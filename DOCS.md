@@ -270,7 +270,7 @@ Entities fall into two categories:
 
 Some data points only appear when a related feature is active. These **dynamic data points** are added and removed automatically as the controller's state changes.
 
-![Dynamic points lifecycle](/local/nibe-dynamic-points.svg)
+![Dynamic points lifecycle](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-dynamic-points.svg)
 
 **First-time discovery** — when you flip a switch for the first time, the bridge runs a one-time learning scan:
 - It watches for new data points to appear for up to 90 seconds after your write
