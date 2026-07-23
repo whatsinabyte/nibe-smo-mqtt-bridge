@@ -62,7 +62,7 @@ Works with any Nibe S-series controller running **minimum firmware 4.5.7** with 
 
 ## Installation
 
-1. 1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
    and add: `https://github.com/whatsinabyte/nibe-smo-mqtt-bridge`
 2. Install the **Nibe S-Series MQTT Bridge** add-on
 3. Enable the local API on your controller — **Menu 7.5.15** on all S-series products
