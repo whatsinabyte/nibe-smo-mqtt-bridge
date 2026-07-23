@@ -1,0 +1,28 @@
+# pyproject.toml — mutmut phase 3 (nibe_entity_manager.py full file)
+# Written by run-mutmut.sh — do not edit manually during a run.
+# Intended for overnight/weekend runs on ODROID-M1.
+#
+# NOTE: mutmut 3.x only_mutate uses fnmatch against file paths — function-level
+# scoping is not supported. The full file is mutated (~3000-5000 mutants expected).
+
+[tool.mutmut]
+source_paths = ["nibe_entity_manager.py"]
+also_copy = [
+    "tests",
+    "pytest.ini",
+    "app",
+]
+pytest_add_cli_args = [
+    "--timeout=600",
+    "--override-ini=pythonpath=. app",
+    "-p", "no:randomly",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/test_entity_manager.py",
+    "tests/test_ha_integration.py",
+    "tests/test_generate.py",
+    "tests/test_lovelace.py",
+]
+mutate_only_covered_lines = false
+timeout_multiplier = 5.0
+timeout_constant = 30.0

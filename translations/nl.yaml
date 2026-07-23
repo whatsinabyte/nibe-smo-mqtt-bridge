@@ -1,0 +1,141 @@
+configuration:
+  nibe_host:
+    name: IP-adres controller
+    description: >-
+      IP-adres of hostnaam van uw Nibe S-series controller op uw lokale
+      netwerk. Het wordt sterk aangeraden om via uw router een vast IP-adres
+      in te stellen, zodat dit niet verandert na een herstart.
+  nibe_port:
+    name: API-poort controller
+    description: >-
+      HTTPS-poort van de lokale REST API van de controller. De standaardwaarde
+      8443 is correct voor alle S-series producten en hoeft normaal gesproken
+      niet gewijzigd te worden.
+  nibe_username:
+    name: API-gebruikersnaam controller
+    description: >-
+      Gebruikersnaam ingesteld in het servicemenu van de controller
+      (menu 7.5.15). Moet exact overeenkomen met de waarde op de controller.
+  nibe_password:
+    name: API-wachtwoord controller
+    description: >-
+      Wachtwoord ingesteld in het servicemenu van de controller (menu 7.5.15).
+      Hoofdlettergevoelig.
+  mqtt_host:
+    name: MQTT-broker hostnaam
+    description: >-
+      Hostnaam of IP-adres van uw MQTT-broker. De standaardwaarde
+      "core-mosquitto" werkt met de officiële Mosquitto-add-on. Gebruik een
+      IP-adres of hostnaam voor een andere broker.
+  mqtt_port:
+    name: MQTT-broker poort
+    description: >-
+      TCP-poort van uw MQTT-broker. De standaardwaarde 1883 is de
+      onversleutelde MQTT-poort. Als u "MQTT TLS" inschakelt, wijzig deze
+      dan naar 8883 (de versleutelde poort die Mosquitto gebruikt).
+  mqtt_username:
+    name: MQTT-gebruikersnaam
+    description: >-
+      Gebruikersnaam voor authenticatie bij de MQTT-broker. Laat leeg als uw
+      broker geen authenticatie vereist.
+  mqtt_password:
+    name: MQTT-wachtwoord
+    description: >-
+      Wachtwoord voor authenticatie bij de MQTT-broker. Laat leeg als uw
+      broker geen authenticatie vereist.
+  device_name:
+    name: Apparaatnaam
+    description: >-
+      Hoe het controller-apparaat in Home Assistant wordt weergegeven.
+      Standaard "Nibe SMO S40", maar u kunt dit aanpassen aan uw hardware
+      (bijv. "Nibe S1155" of "Nibe VVM S320").
+  poll_interval:
+    name: Peilinterval
+    description: >-
+      Hoe vaak alle datapunten bij de controller worden opgehaald, in seconden.
+      30 seconden wordt aanbevolen. De controller is een embedded apparaat —
+      de REST API is ondergeschikt aan het aansturen van uw warmtepomp.
+      Een herstart is vereist na het wijzigen van deze instelling.
+  mode:
+    name: Entiteitsmodus
+    description: >-
+      Welke entiteiten de bridge beschikbaar stelt: "essential" omvat de
+      kerntemperaturen, warm-waterstatus, energietotalen en basisinstellingen
+      — een goed startpunt voor elke installatie. "monitoring" voegt
+      aanvoer-/retourlijnen, compressorstatus en efficiëntie-indicatoren toe.
+      "advanced" voegt het volledige koudemiddelcircuit en afstelinstellingen
+      toe. "menus" stelt elk punt beschikbaar dat nodig is voor het
+      Nibe-menusdashboard en bouwt dat dashboard. "all" stelt elk ontdekt
+      punt beschikbaar; "none" stelt niets beschikbaar totdat u entiteiten
+      handmatig inschakelt. Dit wordt toegepast bij het opstarten — wijzigen
+      vereist een herstart van de add-on. Overschakelen naar een andere modus
+      schakelt entiteiten uit die niet in de nieuwe selectie zitten, inclusief
+      entiteiten die u handmatig hebt ingeschakeld via de Entity Manager-kaart.
+      "essential" is het aanbevolen startpunt.
+  log_level:
+    name: Logniveau
+    description: >-
+      Uitgebreidheid van het add-on logboek. "info" wordt aanbevolen voor
+      normaal gebruik. Gebruik "debug" om verbindings- of entiteitsproblemen
+      te diagnosticeren — dit produceert een grote hoeveelheid uitvoer en
+      moet daarna worden teruggezet naar "info".
+  debug_mode:
+    name: Foutopsporingsmodus
+    description: >-
+      Schakelt de testsuiteknop en resultaatsensor in op het
+      Beheer-apparaat. Handig om de nachtelijke testsuite uit te voeren
+      zonder het logniveau op debug in te stellen. Wanneer log_level "debug"
+      is, worden de testsuite-entiteiten ook weergegeven ongeacht deze
+      instelling.
+  api_failure_threshold:
+    name: API-foutdrempel
+    description: >-
+      Aantal opeenvolgende mislukte peilingen voordat er een permanente
+      melding verschijnt in de HA-notificatiebel. De standaardwaarde 3
+      betekent drie opeenvolgende mislukkingen (90 seconden bij het
+      standaardinterval) voordat er een waarschuwing wordt gegeven. Verhoog
+      dit op een onstabiel netwerk om valse positieven te vermijden.
+  changelog_retention_days:
+    name: Wijzigingenlogboek bewaren (dagen)
+    description: >-
+      Hoeveel dagen vermeldingen in het wijzigingenlogboek van de Entity
+      Manager worden bewaard voordat ze worden verwijderd. Vermeldingen
+      ouder dan deze waarde worden bij elke herstart verwijderd. De
+      standaardwaarde van 90 dagen is geschikt voor de meeste installaties.
+  remove_frontend:
+    name: Frontend verwijderen bij afsluiten
+    description: >-
+      Stel dit in op true voordat u de add-on stopt om automatisch het
+      Nibe Bridge-dashboard, de Lovelace-resourceregistratie, het kaartbestand
+      en alle bewaarde MQTT-berichten te verwijderen bij de volgende normale
+      afsluiting. Gebruik dit alleen bij het verwijderen van de add-on.
+      Normale herstarts worden niet beïnvloed. Zie de documentatie voor de
+      volledige verwijderprocedure.
+  nibe_ca_cert:
+    name: Pad naar CA-certificaat Nibe controller
+    description: >-
+      Optioneel. Absoluut pad naar een CA-certificaatbestand in PEM-formaat
+      voor het verifiëren van het HTTPS-certificaat van de controller. Indien
+      ingesteld worden volledige TLS-ketenverificatie en hostnaamcontrole
+      ingeschakeld voor alle API-aanroepen naar de controller. Laat leeg om
+      het ingebouwde zelfondertekende certificaat van de controller zonder
+      verificatie te accepteren — dit is de standaard en acceptabel op een
+      vertrouwd thuisnetwerk. Voorbeeld: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Schakel TLS-versleuteling in voor al het verkeer tussen de bridge en
+      de MQTT-broker. Beschermt uw MQTT-inloggegevens en alle
+      entiteitsopdrachten tegen afluisteren op het lokale netwerk. Vereist
+      dat uw broker is geconfigureerd voor TLS — wijzig de MQTT-brokerpoort
+      naar 8883 als u de Mosquitto-add-on gebruikt. Standaard uitgeschakeld.
+  mqtt_ca_cert:
+    name: Pad naar CA-certificaat MQTT-broker
+    description: >-
+      Optioneel. Alleen gebruikt als "MQTT TLS" is ingeschakeld. Absoluut
+      pad naar een CA-certificaatbestand in PEM-formaat voor het verifiëren
+      van het TLS-certificaat van de broker. Laat leeg om de systeem-CA-store
+      te gebruiken, wat correct is voor brokers met een door een publieke CA
+      ondertekend certificaat. Stel dit in als uw broker een zelfondertekend
+      of privé-ondertekend certificaat gebruikt.
+      Voorbeeld: /ssl/mqtt-ca.pem
