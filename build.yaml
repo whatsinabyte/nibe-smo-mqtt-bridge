@@ -5,5 +5,5 @@ build_from:
 labels:
   org.opencontainers.image.title: "Nibe S-Series MQTT Bridge"
   org.opencontainers.image.description: "MQTT bridge for Nibe S-series heat pump controllers"
-  org.opencontainers.image.source: "https://github.com/whatsinabyte/nibe-addon"
+  org.opencontainers.image.source: "https://github.com/whatsinabyte/nibe_smo_mqtt_bridge"
   org.opencontainers.image.licenses: "MIT"
