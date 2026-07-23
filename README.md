@@ -4,7 +4,7 @@
 ![Supports amd64 Architecture][amd64-shield]
 
 Connects your Nibe S-series heat pump controller to Home Assistant via MQTT — no cloud account, no hardcoded register maps, no manual configuration of data points.
-![Dynamic points lifecycle](![Nibe Enity Manager](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/Nibe-Bridge-Entity-Manager.png)
+![Nibe Entity Manager](![Nibe Entity Manager](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/Nibe-Bridge-Entity-Manager.png)
 
 
 ## About
