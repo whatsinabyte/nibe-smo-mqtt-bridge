@@ -41,9 +41,6 @@ if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
     fi
 fi
 
-mkdir -p /config/www
-cp /app/*.svg /config/www/
-
 echo "Starting Nibe S-Series MQTT Bridge (log=${LOG_LEVEL}, mode=${MODE})..."
 
 # Export cleanup flag so the Python bridge can act on it at shutdown.
