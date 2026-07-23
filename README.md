@@ -13,6 +13,7 @@ The bridge creates two devices in Home Assistant under **Settings → Devices & 
 
 - **Your controller device** — all heat pump sensors, setpoints, and controls
 - **Management device** — bridge controls: Smart Mode, Aid Mode, alarm monitoring, and diagnostics
+![Dynamic points lifecycle](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-bridge-simple.svg)
 
 > ⚠️ Writable entities send commands directly to the heat pump controller. Treat unfamiliar registers with care.
 

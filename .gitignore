@@ -26,6 +26,7 @@ data/
 
 # macOS
 .DS_Store
+.smbdelete*
 
 # Editor / IDE
 .vscode/
