@@ -1,0 +1,3741 @@
+menus:
+- id: '1'
+  title: Indoor climate
+  description: 'Temperature and heating/cooling curve settings for the climate system. If more than one zone or climate system
+    is installed, settings are made per zone/system.
+
+    '
+  tip: 'Always wait 24 hours after making a change before making another adjustment — the room temperature needs time to stabilise.
+
+    '
+  submenus:
+  - id: '1.1'
+    title: Temperature
+    description: 'The primary comfort control — set your desired indoor temperature here. The display shows either a target
+      temperature in °C (when a room sensor is active) or a curve offset (-10 to +10) that shifts the entire heating or cooling
+      curve up or down. This is the setting most homeowners adjust day-to-day.
+
+      '
+    note: 'For fast-response low-temperature fan convectors (such as low-H2O radiators with Dynamic Boost fans), room sensor
+      control works particularly well. The very low water volume means the system responds quickly to room temperature changes,
+      making room sensor control accurate and energy efficient. These systems can also switch between heating and cooling
+      automatically based on the water temperature — the heat pump''s cooling signal drives this directly without any additional
+      room sensor logic needed from the SMO S40.
+
+      '
+    tip: 'Two different problems, two different fixes: if the house is always too cold or too warm regardless of outdoor temperature
+      → adjust the offset here (menu 1.1). If the house is comfortable in mild weather but cold when it gets really cold outside
+      → adjust the heating curve slope in menu 1.30.1 instead.
+
+      '
+    warning: 'If a room sensor is installed, this menu shows a desired room temperature (5–30°C for heating, 5–35°C for cooling).
+      Without a room sensor it shows a curve offset (-10 to +10). The same setting has a completely different meaning and
+      scale depending on whether a room sensor is connected. Installing or removing a room sensor after initial setup will
+      change the interpretation of this value without warning — verify the setting after any room sensor change.
+
+      '
+    settings:
+    - label: Heating setpoint (with room sensor)
+      range: 5 – 30 °C
+      point_id: 3945
+      note: Only active when a room sensor is installed and enabled
+    - label: Cooling setpoint (with room sensor)
+      range: 5 – 35 °C
+      point_id: 5079
+      note: Only active when a room sensor is installed and enabled
+    - label: Heating offset (without room sensor)
+      range: -10 – +10
+      point_id: 3671
+      tip: 'First adjustment step for comfort issues: change by 1, wait 24 hours, reassess. Open all thermostats fully except
+        rooms where a cooler temperature is wanted. If comfort issues persist across all outdoor temperatures, the offset
+        is the right tool. If the house is comfortable in mild weather but cold in very cold weather (or vice versa), adjust
+        the curve slope instead.
+
+        '
+      note: 'Each offset step shifts the supply temperature by about 2.5°C at every outdoor temperature (e.g. +2 steps = +5°C
+        supply) — useful for cross-checking against the live supply temperature in menu 3.1.3. The corresponding room temperature
+        effect is roughly 1°C per step, though this varies with the building''s heat loss and emitter type.
+
+        '
+    - label: Cooling offset (without room sensor)
+      range: -10 – +10
+      point_id: 5033
+      tip: 'Parallel offset of the cooling curve. Increase to raise supply temperature (less cooling). Only applies when no
+        room sensor is installed.
+
+        '
+      note: 'This point was not found in firmware testing on an S2125 with room sensor control active — it may only appear
+        without a room sensor installed, or may not be exposed on all S-series variants. If this entity shows as unavailable,
+        use the cooling curve slope (menu 1.30.2) or the room sensor cooling setpoint (above) instead.
+
+        '
+    submenus:
+    - id: 1.1.1
+      title: Heating
+      description: 'Set the heating temperature for the climate system. With a room sensor installed and activated: setting
+        range 5–35°C (desired room temperature). Without room sensor: setting range -10–10 (curve offset). One offset step
+        usually changes room temperature by 1°C.
+
+        Cross-reference: heating curve slope → menu 1.30.1.
+
+        '
+      tip: 'If the room temperature is constantly too low or too high, adjust by one step and wait 24 hours before making
+        another change.
+
+        '
+      settings: []
+      local_api: false
+    - id: 1.1.2
+      title: Cooling
+      description: 'Set the cooling temperature for the climate system. With a room sensor installed and activated: setting
+        range 5–35°C (desired room temperature). Without room sensor: setting range -10–10 (curve offset). Requires cooling
+        hardware installed and activated.
+
+        Cross-reference: cooling curve slope → menu 1.30.2.
+
+        '
+      settings: []
+      local_api: false
+    - id: 1.1.3
+      title: Humidity
+      description: 'Live temperature and humidity readings from a paired THS-10 wireless sensor. Only visible when a THS-10
+        has been paired with the SMO S40 via the wireless interface. Multiple THS-10 sensors appear here as separate named
+        entries.
+
+        '
+      settings:
+      - label: Room temperature (THS-10)
+        range: °C (read-only)
+        point_id: 50662
+        note: Only present when a THS-10 wireless sensor is paired.
+      - label: Room humidity (THS-10)
+        range: '% RH (read-only)'
+        point_id: 50827
+        note: 'Only present when a THS-10 wireless sensor is paired. Firmware reports the unit as "%RH" which Home Assistant
+          does not auto-detect — a unit override to "%" is required in the bridge configuration.
+
+          '
+      - label: HTS 1
+        range: off/on
+        point_id: 5102
+        note: Firmware label "HTS 1". This is NOT an indicator of THS-10 pairing status — there is no sensor or point that
+          reports whether the THS-10 has paired. The actual function of this point is unconfirmed.
+      note: 'The THS-10 is a battery-powered wireless temperature and humidity sensor. It pairs via the SMO S40''s built-in
+        wireless interface (no additional hardware needed). Once paired, it can replace the fixed wired room sensor and additionally
+        enables humidity-based control functions in menus 1.3 and 7.1.7.2.
+
+        '
+  - id: '1.2'
+    title: Ventilation
+    description: 'Settings for the ERS heat recovery ventilation unit (ERS S10-400, ERS S40-400, ERS 20-250, or ERS 30-400).
+      The ERS supplies the home with energy-recovered ventilation air — it ventilates the house and heats the supply air as
+      necessary. This menu only appears on the controller display when a compatible ERS unit is installed and activated in
+      menu 7.2.1.
+
+      '
+    submenus:
+    - id: 1.2.1
+      title: Fan speed
+      description: 'Set the exhaust air fan speeds for four selectable speed levels plus a normal (default) speed. Speed 1
+        is the lowest, speed 4 is the highest. The ERS supply air fan speed adjusts automatically to match the exhaust air
+        fan speed.
+
+        '
+      tip: 'Normal speed is the default operating speed — set it to match your typical ventilation requirement (typically
+        70–80%). Speed levels 1–4 can be activated via AUX inputs connected to external switches.
+
+        '
+      settings:
+      - label: Exhaust air fan speed, normal
+        range: 1 – 100 %
+        point_id: 5148
+        note: 'Speed 0 stops the fan completely — only use for speed 1 (lowest) if occasional pauses are acceptable.
+
+          '
+        tip: Used during regular ventilation — set to match your typical requirement.
+      - label: Exhaust air fan speed 1 (lowest)
+        range: 0 – 100 %
+        point_id: 5147
+        note: 'Speed 0 stops the fan completely — only use for speed 1 (lowest) if occasional pauses are acceptable.
+
+          '
+        tip: Lowest temporary speed, activated via an AUX input. Set to 0 to allow the fan to stop completely.
+      - label: Exhaust air fan speed 2
+        range: 0 – 100 %
+        point_id: 5146
+        note: 'Speed 0 stops the fan completely — only use for speed 1 (lowest) if occasional pauses are acceptable.
+
+          '
+      - label: Exhaust air fan speed 3
+        range: 0 – 100 %
+        point_id: 5145
+        note: 'Speed 0 stops the fan completely — only use for speed 1 (lowest) if occasional pauses are acceptable.
+
+          '
+      - label: Exhaust air fan speed 4 (highest)
+        range: 0 – 100 %
+        point_id: 5144
+        note: 'Speed 0 stops the fan completely — only use for speed 1 (lowest) if occasional pauses are acceptable.
+
+          '
+        tip: Highest temporary speed, used during night cooling and boost.
+      - label: ERS 1
+        range: off/on
+        point_id: 4940
+        note: Master on/off for ERS unit 1
+        tip: 'Activate ERS/S135 unit 1. The unit must also be added via menu 7.2.1 (add/remove accessories).
+
+          '
+      - label: ERS blocking status (read-only)
+        range: Status
+        point_id: 782
+        note: Read-only — indicates if ERS is currently blocked (e.g. by stove monitor)
+    - id: 1.2.2
+      title: Night cooling
+      description: 'Night cooling uses the ventilation fan at high speed during cool nights to lower the indoor temperature
+        passively without running the compressor. Activates when outdoor temperature is sufficiently below indoor temperature.
+
+        '
+      settings:
+      - label: Night cooling temperature difference
+        range: 3 – 10 °C
+        point_id: 7208
+        tip: 'The outdoor temperature must be this many degrees lower than indoor before night cooling activates
+
+          '
+      note: 'Start temp exhaust air (20–30°C) and "Night cooling during heating" are configured on the controller display
+        only.
+
+        '
+    - id: 1.2.3
+      title: Bypass temperature
+      description: 'Sets the outdoor temperature threshold below which the heat recovery bypass opens. Above this temperature,
+        incoming air bypasses the heat exchanger to avoid overheating in summer.
+
+        '
+      settings:
+      - label: Bypass temperature (ERS 1)
+        range: 2 – 10 °C
+        point_id: 5193
+        tip: 'Set to just above the typical outdoor temperature where you want the bypass to open — typically 5–8 °C
+
+          '
+    - id: 1.2.4
+      title: Demand controlled ventilation
+      description: 'Automatically adjusts fan speed based on CO₂ or humidity sensors. Requires compatible CO₂ or humidity
+        sensors connected to the ERS unit.
+
+        '
+      settings: []
+      local_api: false
+      note: 'Demand controlled ventilation settings are configured on the controller display only.
+
+        '
+    - id: 1.2.5
+      title: Fan return time
+      description: 'Sets how long the fan runs at a temporarily activated speed before returning to normal speed after the
+        triggering switch is released.
+
+        '
+      settings:
+      - label: Return time fan speed 1–4 (ERS/S135 unit 1)
+        range: 1 – 24 h
+        point_id: 21583
+        tip: Time before a temporary fan speed change returns to normal speed.
+      - label: Return time fan speed 1–4 (ERS/S135 unit 2)
+        range: 1 – 24 h
+        point_id: 21584
+        note: Same setting as unit 1, applied independently.
+      - label: Return time fan speed 1–4 (ERS/S135 unit 3)
+        range: 1 – 24 h
+        point_id: 21585
+        note: Same setting as unit 1, applied independently.
+      - label: Return time fan speed 1–4 (ERS/S135 unit 4)
+        range: 1 – 24 h
+        point_id: 21586
+        note: Same setting as unit 1, applied independently.
+      note: 'Individual return times per speed level (speed 1, 2, 3, 4) are configured on the controller display only.
+
+        '
+    - id: 1.2.6
+      title: Filter cleaning interval
+      description: 'Sets the number of days between filter cleaning reminders. When the interval expires, an alarm appears
+        on the controller display prompting the user to clean or replace the filter.
+
+        '
+      settings:
+      - label: Time between filter replacement (ERS/S135 unit 1)
+        range: 1 – 24 months
+        point_id: 15078
+        tip: Interval for the filter cleaning reminder alarm.
+      - label: Time between filter replacement (ERS/S135 unit 2)
+        range: 1 – 24 months
+        point_id: 15079
+        note: Same setting as unit 1, applied independently.
+      - label: Time between filter replacement (ERS/S135 unit 3)
+        range: 1 – 24 months
+        point_id: 15080
+        note: Same setting as unit 1, applied independently.
+      - label: Time between filter replacement (ERS/S135 unit 4)
+        range: 1 – 24 months
+        point_id: 15081
+        note: Same setting as unit 1, applied independently.
+      note: Filter cleaning interval settings are configured on the controller display only.
+    - id: 1.2.7
+      title: Ventilation recovery
+      description: 'Settings for the heat recovery efficiency and temperature limits for the heat exchanger in the ERS unit.
+
+        '
+      settings: []
+      local_api: false
+      note: 'All ventilation recovery settings (temp stop heat recovery 5–30°C, min diff indoor/outdoor temp, recovery stop
+        during heating, cooling recovery, supply air cooled by exhaust temp, min diff outdoor/exhaust) are configured on the
+        controller display only — not exposed via the local API.
+
+        '
+  - id: '1.3'
+    title: Room sensor settings
+    description: 'Configure room sensors and zones. Room sensors allow the controller to regulate to a target room temperature
+      rather than using the heating curve offset. Each sensor is assigned to a zone, and each zone belongs to a climate system.
+      With a room sensor active, the controller continuously adjusts the supply temperature to maintain the target room temperature,
+      rather than following a fixed curve.
+
+      '
+    tip: 'With room sensor control enabled, the curve settings in menu 1.30.1 still define the base behaviour, but the room
+      sensor trims the supply temperature up or down to hit the target. The "room sensor factor" (point 3949) controls how
+      aggressively the supply temperature is adjusted — start at 2 and increase if the room temperature is slow to reach the
+      setpoint. Cross-reference: temperature setpoint with room sensor → menu 1.1; heating curve → menu 1.30.1.
+
+      '
+    settings:
+    - label: Use room sensor climate system 1
+      range: off/on
+      point_id: 3941
+      note: Enables room sensor control for climate system 1
+    - label: Room sensor factor climate system 1 (heating)
+      range: 0.0 – 6.0
+      point_id: 3949
+      tip: Higher factor = more influence from the room sensor on the supply temperature
+    - label: Room sensor factor climate system 1 (cooling)
+      range: 0.0 – 6.0
+      point_id: 5087
+      tip: Higher factor = more influence from the room sensor on the supply temperature during cooling, same convention as
+        the heating factor above (point 3949). Requires cooling hardware installed and activated.
+    - label: Prevent condensation (climate system 1)
+      range: off/on
+      point_id: 5110
+      tip: 'When on, the system raises the supply temperature during cooling if the room humidity rises to a level where condensation
+        on cold surfaces becomes likely. The SMO S40 calculates the dew point from the THS-10 readings and adjusts cooling
+        output to stay above it. Recommended for installations with underfloor or low-temperature distribution where surface
+        temperatures may approach the dew point.
+
+        '
+      note: Only present when a THS-10 is paired.
+    - label: Limit humidity in room, cooling (climate system 1)
+      range: off/on
+      point_id: 5214
+      tip: 'When on, the system increases cooling output if room humidity exceeds the RH setpoint (point 5088). Useful for
+        bathrooms or rooms where humidity control is more important than temperature precision. When off, cooling follows
+        temperature only.
+
+        '
+      note: Only present when a THS-10 is paired.
+    - label: Relative humidity setpoint (RH)
+      range: 30 – 90 %
+      point_id: 5088
+      tip: 'Target maximum relative humidity, used by both "prevent condensation" (5110) and "limit humidity during cooling"
+        (5214). For condensation prevention on underfloor cooling with typical Dutch summer conditions (indoor ~24°C), a setpoint
+        of 60–65% provides a safe margin above the dew point at 18°C supply temperature.
+
+        '
+      note: Only present when a THS-10 is paired.
+    note: 'Room sensors include the wireless RMU S40 room unit (part no. 067 650) which has a built-in room sensor and humidity
+      sensor and allows control and monitoring from a different part of the home. Wireless CO₂ and humidity sensors can also
+      be connected.
+
+      '
+    submenus:
+    - id: 1.3.4
+      title: Zones
+      description: 'Each zone is a grouping of one or more room sensors within a climate system. A zone can represent a room,
+        a floor, or a section of the building. Each zone has its own desired room temperature setpoint, which takes precedence
+        over the climate system setpoint (menu 1.1) when a room sensor is active in that zone.
+
+        '
+      note: 'Zone naming and climate system assignment are configured on the controller display only and are not accessible
+        via the local REST API. The desired room temperature setpoints for each zone (points 32341–32380) are accessible and
+        writable via the REST API. Zones without an active room sensor use the curve offset from menu 1.1 instead. The firmware
+        provides setpoints for up to 40 zones; on most residential installations only zone 1 is active.
+
+        '
+      settings:
+      - label: Desired room temperature, zone 1
+        range: 5.0 – 35.0 °C
+        point_id: 32341
+        tip: The target room temperature for zone 1. Only active when a room sensor is assigned to zone 1 and room sensor
+          control is enabled (point 3941). Takes precedence over the climate system 1 setpoint (point 3945) for this zone.
+  - id: '1.4'
+    title: External influence
+    description: 'Shows information about active accessories or external functions that are currently affecting the indoor
+      climate. This is a status/information section — no direct settings can be changed here.
+
+      '
+    note: 'This is a read-only display on the controller. External influences (e.g. SG Ready, Smart Price Adaption, external
+      contact) are configured in their respective menus. There are no writable registers for this view in the local API.
+
+      '
+    settings: []
+    local_api: false
+  - id: '1.5'
+    title: Climate system name
+    description: 'Assign a custom name to the climate system (e.g. "Ground floor", "First floor"). The name is shown on the
+      controller home screen.
+
+      '
+    note: 'Climate system names are stored as text in the controller display and are not accessible via the local REST API
+      as individual registers.
+
+      '
+    settings: []
+    local_api: false
+  - id: '1.30'
+    title: Advanced
+    description: 'Advanced curve and limit settings. These settings determine the supply temperature at different outdoor
+      temperatures and set hard limits on how high or low the supply temperature can go.
+
+      '
+    submenus:
+    - id: 1.30.1
+      title: Curve, heating
+      description: 'The heating curve is the most important efficiency setting in the system. It tells the heat pump how warm
+        to make the water at each outdoor temperature — the colder it is outside, the warmer the water needs to be. A well-tuned
+        curve keeps your house at a constant temperature without wasting energy on unnecessarily hot water. Think of it as
+        the "shape" of the heating response. The offset in menu 1.1 moves the whole curve up or down; the curve number here
+        changes its slope.
+
+        '
+      tip: 'Starting values for the Netherlands: underfloor heating curve 5–6, modern radiators curve 7–8, old radiators or
+        poorly insulated homes curve 9+. Change by 1 step at a time and wait 24 hours. If the house is cold only on the coldest
+        days → increase curve. If the house is warm enough in cold weather but too warm in mild weather → decrease curve.
+        The minimum and maximum supply temperatures (menus 1.30.4 and 1.30.6) act as hard limits — make sure they are set
+        appropriately or they will override the curve.
+
+        '
+      note: 'Curve 0 activates the own curve from menu 1.30.7. Cross-reference: min supply temp (1.30.4), max supply temp
+        (1.30.6), point offset for fine-tuning a specific outdoor temperature (1.30.8).
+
+        '
+      settings:
+      - label: Heating curve
+        range: 0 – 15
+        point_id: 3667
+        tip: 'Only adjust the slope when the offset alone cannot solve the problem — specifically when the house is comfortable
+          at moderate outdoor temperatures but uncomfortable at temperature extremes. Always adjust in steps of 1 and wait
+          24h between changes. Most comfort issues are solved by the offset (menu 1.30.1), not the slope.
+
+          '
+      - label: Heating offset, climate system 1
+        range: -10 – 10
+        point_id: 3671
+        tip: 'First adjustment step for comfort issues: change by 1, wait 24 hours, reassess. Open all thermostats fully except
+          rooms where a cooler temperature is wanted. If comfort issues persist across all outdoor temperatures, the offset
+          is the right tool. If the house is comfortable in mild weather but cold in very cold weather (or vice versa), adjust
+          the curve slope instead.
+
+          '
+        note: Each step shifts supply temperature by about 2.5°C at every outdoor temperature. See menu 1.1 for the corresponding
+          room temperature effect.
+    - id: 1.30.2
+      title: Curve, cooling
+      description: 'The cooling curve works together with the heating curve to maintain uniform indoor temperature during
+        cooling operation. A higher curve produces cooler water; a lower curve produces less aggressive cooling.
+
+        '
+      warning: 'With underfloor cooling, the minimum supply cooling temperature (menu 1.30.5) MUST be restricted to prevent
+        condensation — which in the worst case can cause moisture damage to floors.
+
+        '
+      note: 'Cooling menus are only visible if the outdoor unit supports cooling and the average temperature is above the
+        start cooling threshold set in menu 7.1.10.2. Curve 0 activates the own curve.
+
+        '
+      tip: 'Typical values: curve 9 for fan coils, curve 5 for underfloor cooling.
+
+        '
+      settings:
+      - label: Cooling curve
+        range: 0 – 9
+        point_id: 5025
+        tip: 'Higher value = lower supply temperature at high outdoor temps = more cooling. Fan coils: start at 3–5. Underfloor
+          cooling: start at 1–2. 0 = use own curve (menu 1.30.7).
+
+          '
+      - label: Min supply temperature, cooling CS1
+        range: -5 – 30 °C
+        point_id: 4602
+        tip: 'Minimum permitted supply temperature in cooling mode. Set with regard to the climate system — underfloor cooling
+          needs higher minimum to prevent condensation.
+
+          '
+        warning: 'For underfloor cooling set this no lower than 16°C to prevent condensation and moisture damage to the floor.
+
+          '
+    - id: 1.30.3
+      title: External adjustment
+      description: 'When an external switch (e.g. a room thermostat or timer) is connected and active, this setting applies
+        an offset to the heating curve. With a room sensor installed, it sets a target room temperature directly in °C.
+
+        '
+      note: 'This is for external hardware switches connected to the controller''s input terminals — not a software setting.
+        If more than one zone is installed, each zone can have its own external adjustment value. Cross-reference: the AUX
+        input that the external switch is connected to must be assigned in menu 7.4 Selectable in/outputs.
+
+        '
+      settings:
+      - label: External adjustment (offset, no room sensor)
+        range: -10 – +10
+        point_id: 3692
+        tip: 'When the AUX input switch activates, the heating curve shifts by this many steps. Positive = warmer, negative
+          = cooler. Used for night setback or away mode via external switch.
+
+          '
+      - label: External adjustment (with room sensor)
+        range: 5 – 30 °C
+        point_id: 3696
+        tip: 'Desired room temperature when external AUX switch is active. Only used when a room sensor is installed.
+
+          '
+    - id: 1.30.4
+      title: Lowest supply heating
+      description: 'Sets the minimum permitted supply temperature during heating operation. The controller will never calculate
+        a supply temperature lower than this value, regardless of the heating curve setting. This limit protects against the
+        system supplying water so cool that the emitters cannot heat the space effectively.
+
+        '
+      tip: 'Set to just below the minimum useful supply temperature for your system. For underfloor heating this is typically
+        20–25 °C; for traditional radiators 35–40 °C. For low-temperature fan convectors with Dynamic Boost (DBH) technology:
+        these systems work effectively from around 25–30 °C supply temperature. Setting the minimum to 25 °C allows the heat
+        pump to run at very low supply temperatures in mild weather, maximising COP (efficiency). The fans automatically compensate
+        for lower water temperatures by running faster. Avoid setting this too high — it forces the heat pump to work harder
+        than needed in mild weather.
+
+        '
+      settings:
+      - label: Min supply heating
+        range: 5 – 80 °C
+        point_id: 3675
+        tip: 'The system never calculates a lower supply temperature than this. For underfloor heating: typically 20–25°C.
+          For radiators: can be set lower. Prevents heat pump stopping in mild weather.
+
+          '
+    - id: 1.30.5
+      title: Lowest supply cooling
+      description: 'Sets the minimum permitted supply temperature during cooling operation. The controller will never calculate
+        a supply temperature lower than this value. The correct minimum depends entirely on your cooling emitters — underfloor
+        cooling and fan convectors have very different limits.
+
+        '
+      warning: 'For underfloor cooling, set no lower than 17–18 °C to prevent condensation and moisture damage to floors.
+        For low-temperature fan convectors with Dynamic Boost Hybrid (DBH) technology: non-condensing cooling is a core feature
+        of these units. Supply temperatures of 15–17 °C are typically safe for Dutch summer conditions (indoor ~24 °C, 60%
+        RH gives a dew point of ~15 °C). However these units have no built-in condensation monitor — the installation must
+        protect against the supply temperature dropping below the dew point. A safe practical setting is 16 °C for DBH fan
+        convectors. Cross-reference: prevent condensation setting → menu 7.1.7.
+
+        '
+      settings:
+      - label: Min supply cooling
+        range: -5 – 30 °C
+        point_id: 4602
+        warning: 'Underfloor cooling: 17–18 °C minimum. Fan convectors (DBH): 15–17 °C minimum depending on indoor dew point
+          conditions.
+
+          '
+    - id: 1.30.6
+      title: Highest supply heat
+      description: 'Sets the maximum permitted supply temperature during heating operation. The controller will never calculate
+        a supply temperature higher than this value. This is one of the most important efficiency settings — the lower you
+        can set this, the higher the heat pump''s COP (coefficient of performance) and the lower your energy bills.
+
+        '
+      warning: 'For underfloor heating, set between 35 and 45 °C. Exceeding this can damage floor coverings and cause discomfort.
+        Climate systems 2–8 cannot be set higher than climate system 1.
+
+        '
+      tip: 'The golden rule: set the maximum as low as your heating system can manage on the coldest day. Every 1 °C reduction
+        in supply temperature improves heat pump efficiency by roughly 2–3%. For low-temperature fan convectors with Dynamic
+        Boost (DBH) technology: the Dynamic Boost fans allow these systems to deliver full heating output at supply temperatures
+        of 35–45 °C. Setting the maximum to 45–50 °C is sufficient for most Dutch winters. There is no need to go above 50
+        °C with these convectors — doing so only wastes energy. For traditional radiators: 55–65 °C. For underfloor: 35–45
+        °C. Cross-reference: check your actual supply temperature on the coldest days in menu 3.1.3 Heating.
+
+        '
+      settings:
+      - label: Max supply heating
+        range: 5 – 80 °C
+        point_id: 3679
+        warning: 'For underfloor heating set no higher than 45°C to prevent floor damage. Radiators can typically handle 55–65°C.
+          Climate system 2+ cannot exceed climate system 1 value.
+
+          '
+    - id: 1.30.7
+      title: Own curve
+      description: 'Define a fully custom heating or cooling curve by setting the desired supply temperature at seven specific
+        outdoor temperature points. This gives precise control over the heating/cooling curve shape. Activate by selecting
+        curve 0 in menu 1.30.1 (heating) or 1.30.2 (cooling).
+
+        '
+      note: 'The supply temperature should decrease from the coldest to the warmest outdoor temperature point for a sensible
+        heating curve. For cooling, supply temperature typically increases with outdoor temperature.
+
+        '
+      tip: 'Only use the own curve if standard curves 1–15 are not suitable for your system. For most installations a standard
+        curve with a point offset (menu 1.30.8) is easier to tune.
+
+        '
+      settings:
+      - label: Heating supply temp at outdoor -30 °C
+        range: 5 – 80 °C
+        point_id: 3686
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor -20 °C
+        range: 5 – 80 °C
+        point_id: 3685
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor -10 °C
+        range: 5 – 80 °C
+        point_id: 3684
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor 0 °C
+        range: 5 – 80 °C
+        point_id: 3683
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor +10 °C
+        range: 5 – 80 °C
+        point_id: 3682
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor +20 °C
+        range: 5 – 80 °C
+        point_id: 3681
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Heating supply temp at outdoor +30 °C
+        range: 5 – 80 °C
+        point_id: 3680
+        note: 'Only active when heating curve (menu 1.30.1) is set to 0. Points must form a decreasing sequence from cold
+          to warm outdoor temperatures.
+
+          '
+      - label: Cooling supply temp at outdoor 0 °C
+        range: 7 – 40 °C
+        point_id: 5036
+        note: Only active when cooling curve (menu 1.30.2) is set to 0.
+      - label: Cooling supply temp at outdoor +10 °C
+        range: 7 – 40 °C
+        point_id: 5035
+        note: Only active when cooling curve (menu 1.30.2) is set to 0.
+      - label: Cooling supply temp at outdoor +20 °C
+        range: 7 – 40 °C
+        point_id: 4603
+        note: Only active when cooling curve (menu 1.30.2) is set to 0.
+      - label: Cooling supply temp at outdoor +30 °C
+        range: 7 – 40 °C
+        point_id: 5034
+        note: Only active when cooling curve (menu 1.30.2) is set to 0.
+      - label: Cooling supply temp at outdoor +40 °C
+        range: 7 – 40 °C
+        point_id: 4604
+        note: Only active when cooling curve (menu 1.30.2) is set to 0.
+    - id: 1.30.8
+      title: Point offset
+      description: 'Apply a local adjustment to the heating curve at a specific outdoor temperature. The curve is affected
+        ±5 °C from the set outdoor temperature point. Use this to fine-tune comfort at a specific part of the outdoor temperature
+        range without changing the whole curve.
+
+        '
+      tip: 'If it feels cold at a specific outdoor temperature (e.g. -2°C), set the outdoor temp point to -2 and increase
+        the curve change until comfort is restored. One step usually changes the room temperature by 1°C. This is easier than
+        switching to a custom curve for a single cold spot.
+
+        '
+      note: 'Wait 24 hours after each adjustment before assessing the result.
+
+        '
+      settings:
+      - label: Outdoor temp point
+        range: -40 – +30 °C
+        point_id: 3687
+        tip: 'Outdoor temperature at which the curve correction is applied. The correction affects a ±5°C range around this
+          point. Use to compensate for a specific temperature range where comfort is poor.
+
+          '
+      - label: Change in curve
+        range: -10 – +10 °C
+        point_id: 3688
+        tip: 'Correction applied to the calculated supply temperature at the set outdoor temperature point. Positive = higher
+          supply (more heat).
+
+          '
+- id: '2'
+  title: Hot water
+  description: 'Hot water settings. Requires SMO S40 to be docked to a water heater. These menus are only visible when a water
+    heater is connected.
+
+    '
+  note: 'Menus 2.1 (More hot water) and 2.2 (Hot water demand) are controlled via the Smart Mode and Aid Mode management entities
+    in this bridge, not as individual register settings.
+
+    '
+  submenus:
+  - id: '2.1'
+    title: More hot water
+    description: 'When there is a temporary increase in hot water demand, select an increase in the hot water temperature
+      for a selectable time: 3, 6, 12, 24, or 48 hours, or One-time increase. Quick start with immersion heater gives faster
+      heating but can lead to increased energy consumption. When the time runs out, SMO S40 returns to the set demand mode.
+      Select Off to switch off More hot water.
+
+      '
+    note: 'If the hot water temperature is already sufficiently high, One-time increase cannot be activated.
+
+      '
+    settings: []
+    local_api: false
+  - id: '2.2'
+    title: Hot water demand
+    description: 'Sets the baseline hot water temperature level. Small: lower temperature, smaller households. Medium: normal
+      mode, suitable for most households. Large: higher temperature, immersion heater may be used, hot water prioritised ahead
+      of heating. Smart control: SMO S40 continuously learns previous hot water consumption and adjusts the temperature for
+      minimum energy consumption and maximum comfort.
+
+      '
+    tip: 'Smart control is the most energy-efficient option for most households. It learns your usage pattern and avoids keeping
+      more hot water than needed. Switch to Medium or Large if Smart control leaves you short of hot water.
+
+      '
+    note: 'Controlled via the Smart Mode select in the bridge management entities, not via a direct register. Cross-reference:
+      the start/stop temperatures for each demand mode (Small/Medium/Large) are set in menu 7.1.1.1 Temperature setting.
+
+      '
+    settings: []
+    local_api: false
+  - id: '2.3'
+    title: External influence
+    description: 'Shows information about accessories and functions that are currently affecting hot water operation. Read-only
+      display.
+
+      '
+    settings: []
+    local_api: false
+  - id: '2.4'
+    title: Periodic increase
+    description: 'Periodically heats the water in the tank to a high temperature to kill Legionella bacteria. Legionella can
+      multiply in water stored between 20–50 °C, and is killed at 60 °C or above. Even if you have a separate hot water system,
+      this setting matters if any water is stored in the heat pump''s buffer tank. This function is ON by default and requires
+      a water heater with hot water sensor (BT6).
+
+      '
+    warning: 'Do not disable this without an alternative sanitisation method in place. Legionella causes Legionnaires disease
+      — a serious form of pneumonia. Dutch regulations (RIVM) require periodic sanitisation of domestic hot water systems.
+
+      '
+    tip: 'Weekly (period = 7 days) is the standard recommendation. Schedule the start time during off-peak electricity hours
+      (e.g. 02:00) to reduce cost.  the stop temperature is set in menu 7.1.1.1, not here — make sure it is at least 60 °C.
+      The next scheduled increase date is shown as a read-only value in this menu. Cross-reference: stop temperature → menu
+      7.1.1.1. Coordinate periodic increase start time with hot water circulation periods (menu 2.5) — running both simultaneously
+      wastes energy and circulates the hot sanitisation water before the tank is fully heated.'
+    settings:
+    - label: Activated
+      range: off/on
+      point_id: 3706
+      warning: 'Disabling prevents Legionella sanitisation — only disable if an alternative sanitisation method is in use
+
+        '
+    - label: Period
+      range: 1 – 90 days
+      point_id: 3707
+      tip: 7 days (weekly) is a common setting
+    - label: Start time
+      range: 00:00 – 23:59
+      point_id: 3708
+      tip: Schedule during off-peak electricity hours to reduce cost
+    - label: Stop temperature (configured in menu 7.1.1.1)
+      range: 55 – 70 °C
+      point_id: null
+      note: 'The periodic increase stop temperature is set in menu 7.1.1.1 Temperature setting. Must be at least 60 °C for
+        Legionella prevention.
+
+        '
+    - label: Next periodic increase (read-only)
+      range: Date
+      point_id: 2685
+      note: Read-only — shows the date of the next scheduled Legionella sanitisation cycle.
+  - id: '2.5'
+    title: Hot water circulation
+    description: 'Controls the hot water circulation pump to keep hot water ready at taps without waiting. Up to five time
+      periods per day can be configured, each with its own start time, stop time, and active days. Within each active period
+      the pump cycles on and off according to the operating time and downtime settings.
+
+      '
+    warning: 'Hot water circulation must first be activated in menu 7.4 "Selectable in/outputs" — the AUX output must be assigned
+      to the circulation pump function before these time settings have any effect. Cross-reference: AUX output assignment
+      → menu 7.4; periodic increase scheduling → menu 2.4 (coordinate start times to avoid overlap).
+
+      '
+    tip: 'Running circulation continuously wastes energy. Set periods to match actual usage — morning shower time and evening
+      are the most common. A typical operating/downtime cycle is 5 min on / 15 min off, meaning the pump runs 25% of the time
+      during active periods.
+
+      '
+    note: 'Operating time (1–60 min) and downtime (0–60 min) are not exposed via the local API. Configure these on the controller
+      display. Active days use a bitmask: Mon=1, Tue=2, Wed=4, Thu=8, Fri=16, Sat=32, Sun=64. Add the values for the days
+      you want active (e.g. Mon+Fri = 1+16 = 17, every day = 127). Only periods 1 and 2 have start times and period 1 has
+      a stop time in the local API. Periods 3–5 must be configured on the controller.
+
+      '
+    settings:
+    - label: Circulation active
+      range: off/on
+      point_id: 12385
+      tip: 'Enable hot water circulation pump. When active the pump runs according to the schedule periods below.
+
+        '
+    - label: Active days (period 1)
+      range: '0 – 127 (bitmask: Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32 Sun=64)'
+      point_id: 12396
+      tip: 127 = all days, 31 = weekdays only (Mon–Fri), 96 = weekend only (Sat+Sun)
+    - label: Start time (period 1)
+      range: 00:00 – 23:59
+      point_id: 12401
+      tip: 'Start time for circulation period 1 in seconds from midnight. 0 = 00:00, 3600 = 01:00, 25200 = 07:00.
+
+        '
+    - label: Stop time (period 1)
+      range: 00:00 – 23:59
+      point_id: 12403
+      tip: Stop time for circulation period 1 in seconds from midnight.
+    - label: Active days (period 2)
+      range: 0 – 127 (bitmask)
+      point_id: 12397
+      tip: 'Active days bitmask for period 2. 1=Mon, 2=Tue, 4=Wed, 8=Thu, 16=Fri, 32=Sat, 64=Sun. Add values for multiple
+        days. 127 = all days.
+
+        '
+    - label: Start time (period 2)
+      range: 00:00 – 23:59
+      point_id: 12402
+      tip: Start time for circulation period 2 in seconds from midnight.
+    - label: Stop time (period 2)
+      range: 00:00 – 23:59
+      point_id: null
+      note: Not available via local API — configure on controller display
+    - label: Active days (period 3)
+      range: 0 – 127 (bitmask)
+      point_id: 12398
+      tip: Active days bitmask for period 3.
+    - label: Active days (period 4)
+      range: 0 – 127 (bitmask)
+      point_id: 12399
+      tip: Active days bitmask for period 4.
+    - label: Active days (period 5)
+      range: 0 – 127 (bitmask)
+      point_id: 12400
+      tip: Active days bitmask for period 5.
+    - label: Operating time
+      range: 1 – 60 min
+      point_id: null
+      note: How long the pump runs per operating instance — configure on controller display
+    - label: Downtime
+      range: 0 – 60 min
+      point_id: null
+      note: How long the pump rests between instances — configure on controller display
+- id: '3'
+  title: Info
+  description: Read-only operating information — current temperatures, system status, compressor data, and statistics. All
+    values in this menu are reported by the firmware and update automatically. No settings can be changed here unless explicitly
+    noted otherwise. This menu corresponds to menu 3.1 "Operating info" on the controller display and mirrors the myUplink
+    3.1.x structure.
+  note: 'All entries in this menu are read-only sensors. Use the Entity Manager card to enable or disable individual sensors.
+
+    '
+  submenus:
+  - id: '3.1'
+    title: Operating info
+    description: Live operating status for the installation. All values update automatically from the firmware — no changes
+      can be made here unless explicitly noted. In multi-installations, information about all connected heat pumps is shown.
+    submenus:
+    - id: 3.1.2
+      title: Overview
+      description: Key live values in one place — the first panel to check during troubleshooting.
+      note: 'Reading the DM value: DM near 0: system is balanced, demand is met. DM -30 to -100: normal operating range, compressor
+        likely running. DM below -300: significant deficit — supply temperature is well below target. Could mean: heating
+        curve too low, something blocking heat delivery (pump, thermostat, zone valve), or very cold weather. In Auto mode,
+        DM only accumulates when outdoor temperature is below the "stop heating" threshold (menu 7.1.10.2). In Manual mode,
+        DM accumulates regardless of outdoor temperature. Cross-reference: DM start threshold → menu 7.1.10.3; auto mode stop
+        temps → menu 7.1.10.2.
+
+        '
+      settings:
+      - label: Operating prioritisation
+        range: Read-only status
+        point_id: 56150
+        note: 'Shows what the system is currently working on: Heating, Hot water, Cooling, or Pool. Controlled by the operating
+          prioritisation algorithm (menu 7.1.10.1). In auto mode the firmware balances demands automatically; in manual mode
+          you set the minimum time for each function.'
+      - label: Outdoor temperature (BT1)
+        range: °C
+        point_id: 4
+      - label: Current status
+        range: Idle / Heating / Hot water / Cooling
+        point_id: 2022
+        note: Shows the system's current operating mode as a decoded bitfield. Multiple modes can be active simultaneously
+          — for example Heating and Hot water can run concurrently when a tank immersion heater is present.
+      - label: Degree minutes (heating)
+        range: DM (negative = heating demand)
+        point_id: 781
+        note: Degree minutes (DM) measure accumulated heating demand. The value becomes more negative as the house cools below
+          setpoint. The compressor starts when DM reaches the threshold set in menu 7.1.10.3 (default −60 DM). Returns toward
+          0 as heating is delivered.
+        tip: A slow drift toward more negative values on a mild day can indicate the heating curve slope (menu 1.30.1) is
+          set too low. A rapid swing suggests high heat loss or an undersized system.
+      - label: Calculated supply temp climate system 1
+        range: °C
+        point_id: 1708
+        note: The firmware's calculated target supply temperature for climate system 1, derived from the heating curve and
+          current outdoor temperature. This is the temperature the system is aiming to deliver, not necessarily what BT25
+          currently reads.
+      - label: External supply line (BT25)
+        range: °C
+        point_id: 57
+        note: Actual supply line temperature measured at BT25 — the water leaving the heat pump toward the climate system.
+          Compare with the calculated supply temp (1708) to see how closely the system is tracking its target.
+      - label: Return temperature (BT71)
+        range: °C
+        point_id: 121
+        note: Return line temperature measured at BT71 — the water coming back from the climate system. The difference between
+          supply (BT25) and return (BT71) indicates how much heat the system is delivering to the building.
+      - label: Cooling degree minutes
+        range: DM (positive = cooling demand)
+        point_id: 2691
+        note: Cooling degree minutes measure accumulated cooling demand. Becomes more positive as the house warms above the
+          cooling setpoint. Active cooling starts when this reaches the threshold set in menu 7.1.10.3.
+      - label: Calculated cooling supply climate system 1
+        range: °C
+        point_id: 2695
+        note: Firmware-calculated target supply temperature for cooling in climate system 1.
+      - label: Supply temperature cooling (BT64)
+        range: °C
+        point_id: 734
+        note: Actual supply temperature measured at BT64, used during active cooling operation.
+      - label: Controlling hot water sensor (BT6)
+        range: °C
+        point_id: 2855
+        note: Temperature measured by BT6, the mid-tank sensor that controls when the heat pump considers hot water production
+          complete. The pump stops charging when BT6 reaches the configured stop temperature.
+    - id: 3.1.3
+      title: Heating
+      description: Current heating system temperatures, pump status, and demand data.
+      settings:
+      - label: Outdoor temperature (BT1)
+        range: °C
+        point_id: 4
+      - label: Average outdoor temperature (BT1)
+        range: °C
+        point_id: 54
+        note: Filtered average of BT1 over the period set in menu 7.1.10.2 (default 24h). The heating curve uses this averaged
+          value rather than the instantaneous outdoor temperature, smoothing out short-term weather fluctuations.
+      - label: Current compressor frequency (EB101)
+        range: Hz
+        point_id: 3096
+      - label: Condenser supply line (EB101-BT12)
+        range: °C
+        point_id: 2494
+      - label: Return temperature (EB101-BT3)
+        range: °C
+        point_id: 2491
+      - label: Charge pump speed (EB101-GP12)
+        range: '%'
+        point_id: 2792
+        note: Current speed of the charge pump GP12 (inside the EB101 outdoor unit) as a percentage of maximum. In auto mode
+          the firmware regulates this to maintain the correct flow through the heat pump.
+      - label: Degree minutes (heating)
+        range: DM
+        point_id: 781
+        tip: A slow drift toward more negative values on a mild day can indicate the heating curve slope (menu 1.30.1) is
+          set too low. A rapid swing suggests high heat loss or an undersized system.
+        note: Degree minutes (DM) measure accumulated heating demand. The value becomes more negative as the house cools below
+          setpoint. The compressor starts when DM reaches the threshold set in menu 7.1.10.3 (default −60 DM). Returns toward
+          0 as heating is delivered.
+      - label: Calculated supply temp climate system 1
+        range: °C
+        point_id: 1708
+        note: The firmware's calculated target supply temperature for climate system 1, derived from the heating curve and
+          current outdoor temperature.
+      - label: External supply line (BT25)
+        range: °C
+        point_id: 57
+      - label: Return temperature (BT71)
+        range: °C
+        point_id: 121
+        note: Return line temperature measured at BT71 — the water coming back from the climate system.
+      - label: External heating medium pump (GP10) status
+        range: Status
+        point_id: 1838
+        note: Status of GP10, the external heating medium pump in the hydraulic circuit between the SMO S40 and the climate
+          system. ON means GP10 is running.
+    - id: 3.1.5
+      title: Cooling
+      description: 'Current cooling system temperatures and status. Only relevant if the outdoor unit supports cooling.
+
+        '
+      note: 'Cooling DM (visible in menu 3.1.2) goes POSITIVE for cooling demand. AUTO MODE: cooling DM stays at zero — the
+        system uses outdoor temp gates to determine cooling mode, not a separate DM counter. MANUAL MODE: cooling DM becomes
+        active and independently tracks cooling demand. This is why the cooling DM counter "wakes up" when you switch to Manual
+        mode — it was inactive in Auto mode, not absent. Cross-reference: cooling DM thresholds → menu 7.1.10.3; outdoor temp
+        gates for auto mode → menu 7.1.10.2.
+
+        '
+      settings:
+      - label: Outdoor temperature (BT1)
+        range: °C
+        point_id: 4
+      - label: Average outdoor temperature (BT1)
+        range: °C
+        point_id: 54
+        note: Filtered average of BT1 over the period set in menu 7.1.10.2. Used for auto mode switching between heating and
+          cooling.
+      - label: Current compressor frequency (EB101)
+        range: Hz
+        point_id: 3096
+      - label: Condenser supply line (EB101-BT12)
+        range: °C
+        point_id: 2494
+      - label: Return temperature (EB101-BT3)
+        range: °C
+        point_id: 2491
+      - label: Charge pump speed (EB101-GP12)
+        range: '%'
+        point_id: 2792
+        note: Current speed of the charge pump GP12 as a percentage of maximum.
+      - label: Cooling degree minutes
+        range: DM
+        point_id: 2691
+        note: Cooling degree minutes measure accumulated cooling demand. Becomes more positive as the house warms above the
+          cooling setpoint. Active cooling starts when this reaches the threshold set in menu 7.1.10.3.
+      - label: Calculated cooling supply climate system 1
+        range: °C
+        point_id: 2695
+        note: Firmware-calculated target supply temperature for cooling in climate system 1.
+      - label: External supply line (BT25)
+        range: °C
+        point_id: 57
+      - label: External heating medium pump (GP10) status
+        range: Status
+        point_id: 1838
+        note: Status of GP10, the external heating medium pump. During active cooling GP10 circulates the cooled water through
+          the climate system.
+      - label: Cooling status
+        range: Status
+        point_id: 1716
+        note: Confirms whether the system is currently in active cooling mode. ON means the compressor is running in cooling
+          direction with the reversing valve shifted.
+    - id: 3.1.8
+      title: Heat pump 1 (EB101)
+      description: Live operating data from the primary heat pump compressor unit (EB101). These values are the primary diagnostic
+        panel for refrigeration circuit health.
+      tip: 'During normal heating operation: discharge temperature (BT14) is typically 60–80 °C, suction gas (BT17) typically
+        5–15 °C, and the compressor frequency tracks the heating demand. Low pressure (BP8) is reported directly in bar; high
+        pressure (BP9) is reported as a derived dew-point temperature in °C rather than raw bar — see that entry below for
+        what it means.
+
+        '
+      settings:
+      - label: Current compressor frequency (EB101)
+        range: Hz
+        point_id: 3096
+        note: Current compressor operating frequency in Hz. For the S2125-12, the range is approximately 25–120 Hz depending
+          on demand and limiting conditions.
+      - label: Requested compressor frequency (EB101)
+        range: Hz
+        point_id: 3170
+        note: The frequency the control system is requesting from the compressor. If the actual frequency (3096) is significantly
+          lower than requested, protection mode may be active — check point 3097.
+      - label: Charge pump speed (EB101-GP12)
+        range: '%'
+        point_id: 2792
+        note: Current speed of charge pump GP12 as a percentage of maximum.
+      - label: Compressor status (EB101)
+        range: Status
+        point_id: 2500
+      - label: Blocked compressors
+        range: Status
+        point_id: 2688
+        note: Number of compressors currently blocked from starting. A non-zero value means the firmware is preventing one
+          or more compressors from running due to an alarm condition or blocking input.
+      - label: Condenser supply line (EB101-BT12)
+        range: °C
+        point_id: 2494
+      - label: Return temperature (EB101-BT3)
+        range: °C
+        point_id: 2491
+      - label: Discharge (EB101-BT14)
+        range: °C
+        point_id: 2495
+        note: Temperature of the hot refrigerant gas leaving the compressor. A key indicator of refrigeration circuit health
+          — high values (above ~115°C) trigger protection mode.
+      - label: Suction gas (EB101-BT17)
+        range: °C
+        point_id: 2497
+        note: Temperature of the refrigerant gas entering the compressor on the low-pressure side. Used together with the
+          evaporator temperature to calculate superheat.
+      - label: High pressure dew (EB101-BP9)
+        range: °C
+        point_id: 993
+        note: High-pressure side refrigerant pressure expressed as a saturation (dew-point) temperature — not an actual temperature
+          measurement. Converted from bar using the refrigerant's pressure-temperature curve.
+        tip: 'Typical values in heating mode: 35–55°C equivalent. Persistently high values suggest reduced heat transfer in
+          the condenser — check charge pump speed and system flow.'
+      - label: Outdoor temperature (EB101-BT28)
+        range: °C
+        point_id: 2766
+        note: Outdoor air temperature measured directly at the outdoor unit (EB101-BT28). May differ slightly from BT1 depending
+          on sensor placement.
+      - label: Liquid line (EB101-BT15)
+        range: °C
+        point_id: 2496
+        note: Refrigerant temperature in the liquid line between condenser and expansion valve.
+      - label: Evaporator (EB101-BT16)
+        range: °C
+        point_id: 2767
+        note: Evaporator coil temperature (BT16). The defrost function monitors this sensor — if it falls below the configured
+          start temperature, the defrost index begins counting.
+      - label: Low pressure (EB101-BP8)
+        range: bar
+        point_id: 3095
+        note: Pressure on the low-pressure side of the refrigerant circuit in bar. A useful diagnostic for refrigerant charge
+          and evaporator performance.
+      - label: Evaporator out (EB101-BT84)
+        range: °C
+        point_id: 997
+        note: Air temperature leaving the evaporator coil (BT84). Together with BT16 (evaporator surface) this indicates the
+          heat absorption from outdoor air.
+      - label: Alarm number (EB101)
+        range: count
+        point_id: 832
+        note: Count of active alarms on the EB101 outdoor unit. Non-zero means at least one alarm is present — check the alarm
+          log (menu 3.4).
+      - label: Fan speed (EB101)
+        range: rpm
+        point_id: 834
+        note: Current fan speed in rpm. Varies with demand, outdoor temperature, and defrost state. Fan stops during active
+          defrosting and runs at high speed during passive defrosting.
+      - label: Max fan speed (EB101)
+        range: rpm
+        point_id: 835
+        note: Maximum fan speed limit uploaded from the EB101 at startup. Reflects the outdoor unit's hardware specification,
+          not a user setting.
+      - label: Min fan speed (EB101)
+        range: rpm
+        point_id: 836
+        note: Minimum fan speed limit uploaded from the EB101 at startup. Reflects the outdoor unit's hardware specification.
+      - label: Max compressor speed (EB101)
+        range: Hz
+        point_id: 837
+        note: Maximum compressor frequency limit for this outdoor unit in Hz.
+      - label: Min compressor speed (EB101)
+        range: Hz
+        point_id: 838
+        note: Minimum compressor frequency limit for this outdoor unit in Hz. The compressor will not run below this speed.
+      - label: Defrosting index (EB101)
+        range: count
+        point_id: 841
+        note: Counts upward while the evaporator temperature (BT16) is below the defrost start threshold. When this index
+          reaches the limit, active or passive defrosting begins. Resets to zero after each defrost cycle.
+      - label: Time to defrosting (EB101)
+        range: minutes
+        point_id: 840
+        note: Minutes remaining until the next defrost cycle. Counts down to 0, at which point active or passive defrosting
+          starts depending on outdoor temperature.
+        tip: Passive defrosting (fan running, compressor off) is used when outdoor temperature is above 4°C. Active defrosting
+          (reversing valve shifts, fan stops) is used in colder conditions. Both are normal — brief pauses in heating output
+          are expected.
+      - label: Last defrost heat pump 1
+        range: Read-only
+        point_id: 22268
+        note: Time elapsed since the last completed defrost cycle, in minutes.
+      - label: Superheat reference EEV (EB101)
+        range: °C
+        point_id: 842
+        note: Target superheat setpoint for the electronic expansion valve (EEV). The EEV adjusts refrigerant flow to maintain
+          this superheat target.
+      - label: Superheat EEV (EB101)
+        range: °C
+        point_id: 843
+        note: Actual superheat at the EEV — the difference between the measured suction gas temperature and the evaporator
+          saturation temperature.
+      - label: Superheat temp reference EEV (EB101)
+        range: °C
+        point_id: 845
+        note: Supply temperature reference used by the EEV superheat control algorithm.
+      - label: Protection mode (EB101)
+        range: Status
+        point_id: 3097
+        note: Indicates whether the compressor is being throttled or blocked by a protective limit. 0 = normal operation.
+          1 = protection active — the compressor is being limited due to high discharge temperature, high pressure, or low
+          pressure conditions. Check discharge temp (2495) and pressures (993, 3095).
+      - label: Inverter temperature (EB101)
+        range: °C
+        point_id: 3353
+        note: Temperature of the inverter power electronics driving the compressor motor. High inverter temperature can trigger
+          protection mode, reducing compressor frequency to protect the electronics.
+      - label: Version (EB101)
+        range: Firmware version (e.g. 3.3.1)
+        point_id: 2453
+        note: Firmware version of the EB101 outdoor unit.
+      - label: Inverter version (EB101)
+        range: Firmware version
+        point_id: 14987
+        note: Firmware version of the EB101 inverter module.
+      - label: Compressor (EB101)
+        range: Compressor size
+        point_id: 2472
+        note: Compressor model identifier reported by the EB101.
+      - label: Heat pump type (EB101)
+        range: Model identifier
+        point_id: 2471
+        note: 'Heat pump model type code reported by the EB101. See also: point 2527 for the indoor module type.'
+      - label: Heat pump type (EB100/SMO S40)
+        range: Model identifier
+        point_id: 2527
+        note: 'Model type code for the indoor module (SMO S40 = 40). See also: point 2471 for the outdoor unit type.'
+    - id: 3.1.9
+      title: El. add. heat
+      description: 'Status and configuration of the internal electrical additional heat (immersion heater steps). Additional
+        heat supplements the compressor when heating demand exceeds compressor capacity.
+
+        '
+      settings:
+      - label: Step controlled add. heat blocking
+        range: Status
+        point_id: 1827
+        note: Indicates whether the step-controlled additional heat is currently blocked from operating. Blocking can be triggered
+          by the load monitor, an external AUX input configured as a blocking input, or an alarm condition.
+      - label: Max step internal additional heat
+        range: steps
+        point_id: 4084
+        tip: 'Maximum additional heat step currently active or permitted. 0 = no additional heat, 7 = all steps available.
+          Writable — reduce to limit electricity consumption.
+
+          '
+        note: Writable. The value you set here is an upper ceiling — the firmware may operate below this limit if the load
+          monitor or fuse size restricts power. Any value written here will be overwritten within seconds.
+      - label: Fuse size
+        range: A
+        point_id: 3825
+        note: 'Main fuse size as configured in menu 7.1.9 (Load monitor). See also: menu 7.1.9 to change this value.'
+    - id: 3.1.10
+      title: System components
+      description: 'Live status of key system components — pumps and their current operating speeds. Corresponds to the myUplink
+        3.1.10 view showing the heating medium pump (GP1) and charge pump (EB101-GP12).
+
+        '
+      settings:
+      - label: Heating medium pump (GP1)
+        range: '%'
+        point_id: 2559
+        note: 'GP1 is the internal heating medium pump inside the SMO S40 (EB100). In simple installations GP1 handles all
+          climate system circulation. In installations with high pressure drop or constant flow requirement (e.g. fan convectors,
+          parallel expansion vessel), an external pump GP10 is added as supplement or replacement. In those installations
+          GP1 may show 0% while GP10 handles circulation — this is normal.
+
+          '
+      - label: External heating medium pump (GP10)
+        range: Status
+        point_id: 1838
+        note: Status of GP10, the external heating medium pump in the hydraulic circuit. ON means GP10 is running.
+      - label: Charge pump speed (EB101-GP12)
+        range: '%'
+        point_id: 2792
+        note: Current speed of charge pump GP12 (inside EB101) as a percentage of maximum. In auto mode the firmware regulates
+          this to maintain correct flow.
+    - id: 3.1.12
+      title: Statistics
+      description: 'Operating time and start counters for the compressor and additional heat. Useful for monitoring wear and
+        sizing service intervals.
+
+        '
+      tip: 'Divide total operating time by number of starts to get the average run time per start cycle. Very short cycles
+        (< 10 min) indicate short-cycling which increases compressor wear.
+
+        '
+      settings:
+      - label: Compressor number of starts (EB101)
+        range: count
+        point_id: 2505
+        note: Total number of compressor start events — useful for monitoring compressor wear.
+      - label: Compressor total operating time (EB101)
+        range: hours
+        point_id: 2506
+        note: Total compressor operating hours.
+      - label: Compressor operating time hot water (EB101)
+        range: hours
+        point_id: 2507
+        note: Compressor hours spent on hot water production specifically.
+      - label: Compressor time to start (EB101)
+        range: minutes
+        point_id: 2501
+        note: Remaining wait time before the compressor is permitted to start again. The firmware enforces a minimum interval
+          between starts to protect the compressor motor from thermal stress.
+      - label: Total run time additional heat
+        range: hours
+        point_id: 1755
+        note: Total hours of additional heat (electric/boiler) operation.
+    - id: 3.1.13
+      title: Connections
+      description: 'Network connection information — IP address, DHCP status, gateway, and DNS server. Read-only display of
+        current network configuration.
+
+        '
+      note: 'Network settings are not exposed as registers in the local API. They are visible on the controller display and
+        configurable via menu 5.2 (Network settings) on the controller.
+
+        '
+      settings: []
+      local_api: false
+    - id: 3.1.14
+      title: Selectable in/outputs
+      description: 'Current assignment of AUX inputs and relay outputs. Shows what function each AUX terminal is configured
+        for (e.g. SG Ready, hot water circulation, external contact).
+
+        '
+      note: 'Most AUX input/output assignments are not exposed as readable registers in the local API. Configure via menu
+        7.4 on the controller display.
+
+        '
+      settings:
+      - label: AUX relay (AUX11)
+        range: Function assignment
+        point_id: 12463
+        tip: 'Function assignment for AUX11 relay output. 0=off, 5=alarm output (default). See firmware documentation for
+          full list of function codes.
+
+          '
+      - label: AUX from Modbus
+        range: Function assignment
+        point_id: 22070
+        tip: 'AUX output function via Modbus register. Allows external Modbus master to control AUX relay function. 0=not
+          used (default).
+
+          '
+      - label: AUX from Modbus (2)
+        range: Function assignment
+        point_id: 22077
+        note: 'Firmware reuses the same generic title "AUX from Modbus" for this register as it does for point 22070 above
+          — they are sibling Modbus registers (2740 and 2741 respectively) controlling separate AUX relay channels. Firmware
+          reports a degenerate range (min=max=0) despite being writable, which causes entity-type auto-detection to misclassify
+          it — requires a manual entity-type override to display correctly.
+
+          '
+    - id: 3.1.15
+      title: Product information
+      description: 'Detailed product information for the SMO S40 controller and connected heat pump unit(s) — software versions,
+        serial numbers, communication board versions.
+
+        '
+      note: 'The SMO S40 product name, software version, and serial number are also shown on the HA device page (Settings
+        → Devices & Services → MQTT → your Nibe device). Heat pump unit versions are available as registers.
+
+        '
+      settings:
+      - label: Software version (SMO S40)
+        range: Firmware version (e.g. 4.11)
+        point_id: 2509
+        note: 'SMO S40 controller firmware version. Patch level not available via local API — myUplink shows the full version
+          including patch.
+
+          '
+      - label: Version (EB101 heat pump unit)
+        range: Firmware version (e.g. 3.3.1)
+        point_id: 2453
+        note: Firmware version of EB101 heat pump unit.
+      - label: Inverter version (EB101)
+        range: Read-only
+        point_id: 14987
+        note: Inverter module firmware version.
+    - id: 3.1.16
+      title: Communication
+      description: 'Internal and external communication quality indicators. Shows the signal quality between the SMO S40 controller
+        board and connected heat pump units.
+
+        '
+      note: 'Communication quality values are not exposed as individual registers in the local API. Monitor via the controller
+        display if communication issues are suspected.
+
+        '
+      settings: []
+      local_api: false
+  - id: '3.2'
+    title: Temperature log
+    description: 'Shows the average indoor temperature week by week over the past year. The average outdoor temperature is
+      only shown if a room sensor (BT50) is installed. In installations with ventilation accessories and no room sensors,
+      the exhaust air temperature is displayed instead.
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.3'
+    title: Energy log
+    description: 'Diagram showing how much energy SMO S40 supplies and consumes. Select which parts of the installation to
+      include in the log. Indoor and/or outdoor temperature display can optionally be activated. View range configurable from
+      1–10 years or 1–24 months.
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.4'
+    title: Alarm log
+    description: 'The installation''s operating status at the time of each alarm is stored here for troubleshooting. Shows
+      information for the 10 most recent alarms. Select an alarm from the list to see the operating status at the time of
+      the fault.
+
+      '
+    note: 'This is the display alarm log — for current active alarms via the local API, use the bridge''s Active alarms sensor
+      and Reset alarms button in the HA device page.
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.5'
+    title: Product info, summary
+    description: 'Summary product information for the SMO S40 and connected heat pump units. Shows general information such
+      as software versions. Detailed versions and serial numbers are also in menus 3.1.8 Heat pump 1 and 3.1.15 Product information.
+      The SMO S40 product name, software version, and serial number are shown on the HA device page (Settings → Devices &
+      Services → MQTT → your Nibe device).
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.6'
+    title: Licences
+    description: 'View licences for open source code used in the SMO S40 firmware.
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.7'
+    title: Version history
+    description: 'Shows what is new or changed in each firmware version. Useful for understanding what changed after a software
+      update.
+
+      '
+    settings: []
+    local_api: false
+  - id: '3.8'
+    title: Data protection information
+    description: 'Shows information about the data collected by SMO S40 for troubleshooting and optimising the product (NIBE
+      data collection policy).
+
+      '
+    settings: []
+    local_api: false
+- id: '4'
+  title: My system
+  description: 'System-level settings including operating mode, away mode, language, time/date, and advanced energy management
+    features.
+
+    '
+  submenus:
+  - id: '4.1'
+    title: Operating mode
+    description: 'The operating mode for SMO S40 is normally set to Auto. In Auto mode the controller automatically selects
+      which functions are permitted — compressor, additional heat, heating, and cooling as needed.
+
+      Manual mode lets you select exactly which functions are active. Compressor cannot be deselected in Manual mode. Additional
+      heat helps the compressor when it cannot meet demand alone — deselecting it may result in insufficient hot water or
+      heating. Heating and Cooling can each be deselected when you do not want them running.
+
+      Add. heat only means the compressor is not active — only additional heat (immersion heater or boiler) is used.
+
+      '
+    warning: '"Add. heat only" means operating costs will be significantly higher than normal heat pump operation. Only use
+      this mode if the compressor has a fault or during compressor maintenance. Do not select "Add. heat only" if no heat
+      pump is connected (see menu 7.3.1 Configure).
+
+      '
+    tip: 'If the system is not heating or cooling when it should be, check this menu first — it may have been accidentally
+      left on Manual with the wrong functions selected. Auto is almost always the correct choice. Cross-reference: which functions
+      are permitted in Auto mode → menu 7.1.10.6 Limitation room temp; current operating status → menu 3.1.2 Overview.
+
+      '
+    settings:
+    - label: Operating mode
+      range: Auto / Manual / Add. heat only
+      point_id: 3751
+      tip: '0=Auto (firmware decides based on outdoor temperature and demand), 1=Heating only, 2=Cooling only. Auto mode is
+        strongly recommended — manual modes prevent the firmware from optimising across heating, cooling and hot water demand.
+        The firmware may return to Auto if conditions require it.
+
+        '
+      note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+        but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+        '
+    - label: Heating, auto mode
+      range: off/on
+      point_id: 10591
+      note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+        but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+        '
+    - label: Cooling, auto mode
+      range: off/on
+      point_id: 10592
+      note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+        but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+        '
+    - label: Current status (live)
+      range: Idle / Heating / Hot water / Cooling
+      point_id: 2022
+      note: 'Live decoded status showing what the system is doing right now, including whether the compressor is Starting,
+        Running or idle. More detailed than the controller display — shows mode + compressor state.
+
+        '
+  - id: '4.2'
+    title: Plus functions
+    description: 'Settings for additional installed functions. Submenus appear only when the relevant hardware or function
+      is installed and activated.
+
+      '
+    submenus:
+    - id: 4.2.2
+      title: Solar electricity
+      description: 'Settings for Solar PV integration via the EME 20 communication module (part no. 057 215). The EME 20 enables
+        communication and control between NIBE solar inverters and SMO S40. When surplus solar electricity is available, the
+        SMO S40 can use it to boost heating or hot water production.
+
+        '
+      note: 'Requires EME 20 communication module installed and configured in menu 7.2.19 External energy meter. Cross-reference:
+        energy meter configuration → menu 7.2.19.
+
+        '
+      settings:
+      - label: PV panel affects heating (EME)
+        range: off/on
+        point_id: 5220
+        tip: 'Allow Solar PV (EME20) excess power to increase heating. 0=off, 1=on. Requires EME20 energy meter accessory.
+
+          '
+      - label: PV panel affects hot water (EME)
+        range: off/on
+        point_id: 5221
+        tip: Allow Solar PV (EME20) excess power to boost hot water production. 0=off, 1=on.
+    - id: 4.2.3
+      title: SG Ready
+      description: 'SG Ready is a smart grid standard that allows your electricity supplier or energy management system to
+        signal the SMO S40 to shift consumption. Four modes: Normal — no effect. Low price — the heating curve offset is increased
+        by +1 (or room temperature setpoint raised 1°C if a room sensor is active). Hot water stop temperature is set as high
+        as possible with compressor only (immersion heater not permitted). Cooling is not affected. Overcapacity — heating
+        offset increased by +2 (or room setpoint +2°C). Hot water set to Large demand mode (immersion heater permitted). Cooling
+        offset decreased by -1 (or room setpoint -1°C if room sensor is active). Blocking — compressor and additional heat
+        are blocked.
+
+        '
+      warning: 'SG Ready requires two AUX inputs wired to the SMO S40 and must be activated in menu 7.4 Selectable in/outputs.
+        An auxiliary relay (HR 10 for 10 A loads, part no. 067 309; or HR 20 for 20 A loads, part no. 067 972) is typically
+        used to connect external SG Ready signals to the AUX inputs.
+
+        '
+      note: 'The "Activate SG Ready via API" point allows HA automations to trigger SG Ready modes without hardware AUX inputs.
+
+        '
+      settings:
+      - label: Affect room temperature heating (SG Ready)
+        range: off/on
+        point_id: 4693
+        tip: ON activates SG Ready heating mode — the supply temperature offset is increased to pre-heat the building during
+          low-tariff periods. Requires AUX input configured as SG Ready in menu 7.4.
+      - label: Max additional heat power (SG Ready)
+        range: 0.0 – 9.0 kW
+        point_id: 5204
+        tip: 'Maximum additional heat step permitted during SG Ready activation. Reduce to limit electricity consumption during
+          grid demand response.
+
+          '
+      - label: Activate SG Ready via API
+        range: off/on
+        point_id: 10613
+        note: Allows HA automations to activate SG Ready modes programmatically
+    - id: 4.2.5
+      title: Smart Price Adaption™
+      description: 'Automatically shifts heating, cooling, and hot water consumption to periods with the cheapest electricity
+        tariff. Based on hourly rates downloaded via myUplink. The higher the saving level selected, the greater the effect
+        on comfort.
+
+        '
+      warning: 'Requires an active myUplink account and an hourly tariff electricity contract. Higher saving levels can noticeably
+        reduce comfort — start with "Comfort" before trying "Saving" or "Saving PLUS". Cross-reference: hot water demand mode
+        → menu 2.2 (SPA can shift hot water production to cheap electricity periods when smart control is active in menu 2.2).
+
+        '
+      settings:
+      - label: Smart Price Adaption activated
+        range: off/on
+        point_id: 4789
+        tip: 'Enable Smart Price Adaption. Requires a compatible electricity tariff provider connected via myUplink.
+
+          '
+      - label: Affect heating
+        range: Off, Comfort, Saving, Saving PLUS
+        point_id: 4790
+        tip: '0=off, 1=Comfort (slight influence), 2=Saving (moderate), 3=Saving PLUS (maximum influence).
+
+          '
+      - label: Affect heating influence
+        range: Steps
+        point_id: 4791
+        tip: 'How strongly electricity price influences the heating setpoint. Higher = greater offset.
+
+          '
+      - label: Affect cooling
+        range: off/on
+        point_id: 4795
+        tip: Enable SPA influence on cooling.
+      - label: Cooling influence
+        range: Steps
+        point_id: 4796
+        tip: How strongly electricity price influences cooling.
+      - label: Affect hot water
+        range: off/on
+        point_id: 3281
+        note: 'Currently read-only on this installation (min=max=0 in firmware) — per the manual, this only becomes active
+          when hot water demand mode is set to "Smart control" in menu 2.2. With Smart control off, SPA cannot shift hot water
+          timing regardless of this setting.
+
+          '
+      - label: Area
+        range: 0 – 255
+        point_id: 4797
+        note: 'Electricity price-zone selector, per Nibe''s VVM 320 manual (menu 4.1.6, "area" field alongside the affect-heating/cooling/pool/hot-water
+          settings above). Identifies which electricity market zone SPA should use for price data. The mapping from numeric
+          value to named zone (e.g. Nordic Nordpool bidding zones) is not confirmed against this installation''s firmware
+          — set via myUplink rather than this register in normal use.
+
+          '
+      - label: Operating mode (SPA status, read-only)
+        range: Read-only
+        point_id: 3292
+        note: 'Read-only status showing what SPA is currently doing: Off, Comfort, Saving, or Saving PLUS. Changes automatically
+          based on hourly electricity prices received via myUplink.'
+  - id: '4.3'
+    title: Alarm log
+    description: 'Shows a history of alarms and fault events recorded by the controller. Useful for diagnosing intermittent
+      faults or reviewing what triggered a previous Aid Mode activation.
+
+      '
+    note: 'The alarm log is display-only — there is no local API endpoint for historical alarm records. For current active
+      alarms, use the bridge''s Active alarms sensor and the Reset alarms button in the HA device page.
+
+      '
+    settings: []
+    local_api: false
+  - id: '4.4'
+    title: Weather control
+    description: 'Adjusts the indoor temperature setpoint based on the weather forecast downloaded via myUplink. The Factor
+      setting determines how strongly the weather forecast affects the temperature — the higher the value, the greater the
+      effect.
+
+      '
+    note: Weather control is managed via myUplink — no local API registers exist.
+    settings: []
+    local_api: false
+  - id: '4.5'
+    title: Away mode
+    description: 'When away mode is activated, the following functions are affected: the heating setpoint is lowered slightly,
+      the cooling setpoint is raised slightly, hot water temperature is lowered if demand mode Large or Medium is selected,
+      and the AUX function "Away mode" is activated. Ventilation and hot water circulation can optionally also be affected
+      (accessories required).
+
+      '
+    tip: 'For holidays with a known return date, use the Holiday function in menu 6.1 instead — it lets you set a specific
+      end date so the system automatically returns to comfort mode before you arrive home. Away mode has no end date and must
+      be manually deactivated. Cross-reference: Holiday with end date → menu 6.1.
+
+      '
+    settings:
+    - label: Away mode
+      range: off/on
+      point_id: 8982
+      tip: 'Activates away mode setback — lowers the heating setpoint by the away offset configured in menu 1.1. This is not
+        a full system off: the heat pump continues running at a reduced setpoint to prevent pipes freezing. The firmware may
+        adjust this based on scheduling if configured.
+
+        '
+      note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+        but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+        '
+  - id: '4.6'
+    title: Smart Energy Source™
+    description: 'If Smart Energy Source™ is activated, SMO S40 prioritises which energy source to use — either the cheapest
+      at the current time (Price per kWh) or the most CO2-neutral (CO2). Requires external additional heat to be installed
+      and connected.
+
+      '
+    warning: 'Smart Energy Source™ requires external additional heat. The choices made in this menu directly affect the energy
+      price settings in menu 4.7 — menu 4.7 is only visible when Smart Energy Source is activated.
+
+      '
+    note: 'Cross-reference: additional heat configuration → menu 7.1.5 Additional heat. Shunt or step controlled additional
+      heat must be installed and configured before Smart Energy Source can effectively prioritise between energy sources.
+
+      '
+    settings:
+    - label: Smart Energy Source™
+      range: off/on
+      point_id: 5268
+      tip: 'Optimises energy source selection (heat pump vs additional heat) based on price or CO2 intensity. Requires myUplink
+        connectivity.
+
+        '
+    - label: Control method
+      range: Price per kWh / CO2
+      point_id: 5269
+      tip: 0 = Price optimisation, 1 = CO2 intensity optimisation.
+  - id: '4.7'
+    title: Energy price
+    description: 'Tariff control for your additional heat sources. Choose whether the system controls based on spot price,
+      tariff control, or a fixed price. The setting is made for each individual energy source. Spot price can only be used
+      with an hourly tariff agreement with your electricity supplier.
+
+      '
+    note: 'This menu is only visible if Smart Energy Source is activated in menu 4.6. Cross-reference: menu 4.6 Smart Energy
+      Source™.
+
+      '
+    submenus:
+    - id: 4.7.1
+      title: Variable electricity price
+      description: 'Tariff price thresholds and seasonal date windows for Smart Energy Source price-based control. High/low
+        tariff price values set the price boundary the firmware compares against to decide which energy source is cheaper;
+        the date windows set when each tariff period applies (useful for markets with seasonal rate structures). Up to two
+        date periods per year per heat source type — this bridge exposes the primary period; a second period and the four-times-daily/weekday-vs-weekend
+        time-of-day breakdown described in the Nibe menu are controller-display-only.
+
+        '
+      settings:
+      - label: Fixed price, high tariff
+        range: 1 – 60000
+        point_id: 5290
+        tip: 'Price threshold above which the fixed-tariff period is considered expensive. Units match whatever your electricity
+          contract uses (e.g. cents/kWh ×100) — check against your actual tariff before relying on this.
+
+          '
+      - label: Fixed price, low tariff
+        range: 1 – 60000
+        point_id: 5291
+        tip: Price threshold below which the fixed-tariff period is considered cheap.
+      - label: Variable price, high tariff
+        range: 1 – 60000
+        point_id: 5292
+        tip: 'Price threshold for hourly/spot pricing above which the period is considered expensive. Requires an hourly tariff
+          electricity contract and myUplink price data.
+
+          '
+      - label: Variable price, low tariff
+        range: 1 – 60000
+        point_id: 5293
+        tip: Price threshold for hourly/spot pricing below which the period is considered cheap.
+      - label: Tariff period start day
+        range: 1 – 31
+        point_id: 5299
+        note: Day of the month (1–31) on which the low-tariff date window begins. Used together with start month (5301) to
+          define the seasonal period.
+      - label: Tariff period end day
+        range: 1 – 31
+        point_id: 5300
+        note: Day of the month (1–31) on which the low-tariff date window ends.
+      - label: Tariff period start month
+        range: 1 – 12
+        point_id: 5301
+        note: Month (1–12) on which the low-tariff date window begins. Together with start day (5299) this defines the start
+          of the seasonal period.
+      - label: Tariff period end month
+        range: 1 – 12
+        point_id: 5302
+        tip: 'Together with the start day/month above, defines the date window this tariff period applies to. Default spans
+          the full year (1 Jan – 31 Dec) — narrow this only if your tariff structure genuinely changes seasonally.
+
+          '
+    - id: 4.7.3
+      title: Shunt-controlled additional heat
+      description: 'Price-based permission for shunt-controlled additional heat (e.g. district heating or gas boiler via shunt
+        valve) under Smart Energy Source control. The on/off switch and wait time are the same registers used for the hardware-level
+        shunt configuration — see menu 7.1.5.1 for the full settings and explanation, including the boiler sensor (BT52) trigger
+        logic.
+
+        '
+      settings:
+      - label: Shunt controlled additional heat
+        range: off/on
+        point_id: 3881
+        note: Same register as menu 7.1.5.1 — see there for full context.
+      - label: Wait time shunt
+        range: 10 – 300 s
+        point_id: 3885
+        note: Same register as menu 7.1.5.1 — see there for full context.
+    - id: 4.7.4
+      title: Step-controlled additional heat
+      description: 'Price-based permission and stepping for step-controlled additional heat (immersion heater steps) under
+        Smart Energy Source control.
+
+        '
+      settings:
+      - label: Step controlled additional heat accessory
+        range: off/on
+        point_id: 3886
+        note: 'Maximum number of steps permitted for step-controlled additional heat when the energy price is in the high-price
+          band. Setting this lower than the hardware maximum reduces electricity consumption during expensive periods. See
+          also: menu 7.1.5.1 for the hardware-level step configuration.'
+      - label: DM between additional heat steps
+        range: 10 – 1000 DM
+        point_id: 3821
+        tip: 'Larger value = longer wait before the next heater step engages — smoother but slower response.
+
+          '
+      - label: Max step internal additional heat
+        range: 0 – 7
+        point_id: 4084
+        tip: Maximum number of immersion heater steps permitted. Set to match actual installed capacity or reduce to limit
+          electricity consumption during high-price periods.
+        note: Writable. The value you set here is an upper ceiling — the firmware may operate below this limit if the load
+          monitor or fuse size restricts power. Any value written here will be overwritten within seconds.
+    - id: 4.7.6
+      title: External additional heat
+      description: 'Price-based control for external additional heat sources connected via AUX relay output. Configured through
+        the AUX output function assignment in menu 7.4.2. Cross-reference: AUX output assignment → menu 7.4.2.
+
+        '
+      settings: []
+      local_api: false
+  - id: '4.8'
+    title: Time and date
+    description: 'Set time, date, display mode, and time zone here.
+
+      '
+    tip: 'Time and date are set automatically when connected to myUplink. To obtain the correct local time, the time zone
+      must be set correctly — myUplink synchronises UTC time and the controller applies the time zone offset.
+
+      '
+    settings:
+    - label: Time format
+      range: 12h / 24h
+      point_id: 3933
+      tip: 0 = 12-hour format, 1 = 24-hour format.
+  - id: '4.9'
+    title: Language
+    description: 'Choose the display language for the controller UI.
+
+      '
+    settings:
+    - label: Language
+      range: 24 language options
+      point_id: 3745
+      note: 'Language selection for controller display. 0=Swedish, 1=English, 2=German, etc. Does not affect this MQTT bridge
+        — entity names are always in English.
+
+        '
+  - id: '4.10'
+    title: Country
+    description: 'Specify the country in which the product is installed. This enables country-specific settings. Language
+      settings can be made independently of this selection.
+
+      '
+    warning: 'This setting locks after 24 hours, after a display restart, or after a program update. Once locked it is not
+      possible to change the country without replacing components in the product. Set this correctly during initial commissioning.
+
+      '
+    settings: []
+    local_api: false
+  - id: '4.11'
+    title: Tools
+    description: 'Miscellaneous system tools and display preferences.
+
+      '
+    submenus:
+    - id: 4.11.1
+      title: Installer details
+      description: 'The installer''s name and telephone number are entered in this menu. Afterwards, the details are visible
+        on the home screen under "Product overview" — useful for the homeowner to know who to contact for service.
+
+        '
+      settings: []
+      local_api: false
+    - id: 4.11.2
+      title: Sound when pressing button
+      description: 'Controls whether the controller display makes a click sound when buttons are pressed.
+
+        '
+      settings:
+      - label: Sound when pressing button
+        range: off/on
+        point_id: 9663
+        tip: 'Enable/disable the click sound when pressing buttons on the controller display.
+
+          '
+    - id: 4.11.3
+      title: Fan de-icing
+      description: 'Settings for clearing ice buildup on the outdoor unit''s fan blades and front grille (EB101) — a separate
+        mechanism from normal refrigerant-circuit defrosting (menu 3.1.8). When fan de-icing is active, it triggers at the
+        next active defrosting cycle (not on a separate schedule) and runs alongside it to clear the fan itself rather than
+        the evaporator coil. Cross-reference: refrigerant-circuit defrost status and timing → menu 3.1.8 Heat pump 1.
+
+        '
+      note: 'Only "Start fan de-icing" is available via the local API. The remaining sub-settings (continuous de-icing, deactivate,
+        operate fan during defrosting, silent mode defrosting) are not exposed as local registers and must be configured on
+        the controller display.
+
+        '
+      settings:
+      - label: Start fan de-icing (EB101)
+        range: Trigger
+        point_id: 8052
+        tip: Triggers a one-off fan de-icing cycle on heat pump 1
+      - label: Continuous fan de-icing
+        range: off/on
+        point_id: null
+        note: Not available via local API — configure on controller display
+      - label: Deactivate fan de-icing
+        range: off/on
+        point_id: null
+        note: Not available via local API — configure on controller display
+      - label: Operate fan during defrosting
+        range: off/on
+        point_id: null
+        note: Not available via local API — configure on controller display
+      - label: Silent mode defrosting
+        range: off/on
+        point_id: null
+        note: Not available via local API — configure on controller display
+    - id: 4.11.4
+      title: Home screen
+      description: 'Configures which function cards are shown on the controller''s home screen. Each toggle enables or disables
+        a home screen card.
+
+        '
+      note: 'Home screen display settings are not exposed via the local API. Configure directly on the controller display.
+
+        '
+      settings: []
+      local_api: false
+  - id: '4.30'
+    title: Advanced
+    description: 'Advanced menu intended for advanced users.
+
+      '
+    submenus:
+    - id: 4.30.4
+      title: Factory settings user
+      description: 'All settings available to the user (including advanced menus) can be reset to factory default values here.
+        After the factory reset, personal settings such as the heating curve must be reconfigured.
+
+        '
+      warning: 'Factory reset cannot be undone. All user settings will be lost including temperature offsets, heating curve,
+        hot water demand mode, scheduling, and holiday settings. Document your current settings before proceeding.
+
+        '
+      settings: []
+      local_api: false
+- id: '5'
+  title: Connection
+  description: 'myUplink cloud connection settings and network configuration. Connection settings are managed on the controller
+    display or via the myUplink app — no local API registers exist for connectivity.
+
+    '
+  submenus:
+  - id: '5.1'
+    title: myUplink
+    description: 'Shows the installation''s connection status, serial number, and how many users and service partners are
+      connected via myUplink. From here you can manage the myUplink connection and request a new connection string. It is
+      possible to disconnect all users and service partners connected via myUplink.
+
+      '
+    warning: 'After disconnecting all users, none of them can monitor or control your installation via myUplink without requesting
+      a new connection string.
+
+      '
+    settings: []
+    local_api: false
+  - id: '5.2'
+    title: Network settings
+    description: 'Choose whether the system connects via Wi-Fi (menu 5.2.1) or Ethernet network cable (menu 5.2.2). Set TCP/IP
+      settings here. Activate "Automatic" to use DHCP, or configure IP address, network mask, gateway, and DNS manually.
+
+      '
+    note: 'The installation cannot connect to the internet without correct TCP/IP settings. If unsure, use "Automatic" (DHCP)
+      mode or contact your network administrator.
+
+      '
+    settings: []
+    local_api: false
+    submenus:
+    - id: 5.2.1
+      title: Wi-Fi
+      description: Configure Wi-Fi connection settings for myUplink connectivity.
+      settings: []
+      local_api: false
+    - id: 5.2.2
+      title: Ethernet
+      description: 'Configure Ethernet (network cable) TCP/IP settings. Activate "Automatic" to use DHCP, or configure IP
+        address, network mask, gateway, and DNS manually.
+
+        '
+      settings: []
+      local_api: false
+  - id: '5.4'
+    title: Wireless units
+    description: 'Connect and manage wireless accessories (room sensors, humidity sensors, CO2 sensors). Add a wireless unit
+      by pressing "Add unit". For quickest identification, put the master unit in search mode first, then put the wireless
+      unit in identification mode.
+
+      '
+    settings: []
+    local_api: false
+  - id: '5.10'
+    title: Tools
+    description: 'Installer tools for connecting an installation via an app by activating an access point for direct connection
+      to a mobile phone.
+
+      '
+    submenus:
+    - id: 5.10.1
+      title: Direct connection
+      description: 'Activate direct Wi-Fi connection here. When active, the installation loses communication with the regular
+        network and you connect your mobile device directly to the installation instead. Used for initial commissioning or
+        on-site configuration without a local network.
+
+        '
+      settings: []
+      local_api: false
+- id: '6'
+  title: Scheduling
+  description: 'Schedule changes to heating, hot water, and other functions.
+
+    '
+  submenus:
+  - id: '6.1'
+    title: Holiday
+    description: 'The Holiday function is the right tool for absences of several days or weeks. Unlike Away mode (menu 4.5),
+      Holiday has a specific end date — the system automatically returns to normal comfort settings on that date without you
+      having to remember to do anything. During the holiday period, heating is reduced, hot water production is lower, and
+      any configured ventilation or circulation adjustments apply. The exact reduction depends on your system configuration.
+
+      '
+    tip: 'Set the end date to the day before you return home. The system needs a few hours to bring the house back to comfort
+      temperature, especially with underfloor heating which warms up slowly. For a Friday return, set the end date to Thursday.
+      Cross-reference: Away mode (no end date, manual deactivation) → menu 4.5. Scheduling for recurring weekly patterns →
+      menu 6.2.
+
+      '
+    settings:
+    - label: Holiday function status (read-only)
+      range: Active/inactive
+      point_id: 1948
+      note: 'Read-only status indicator — configure holiday periods directly on the controller display
+
+        '
+  - id: '6.2'
+    title: Scheduling
+    description: 'Set up recurring scheduled changes to heating, hot water, cooling, or blocking. A schedule repeats on the
+      selected days until manually deactivated. Each mode contains one or more settings and can be given a name and colour.
+
+      '
+    note: 'Scheduling is a complex multi-register feature with no clean single-register interface in the local REST API. Create
+      and manage schedules directly on the controller display.
+
+      '
+    settings: []
+    local_api: false
+- id: '7'
+  title: Installer settings & accessories
+  description: 'Advanced installer settings and accessory configuration. These settings correspond to menu 7 on the controller
+    display. Most require installer knowledge — incorrect settings can affect system performance or cause damage.
+
+    '
+  warning: 'Changes to installer settings should only be made by qualified installers or experienced users. Always consult
+    the relevant installer manual before making changes.
+
+    '
+  submenus:
+  - id: '7.1'
+    title: Operating settings
+    description: 'Advanced operating settings for all system functions.
+
+      '
+    submenus:
+    - id: 7.1.1
+      title: Hot water
+      description: 'Advanced settings for hot water operation — start and stop temperatures for each demand mode, charge method,
+        and compressor step difference during hot water charging.
+
+        '
+      submenus:
+      - id: 7.1.1.1
+        title: Temperature setting
+        description: 'Advanced hot water temperature settings. Start and stop temperatures for the individual demand modes
+          (Small/Medium/Large) are configured on the controller display only — they are not exposed via the local API.
+
+          '
+        tip: 'For energy efficiency, keep the difference between start and stop temperatures at 5–10 °C. Larger differences
+          mean fewer but longer charge cycles (better for the compressor).
+
+          '
+        note: 'Cross-reference: the demand mode (Small/Medium/Large) that these start/stop temperatures apply to is selected
+          in menu 2.2 Hot water demand.
+
+          '
+        settings:
+        - label: Stop temperature, periodic increase
+          range: 55 – 70 °C
+          point_id: 3702
+          tip: 'Temperature the system heats hot water to during the legionella periodic increase cycle.
+
+            '
+      - id: 7.1.1.2
+        title: Operating settings
+        description: 'Compressor step difference and charge method for hot water mode. The charge method affects how supply
+          temperature is controlled during hot water charging.
+
+          '
+        settings:
+        - label: Step difference, compressor
+          range: 0.0 – 4.0 °C
+          point_id: 4685
+          tip: 'Difference between engagement and disengagement of compressor steps during hot water charging. Larger values
+            mean fewer but bigger steps (less switching, coarser control); smaller values mean finer, more frequent step changes.
+
+            '
+        - label: Charging method
+          range: Target temp / Delta temp
+          point_id: 4692
+          note: 'Delta temp is recommended for water heaters with a charge coil. Target temp for double-jacketed heaters and
+            heaters with a hot water coil.
+
+            '
+    - id: 7.1.2
+      title: Circulation pumps
+      description: 'Advanced circulation pump settings — operating mode, speed control, and flow settings for the charge pump.
+
+        '
+      submenus:
+      - id: 7.1.2.3
+        title: Operating mode, charge pump
+        description: 'Auto: the charge pump runs according to the current operating mode. Intermittent: the charge pump starts
+          20 seconds before the compressor starts and is turned off 20 seconds after the compressor stops. Cross-reference:
+          live charge pump speed and status → menu 3.1.10 System components.
+
+          '
+        settings:
+        - label: Operating mode, charge pump (EB101)
+          range: Auto (0) / Intermittent (1)
+          point_id: 4651
+          note: 'Auto: charge pump follows current operating mode. Intermittent: starts 20s before compressor, stops 20s after.
+
+            '
+        - label: Operating mode, charge pump cooling (EB101)
+          range: Auto (0) / Intermittent (1)
+          point_id: 4821
+          tip: '0=Auto (follows operating mode), 1=Intermittent (starts 20s before compressor, stops 20s after).
+
+            '
+      - id: 7.1.2.4
+        title: Pump speed, charge pump
+        description: 'Set automatic or manual speed control for the charge pump in each operating mode (heating, hot water,
+          pool, cooling). Auto: the charge pump is regulated automatically for optimal operation. Manual: set the desired
+          pump speed manually. Minimum permitted speed: restricts the pump from operating below the set value. Maximum permitted
+          speed: restricts the pump from operating above the set value. Speed in standby mode: speed during standby — when
+          heating is permitted but there is no compressor or additional heat demand.
+
+          '
+        settings:
+        - label: Manual heating medium pump speed override
+          range: off/on
+          point_id: 4562
+          note: Switches between automatic pump speed control (0) and manual speed control (1). In auto mode the firmware
+            regulates GP1 speed based on demand. In manual mode the speed is fixed at the value set in the manual speed setting.
+        - label: Minimum permitted speed (EB101-GP12)
+          range: 1 – 50 %
+          point_id: 8034
+          tip: 'Minimum permitted charge pump speed. A value of 1% allows the pump to nearly stop; the firmware will not run
+            the pump slower than this floor even in auto mode. Setting too low may cause noise or poor heat distribution.
+
+            '
+        - label: Max speed, controlled charge pump (EB101)
+          range: 80 – 100 %
+          point_id: 4813
+          tip: 'Maximum charge pump speed. Reducing this limits flow through the hot water tank — only change if tank is oversized
+            or noise is an issue.
+
+            '
+        - label: Speed, circulation pump, standby mode (EB100)
+          range: 1 – 100 %
+          point_id: 4788
+          tip: Charge pump speed during standby mode (EB100).
+          note: 'Firmware exposes this same setting at two register addresses with identical titles (4788 and 30001). Both
+            appear to control the same function — write to whichever this bridge has indexed; check the Entity Manager card
+            if values seem inconsistent between the two.
+
+            '
+        - label: Speed, circulation pump, waiting mode (heat pump 1)
+          range: 1 – 100 %
+          point_id: 4787
+          tip: 'Charge pump speed during waiting mode — when heating is permitted but no compressor demand exists. Lower values
+            save pump energy.
+
+            '
+          note: 'Firmware exposes this same setting at two register addresses with identical titles (4787 and 30002). Both
+            appear to control the same function — write to whichever this bridge has indexed; check the Entity Manager card
+            if values seem inconsistent between the two.
+
+            '
+        - label: Speed, circulation pump, standby mode (EB100, alt. register)
+          range: 1 – 100 %
+          point_id: 30001
+          note: 'Same firmware title and function as point 4788 above — likely an alternate register mapping for the same
+            physical setting, not a separate pump. Kept as a distinct entity since both registers are present and writable
+            in this firmware.
+
+            '
+        - label: Speed, circulation pump, waiting mode (heat pump 1, alt. register)
+          range: 1 – 100 %
+          point_id: 30002
+          note: 'Same firmware title and function as point 4787 above — likely an alternate register mapping for the same
+            physical setting, not a separate pump. Kept as a distinct entity since both registers are present and writable
+            in this firmware.
+
+            '
+      - id: 7.1.2.5
+        title: Flow setting, charge pump
+        description: 'Sets the target flow through the charge pump circuit. Used to optimise performance based on the installation''s
+          hydraulic characteristics. Cross-reference: live flow measurement → menu 3.1.10.
+
+          '
+        settings:
+        - label: Heating medium pump manual speed
+          range: 1 – 100 %
+          point_id: 4535
+          tip: 'The actual speed used when manual override is enabled. Firmware default: 70%.
+
+            '
+          note: 'Only takes effect when the manual override toggle (point 4562, menu 7.1.2.3) is on. With the override off,
+            the pump runs in automatic mode and this value is ignored.
+
+            '
+    - id: 7.1.4
+      title: Ventilation
+      description: 'Advanced fan speed settings for ERS heat recovery ventilation units (ERS S10-400, ERS S40-400, ERS 20-250,
+        ERS 30-400). Cross-reference: user-facing fan speed → menu 1.2.
+
+        '
+      submenus:
+      - id: 7.1.4.1
+        title: Fan speed, exhaust air
+        description: 'Set the exhaust air fan speeds for each of the five selectable speed levels for ERS 1 or S135 unit 1.
+          Speed 4 = highest, Normal = default operating speed.
+
+          Also see the Installer Manual for the main product.
+
+          '
+        settings:
+        - label: ERS 1 activated
+          range: off/on
+          point_id: 4940
+          tip: Activate ERS/S135 unit 1. Must also be added via menu 7.2.1.
+        - label: Exhaust air fan speed, normal
+          range: 1 – 100 %
+          point_id: 5148
+          tip: Used during regular ventilation — set to match your typical requirement.
+        - label: Exhaust air fan speed 1
+          range: 0 – 100 %
+          point_id: 5147
+          tip: Lowest temporary speed, activated via an AUX input. Set to 0 to allow the fan to stop completely.
+        - label: Exhaust air fan speed 2
+          range: 0 – 100 %
+          point_id: 5146
+          note: 'Fan speed for speed level 2 as a percentage of maximum. Level 2 is typically used for normal occupancy. See
+            also: speed levels 1 (5144), 3 (5145), 4 (5147), 5 (5148).'
+        - label: Exhaust air fan speed 3
+          range: 0 – 100 %
+          point_id: 5145
+          note: 'Fan speed for speed level 3 as a percentage of maximum. Level 3 is typically used for normal to high occupancy.
+            See also: speed levels 1 (5144), 2 (5146), 4 (5147), 5 (5148).'
+        - label: Exhaust air fan speed 4
+          range: 0 – 100 %
+          point_id: 5144
+          tip: Highest temporary speed, used for boost and night cooling.
+        - label: ERS 2 activated
+          range: off/on
+          point_id: 6215
+          tip: Activate ERS unit 2. Requires ERS unit 2 connected.
+        - label: ERS 3 activated
+          range: off/on
+          point_id: 6216
+          tip: Activate ERS unit 3.
+        - label: ERS 4 activated
+          range: off/on
+          point_id: 6217
+          tip: Activate ERS unit 4.
+      - id: 7.1.4.2
+        title: Fan speed, supply air
+        description: Supply (fresh air) fan speed levels for ERS S40 unit 1 are configured on the controller display only
+          — no supply fan speed registers are accessible via the local REST API. This menu is therefore empty.
+        settings:
+        - label: Start temperature (BT64)
+          range: -8 – 30 °C
+          point_id: 5152
+          tip: Temperature at which supply air preheating activates, to prevent cold drafts in winter.
+        note: 'Supply fan speed levels (five selectable speeds, same structure as exhaust air in 7.1.4.1) are not exposed
+          via the local API — configure on the controller display.
+
+          '
+      - id: 7.1.4.4
+        title: Demand controlled ventilation
+        description: 'Demand controlled ventilation settings for ERS units. Humidity controlled ventilation, highest/lowest
+          fan speed limits, and time interval between speed changes are configured on the controller display only — not exposed
+          via the local API.
+
+          '
+        settings:
+        - label: Night cooling temperature difference
+          range: 3 – 10 °C
+          point_id: 7208
+          tip: 'Temperature difference from setpoint at which night cooling via ventilation activates.
+
+            '
+        - label: Bypass temperature (ERS 1)
+          range: 2 – 10 °C
+          point_id: 5193
+          tip: Outdoor temperature above which ERS bypass opens for free cooling.
+        note: 'Humidity controlled ventilation (on/off), highest/lowest fan speed limits, time interval between speed changes,
+          and controlling zones are configured on the controller display only — not exposed via the local API.
+
+          '
+    - id: 7.1.5
+      title: Additional heat
+      description: 'Settings for shunt-controlled and step-controlled additional heat sources (e.g. boiler, district heating).
+        Cross-reference: the DM thresholds that control when additional heat engages and how aggressively it ramps up are
+        in menu 7.1.10.3 Degree minute settings.
+
+        '
+      warning: 'Incorrect shunt amplification or waiting time settings can cause the shunt valve to hunt (oscillate). Start
+        with default values and adjust incrementally.
+
+        '
+      submenus:
+      - id: 7.1.5.1
+        title: Additional heat settings
+        description: 'Select whether step controlled or shunt controlled additional heat is connected, then configure the
+          settings for the selected type.
+
+          Step controlled: external electric boiler or immersion heater steps, controlled via potential-free relays in the
+          control module. Placement relative to the diverter valve (QN10, used for hot water charging) determines how many
+          relays are available: before QN10 uses all three relays (3 linear steps, or 7 with binary stepping); after QN10
+          uses only two relays since the third is reserved for the tank immersion heater (2 linear steps, or 3 with binary
+          stepping). With the AXC 30 accessory installed, a further three relays become available, adding another 3 linear
+          or 7 binary steps on top of the above. Binary stepping combines relays in on/off patterns to produce more effective
+          steps from the same relay count, instead of each relay mapping to one linear step.
+
+          Shunt controlled: e.g. log, pellet, oil, or gas boiler connected via shunt valve. SMO S40 monitors the boiler sensor
+          (BT52); when it reaches 55°C, the shunt valve (QN11) opens to draw heat from the boiler, modulating to track the
+          controller''s calculated supply temperature. Set prioritised mode (uses external heat instead of heat pump), minimum
+          operating time (factory default 12 hours, not exposed via the local API — configure on the controller display),
+          lowest permitted temperature, shunt amplification, and shunt waiting time.
+
+          Additional heat in tank: if an immersion heater is in the tank, it can produce hot water simultaneously while the
+          heat pump prioritises heating or cooling.
+
+          '
+        settings:
+        - label: Max step, internal additional heat
+          range: 0 – 7
+          point_id: 14968
+          tip: Maximum number of permitted additional heat steps.
+        - label: Shunt controlled additional heat
+          range: off/on
+          point_id: 3881
+          note: Enable shunt controlled additional heat (e.g. log, pellet, oil, gas boiler).
+        - label: Internal shunt controlled additional heat
+          range: off/on
+          point_id: 4803
+          tip: 'Enable internal shunt-controlled additional heat. Only applicable when an internal shunt is installed.
+
+            '
+        - label: Shunt waiting time
+          range: 10 – 300 s
+          point_id: 3885
+          tip: 'Time between shunt valve adjustment steps. Longer = more stable but slower response.
+
+            '
+        - label: DM diff. start additional heat
+          range: 100 – 2000 DM
+          point_id: 4527
+          tip: 'Degree minute offset above the compressor DM start at which shunt-controlled additional heat engages. Higher
+            = later engagement.
+
+            '
+        note: 'External electric additional heat options: ELK 15 (15 kW, part no. 069 022), ELK 26 (26 kW, part no. 067 074),
+          ELK 42 (42 kW, part no. 067 075), ELK 213 (7–13 kW, part no. 069 500). Immersion heater options: 3 kW (part no.
+          018 084), 6 kW (part no. 018 088), 9 kW (part no. 018 090). Cross-reference: main fuse size, which limits how many
+          additional heat steps can run simultaneously → menu 7.1.9 Load monitor.
+
+          '
+    - id: 7.1.6
+      title: Heating
+      description: 'Advanced heating settings — supply temperature limits, flow settings, and compressor sequencing. Cross-reference:
+        live calculated vs actual supply temperature to verify DOT and delta T settings → menu 3.1.3 Heating.
+
+        '
+      submenus:
+      - id: 7.1.6.1
+        title: Max diff supply temp
+        description: 'Maximum permitted difference between calculated and actual supply temperature. Max diff compressor:
+          if the actual supply temperature exceeds the calculated supply temperature by this value, the degree minute value
+          is set to 1 and the compressor stops (heating demand only). Max diff additional heat: if additional heat is active
+          and the supply temperature exceeds the calculated temperature by this value, additional heat is forced to stop.
+          Cannot exceed the max diff compressor setting. BT12 offset: compensates for any difference between the external
+          supply sensor (BT25) and the condenser supply sensor (BT12) with a fixed offset.
+
+          '
+        settings:
+        - label: Max diff supply temp, compressor
+          range: 1 – 25 °C
+          point_id: 3926
+          tip: If supply overshoots setpoint by more than this, compressor steps down.
+        - label: Max diff supply temp, additional heat
+          range: 1 – 24 °C
+          point_id: 3927
+          warning: 'Must always be set lower than "Max diff compressor" (menu 7.1.6.1). If supply exceeds calculated by this
+            value, additional heat is forced to stop.
+
+            '
+        - label: BT12 offset, heat pump 1
+          range: -5 – 5 °C
+          point_id: 9664
+          note: 'Fixed offset to compensate for difference between external supply sensor (BT25) and condenser sensor (BT12).
+
+            '
+      - id: 7.1.6.2
+        title: Flow settings, climate system
+        description: 'Sets the distribution system type — Radiator, Underfloor heating, Radiator + Underfloor, or Own. The
+          type affects the heating medium pump operating curve. dT at DOT: the difference in degrees between supply and return
+          temperatures at the design outdoor temperature (DOT). This value is used to calculate the required flow rate.
+
+          '
+        settings:
+        - label: Flow setting climate system 1
+          range: Radiator / Underfloor / Rad+Underfloor / Own
+          point_id: 3976
+          note: 'Distribution system type. Radiator: higher head, lower flow. Underfloor: lower head, higher flow.
+
+            '
+        - label: Dimensioned outdoor temperature (DOT)
+          range: -40 – 20 °C
+          point_id: 3868
+          tip: Design outdoor temperature for your climate.
+        - label: Delta T for DOT
+          range: 1 – 25 °C
+          point_id: 3869
+          tip: 'Temperature difference between supply and return at design outdoor temperature.
+
+            '
+        note: 'For installations with two or more climate systems requiring different supply temperatures, the Extra Shunt
+          Group ECS accessory is used: ECS 40 (max 80 m², part no. 067 287) or ECS 41 (approx. 80–250 m², part no. 067 288).
+
+          '
+      - id: 7.1.6.3
+        title: Power at DOT
+        description: 'Sets the power the property requires at the dimensioned outdoor temperature (DOT). If "Manually selected
+          power at DOT" is not activated, the setting is made automatically — SMO S40 calculates a suitable power at DOT based
+          on actual operating data.
+
+          '
+        note: 'Activating manual power at DOT is only recommended for experienced installers. The automatic calculation is
+          correct for most installations.
+
+          '
+        settings:
+        - label: Dimensioned outdoor temperature (DOT)
+          range: -40 – 20 °C
+          point_id: 3868
+          tip: 'Design outdoor temperature for your climate. Typically -10 to -20 °C in the Netherlands.
+
+            '
+        - label: Delta T for DOT
+          range: 1 – 25 °C
+          point_id: 3869
+          tip: Temperature difference between supply and return at DOT.
+        - label: Power at DOT, manual value
+          range: off/on
+          point_id: 6984
+          note: 'When on, enables manual override of the calculated DOT power value. The power value register appears automatically
+            below this switch when enabled.
+
+            '
+      - id: 7.1.6.4
+        title: Limit RH in heat
+        description: Relative humidity limit in heating mode. Listed in the SMO S40 menu overview as an accessory-dependent
+          menu — consult the relevant accessory manual. The setting below is present in this installation.
+        settings: []
+        local_api: false
+        note: 'Not present in this installation''s firmware data even with a THS-10 wireless sensor paired and active. Condensation
+          risk is fundamentally a cooling-mode phenomenon (cold surfaces below the dew point) rather than a heating-mode one,
+          which may explain why this function is rarely needed in practice. If you have a different humidity accessory or
+          encounter floor-covering manufacturer guidance requiring heating-side RH limiting, this menu number is reserved
+          for it.
+
+          '
+      - id: 7.1.6.6
+        title: Compressors, start sequence
+        description: 'Sets the start sequence for compressors. Degree minutes: compressors start based on degree minute demand
+          as normal (factory default). Cluster: in a multi-installation, heat pumps are controlled as a group according to
+          demand rather than individual DM.
+
+          '
+        settings: []
+        local_api: false
+    - id: 7.1.7
+      title: Cooling
+      description: 'Advanced cooling settings. Cooling hardware comes in two forms on the S-series, and the menus below apply
+        to both:
+
+        - **Native reversible cooling** — built into most S-series outdoor units (e.g. S2125, S1155, S1255 and others) via
+        an internal reversing valve. No accessory needed; activate with "Cooling connected, climate system 1" below.
+
+        - **ACS 45 accessory** — only required for S-series models without an integrated reversing valve, or when a separate
+        brine-circuit cooling distribution system is needed. Compatible with S1155/S1255 specifically per the ACS 45 manual
+        — check your model before assuming you need this accessory.
+
+
+        Passive (free) cooling uses the ground/brine loop without the compressor; active cooling runs the compressor in reverse.
+        Cross-reference: live cooling status → menu 3.1.5 Cooling.
+
+        '
+      submenus:
+      - id: 7.1.7.1
+        title: Cooling settings
+        description: 'Core cooling configuration — ACS activation, shunt tuning, passive cooling thresholds, and temperature
+          deltas. Super cooling: when activated, the installation prioritises cooling using the compressor while hot water
+          is produced by additional heating in the tank. Max compressors in active cooling limits how many compressors are
+          permitted for cooling.
+
+          '
+        settings:
+        - label: ACS accessory activated
+          range: off/on
+          point_id: 4613
+          tip: Activate ACS 45 cooling accessory. The unit must also be added via menu 7.2.1.
+        - label: Cooling connected, climate system 1
+          range: off/on
+          point_id: 4608
+          tip: 'Activate cooling for climate system 1. Must be enabled before active or passive cooling can operate.
+
+            '
+        - label: Cooling shunt amplification (QN18)
+          range: 0.1 – 10.0
+          point_id: 3898
+          tip: 'Shunt valve response speed. Higher = faster response. Increase slowly if cooling is sluggish.
+
+            '
+        - label: Cooling shunt waiting time (QN18)
+          range: 10 – 300 s
+          point_id: 3899
+          tip: Pause between shunt valve steps. Shorter = faster but less stable.
+        - label: Cooling delta temp at outdoor 20 °C
+          range: 3 – 10 °C
+          point_id: 4631
+          tip: 'Desired temperature difference between supply and return at 20°C outdoor temperature.
+
+            '
+        - label: Cooling delta temp at outdoor 40 °C
+          range: 3 – 20 °C
+          point_id: 4632
+          tip: 'Desired temperature difference between supply and return at 40°C outdoor temperature. Higher difference =
+            more cooling capacity.
+
+            '
+        - label: Waiting time between cooling and heating
+          range: 0 – 48 h
+          point_id: 3895
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+          tip: 'How long to wait after cooling demand ceases before returning to heating mode. Prevents rapid mode switching.
+
+            '
+        - label: ACS thermostat hysteresis between compressors
+          range: 1 – 10 °C
+          point_id: 5151
+          tip: 'Temperature hysteresis between compressor engagement steps during active cooling. Wider hysteresis = fewer
+            compressor starts.
+
+            '
+        - label: Start passive cooling DM
+          range: 10 – 500 DM
+          point_id: 3902
+          tip: 'Degree minute threshold at which passive (free) cooling starts. Lower value = earlier start.
+
+            '
+        - label: Start active cooling DM
+          range: 10 – 300 DM
+          point_id: 3903
+          tip: DM above passive cooling at which the compressor engages for active cooling.
+        - label: ACS status (read-only)
+          range: Status
+          point_id: 2701
+          note: Status of the ACS 45 accessory (Active Cooling System). ON means the ACS is actively engaged in the cooling
+            circuit.
+        - label: Heating dump status (read-only)
+          range: Status
+          point_id: 2702
+          note: Status of the heating dump shunt valve EQ1 position for heating. Indicates whether the shunt is directing
+            flow toward the heating circuit.
+        - label: Cooling dump status (read-only)
+          range: Status
+          point_id: 2703
+          note: Status of the cooling dump shunt valve EQ1 position for cooling. Indicates whether the shunt is directing
+            flow toward the cooling circuit.
+        - label: Passive cooling pump GP13 (read-only)
+          range: Status
+          point_id: 3149
+          note: Status of the passive cooling pump GP13. GP13 circulates water through the cooling circuit during passive
+            (free) cooling without compressor operation.
+        - label: Reversing valve EQ1-QN12 (read-only)
+          range: Status
+          point_id: 3146
+          note: Status of the reversing valve EQ1-QN12 in the ACS cooling circuit. This valve switches the circuit between
+            heating and cooling mode.
+        - label: Heating dump temperature EQ1-BT75 (read-only)
+          range: °C
+          point_id: 124
+          note: Temperature measured at BT75, the heating dump sensor on the EQ1 shunt unit. Used by the firmware to control
+            shunt valve position.
+        note: 'These settings apply to both native reversible cooling and the ACS 45 accessory. ACS-specific points (e.g.
+          ACS status, reversing valve EQ1-QN12) only appear if ACS 45 is activated in menu 7.2.1 — on installations with native
+          cooling (e.g. S2125), cooling is enabled directly via "Cooling connected, climate system 1" above with no separate
+          accessory activation step. See the ACS 45 Installer Manual for DIP switch configuration only if that accessory is
+          actually installed. Cross-reference: external cooling accessory activation and pump type → menu 7.1.7.4.
+
+          '
+      - id: 7.1.7.2
+        title: Humidity control
+        description: 'Relative humidity control during cooling. When a THS-10 wireless sensor is paired, the SMO S40 can use
+          its humidity readings to prevent condensation and limit indoor humidity during active cooling. These settings are
+          only accessible via the local API when a THS-10 is paired — without one they do not appear in the bulk fetch. THS-10
+          pairing status is reported in menu 1.1.3.
+
+          '
+        settings:
+        - label: Prevent condensation (climate system 1)
+          range: off/on
+          point_id: 5110
+          tip: 'Raises supply temperature during cooling when the calculated dew point approaches the surface temperature.
+            Prevents condensation on cold floors and pipes. Recommended for all passive cooling installations. Cross-reference:
+            sensor readings → menu 1.1.3; RH setpoint → point 5088.
+
+            '
+          note: Only present when a THS-10 is paired.
+        - label: Limit humidity in room, cooling (climate system 1)
+          range: off/on
+          point_id: 5214
+          tip: 'Increases cooling output when room humidity exceeds the RH setpoint. Prioritises dehumidification over temperature
+            precision during cooling. Primarily useful for bathrooms or rooms with ERS ventilation.
+
+            '
+          note: Only present when a THS-10 is paired.
+        - label: Relative humidity setpoint (RH)
+          range: 30 – 90 %
+          point_id: 5088
+          tip: Target maximum relative humidity, used by both condensation prevention and humidity limiting.
+          note: Only present when a THS-10 is paired.
+      - id: 7.1.7.3
+        title: System settings cooling
+        description: 'System-level cooling configuration including cooling with room sensors and cooling pump settings.
+
+          '
+        settings:
+        - label: Cooling with room sensors, factor (climate system 1)
+          range: 0.0 – 4.1
+          point_id: 3900
+          tip: 'Room sensor influence factor for cooling, analogous to the heating room sensor factor (point 3949) but typically
+            kept lower or at 0. Higher = more aggressive supply temperature adjustment from room sensor deviation. For systems
+            cooling via underfloor at a fixed low supply temperature (e.g. 18°C to avoid condensation), 0 is usually correct
+            — the supply temperature shouldn''t be trimmed further by the room sensor since it''s already set to the safe
+            minimum.
+
+            '
+          note: Cooling curve P-band — the temperature deviation (in °C) from the setpoint over which the cooling valve fully
+            opens. A smaller value gives a more aggressive response; a larger value gives a more gradual response.
+        note: 'Closing time for cooling dump is configured on the controller display only.
+
+          '
+      - id: 7.1.7.4
+        title: External cooling accessory
+        description: Configure external cooling accessory type and pump settings.
+        settings:
+        - label: External cooling accessory
+          range: off/on
+          point_id: 4581
+          note: Activate external cooling accessory (e.g. ACS 45).
+        - label: External cooling accessory pump type
+          range: 0 – 1
+          point_id: 5195
+          note: 0 = On/Off, 1 = Speed controlled.
+    - id: 7.1.8
+      title: Alarms
+      description: 'Configure alarm actions and emergency mode behaviour. Alarm actions determine what SMO S40 does when a
+        fault occurs. Cross-reference: additional heat type and shunt configuration for emergency mode → menu 7.1.5 Additional
+        heat.
+
+        '
+      submenus:
+      - id: 7.1.8.1
+        title: Alarm actions
+        description: 'Select how SMO S40 responds when an alarm occurs. Options: reduce room temperature and/or stop producing
+          hot water. Both actions reduce energy consumption during a malfunction.
+
+          '
+        note: 'If no alarm action is selected, higher energy consumption may result during a malfunction as the system continues
+          operating without adjustment.
+
+          '
+        settings:
+        - label: Alarm action — lower room temperature
+          range: off/on
+          point_id: 3935
+          tip: 'When enabled, the system lowers room temperature setpoint during an active alarm to reduce energy consumption
+            while waiting for service.
+
+            '
+        - label: Audio signal on alarm
+          range: off/on
+          point_id: 9659
+          tip: Enable/disable the audible beep when alarms are triggered.
+      - id: 7.1.8.2
+        title: Emergency mode
+        description: 'Settings for how additional heat is controlled in emergency mode. Configure the number of additional
+          heat steps and whether shunt controlled additional heat is active.
+
+          '
+        note: 'In emergency mode the display is switched off. Configure these settings correctly in advance — if the settings
+          are insufficient in emergency mode, they cannot be changed while the display is off.
+
+          '
+        settings:
+        - label: Additional heat steps, emergency mode
+          range: 0 – 7
+          point_id: 10567
+          note: Number of additional heat steps active in emergency/auxiliary mode
+          warning: 'Emergency mode runs only additional heat (electric elements or boiler) with no compressor. Electricity
+            consumption can be 3-5x higher than normal heat pump operation. If a compressor fault triggers emergency mode
+            unnoticed, electricity bills will spike dramatically. Configure HA alarm notifications to alert immediately when
+            emergency mode activates.
+
+            '
+        - label: Shunt controlled add. heat, emergency mode
+          range: off/on
+          point_id: 3881
+          note: 'Whether shunt controlled additional heat runs in emergency mode. Configure in menu 7.1.5.
+
+            '
+    - id: 7.1.9
+      title: Load monitor
+      description: 'Set the fuse size and transformer ratio for the load monitor. The transformer ratio converts the metered
+        voltage to current. The Energy Measurement Kit EMK 500 (part no. 067 178) can be used to measure energy supplied for
+        pool, hot water, heating and cooling.
+
+        '
+      tip: 'Set the fuse size to the actual building main fuse rating. If the transformer ratio is wrong, the load monitor
+        will not correctly limit power and the fuse may trip.
+
+        '
+      settings:
+      - label: Fuse size
+        range: 1 – 400 A
+        point_id: 3825
+        tip: Main fuse size.
+      - label: Current transformer ratio
+        range: 300 – 3000
+        point_id: 5049
+        tip: Factor used to convert metered voltage to current.
+    - id: 7.1.10
+      title: System settings
+      description: 'System-level operating settings including prioritisation, auto mode thresholds, degree minutes, and room
+        temperature limits.
+
+        '
+      submenus:
+      - id: 7.1.10.1
+        title: Operating prioritisation
+        description: 'Sets how long the installation works with each demand when multiple demands are active simultaneously:
+          hot water, heating, cooling, and pool (if installed). Auto mode: SMO S40 optimises operating times between demands
+          automatically — this is the recommended setting for almost all installations. Manual: you set how long the installation
+          works with each demand by period time in minutes. If only one demand is active, the installation works with that
+          demand regardless of the period time setting. If 0 minutes is selected for a demand, it is never proactively prioritised
+          — it only runs when no other demand is active.
+
+          Important tradeoff: these demands share a common time pool. Increasing the period time for one demand reduces the
+          share available to the others — there is no independent "more of everything" setting. Hot water''s period time is
+          configured on the controller display only (not exposed via the local API), but it still competes for the same pool
+          as heating and cooling below.
+
+          Troubleshooting cross-reference: low room temperature with otherwise correct settings → try increasing heating''s
+          period time here (this will reduce hot water''s share). Insufficient hot water with otherwise correct settings →
+          increase hot water''s priority on the controller display (this will reduce heating''s share and may cause lower
+          or uneven room temperatures). Cross-reference: pool heating adds a further competing demand → menu 7.2.17. Live
+          operating prioritisation status → menu 3.1.2 Overview.
+
+          '
+        settings:
+        - label: Permit prioritised additional heat
+          range: off/on
+          point_id: 1186
+          note: Read-only status indicating whether the firmware is currently permitting prioritised additional heat. Changes
+            automatically based on operating conditions and the prioritisation settings in this menu.
+        - label: Period time heating
+          range: 0 – 180 min
+          point_id: 3749
+          tip: 'Minimum time the system stays in heating mode before switching to hot water or other demands. Longer periods
+            mean fewer mode switches and more efficient compressor operation, but less time available for hot water and cooling.
+            If your hot water tank is well-insulated, increasing this to 60-90 minutes reduces energy consumption by allowing
+            longer, fewer compressor cycles rather than frequent short ones.
+
+            '
+        - label: Period time cooling
+          range: 0 – 180 min
+          point_id: 4624
+          tip: Minimum time the system must remain in cooling mode.
+      - id: 7.1.10.2
+        title: Auto mode setting
+        description: 'These thresholds tell the system when to automatically stop heating and when to start cooling, based
+          on average outdoor temperature. They prevent the heat pump from unnecessarily heating or cooling during mild weather.
+          Stop heating: when the average outdoor temperature rises above this value, the heating system stops. Typically set
+          to 16–18°C in the Netherlands — no need to heat when it is warm outside. Stop additional heat: the immersion heater
+          or boiler stops supplementing at this outdoor temperature (usually a few degrees lower than stop heating, since
+          the heat pump alone can manage at milder temperatures). Filtering time: averages the outdoor temperature over this
+          period to avoid the system reacting to brief warm or cold spells.
+
+
+          With a room sensor (THS-10, RMU S40, or BT74) active: the stop heating and start cooling thresholds can deliberately
+          overlap (e.g. stop heating 19°C, start cooling 14°C). In this overlap band, both heating and cooling are permitted
+          — the room temperature decides which runs, using the setpoint and dead-band settings below. Without a room sensor,
+          the thresholds must not overlap.
+
+
+          Cross-reference: current average outdoor temp → menu 3.1.3 Heating; operating mode → menu 4.1; DM settings that
+          control compressor start/stop within the permitted operating window → menu 7.1.10.3. Important: in Auto mode these
+          stop temperatures gate whether DM is even allowed to run heating or cooling — they work together, not independently.
+
+          '
+        settings:
+        - label: Auto mode start temperature for active cooling
+          range: 0 – 40 °C
+          point_id: 27294
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+        - label: Stop temperature for heating
+          range: -20 – 40 °C
+          point_id: 3923
+          tip: System stops heating when average outdoor temp exceeds this value
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+        - label: Additional heat stop temperature
+          range: -25 – 40 °C
+          point_id: 3924
+          tip: 'Outdoor temperature above which additional heat (electric/boiler) is not permitted.
+
+            '
+          warning: 'Cannot be set higher than the heating stop temperature (point 3923) — the controller enforces this. Additional
+            heat is only ever useful below the point where heating itself stops, so this constraint reflects normal operation
+            rather than a limitation.
+
+            '
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+        - label: Auto mode filter time
+          range: 0 – 48 h
+          point_id: 3925
+          tip: 'Time over which outdoor temperature is averaged before the system transitions between heating and cooling
+            modes. At the factory setting of 24h, on a warm spring day the system may continue heating even if current outdoor
+            temperature is above the heating stop threshold — because the 24h average is still below it. Reduce to 5-8h for
+            faster seasonal transitions; increase for more stable operation.
+
+            '
+        - label: Set point value cool/heat sensor
+          range: 5 – 40 °C
+          point_id: 4529
+          tip: 'The room temperature pivot point for auto heating/cooling switchover. With a room sensor active, heating and
+            cooling can both be permitted at the same outdoor temperature — the room temperature decides which runs. Example:
+            setpoint 21°C, heating delta 1°C, cooling delta 1°C → heating activates below 20°C, cooling activates above 22°C,
+            neither runs between 20–22°C (dead band). This overrides menu 1.1 for the purpose of mode switching — even if
+            menu 1.1 is set to 24°C, the system will not heat above 22°C when this setting is active.
+
+            '
+          note: 'Requires a THS-10, RMU S40, or BT74 room sensor. When a room sensor is active, the outdoor temperature thresholds
+            (stop heating, start cooling above) can deliberately overlap — the room temperature then decides which mode runs
+            in that overlap band.
+
+            '
+        - label: Heating start at under temp
+          range: 0.5 – 10.0 °C
+          point_id: 3896
+          tip: 'Dead-band below the room sensor setpoint at which heating activates. With setpoint 21°C and this value at
+            1°C: heating starts when room temperature drops below 20°C. Once heating has stopped, it will not restart until
+            the room has cooled to this threshold — preventing short-cycling around the setpoint. Firmware default: 1°C. Dutch
+            practice: 1°C works well for fan convectors; underfloor may need 0.5°C for finer control.
+
+            '
+        - label: Cooling start at over temp
+          range: 0.5 – 10.0 °C
+          point_id: 3897
+          tip: 'Dead-band above the room sensor setpoint at which cooling activates. With setpoint 21°C and this value at
+            1°C: cooling starts when room temperature rises above 22°C. Symmetric with the heating delta — together they create
+            a comfort band where neither heating nor cooling runs. Firmware default: 3°C. Dutch practice: 1°C suits fan convectors
+            for tighter control; for passive underfloor cooling where response is slow, the wider 3°C default avoids unnecessary
+            switching.
+
+            '
+        - label: Waiting time cooling/heating
+          range: 0 – 48 h
+          point_id: 3895
+          tip: 'How long to wait after cooling demand ceases before returning to heating mode. Prevents rapid mode switching.
+
+            '
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+      - id: 7.1.10.3
+        title: Degree minute settings
+        description: 'Degree minutes (DM) are how the SMO S40 decides when to start and stop the compressor and additional
+          heat. Understanding DM is key to tuning the system for efficiency and comfort.
+
+          HOW DM WORKS: Every minute, the controller compares the actual supply temperature to the target (calculated) supply
+          temperature. If the actual is 2°C below target, that is -2 DM per minute. The DM counter accumulates this deficit
+          over time. When DM reaches the "start compressor" threshold (default -60 DM), the compressor starts. The compressor
+          runs until DM returns to 0 (demand met). For additional heat: when DM reaches (start compressor + start diff additional
+          heat), e.g. -60 + (-700) = -760 DM, additional heat engages. Each subsequent step of additional heat engages after
+          another "diff between steps" of DM accumulates.
+
+          IN AUTO MODE — ONE ACTIVE DM COUNTER: Only the heating degree minutes counter (point 781) is active. The cooling
+          degree minutes counter (point 2691) stays at zero. The system uses the auto mode outdoor temperature thresholds
+          (menu 7.1.10.2) to decide whether it is in heating or cooling mode — the outdoor temperature gates make a separate
+          cooling DM counter unnecessary. When heating is permitted (outdoor temp below stop heating threshold), heating DM
+          accumulates negatively and controls the compressor. When cooling is permitted (outdoor temp above start cooling
+          threshold), the same heating DM counter is used but in the positive direction for cooling decisions.
+
+          IN MANUAL MODE — TWO ACTIVE DM COUNTERS: Both DM counters run simultaneously and independently: Heating DM (point
+          781) counts only heating demand — goes negative when the supply temperature is below the heating target. Cooling
+          DM (point 2691) counts only cooling demand — goes positive when the supply temperature is above the cooling target.
+          Because there are no outdoor temperature gates in manual mode (you have explicitly selected which functions are
+          active), the firmware needs two separate accumulators to independently track heating and cooling demand at the same
+          time. This is why switching from Auto to Manual mode makes the cooling DM counter "come alive" — it was zero in
+          Auto mode not because there was no cooling demand, but because the firmware was not using that counter. In Manual
+          mode both counters are live.
+
+          '
+        note: 'Start compressor DM (-1000 – -30) and stepping diff compressors are configured on the controller display only
+          — not exposed via the local API.
+
+          '
+        tip: 'Default DM start -60 DM suits most variable-speed heat pumps. Signs the DM start is too shallow (not negative
+          enough): compressor starts briefly and stops repeatedly (short-cycling), reducing efficiency and compressor life.
+          Fix: make DM start more negative (e.g. -100 or -150). Signs too deep (too negative): room temperature noticeably
+          drops before compressor starts, slow recovery from setback. Fix: make DM start less negative (e.g. -40). For fast-response
+          fan convectors (DBH technology): these have very low water volume, so DM moves quickly. A DM start of -80 to -120
+          typically works well, allowing the system to batch runs efficiently. Cross-reference: live DM → menu 3.1.2; auto
+          mode temps → menu 7.1.10.2; compressor starts → menu 3.1.12.
+
+          '
+        settings:
+        - label: DM start heating (compressor start)
+          range: -1000 – -30 DM
+          point_id: 3818
+          tip: 'At the factory setting of -200 DM, well-insulated houses with high thermal mass often see compressors start
+            too frequently — try -400 to -600 for fewer, longer cycles which is more efficient. In poorly insulated houses,
+            keep closer to -100 to -150 to prevent the house getting cold before the compressor starts. One degree of heat
+            loss per hour is roughly 1 DM per minute.
+
+            '
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+        - label: Degree minutes, current value (read-only)
+          range: -3000 – 3000 DM
+          point_id: 781
+          note: 'Writing a value here triggers an immediate action but the firmware resumes normal control within seconds.
+            Use for diagnostics and manual override only — the effect is transient.
+
+            '
+          tip: 'Live degree minute counter. Becomes more negative as heating demand builds. Compressor starts when this reaches
+            the DM start threshold (menu 7.1.10.3). Write -200 to force immediate start or 0 to reset.
+
+            '
+        - label: Cooling degree minutes (read-only)
+          range: -3000 – 3000 DM
+          point_id: 2691
+          note: 'Writing a value here triggers an immediate action but the firmware resumes normal control within seconds.
+            Use for diagnostics and manual override only — the effect is transient.
+
+            '
+          tip: 'Live cooling degree minute counter. Becomes more positive as cooling demand builds.
+
+            '
+        - label: DM diff. start additional heat
+          range: 100 – 2000 DM
+          point_id: 4527
+          tip: 'Relative DM above compressor DM start at which additional heat engages.
+
+            '
+        - label: DM diff. start step add. heat (AXC)
+          range: 0 – 2000 DM
+          point_id: 4574
+          tip: DM offset for step-controlled additional heat via AXC 30.
+        - label: Start active cooling DM
+          range: 10 – 300 DM
+          point_id: 3903
+          tip: 'Degree minute threshold at which active (compressor) cooling starts.
+
+            '
+        - label: Diff. between additional heat steps
+          range: 10 – 1000 DM
+          point_id: 3821
+          tip: DM between engagement of successive additional heat steps.
+        - label: Heating, auto
+          range: off/on
+          point_id: 10591
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+        - label: Cooling, auto
+          range: off/on
+          point_id: 10592
+          note: 'The firmware may overwrite this value as part of its automatic control cycle. Changes take effect immediately
+            but may not persist if the firmware''s auto mode logic determines a different value is needed.
+
+            '
+      - id: 7.1.10.6
+        title: Permit overrides
+        description: 'System-wide on/off permission switches for heating, cooling, additional heat, and hot water. These are
+          absolute overrides — disabling one blocks that function entirely, regardless of demand from any other source (auto
+          mode, SG Ready, Smart Price Adaption, room sensor, or manual setting).
+
+          '
+        settings:
+        - label: Permit heating
+          range: off/on
+          point_id: 3920
+          tip: 'Disabling heating here overrides all other heating demand. Useful for summer/commissioning.
+
+            '
+          warning: 'This is an absolute override. Disabling permit heating prevents the system from heating under any circumstances
+            — including SG Ready, SPA, and manual mode. If accidentally left off, the house will not heat. Always verify this
+            is enabled before leaving the system unattended in cold weather.
+
+            '
+        - label: Permit additional heat
+          range: off/on
+          point_id: 3919
+          tip: 'Disabling additional heat prevents electric or boiler supplementary heat regardless of demand.
+
+            '
+          warning: 'This is an absolute override. Disabling permit additional heat prevents all supplementary electric or
+            boiler heat regardless of demand or outdoor temperature. In very cold weather the heat pump alone may be insufficient
+            — ensure this is enabled before winter.
+
+            '
+        - label: Permit cooling
+          range: off/on
+          point_id: 3921
+          tip: Disabling cooling here overrides all other cooling demand.
+          warning: 'This is an absolute override. Disabling permit cooling prevents all active and passive cooling regardless
+            of demand or room temperature.
+
+            '
+        - label: Heating connected, climate system 1
+          range: off/on
+          point_id: 4937
+          note: Whether heating is connected and permitted for CS1
+        - label: Hot water permitted
+          range: off/on
+          point_id: 3934
+          tip: 'Allow hot water production. Disabled by default — hot water is managed separately. Enable if you want to permit
+            hot water charging.
+
+            '
+      - id: 7.1.10.4
+        title: Prio compressor
+        description: 'In multi-installation: set compressor priority order.'
+        local_api: false
+        note: 'Compressor priority settings are configured on the controller display only.
+
+          '
+        settings: []
+    - id: 7.1.11
+      title: SPLA
+      description: 'Smart Preload Adaptation settings. SPLA predicts time to next defrost — if defrost is active or expected
+        within 1 hour, calculated supply temperature is adjusted. Requires at least one counterflow NIBE Flow air handling
+        unit connected to SMO S40 (firmware 4.10.5+).
+
+        '
+      local_api: false
+      note: 'SPLA settings are configured on the controller display only.
+
+        '
+      settings: []
+  - id: '7.2'
+    title: Accessory settings
+    description: 'Settings for installed accessories. Submenus appear only when the relevant accessory is activated in menu
+      7.2.1.
+
+      '
+    submenus:
+    - id: 7.2.1
+      title: Add/remove accessories
+      description: 'Tell SMO S40 which accessories are installed. Select ''Search for accessories'' to detect connected units
+        automatically, or select manually from the list.
+
+
+        Available accessories include: ACS 45 (cooling), ERS ventilation units, POOL 40 (pool heating, part no. 067 062),
+        AXC 30 accessory card (part no. 067 304), RMU S40 room unit (part no. 067 650), EME 20 solar communication module
+        (part no. 057 215), ECS 40/41 extra shunt group, and wireless sensors.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.2.3
+      title: Shunt-controlled additional heat (AXC)
+      description: 'Settings for shunt-controlled additional heat — e.g. a wood, pellet, oil, or gas boiler connected via
+        a shunt valve. The Nibe menu system places this under the AXC 30 accessory card''s docking menu when AXC 30 is installed,
+        but the underlying API registers are shared with the built-in shunt control in menu 7.1.5.1 — they are not separate
+        AXC-specific points. The shunt adjusts for as long as heat is available from the boiler; otherwise the shunt closes
+        and the heat pump takes over. If "Prioritised additional heat" is selected, the external heat source is used instead
+        of the heat pump whenever heat is available.
+
+        '
+      settings:
+      - label: Shunt controlled additional heat
+        range: off/on
+        point_id: 3881
+        note: Same register as menu 7.1.5.1 — see there for full context.
+      - label: Internal shunt controlled additional heat
+        range: off/on
+        point_id: 4803
+        note: Same register as menu 7.1.5.1 — see there for full context.
+      - label: Shunt waiting time
+        range: 10 – 300 s
+        point_id: 3885
+        note: Same register as menu 7.1.5.1 — see there for full context.
+      - label: DM diff. start additional heat
+        range: 100 – 2000 DM
+        point_id: 4527
+        note: Same register as menu 7.1.5.1 — see there for full context.
+    - id: 7.2.4
+      title: Extra climate system (ECS / AXC)
+      description: 'Settings for an extra climate system (climate system 2) — a second distribution circuit with its own mixing
+        valve and pump, useful for installations with both radiators and underfloor heating requiring different supply temperatures.
+        Connected via the AXC 30 accessory card or ECS 40/41 extra shunt group.
+
+        Cross-reference: climate system 1 flow settings → menu 7.1.6.2; climate system 1 room sensor equivalents → menu 1.3.
+
+        '
+      settings:
+      - label: Climate system 2 activated
+        range: off/on
+        point_id: 3870
+        tip: 'Activate climate system 2. Requires the physical second distribution circuit (mixing valve, pump, ECS 40/41
+          or AXC 30) to be installed — enabling this without the hardware will have no physical effect.
+
+          '
+      - label: Use room sensor, climate system 2
+        range: off/on
+        point_id: 3940
+        note: Same pattern as climate system 1's room sensor toggle (menu 1.3).
+      - label: Room sensor set point, climate system 2 (heating)
+        range: 5 – 30 °C
+        point_id: 3944
+        note: 'Desired room temperature setpoint for climate system 2 when a room sensor is active on that circuit. Range:
+          5–30°C.'
+      - label: Room sensor factor, climate system 2 (heating)
+        range: 0.0 – 6.0
+        point_id: 3948
+        tip: Higher factor = more influence from the room sensor on the supply temperature, same as climate system 1 (point
+          3949).
+      - label: Room sensor set point, climate system 2 (cooling)
+        range: 5 – 35 °C
+        point_id: 5078
+        note: 'Desired room temperature setpoint for climate system 2 during cooling. Range: 5–35°C.'
+      - label: Room sensor factor, climate system 2 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5086
+        note: Controls how strongly the room sensor influences the supply temperature calculation for climate system 2 cooling.
+          Higher factor = greater influence of room temperature deviation on the calculated supply temperature. See the AXC
+          30 installer manual for detailed guidance.
+    - id: 7.2.6
+      title: Step-controlled additional heat (AXC)
+      description: 'Settings for step-controlled additional heat — typically an external electric boiler with multiple power
+        steps. As with menu 7.2.3, the Nibe menu system places this under the AXC 30 docking menu when AXC 30 is installed,
+        but the underlying register is shared with the built-in step control in menu 7.1.5.1 — it is not AXC-specific. The
+        DM start value sets when the first additional heat step engages relative to the normal DM start compressor value.
+
+        '
+      settings:
+      - label: Max step, internal additional heat
+        range: 0 – 7
+        point_id: 14968
+        note: Same register as menu 7.1.5.1 — see there for full context.
+    - id: 7.2.8
+      title: Hot water comfort (AXC)
+      description: 'Settings for hot water comfort functionality. Enables an immersion heater or mixing valve to maintain
+        or boost domestic hot water temperature. "Activating immersion heater" allows the immersion heater to run during hot
+        water production. "Activating mixing valve" enables a shunt valve to boost outgoing hot water temperature.
+
+        Cross-reference: hot water demand mode → menu 2.2; hot water circulation → menu 2.5.
+
+        '
+      settings:
+      - label: Hot water comfort mode
+        range: off/on
+        point_id: 4560
+        note: Activates hot water comfort heating via the AXC 30 accessory.
+      - label: HW comfort shunt on/off
+        range: off/on
+        point_id: 4576
+        tip: Enables hot water comfort shunt circuit via AXC 30 accessory.
+      - label: HW comfort additional heat
+        range: off/on
+        point_id: 4582
+        tip: Permits additional heat for hot water comfort mode via AXC 30.
+    - id: 7.2.17
+      title: Pool heating (POOL 40 / AXC 30)
+      description: 'Pool heating settings for the POOL 40 accessory (part no. 067 062) or AXC 30 accessory card (part no.
+        067 304) with pool connection. Pool heating uses the heat pump''s charge pump to circulate heating medium through
+        the pool heat exchanger.
+
+        '
+      settings:
+      - label: Pool 1 accessory
+        range: off/on
+        point_id: 4538
+        tip: 'Activate pool 1 heating accessory. Pool heating uses surplus heat pump capacity and has lowest priority.
+
+          '
+      - label: Pool 2 accessory
+        range: off/on
+        point_id: 4537
+        tip: Activate pool 2 heating accessory.
+      - label: Pool influence (Smart Price Adaption)
+        range: 0 – 10
+        point_id: 4794
+        tip: Controls how strongly the Smart Price Adaption affects pool heating. "Off" disables SPA influence on the pool
+          circuit. "Saving" and "Saving PLUS" progressively reduce pool heating during high-price periods.
+      - label: Temperature overcharging pool
+        range: 1 – 50 °C
+        point_id: 14062
+        tip: Extra temperature above pool setpoint added at end of charge cycle.
+      - label: Pool temperature sensor CL12-BT51 (read-only)
+        range: °C
+        point_id: 78
+        note: Current pool water temperature measured at BT51. Read-only status.
+      - label: Pool 1 valve QN19 (read-only)
+        range: Status
+        point_id: 2046
+        note: Status of pool 1 diverter valve QN19. ON means the valve has diverted flow toward the pool heat exchanger.
+      - label: Pool 2 valve QN19 (read-only)
+        range: Status
+        point_id: 2045
+        note: Status of pool 2 diverter valve QN19. ON means the valve has diverted flow toward the pool 2 heat exchanger.
+      - label: Pool 1 pump status (read-only)
+        range: Status
+        point_id: 3144
+        note: Status of pool 1 circulation pump. ON means the pump is running.
+      - label: Pool 2 pump status (read-only)
+        range: Status
+        point_id: 3143
+        note: Status of pool 2 circulation pump. ON means the pump is running.
+      note: 'Pool start/stop temperature and compressor count settings require POOL 40 or AXC 30 accessory and are not present
+        in this firmware. Requires POOL 40 (part no. 067 062) or AXC 30 (part no. 067 304).
+
+        '
+    - id: 7.2.19
+      title: External energy meter
+      description: 'Configuration for an external energy meter connected via Modbus or pulse input. Used for Solar PV integration
+        and Smart Energy Source control. Cross-reference: Smart Energy Source prioritisation that uses the metered solar data
+        → menu 4.6; the control method (price vs CO2) that determines how solar surplus is used → menu 4.6 Smart Energy Source.
+
+        '
+      settings:
+      - label: Mode, energy meter (BE6)
+        range: 0 – 255
+        point_id: 6154
+        note: Operating mode for electricity meter BE6.
+      - label: Mode, energy meter (BE7)
+        range: 0 – 255
+        point_id: 6155
+        note: Operating mode for electricity meter BE7.
+      - label: Mode, energy meter (BE11)
+        range: 0 – 255
+        point_id: 6477
+        note: Operating mode for electricity meter BE11.
+      note: 'Energy per pulse and pulses per kWh settings are configured on the controller display only — not exposed via
+        the local API.
+
+        '
+    - id: 7.2.20
+      title: Groundwater pump
+      description: Groundwater pump accessory settings. Requires groundwater pump accessory.
+      settings:
+      - label: Ground water pump accessory
+        range: off/on
+        point_id: 3891
+        note: Activate groundwater pump accessory.
+      - label: Ground water pump temperature alarm
+        range: off/on
+        point_id: 5479
+        tip: 'Enable temperature alarm for groundwater pump. Fires if water temperature drops below the alarm level.
+
+          '
+      - label: Ground water pump temperature alarm level
+        range: -15 – 20 °C
+        point_id: 5480
+        tip: 'Temperature threshold that triggers the groundwater temperature alarm.
+
+          '
+    - id: 7.2.13
+      title: Exhaust Air Module (S135)
+      description: 'Settings for the S135 exhaust air module accessory. The S135 uses the compressor to extract energy from
+        exhaust air for heating and hot water production.
+
+
+        Charge pump speed is set via the local API. "Hot water during cooling" requires cooling to be active.
+
+        '
+      settings:
+      - label: S135 activated
+        range: off/on
+        point_id: 5184
+        note: Activate S135 exhaust air module.
+      - label: Pump speed (S135)
+        range: 1 – 100 %
+        point_id: 5185
+        tip: Charge pump speed for S135 hot water charging.
+      note: '"Hot water during cooling" (on/off) is configured on the controller display only.
+
+        '
+  - id: '7.3'
+    title: Multi-installation
+    description: 'Settings for multi-unit installations where several heat pumps are connected together under one SMO S40
+      controller.
+
+      '
+    submenus:
+    - id: 7.3.1
+      title: Configure
+      description: 'Search for, activate, or deactivate connected heat pump units in a multi-installation. In systems with
+        multiple outdoor units, each must have a unique address set via a DIP switch in the outdoor unit itself before it
+        will be found here.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.3.2
+      title: Installed heat pumps
+      description: 'Overview and settings for each heat pump unit in the multi-installation.
+
+        '
+      submenus:
+      - id: 7.3.2.1
+        title: Heat pump settings
+        description: 'Individual heat pump settings within the multi-installation. Each connected heat pump can have its own
+          operating limits.
+
+          '
+        settings: []
+        local_api: false
+    - id: 7.3.3
+      title: Name heat pump
+      description: 'Assign a name to each heat pump unit in the multi-installation for identification on the display and in
+        logs.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.3.4
+      title: Docking
+      description: 'Maps how each heat pump unit and component (compressor, diverter valve, hot water charging) is electrically
+        connected and assigned within a multi-installation — not a simple online/offline sequence. The controller remembers
+        a given docking layout and automatically re-applies it the next time the same configuration is detected.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.3.5
+      title: Serial number
+      description: 'Displays the serial number of each connected heat pump unit.
+
+        '
+      settings: []
+      local_api: false
+  - id: '7.4'
+    title: Selectable in/outputs
+    description: 'Assign functions to AUX inputs and relay outputs. Each AUX terminal can be configured for a different purpose
+      — SG Ready, hot water circulation, external contact, alarm output etc.
+
+      '
+    submenus:
+    - id: 7.4.1
+      title: Enter a name BT37.x
+      description: 'Assign custom names to external temperature sensors BT37.x connected to the SMO S40 for identification
+        on the display.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.4.2
+      title: Power limitation at external request
+      description: 'Configure how the SMO S40 responds to an external power limitation request via AUX input (SG Ready / demand
+        response). When an external signal activates the configured AUX input, the system limits compressor and additional
+        heat output.
+
+        '
+      settings:
+      - label: Power limitation activation
+        range: off/on
+        point_id: 32824
+        note: 'Activates external power limitation. The fixed power limit value is set on the controller display.
+
+          '
+      - label: Input AUX1 function
+        range: 0 – 69
+        point_id: 3958
+        note: A value of 0 means this AUX input is not assigned a function.
+      - label: Input AUX2 function
+        range: 0 – 69
+        point_id: 3957
+        note: A value of 0 means this AUX input is not assigned a function.
+      - label: Input AUX3 function
+        range: 0 – 69
+        point_id: 3956
+        note: A value of 0 means this AUX input is not assigned a function.
+      - label: Input AUX4 function
+        range: 0 – 69
+        point_id: 3955
+        note: A value of 0 means this AUX input is not assigned a function.
+      - label: Input AUX5 function
+        range: 0 – 69
+        point_id: 3954
+        note: A value of 0 means this AUX input is not assigned a function.
+      - label: AUX relay (AUX11)
+        range: 0 – 32
+        point_id: 12463
+        note: AUX relay output function assignment.
+      - label: AUX from Modbus
+        range: Function assignment
+        point_id: 22070
+        tip: AUX output function controlled via Modbus register. 0=not used (default).
+      note: 'Register 32825 (power limitation value in kW) was added in firmware 4.10.5 but is not present in this installation''s
+        firmware version.
+
+        '
+  - id: '7.5'
+    title: Tools
+    description: 'Maintenance and service tools.
+
+      '
+    submenus:
+    - id: 7.5.1
+      title: Heat pump test
+      description: 'Force-run individual heat pump components for testing. The most important safety functions remain active.
+
+        '
+      warning: 'Test mode is intended for troubleshooting only. Running components outside normal operating conditions can
+        cause damage or reduced lifespan.
+
+        '
+      submenus:
+      - id: 7.5.1.1
+        title: Test mode
+        description: 'Activate and configure individual component test mode.
+
+          '
+        settings:
+        - label: Heat pump test — silent mode (EB101)
+          range: off/on
+          point_id: 22150
+          note: Runs the heat pump in silent/low-noise test mode
+        - label: Activate forced control
+          range: off/on
+          point_id: 3754
+          warning: Forces components to run regardless of demand — only for troubleshooting
+    - id: 7.5.2
+      title: Underfloor drying function
+      description: 'Automated underfloor heating drying programme for new installations. Runs the supply temperature through
+        up to seven periods to cure screed before normal operation. Cross-reference: menu 1.30.6 Highest supply heat must
+        be set to match the highest drying temperature — if the maximum supply limit is lower than the drying target, the
+        drying programme will not reach the set temperature.
+
+        '
+      warning: 'Only use on newly installed underfloor heating. Running on an existing installation can damage floor coverings.
+        Follow the floor manufacturer''s drying temperature profile.
+
+        '
+      tip: 'Factory drying profile (ramps up then back down to cure screed gradually): period 1 — 2 days at 20°C; period 2
+        — 2 days at 30°C; period 3 — 2 days at 40°C; period 4 — 3 days at 45°C (peak); period 5 — 2 days at 40°C; period 6
+        — 2 days at 30°C; period 7 — 2 days at 20°C. Adjust durations and temperatures below to match your floor manufacturer''s
+        specific drying curve if it differs from this default ramp.
+
+        '
+      settings:
+      - label: Floor drying activated
+        range: off/on
+        point_id: 3846
+        tip: 'Start the floor drying program only on newly laid wet screed. The program runs automatically through all 7 periods.
+          Ensure the system is not interrupted during the program.
+
+          '
+      - label: Period 1 duration
+        range: 0 – 30 days
+        point_id: 3853
+        note: Sets the number of days the system runs at the temperature configured for period 1. Set to 0 to skip this period.
+      - label: Period 1 temperature
+        range: 15 – 70 °C
+        point_id: 3860
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Period 2 duration
+        range: 0 – 30 days
+        point_id: 3852
+        note: Sets the number of days the system runs at the temperature configured for period 2. Set to 0 to skip this period.
+      - label: Period 2 temperature
+        range: 15 – 70 °C
+        point_id: 3859
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Period 3 duration
+        range: 0 – 30 days
+        point_id: 3851
+        note: Sets the number of days the system runs at the temperature configured for period 3. Set to 0 to skip this period.
+      - label: Period 3 temperature
+        range: 15 – 70 °C
+        point_id: 3858
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Period 4 duration
+        range: 0 – 30 days
+        point_id: 3850
+        note: Peak period in the factory drying profile.
+      - label: Period 4 temperature
+        range: 15 – 70 °C
+        point_id: 3857
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type. This is the highest temperature in
+          the factory drying profile.
+      - label: Period 5 duration
+        range: 0 – 30 days
+        point_id: 3849
+        note: Sets the number of days the system runs at the temperature configured for period 5. Set to 0 to skip this period.
+      - label: Period 5 temperature
+        range: 15 – 70 °C
+        point_id: 3856
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Period 6 duration
+        range: 0 – 30 days
+        point_id: 3848
+        note: Sets the number of days the system runs at the temperature configured for period 6. Set to 0 to skip this period.
+      - label: Period 6 temperature
+        range: 15 – 70 °C
+        point_id: 3855
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Period 7 duration
+        range: 0 – 30 days
+        point_id: 3847
+        note: Sets the number of days the system runs at the temperature configured for period 7. Set to 0 to skip this period.
+      - label: Period 7 temperature
+        range: 15 – 70 °C
+        point_id: 3854
+        tip: Do not exceed the floor manufacturer's recommendation for your floor type.
+      - label: Floor drying ongoing time (read-only)
+        range: hours
+        point_id: 3861
+        note: Read-only counter showing how many days the underfloor drying programme has been running. Displayed only while
+          the programme is active.
+    - id: 7.5.3
+      title: Forced control
+      description: 'Force individual components to run for troubleshooting. Safety functions remain active.
+
+        '
+      warning: 'Forced control is intended for troubleshooting only. Using it in any other way may damage installation components.
+
+        '
+      note: 'Activate forced control via the setting in menu 7.5.1.1. Cross-reference: menu 7.5.1 Heat pump test.
+
+        '
+      settings: []
+    - id: 7.5.8
+      title: Screen lock
+      description: 'Activate a PIN lock on the controller display. During activation you are asked to enter a four-digit code.
+        The code is required when deactivating the screen lock, changing the code, starting up the display after inactivity,
+        and restarting/starting up SMO S40.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.5.9
+      title: Modbus TCP/IP
+      description: 'Modbus TCP/IP interface configuration for third-party integration. All Solar PV Modbus registers are configured
+        in menu 7.2.19 External energy meter. Cross-reference: menu 7.2.19.
+
+        '
+      settings:
+      - label: Available power (Solar PV)
+        range: 0 – 65535
+        point_id: 14314
+        note: Read-only — the available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
+          inverter. Any value written here will be overwritten within seconds.
+    - id: 7.5.10
+      title: Change pump model
+      description: 'Select the model of circulation pump connected to the installation. SMO S40 uses the pump model to calculate
+        the correct operating curve and speed control parameters. The standard charge pump for SMO S40 is the CPD 12-25/75
+        (part no. 141 051).
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.5.13
+      title: Third-party integration
+      description: 'Settings for third-party energy management integrations via Modbus, including Solar PV offset control.
+        All registers are in menu 7.2.19 External energy meter. Cross-reference: menu 7.2.19.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.5.12
+      title: Modbus TCP/IP PV inverter
+      description: Configure Modbus TCP/IP connection to Solar PV inverter.
+      settings:
+      - label: Modbus TCP/IP external Solar PV activated
+        range: off/on
+        point_id: 14312
+        tip: 'Enable Modbus TCP/IP connection to Solar PV inverter for excess power management. Requires compatible inverter
+          and network configuration.
+
+          '
+      - label: Include own consumption
+        range: off/on
+        point_id: 14313
+        note: Include own consumption in Solar PV power calculation.
+        tip: 'When enabled, own consumption is subtracted from total PV production to calculate available excess power.
+
+          '
+      - label: Available power
+        range: 0 – 65535 W
+        point_id: 14314
+        note: Read-only — the available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
+          inverter. Any value written here will be overwritten within seconds.
+    - id: 7.5.15
+      title: Local REST API
+      description: 'Enable/disable the local REST API used by this bridge and other local integrations. The REST API runs
+        on HTTPS port 8443. Requires firmware 4.10.5 or later.
+
+        '
+      local_api: false
+      note: 'Local REST API enable/disable is configured on the controller display only.
+
+        '
+      settings: []
+  - id: '7.6'
+    title: Factory setting service
+    description: 'Reset all settings including user settings to factory values. It is also possible to factory reset the connected
+      heat pumps.
+
+      '
+    warning: 'When resetting, the start guide is displayed the next time SMO S40 restarts. All settings will be lost including
+      installer settings. Use menu 4.30.4 if you only want to reset user settings.
+
+      '
+    settings: []
+    local_api: false
+  - id: '7.7'
+    title: Start guide
+    description: 'When SMO S40 is started for the first time the start guide is automatically activated. From this menu you
+      can start it manually for reconfiguration during commissioning or after a factory reset.
+
+      '
+    settings: []
+    local_api: false
+  - id: '7.8'
+    title: Quick start
+    description: 'Quick start the compressors. One of the following demands must exist: heating, hot water, cooling, or pool
+      (pool accessory required).
+
+      '
+    warning: 'Too many quick starts in a short space of time may damage the compressors and their auxiliary equipment.
+
+      '
+    settings: []
+    local_api: false
+  - id: '7.9'
+    title: Logs
+    description: 'System logs for diagnosing faults and reviewing historical events.
+
+      '
+    submenus:
+    - id: 7.9.1
+      title: Change log
+      description: 'Read off previous changes to the control system here. The change log is saved at restart and remains unchanged
+        after a factory reset.
+
+        '
+      note: 'The bridge maintains its own change log via MQTT (nibe/browser/changelog/history) which covers all changes made
+        through both the controller display and HA. The controller display change log is separate and display-only.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.9.2
+      title: Extended alarm log
+      description: 'Detailed alarm log intended for troubleshooting. Contains extended diagnostic information for each alarm
+        event.
+
+        '
+      settings: []
+      local_api: false
+    - id: 7.9.3
+      title: Black box
+      description: 'Export all logs (Change log, Extended alarm log) to a USB memory. Connect a USB memory and select the
+        log(s) to export. Contains high-frequency data captured at the moment of an alarm — compressor speed, temperatures,
+        pressures and other key parameters in the seconds before and after a fault.
+
+        '
+      settings: []
+      local_api: false

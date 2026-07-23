@@ -1,0 +1,39 @@
+# Mutation testing
+mutants/
+.mutmut-cache
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Type checking
+.mypy_cache/
+
+# Test infrastructure
+.hypothesis/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Test reports (generated at runtime into /config/www/)
+nibe_test_report.html
+
+# Local secrets and runtime data — never commit these
+data/
+/data/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build outputs
+*.egg-info/
+dist/
+build/

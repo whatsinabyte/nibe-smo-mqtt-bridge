@@ -1,0 +1,17 @@
+# Runtime dependencies
+-r app/requirements.txt
+
+# Test tooling (subset also installed in the Docker image via requirements-test.txt)
+pytest>=8.0
+pytest-cov>=5.0
+pytest-timeout>=2.3
+hypothesis>=6.0
+websocket-client>=1.6
+
+# Static analysis (development only — never installed in the Docker image)
+ruff>=0.9
+mypy>=1.0
+vulture>=2.0
+bandit>=1.8
+pip-audit>=2.0
+mutmut>=3.0

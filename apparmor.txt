@@ -1,0 +1,76 @@
+#include <tunables/global>
+
+profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
+  #include <abstractions/base>
+
+  # Capabilities required by the bridge
+  capability dac_override,
+  capability setuid,
+  capability setgid,
+  capability net_bind_service,
+
+  # Signal handling — allow clean shutdown from Supervisor
+  signal (send,receive) set=(kill,term,int,hup,cont),
+
+  # Python interpreter and standard library
+  /usr/bin/python3*      rix,
+  /usr/lib/python3*/     r,
+  /usr/lib/python3*/**   mr,
+  /usr/local/lib/python3*/ r,
+  /usr/local/lib/python3*/** mr,
+
+  # System binaries used by Python/Alpine
+  /usr/bin/*             rix,
+  /bin/**                rix,
+  /sbin/**               rix,
+
+  # Standard system files
+  /etc/passwd            r,
+  /etc/group             r,
+  /etc/hostname          r,
+  /etc/hosts             r,
+  /etc/resolv.conf       r,
+  /etc/ssl/**            r,
+  /etc/ca-certificates/** r,
+
+  # Proc — memory usage for stats sensor, process info
+  /proc/meminfo          r,
+  /proc/*/status         r,
+  /proc/*/stat           r,
+  /proc/sys/kernel/ngroups_max r,
+  @{PROC}/sys/kernel/random/boot_id r,
+
+  # Tmp — Python needs this for tempfiles (gzip roundtrip, etc.)
+  /tmp/**                rwk,
+
+  # Application code — read and execute only
+  /app/**                r,
+  /app/*.py              r,
+  /run.sh                rix,
+
+  # Tests — read only (nightly test runner)
+  /tests/**              r,
+
+  # pytest.ini and config.yaml at addon root
+  /pytest.ini            r,
+  /config.yaml           r,
+
+  # Add-on data directory — options.json, flag files, dynamic map
+  /data/**               rw,
+
+  # Mapped config volume — Lovelace card, test reports, secrets.yaml
+  /config/**             rw,
+
+  # Network — outbound TCP only (controller + MQTT broker)
+  network tcp,
+  network udp,
+
+  # Unix sockets — needed by Python's ssl/socket implementation
+  unix (create,connect,send,receive) type=stream,
+
+  # Dev
+  /dev/null              rw,
+  /dev/urandom           r,
+  /dev/random            r,
+  /dev/tty               rw,
+}

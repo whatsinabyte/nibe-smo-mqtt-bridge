@@ -1,0 +1,134 @@
+configuration:
+  nibe_host:
+    name: Controller IP address
+    description: >-
+      IP address or hostname of your Nibe S-series controller on your local
+      network. Assigning a static IP via your router is strongly recommended.
+  nibe_port:
+    name: Controller API port
+    description: >-
+      HTTPS port of the controller's local REST API. The default of 8443 is
+      correct for all S-series products and should not normally need changing.
+  nibe_username:
+    name: Controller API username
+    description: >-
+      Username set in the controller's Service menu (menu 7.5.15). Must match
+      the value configured on the controller exactly.
+  nibe_password:
+    name: Controller API password
+    description: >-
+      Password set in the controller's Service menu (menu 7.5.15). Case-sensitive.
+  mqtt_host:
+    name: MQTT broker hostname
+    description: >-
+      Hostname or IP address of your MQTT broker. The default "core-mosquitto"
+      works with the official Mosquitto add-on. Use an IP address or hostname
+      for any other broker.
+  mqtt_port:
+    name: MQTT broker port
+    description: >-
+      TCP port of your MQTT broker. The default of 1883 is the standard
+      unencrypted MQTT port. If you enable "MQTT TLS" below, change this
+      to 8883 (the standard encrypted MQTT port used by Mosquitto).
+  mqtt_username:
+    name: MQTT username
+    description: >-
+      Username for MQTT broker authentication. Leave blank if your broker does
+      not require authentication.
+  mqtt_password:
+    name: MQTT password
+    description: >-
+      Password for MQTT broker authentication. Leave blank if your broker does
+      not require authentication.
+  device_name:
+    name: Device name
+    description: >-
+      How the controller device appears in Home Assistant. Defaults to
+      "Nibe SMO S40" but you can set this to match your actual hardware
+      (e.g. "Nibe S1155" or "Nibe VVM S320").
+  poll_interval:
+    name: Poll interval
+    description: >-
+      How often to fetch all data points from the controller, in seconds.
+      30 seconds is recommended. The controller is an embedded device — its
+      REST API is secondary to its primary job of managing your heat pump.
+      A restart is required after changing this setting.
+  mode:
+    name: Entity mode
+    description: >-
+      Which set of entities the bridge exposes: "essential" covers core
+      temperatures, hot water state, energy totals, and basic setpoints —
+      a good starting point for any installation. "monitoring" adds
+      supply/return lines, compressor state, and efficiency indicators.
+      "advanced" adds the full refrigerant circuit and tuning registers.
+      "menus" exposes every point needed for the Nibe Menus dashboard and
+      builds that dashboard. "all" exposes every discovered point; "none"
+      exposes nothing until you enable entities manually. This is applied
+      at startup — changing it requires an add-on restart, and switching
+      to a different mode disables any entities not in the newly selected
+      set — any entities you enabled manually via the Entity Manager card
+      are also pruned when the mode changes, but preserved across
+      restarts with the same mode.
+      "essential" is the recommended starting point.
+  log_level:
+    name: Log level
+    description: >-
+      Verbosity of the add-on log. "info" is recommended for normal use.
+      Use "debug" to diagnose connection or entity issues — it produces
+      a large volume of output and should be switched back to "info" afterwards.
+  debug_mode:
+    name: Debug mode
+    description: >-
+      Enables the test suite button and result sensor on the Management device.
+      Useful for running the nightly test suite without setting the log level
+      to debug. When log_level is "debug" the test suite entities are also
+      shown regardless of this setting.
+  api_failure_threshold:
+    name: API failure threshold
+    description: >-
+      Number of consecutive failed polls before a persistent notification
+      appears in the HA notification bell. The default of 3 means three
+      failures in a row (90 seconds at the default interval) before alerting.
+      Raise this on an unstable network to avoid false positives.
+  changelog_retention_days:
+    name: Changelog retention (days)
+    description: >-
+      How many days to keep entries in the Entity Manager changelog before
+      they are pruned. Entries older than this are removed on each bridge
+      restart. The default of 90 days suits most installations.
+  remove_frontend:
+    name: Remove frontend on shutdown
+    description: >-
+      Set to true before stopping the add-on to automatically remove the
+      Nibe Bridge dashboard, Lovelace resource registration, card file, and
+      all retained MQTT messages on the next clean shutdown. Only use this
+      when uninstalling. Normal restarts are not affected. See the
+      documentation for the full uninstall procedure.
+  nibe_ca_cert:
+    name: Nibe controller CA certificate path
+    description: >-
+      Optional. Absolute path to a PEM-format CA certificate file used to
+      verify the Nibe controller's HTTPS certificate. When set, full TLS
+      chain verification and hostname checking are enabled for all API calls
+      to the controller. Leave blank to accept the controller's built-in
+      self-signed certificate without verification — this is the default
+      and is acceptable on a trusted home network, but means a
+      man-in-the-middle attack on your LAN could intercept controller traffic.
+      Example: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Enable TLS encryption for all traffic between the bridge and the MQTT
+      broker. Protects your MQTT credentials and all entity command payloads
+      from being read by other devices on the local network. Requires your
+      broker to be configured for TLS — change "MQTT broker port" to 8883
+      if you are using the Mosquitto add-on. Disabled by default.
+  mqtt_ca_cert:
+    name: MQTT broker CA certificate path
+    description: >-
+      Optional. Only used when "MQTT TLS" is enabled. Absolute path to a
+      PEM-format CA certificate file used to verify the broker's TLS
+      certificate. Leave blank to use the system CA store, which is correct
+      for brokers with a certificate signed by a public CA. Set this if
+      your broker uses a self-signed or privately-signed certificate.
+      Example: /ssl/mqtt-ca.pem
