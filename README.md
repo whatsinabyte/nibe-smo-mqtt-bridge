@@ -38,7 +38,7 @@ Accessories connected to the controller's internal bus appear automatically — 
 - **Automatic entity discovery** — the controller describes its own data points; no register maps to maintain
 - **Dynamic data points** — entities appear and disappear automatically as features activate (e.g. manual override registers appear when you switch to manual mode)
 - **Nibe Menus dashboard** — a Lovelace dashboard mirroring the full Nibe installer menu hierarchy, rebuilt automatically on every startup
-![Nibe Mode Based menus](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-menus-dashboard.png)
+![Nibe Memus Dashboard](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-menus-dashboard.png)
 - **Entity Manager card** — a companion Lovelace card with search, filtering, sorting, enable/disable, and full firmware metadata per entity; automatically installed and provisioned on first start
 ![Nibe Entity Manager](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-entity-manager-card.png)
 - **Bidirectional control** — read sensor values and write settings back to the controller
