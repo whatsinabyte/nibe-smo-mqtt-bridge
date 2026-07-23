@@ -2,7 +2,7 @@ name: "Nibe S-Series MQTT Bridge"
 version: "1.0.0"
 slug: "nibe_s_series"
 description: "MQTT bridge for Nibe S-series heat pump controllers. Exposes all data points as native Home Assistant entities via MQTT auto-discovery."
-url: "https://github.com/whatsinabyte/nibe-addon"
+url: "https://github.com/whatsinabyte/nibe-smo-mqtt-bridge"
 stage: experimental
 arch:
   - aarch64
