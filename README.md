@@ -5,6 +5,7 @@
 ![Version](https://img.shields.io/github/v/release/whatsinabyte/nibe-smo-mqtt-bridge)
 ![Project Stage](https://img.shields.io/badge/project%20stage-experimental-yellow.svg)
 ![Maintained](https://img.shields.io/maintenance/yes/2026)
+![GitHub Discussions](https://img.shields.io/github/discussions/whatsinabyte/nibe-smo-mqtt-bridge)
 
 Connects your Nibe S-series heat pump controller to Home Assistant via MQTT — no cloud account, no hardcoded register maps, no manual configuration of data points.
 
@@ -16,8 +17,6 @@ The bridge creates two devices in Home Assistant under **Settings → Devices & 
 
 - **Your controller device** — all heat pump sensors, setpoints, and controls
 - **Management device** — bridge controls: Smart Mode, Aid Mode, alarm monitoring, and diagnostics
-
-![Dynamic points lifecycle](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-bridge-simple.svg)
 
 > ⚠️ Writable entities send commands directly to the heat pump controller. Treat unfamiliar registers with care.
 
@@ -41,15 +40,12 @@ Accessories connected to the controller's internal bus appear automatically — 
 - **Automatic entity discovery** — the controller describes its own data points; no register maps to maintain
 - **Dynamic data points** — entities appear and disappear automatically as features activate (e.g. manual override registers appear when you switch to manual mode)
 - **Nibe Menus dashboard** — a Lovelace dashboard mirroring the full Nibe installer menu hierarchy, rebuilt automatically on every startup
-![Nibe Memus Dashboard](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-menus-dashboard.png)
 - **Entity Manager card** — a companion Lovelace card with search, filtering, sorting, enable/disable, and full firmware metadata per entity; automatically installed and provisioned on first start
-![Nibe Entity Manager](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-entity-manager-card.png)
 - **Bidirectional control** — read sensor values and write settings back to the controller
 - **Mode-based entity management** — `essential`, `monitoring`, `advanced`, `menus`, `all`, or `none`; start small and expand as you explore
 - **Active alarm monitoring** — faults appear in HA within 10 seconds via a dedicated fast poll
 - **Persistent notifications** — active alarms, API outages, write failures, and dynamic point changes all surface in the HA notification bell
 - **Management diagnostics** — API reachability, fetch duration, uptime, and entity counts visible as HA entities
-![Nibe Management diagnostics](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-management-device.png)
 
 ## Compatible hardware
 
@@ -65,8 +61,7 @@ Works with any Nibe S-series controller running **minimum firmware 4.5.7** with 
 
 ## Installation
 
-1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
-   and add: `https://github.com/whatsinabyte/nibe-smo-mqtt-bridge`
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add: `https://github.com/whatsinabyte/nibe-smo-mqtt-bridge`
 2. Install the **Nibe S-Series MQTT Bridge** add-on
 3. Enable the local API on your controller — **Menu 7.5.15** on all S-series products
 4. Configure the add-on with your controller's IP address and API credentials
@@ -85,6 +80,13 @@ On first start the bridge automatically copies the companion card to `/config/ww
 
 - [Documentation](DOCS.md)
 - [Security policy](SECURITY.md)
+
+## Developer documentation
+
+- [Architecture](../ARCHITECTURE.md) — system design, threading model, module reference
+- [Contributing](../CONTRIBUTING.md) — dev environment, test suite, coding conventions
+- [Card MQTT API](../docs/card-api.md) — MQTT protocol between bridge and Entity Manager card
+- [Menu structure schema](../docs/menu-structure-schema.md) — how to add or edit menus in `menu_structure.yaml`
 
 ## License
 
