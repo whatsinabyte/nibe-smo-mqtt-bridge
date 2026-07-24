@@ -4128,6 +4128,48 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
         # debug_mode adds at least one extra entity
         self.assertGreaterEqual(count_debug, count_normal)
 
+    def test_non_debug_mode_unpublishes_debug_entities(self):
+        """When debug_mode=False, empty retained payloads are sent to the
+        three debug-only discovery topics so HA removes those entities."""
+        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        self.pub.publish_management_discovery('essential', debug_mode=False)
+        published = {
+            call.args[0]: call.args[1]
+            for call in self.mqtt.publish.call_args_list
+            if call.args
+        }
+        debug_topics = [
+            MgmtTopic.FLUSH_MAP_CONFIG,
+            MgmtTopic.RUN_TESTS_CONFIG,
+            f"{_HA_BASE}/sensor/nibe_test_suite_result/config",
+        ]
+        for topic in debug_topics:
+            self.assertIn(topic, published,
+                          f"Expected unpublish call for debug topic {topic}")
+            self.assertEqual(published[topic], "",
+                             f"Expected empty payload for debug topic {topic}")
+
+    def test_debug_mode_does_not_unpublish_debug_entities(self):
+        """When debug_mode=True, debug entity topics are published with
+        real config payloads — not empty strings."""
+        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        published = {
+            call.args[0]: call.args[1]
+            for call in self.mqtt.publish.call_args_list
+            if call.args
+        }
+        debug_topics = [
+            MgmtTopic.FLUSH_MAP_CONFIG,
+            MgmtTopic.RUN_TESTS_CONFIG,
+            f"{_HA_BASE}/sensor/nibe_test_suite_result/config",
+        ]
+        for topic in debug_topics:
+            self.assertIn(topic, published,
+                          f"Expected discovery publish for debug topic {topic}")
+            self.assertNotEqual(published[topic], "",
+                                f"Expected non-empty payload for debug topic {topic}")
+
 
 # ===========================================================================
 # 73. MqttDiscoveryPublisher — browser and management topic publishers
@@ -4430,16 +4472,24 @@ class TestPublishManagementDiscovery(unittest.TestCase):
         self.assertIn(self.MgmtTopic.API_OK_CONFIG, self._topics_published())
 
     def test_flush_map_not_published_without_debug_mode(self):
+        """Without debug_mode, FLUSH_MAP_CONFIG is sent with an empty payload
+        to unpublish the entity from HA — not omitted entirely."""
         self.pub.publish_management_discovery('essential', debug_mode=False)
-        self.assertNotIn(self.MgmtTopic.FLUSH_MAP_CONFIG, self._topics_published())
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list if c.args}
+        self.assertIn(self.MgmtTopic.FLUSH_MAP_CONFIG, published)
+        self.assertEqual(published[self.MgmtTopic.FLUSH_MAP_CONFIG], "")
 
     def test_flush_map_published_in_debug_mode(self):
         self.pub.publish_management_discovery('essential', debug_mode=True)
         self.assertIn(self.MgmtTopic.FLUSH_MAP_CONFIG, self._topics_published())
 
     def test_run_tests_button_not_published_without_debug_mode(self):
+        """Without debug_mode, RUN_TESTS_CONFIG is sent with an empty payload
+        to unpublish the entity from HA — not omitted entirely."""
         self.pub.publish_management_discovery('essential', debug_mode=False)
-        self.assertNotIn(self.MgmtTopic.RUN_TESTS_CONFIG, self._topics_published())
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list if c.args}
+        self.assertIn(self.MgmtTopic.RUN_TESTS_CONFIG, published)
+        self.assertEqual(published[self.MgmtTopic.RUN_TESTS_CONFIG], "")
 
     def test_run_tests_button_published_in_debug_mode(self):
         self.pub.publish_management_discovery('essential', debug_mode=True)

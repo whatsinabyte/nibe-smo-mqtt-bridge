@@ -1172,6 +1172,12 @@ class MqttDiscoveryPublisher:
                 "device": mgmt_device, "icon": "mdi:test-tube",
                 "entity_category": "diagnostic",
             })
+        else:
+            # Unpublish debug-only entities so they disappear from HA when
+            # the add-on is not running in debug log level.
+            self.mqtt.publish(MgmtTopic.FLUSH_MAP_CONFIG, "", retain=True)
+            self.mqtt.publish(MgmtTopic.RUN_TESTS_CONFIG, "", retain=True)
+            self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", "", retain=True)
 
         # Initial sensor states
         self.mqtt.publish(MgmtTopic.UPTIME_STATE,      "0",    retain=True)
