@@ -83,10 +83,10 @@ On first start the bridge automatically copies the companion card to `/config/ww
 
 ## Developer documentation
 
-- [Architecture](../ARCHITECTURE.md) — system design, threading model, module reference
-- [Contributing](../CONTRIBUTING.md) — dev environment, test suite, coding conventions
-- [Card MQTT API](../docs/card-api.md) — MQTT protocol between bridge and Entity Manager card
-- [Menu structure schema](../docs/menu-structure-schema.md) — how to add or edit menus in `menu_structure.yaml`
+- [Architecture](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/ARCHITECTURE.md) — system design, threading model, module reference
+- [Contributing](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/CONTRIBUTING.md) — dev environment, test suite, coding conventions
+- [Card MQTT API](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/card-api.md) — MQTT protocol between bridge and Entity Manager card
+- [Menu structure schema](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md) — how to add or edit menus in `menu_structure.yaml`
 
 ## License
 

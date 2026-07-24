@@ -4,7 +4,7 @@ This document describes the MQTT protocol between the Nibe S-Series MQTT Bridge 
 
 All topics in this document are fixed strings — none are per-entity or dynamically constructed. Per-entity HA discovery topics (`homeassistant/*/nibe_*/config`) are standard HA MQTT discovery and are not covered here.
 
-For the source-level description of topic ownership and the publisher/handler modules, see [ARCHITECTURE.md — section 4.5](../ARCHITECTURE.md#45-nibe_mqtt_publisherpy--mqttdiscoverypublisher) (topic construction) and [section 4.7](../ARCHITECTURE.md#47-nibe_ha_integrationpy--ha-integration-layer) (management command handling).
+For the source-level description of topic ownership and the publisher/handler modules, see [ARCHITECTURE.md — section 4.5](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/ARCHITECTURE.md#45-nibe_mqtt_publisherpy--mqttdiscoverypublisher) (topic construction) and [section 4.7](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/ARCHITECTURE.md#47-nibe_ha_integrationpy--ha-integration-layer) (management command handling).
 
 ---
 
