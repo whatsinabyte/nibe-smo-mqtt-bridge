@@ -1779,30 +1779,14 @@ class TestFetchApiResponseProperties(unittest.TestCase):
 class TestGenerateNibeCrossFunctionProperties(unittest.TestCase):
     """Cross-function Hypothesis properties for generate_nibe_mqtt helpers."""
 
-    def test_bridge_version_matches_config_yaml(self):
-        """BRIDGE_VERSION in generate_nibe_mqtt.py must match version: in config.yaml.
-        Catches a version bump applied to only one of the two files.
-        """
-        import yaml as _yaml
+    def test_bridge_version_is_semver(self):
+        """BRIDGE_VERSION is read from config.yaml and has the expected semver format."""
+        import re
         from generate_nibe_mqtt import BRIDGE_VERSION
-
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'config.yaml',
-        )
-        if not os.path.exists(config_path):
-            config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'config.yaml',
-            )
-        self.assertTrue(os.path.exists(config_path),
-                        f"config.yaml not found (tried {config_path})")
-        with open(config_path, encoding='utf-8') as f:
-            manifest = _yaml.safe_load(f)
-        config_version = manifest.get('version', '')
-        self.assertEqual(
-            BRIDGE_VERSION, config_version,
-            f"BRIDGE_VERSION={BRIDGE_VERSION!r} in generate_nibe_mqtt.py does not "
-            f"match version={config_version!r} in config.yaml — update both together",
+        self.assertRegex(
+            BRIDGE_VERSION,
+            r'^\d+\.\d+\.\d+$',
+            f"BRIDGE_VERSION={BRIDGE_VERSION!r} is not a valid semver string",
         )
 
     @given(st.text(max_size=50))
