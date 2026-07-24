@@ -52,6 +52,7 @@ import datetime
 import json
 import logging
 import os
+import pathlib
 import re
 import signal
 import ssl
@@ -96,11 +97,20 @@ from nibe_lovelace        import (
 )
 
 # ============================================================================
-# BRIDGE VERSION
+# BRIDGE VERSION — read from config.yaml (single source of truth)
 # ============================================================================
-BRIDGE_VERSION = "1.0.1"
-# Keep in sync with version: in config.yaml — test_bridge_version_matches_config_yaml
-# in the test suite catches any mismatch automatically.
+def _read_bridge_version() -> str:
+    """Read version from config.yaml at the repo root (one level above app/)."""
+    for candidate in (
+        pathlib.Path(__file__).parent.parent / "config.yaml",  # real repo layout
+        pathlib.Path("/") / "config.yaml",                     # Docker image (COPY'd to /)
+    ):
+        if candidate.exists():
+            with open(candidate) as _f:
+                return yaml.safe_load(_f)["version"]
+    raise FileNotFoundError("config.yaml not found — cannot determine bridge version")
+
+BRIDGE_VERSION = _read_bridge_version()
 
 # ============================================================================
 # CONFIGURATION
