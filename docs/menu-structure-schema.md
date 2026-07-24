@@ -1,6 +1,6 @@
 # menu_structure.yaml — Schema reference
 
-`menu_structure.yaml` drives the entire **Nibe Menus** Lovelace dashboard. For a technical description of how the bridge reads and renders this file into Lovelace dashboard views, see [ARCHITECTURE.md — section 4.8](../ARCHITECTURE.md#48-nibe_lovelacepy--lovelace-provisioning). The bridge reads this file at startup and on every dashboard regeneration, building one dashboard view per top-level menu. Adding a menu, correcting a setting, or adding a tip or warning requires only editing this file — no Python changes needed.
+`menu_structure.yaml` drives the entire **Nibe Menus** Lovelace dashboard. For a technical description of how the bridge reads and renders this file into Lovelace dashboard views, see [ARCHITECTURE.md — section 4.8](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/ARCHITECTURE.md#48-nibe_lovelacepy--lovelace-provisioning). The bridge reads this file at startup and on every dashboard regeneration, building one dashboard view per top-level menu. Adding a menu, correcting a setting, or adding a tip or warning requires only editing this file — no Python changes needed.
 
 ---
 

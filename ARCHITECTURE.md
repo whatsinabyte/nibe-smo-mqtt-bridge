@@ -1,6 +1,6 @@
 # Architecture — Nibe S-Series MQTT Bridge
 
-Developer reference. Not user documentation — see [DOCS.md](nibe_s_series/DOCS.md) for installation and configuration.
+Developer reference. Not user documentation — see [DOCS.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/nibe_s_series/DOCS.md) for installation and configuration.
 
 ---
 
@@ -121,7 +121,7 @@ The largest module (~3,250 lines) and the core of the bridge. Owns the full life
 
 **What this module does not do:** no raw HTTP, no MQTT topic string construction, no HA registry watching, no notification sending.
 
-The MQTT protocol between the bridge and the Entity Manager card is documented in [`docs/card-api.md`](docs/card-api.md).
+The MQTT protocol between the bridge and the Entity Manager card is documented in [`docs/card-api.md`](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/card-api.md).
 
 ---
 
@@ -137,7 +137,7 @@ Single source of truth for all MQTT topic strings and discovery config payloads.
 
 **What this module does not do:** no HTTP, no entity lifecycle tracking, no threading.
 
-For the full topic list and JSON schemas for every topic this module publishes, see [`docs/card-api.md`](docs/card-api.md).
+For the full topic list and JSON schemas for every topic this module publishes, see [`docs/card-api.md`](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/card-api.md).
 
 ---
 

@@ -36,7 +36,7 @@ nibe_s_series/          ← add-on content (installed into HA)
   app/                  ← all Python source modules
   tests/                ← test suite (10 files + conftest.py)
   translations/         ← en.yaml, nl.yaml
-  app/menu_structure.yaml ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](docs/menu-structure-schema.md))
+  app/menu_structure.yaml ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
   config.yaml           ← add-on manifest
   Dockerfile
   run.sh
@@ -215,7 +215,7 @@ Fix all findings before submitting. If a finding is a false positive, add a `# n
 
 For significant changes — new features, architectural changes, new entity type support — open a GitHub Discussion first to align on approach before writing code.
 
-For changes to `nibe-entity-manager-card.js`, consult [`docs/card-api.md`](docs/card-api.md) for the full MQTT protocol the card depends on.
+For changes to `nibe-entity-manager-card.js`, consult [`docs/card-api.md`](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/card-api.md) for the full MQTT protocol the card depends on.
 
 ---
 
