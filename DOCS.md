@@ -8,14 +8,14 @@ Connects your Nibe S-series heat pump controller to Home Assistant via MQTT. Tem
 
 1. **Enable the local REST API** on your controller — go to **Menu 7.5.15** on the controller itself. Set a username and password. If this menu is not visible, contact your installer.
 2. **Note the controller's IP address** — assign a static IP via your router to prevent it changing after a reboot.
-3. **Install the Mosquitto broker** add-on from the HA Add-on Store and configure the **MQTT integration** under Settings → Devices & Services → Add Integration → MQTT.
-4. **Install this add-on** from the Add-on Store.
-5. **Configure the required fields** under the add-on Configuration tab:
+3. **Install the Mosquitto broker** app from the HA App Store and configure the **MQTT integration** under Settings → Devices & Services → Add Integration → MQTT.
+4. **Install this app** from the App Store.
+5. **Configure the required fields** under the app Configuration tab:
    - `nibe_host` — IP address of your controller
    - `nibe_username` and `nibe_password` — the credentials you set in step 1
-   - If you are using the official **Mosquitto broker** add-on, the bridge auto-discovers its hostname, port, and credentials — you do not need to fill in the MQTT fields. If you use a different MQTT broker, enter `mqtt_host`, `mqtt_port`, `mqtt_username`, and `mqtt_password` manually.
+   - If you are using the official **Mosquitto broker** app, the bridge auto-discovers its hostname, port, and credentials — you do not need to fill in the MQTT fields. If you use a different MQTT broker, enter `mqtt_host`, `mqtt_port`, `mqtt_username`, and `mqtt_password` manually.
    - Leave everything else at the default to start
-6. **Start the add-on.** The bridge fetches all available data points, creates two devices in HA (**your controller** and **Management**), and provisions the **Nibe Bridge** dashboard automatically.
+6. **Start the app.** The bridge fetches all available data points, creates two devices in HA (**your controller** and **Management**), and provisions the **Nibe Bridge** dashboard automatically.
 7. **Open the Nibe Bridge dashboard** in the HA sidebar. Use the Entity Manager card to browse all available data points and enable the ones you want.
 
 > 💡 Start with the default `essential` mode — it enables the most useful sensors immediately. Use the Entity Manager card to add more as you explore.
@@ -103,7 +103,7 @@ These are the only fields you need to get started.
 | `log_level` | Log verbosity. `debug` also unlocks diagnostic entities on the Management device. Restart required. | `info` |
 | `api_failure_threshold` | Consecutive failed polls before an HA notification appears | `3` |
 | `changelog_retention_days` | Days to retain Entity Manager changelog entries. Minimum 50 entries always kept. | `90` |
-| `remove_frontend` | Set to `true` before stopping the add-on to clean up Lovelace resources on shutdown. See [Uninstalling](#uninstalling). | `false` |
+| `remove_frontend` | Set to `true` before stopping the app to clean up Lovelace resources on shutdown. See [Uninstalling](#uninstalling). | `false` |
 | `mqtt_tls` | Enable TLS for broker traffic. Requires broker to be configured for TLS. | `false` |
 | `mqtt_ca_cert` | Path to PEM CA certificate for the MQTT broker. Only needed for self-signed broker certificates. Example: `/ssl/ca.pem` | — |
 | `nibe_ca_cert` | Path to PEM CA certificate for the Nibe controller. Leave blank to accept the controller's built-in self-signed certificate. | — |
@@ -128,7 +128,7 @@ Alarms are polled every 10 seconds, regardless of `poll_interval` — an alarm c
 
 ### Credentials via secrets.yaml
 
-As an alternative to entering credentials in the add-on UI, you can supply them via `secrets.yaml` — useful if you share your HA configuration in a repository.
+As an alternative to entering credentials in the app UI, you can supply them via `secrets.yaml` — useful if you share your HA configuration in a repository.
 
 **Nibe API credentials** — supply a pre-encoded Basic auth token:
 
@@ -154,13 +154,13 @@ mqtt_user: "my_mqtt_user"
 mqtt_password: "my_mqtt_password"
 ```
 
-The bridge checks `/config/secrets.yaml` and `/homeassistant/secrets.yaml` automatically. Values found here take priority over the add-on configuration UI.
+The bridge checks `/config/secrets.yaml` and `/homeassistant/secrets.yaml` automatically. Values found here take priority over the app configuration UI.
 
 > ℹ️ Passwords containing special characters including `#` are supported when the value is quoted in `secrets.yaml`.
 
 ### Changing credentials
 
-Credential changes — whether in the add-on UI or in `secrets.yaml` — take effect on the next add-on restart. There is no live re-authentication flow. If the bridge is running and credentials change on the controller side, the bridge will log an authentication error and stop fetching data. Restart the add-on after updating the credentials in the configuration.
+Credential changes — whether in the app UI or in `secrets.yaml` — take effect on the next app restart. There is no live re-authentication flow. If the bridge is running and credentials change on the controller side, the bridge will log an authentication error and stop fetching data. Restart the app after updating the credentials in the configuration.
 
 ### TLS configuration
 
@@ -209,7 +209,7 @@ All entity discovery configs and state values are published to the MQTT broker a
 
 After the bridge starts, there is a window of approximately 30 seconds before the first poll completes and all entity states are populated. During this window, newly registered entities may appear as `unavailable` in HA. This is normal — they will update on the first successful poll.
 
-If entities remain `unavailable` for more than a minute, check the add-on log and the **API Reachable** binary sensor on the Management device.
+If entities remain `unavailable` for more than a minute, check the app log and the **API Reachable** binary sensor on the Management device.
 
 ### No historical backfill
 
@@ -219,7 +219,7 @@ The bridge only provides current values. If the bridge is stopped for any period
 
 ## Entity Modes
 
-The `mode` option controls which data points are enabled as HA entities at startup. Changing mode requires an add-on restart — it disables entities not in the new set, including any extras you enabled manually via the Entity Manager card.
+The `mode` option controls which data points are enabled as HA entities at startup. Changing mode requires an app restart — it disables entities not in the new set, including any extras you enabled manually via the Entity Manager card.
 
 | Mode | Description |
 |---|---|
@@ -270,7 +270,7 @@ Entities fall into two categories:
 
 Some data points only appear when a related feature is active. These **dynamic data points** are added and removed automatically as the controller's state changes.
 
-![Dynamic points lifecycle](https://raw.githubusercontent.com/whatsinabyte/nibe-smo-mqtt-bridge/main/docs/nibe-dynamic-points.svg))
+![Dynamic points lifecycle](/local/nibe-dynamic-points.svg)
 
 **First-time discovery** — when you flip a switch for the first time, the bridge runs a one-time learning scan:
 - It watches for new data points to appear for up to 90 seconds after your write
@@ -450,9 +450,9 @@ The bridge exposes over a thousand data points. The companion Lovelace card is t
 
 On every startup the bridge automatically copies the card file, registers it as a Lovelace resource, and creates the **Nibe Bridge** dashboard. The dashboard is created once and never overwritten — it is yours to customise. In `menus` mode, a **Nibe Menus** dashboard is also created and rebuilt on every startup to reflect your current enabled entities.
 
-> ℹ️ The card file in `/config/www/` is replaced on every add-on start. Do not edit it directly.
+> ℹ️ The card file in `/config/www/` is replaced on every app start. Do not edit it directly.
 
-If you manually delete the Nibe Bridge dashboard, restart the add-on — it recreates missing dashboards automatically.
+If you manually delete the Nibe Bridge dashboard, restart the app — it recreates missing dashboards automatically.
 
 ### Features
 
@@ -473,9 +473,9 @@ This makes `menus` mode the natural choice for users who already know the Nibe c
 
 A few things to know about the Nibe Menus dashboard:
 
-- **It is rebuilt on every startup** — unlike the Nibe Bridge dashboard which is created once and left alone, the Nibe Menus dashboard is regenerated each time the add-on starts to reflect which entities you currently have enabled. Do not customise its layout — changes will be overwritten on the next restart.
+- **It is rebuilt on every startup** — unlike the Nibe Bridge dashboard which is created once and left alone, the Nibe Menus dashboard is regenerated each time the app starts to reflect which entities you currently have enabled. Do not customise its layout — changes will be overwritten on the next restart.
 - **Dynamic points slot in automatically** — when a controlling switch exposes new registers, they appear in the correct menu location in the dashboard. Reload the dashboard in your browser when you see the "Nibe Menus — Dashboard updated" notification.
-- **Use Regenerate Dashboard** on the Management device to rebuild it manually without restarting the add-on — useful after enabling or disabling a batch of entities.
+- **Use Regenerate Dashboard** on the Management device to rebuild it manually without restarting the app — useful after enabling or disabling a batch of entities.
 - **Switching away from `menus` mode** removes the Nibe Menus dashboard automatically on the next restart.
 
 
@@ -532,7 +532,7 @@ Click **Delete** next to a snapshot and confirm. Deleted snapshots cannot be rec
 
 ### Persistence
 
-Snapshots are stored in `/data/snapshots.json` inside the add-on's data volume. They survive add-on restarts, firmware updates, and MQTT broker restarts. They are included in HA backups. They are removed only if the add-on is uninstalled with **Remove frontend** enabled or if you delete them manually.
+Snapshots are stored in `/data/snapshots.json` inside the app's data volume. They survive app restarts, firmware updates, and MQTT broker restarts. They are included in HA backups. They are removed only if the app is uninstalled with **Remove frontend** enabled or if you delete them manually.
 
 ---
 
@@ -622,7 +622,7 @@ These are design constraints, not bugs. Understanding them helps set the right e
 
 **Dynamic entities re-enable themselves** — dynamic data points are firmware-controlled. If you disable a dynamic entity via the HA settings cog, the bridge detects this and re-enables it, because the firmware continues to report that point. To stop a dynamic entity from appearing, change the register value that controls it (e.g. switch the controlling switch off). See [Dynamic data points](#dynamic-data-points).
 
-**One controller per bridge instance** — the bridge connects to one Nibe controller. To monitor two or more controllers, install the add-on multiple times — one instance per controller. Each instance connects to a different IP address and runs independently.
+**One controller per bridge instance** — the bridge connects to one Nibe controller. To monitor two or more controllers, install the app multiple times — one instance per controller. Each instance connects to a different IP address and runs independently.
 
 > ⚠️ **Choose distinct `device_name` values before starting.** The bridge derives a unique internal identifier from the controller's serial number, so there is no risk of MQTT topic collision between instances. However, all Nibe controllers expose the same ~1,200 data points with identical names — "Outdoor temperature", "Supply temperature", "Degree minutes", and so on. If you leave both instances at the default device name, HA will suffix the second instance's entities with `_2`, `_3`, and so on to avoid collisions. The result is two sets of identically-named entities that are impossible to tell apart at a glance.
 >
@@ -632,7 +632,7 @@ These are design constraints, not bugs. Understanding them helps set the right e
 
 **No write rate limiting** — the bridge does not throttle write commands. Rapidly writing to the same register in an automation loop is technically possible but not recommended — the controller may queue or reject rapid writes.
 
-**Restart required for configuration changes** — changing `nibe_host`, credentials, `poll_interval`, `mode`, or `log_level` requires an add-on restart. There is no live reconfiguration path.
+**Restart required for configuration changes** — changing `nibe_host`, credentials, `poll_interval`, `mode`, or `log_level` requires an app restart. There is no live reconfiguration path.
 
 **English entity names only** — the Nibe REST API provides entity names in English regardless of the language setting on the controller itself. Entity names cannot currently be translated.
 
@@ -641,7 +641,7 @@ These are design constraints, not bugs. Understanding them helps set the right e
 ## Troubleshooting
 
 **No entities appear after starting**
-The MQTT integration must be configured in HA (Settings → Devices & Services → Add Integration → MQTT) and connected to the same broker as this add-on.
+The MQTT integration must be configured in HA (Settings → Devices & Services → Add Integration → MQTT) and connected to the same broker as this app.
 
 **Cannot connect to Nibe API**
 - Verify `nibe_host` is the correct IP address of your controller
@@ -652,12 +652,12 @@ The MQTT integration must be configured in HA (Settings → Devices & Services �
 `nibe_username` and `nibe_password` must match the local API settings exactly. Passwords are case-sensitive.
 
 **Cannot connect to MQTT broker**
-- The Mosquitto add-on must be installed and running before this add-on starts
-- `core-mosquitto` only works with the official Mosquitto add-on — use an IP address or hostname for other brokers
+- The Mosquitto app must be installed and running before this app starts
+- `core-mosquitto` only works with the official Mosquitto app — use an IP address or hostname for other brokers
 - If authentication is enabled on the broker, fill in `mqtt_username` and `mqtt_password`
 
 **Entities unavailable after restart**
-Normal for the first 30 seconds while the bridge fetches current values. If still unavailable after a minute, check the add-on log for errors.
+Normal for the first 30 seconds while the bridge fetches current values. If still unavailable after a minute, check the app log for errors.
 
 **Aid Mode on but heat pump appears to be working**
 An installer may have set it manually. Turn it off directly from the **Aid Mode** switch on the Management device, or check the controller itself.
@@ -669,7 +669,7 @@ The bridge is running but cannot reach the Nibe REST API. Check that the control
 A persistent notification has appeared in the HA notification bell with full alarm detail. Use the **Reset Alarms** button to clear alarms once the underlying issue is resolved. The notification dismisses automatically when all alarms clear.
 
 **Entity Manager card not appearing**
-Try reloading browser resources: **Settings → Dashboard → ⠇ → Reload resources**. If the dashboard itself is missing, restart the add-on — it recreates missing dashboards automatically.
+Try reloading browser resources: **Settings → Dashboard → ⠇ → Reload resources**. If the dashboard itself is missing, restart the app — it recreates missing dashboards automatically.
 
 **A number entity shows an empty state or cannot be written**
 The firmware occasionally stores register values outside the range it also reports. The bridge detects this, logs a warning containing `outside firmware range`, and adjusts the discovery config so HA can display the value correctly. No action required.
@@ -686,19 +686,19 @@ When you disable a static entity via Settings → Devices → entity cog → Dis
 
 ### Requirements
 
-This add-on requires the Home Assistant add-on environment (HA OS or HA Supervised). It is not designed for standalone Docker or HA Core/Container installations.
+This app requires the Home Assistant app environment (HA OS or HA Supervised). It is not designed for standalone Docker or HA Core/Container installations.
 
 ### Restart behaviour
 
-**HA Core restart** — add-ons keep running. The bridge keeps polling, MQTT messages keep flowing, and when HA Core comes back up it reads all retained discovery configs and state topics from the broker. Entities don't go unavailable — they show the last retained value until the next poll.
+**HA Core restart** — apps keep running. The bridge keeps polling, MQTT messages keep flowing, and when HA Core comes back up it reads all retained discovery configs and state topics from the broker. Entities don't go unavailable — they show the last retained value until the next poll.
 
-**Full supervisor restart or host reboot** — add-ons are stopped and restarted in dependency order. There is a window where the bridge is down; data from that period is not collected. The bridge has no local cache — it relies on the broker as its state store.
+**Full supervisor restart or host reboot** — apps are stopped and restarted in dependency order. There is a window where the bridge is down; data from that period is not collected. The bridge has no local cache — it relies on the broker as its state store.
 
-**Add-on update** — stops and restarts just that add-on. During the restart window (~5–30 seconds) no polling happens. On restart the bridge reconnects, restores its entity list from the broker's retained messages, and resumes polling.
+**App update** — stops and restarts just that app. During the restart window (~5–30 seconds) no polling happens. On restart the bridge reconnects, restores its entity list from the broker's retained messages, and resumes polling.
 
 ### The SUPERVISOR_TOKEN
 
-The HA Supervisor automatically injects a `SUPERVISOR_TOKEN` into every running add-on. The bridge uses it for Lovelace setup, persistent notifications, and entity registry sync. If absent, those features are skipped — everything else continues normally.
+The HA Supervisor automatically injects a `SUPERVISOR_TOKEN` into every running app. The bridge uses it for Lovelace setup, persistent notifications, and entity registry sync. If absent, those features are skipped — everything else continues normally.
 
 | Feature | Without token |
 |---|---|
@@ -707,7 +707,7 @@ The HA Supervisor automatically injects a `SUPERVISOR_TOKEN` into every running 
 | Entity Manager card | ✅ Full |
 | Bridge health diagnostics | ✅ Full |
 | Lovelace dashboard | ❌ Not provisioned — add the card manually |
-| HA notification bell alerts | ❌ Not sent — check add-on log instead |
+| HA notification bell alerts | ❌ Not sent — check app log instead |
 | HA settings enable/disable sync | ❌ Not real-time — use the card |
 
 In a normal HA OS or Supervised installation you will never see `No SUPERVISOR_TOKEN` in the log. If you do, restarting the Supervisor or the host usually resolves it.
@@ -716,15 +716,15 @@ In a normal HA OS or Supervised installation you will never see `No SUPERVISOR_T
 
 | Path | Purpose |
 |---|---|
-| `/data/options.json` | Add-on configuration (written by the HA UI) |
+| `/data/options.json` | App configuration (written by the HA UI) |
 | `/config/secrets.yaml` or `/homeassistant/secrets.yaml` | Optional credential override |
 | `/config/www/` | Destination for the Lovelace card file |
 
-There is no separate config file option — `/data/options.json` is written automatically by the HA add-on UI. Environment variables are not used for configuration (other than `SUPERVISOR_TOKEN`, injected automatically by the Supervisor).
+There is no separate config file option — `/data/options.json` is written automatically by the HA app UI. Environment variables are not used for configuration (other than `SUPERVISOR_TOKEN`, injected automatically by the Supervisor).
 
 ### Uninstalling
 
-Removing the add-on through the HA Supervisor — even with **Remove add-on data** checked — does not automatically clean up items the bridge created outside its data volume.
+Removing the app through the HA Supervisor — even with **Remove app data** checked — does not automatically clean up items the bridge created outside its data volume.
 
 | Item | Location |
 |---|---|
@@ -735,10 +735,10 @@ Removing the add-on through the HA Supervisor — even with **Remove add-on data
 
 **Option A — Automatic cleanup (recommended)**
 
-1. Go to **Settings → Add-ons → Nibe S-Series MQTT Bridge → Configuration**
+1. Go to **Settings → Apps → Nibe S-Series MQTT Bridge → Configuration**
 2. Set `remove_frontend` to `true` and save
-3. **Stop** the add-on cleanly — do not force-kill it. Cleanup runs during the normal shutdown sequence.
-4. Remove the add-on from the Add-on Store
+3. **Stop** the app cleanly — do not force-kill it. Cleanup runs during the normal shutdown sequence.
+4. Remove the app from the App Store
 
 The bridge also clears all its MQTT retained messages at shutdown — every topic under `homeassistant/*/nibe_*/*` and `nibe/browser/#`.
 
@@ -746,7 +746,7 @@ The bridge also clears all its MQTT retained messages at shutdown — every topi
 
 **Option B — Manual cleanup**
 
-If you have already removed the add-on without running the automatic cleanup:
+If you have already removed the app without running the automatic cleanup:
 
 1. **Card file** — delete `/config/www/nibe-entity-manager-card.js` via the HA file editor or SSH
 2. **Lovelace resource** — Settings → Dashboards → ⠇ → Resources → find `nibe-entity-manager-card.js` → delete

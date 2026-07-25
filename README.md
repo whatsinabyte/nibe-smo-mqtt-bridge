@@ -1,4 +1,4 @@
-# Home Assistant Add-on: Nibe S-Series MQTT Bridge
+# Home Assistant App: Nibe S-Series MQTT Bridge
 
 ![Supports aarch64 Architecture](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64 Architecture](https://img.shields.io/badge/amd64-yes-green.svg)
@@ -11,7 +11,7 @@ Connects your Nibe S-series heat pump controller to Home Assistant via MQTT — 
 
 ## About
 
-Nibe's S-series is a software platform that runs across the entire product range — standalone controllers (SMO S40), integrated indoor units (VVM S320, VVM S325, VVM S500), ground/water heat pumps (S1155, S1255, S1156, S1256), and ventilation heat pumps (S735). They all expose the same local REST API. This add-on uses that API to create native HA entities for everything the controller reports.
+Nibe's S-series is a software platform that runs across the entire product range — standalone controllers (SMO S40), integrated indoor units (VVM S320, VVM S325, VVM S500), ground/water heat pumps (S1155, S1255, S1156, S1256), and ventilation heat pumps (S735). They all expose the same local REST API. This app uses that API to create native HA entities for everything the controller reports.
 
 The bridge creates two devices in Home Assistant under **Settings → Devices & Services → MQTT**:
 
@@ -56,16 +56,17 @@ Works with any Nibe S-series controller running **minimum firmware 4.5.7** with 
 ## Requirements
 
 - Nibe S-series controller on your local network with the local REST API enabled
-- [Mosquitto broker](https://github.com/home-assistant/addons/tree/master/mosquitto) add-on installed and running
+- [Mosquitto broker](https://github.com/home-assistant/addons/tree/master/mosquitto) app installed and running
 - MQTT integration configured in Home Assistant (Settings → Devices & Services → Add Integration → MQTT)
 
 ## Installation
 
-1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add: `https://github.com/whatsinabyte/nibe-smo-mqtt-bridge`
-2. Install the **Nibe S-Series MQTT Bridge** add-on
+1. In Home Assistant go to **Settings → Apps → Install app → ⋮ → Repositories** and add:
+   `https://github.com/whatsinabyte/nibe-smo-mqtt-bridge`
+2. Install the **Nibe S-Series MQTT Bridge** app
 3. Enable the local API on your controller — **Menu 7.5.15** on all S-series products
-4. Configure the add-on with your controller's IP address and API credentials
-5. Start the add-on
+4. Configure the app with your controller's IP address and API credentials
+5. Start the app
 
 On first start the bridge automatically copies the companion card to `/config/www/`, registers it as a Lovelace resource, and creates the **Nibe Bridge** dashboard. Full installation instructions are in the [Documentation](DOCS.md) tab.
 
@@ -73,7 +74,7 @@ On first start the bridge automatically copies the companion card to `/config/ww
 
 - **Values update every poll cycle** (default 30 seconds), not in real time. The controller does not push data — the bridge polls it.
 - **If the bridge is offline, data from that window is not collected.** There is no backfill from the controller.
-- **Configuration changes require a restart** — changing the IP address, credentials, poll interval, or mode takes effect on the next add-on start.
+- **Configuration changes require a restart** — changing the IP address, credentials, poll interval, or mode takes effect on the next app start.
 - **Changing the mode replaces your entity selection.** Switching from `essential` to `monitoring` enables additional entities; switching back disables them. Use the Entity Manager card to manage individual entities within a mode.
 
 ## Links

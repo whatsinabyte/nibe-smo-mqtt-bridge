@@ -241,7 +241,7 @@ When a write command arrives on a command topic:
 9. Publish snapshots
 10. Enter poll loop
 
-Steps 3–5 happen before the poll loop starts, so HA always has a consistent entity set on add-on restart.
+Steps 3–5 happen before the poll loop starts, so HA always has a consistent entity set on app restart.
 
 ### 5.4 Alarm polling
 
