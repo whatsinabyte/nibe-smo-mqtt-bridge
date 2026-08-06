@@ -230,6 +230,13 @@ def t_press(entity_id: str) -> str:
     return f"{_HA_BASE}/button/{entity_id}/press"
 
 
+#: HA device classes that accumulate over time (total_increasing state class).
+_ACCUMULATING_CLASSES: frozenset[str] = frozenset({"energy", "gas", "water", "volume"})  # pragma: no mutate
+
+#: Point ID for the date sensor (days since 2010-01-01 → ISO date string).
+_DATE_SENSOR_POINT_ID = 2685
+
+
 def resolve_unit(
     point_id: int,
     raw_unit: str,
@@ -586,13 +593,11 @@ class MqttDiscoveryPublisher:
         config["state_topic"] = t_state("sensor", entity_id)
         # Special case: point 2685 is a date sensor (days since 2010-01-01
         # converted to ISO date string). Set device_class and return early.
-        if point_id == 2685:
+        if point_id == _DATE_SENSOR_POINT_ID:
             config["device_class"] = "date"
             return
         if unit:
             config["unit_of_measurement"] = unit
-
-        _ACCUMULATING_CLASSES = {"energy", "gas", "water", "volume"}  # pragma: no mutate
 
         device_class = DEVICE_CLASS_OVERRIDES.get(
             point_id, map_device_class("sensor", unit, title)
@@ -1172,12 +1177,6 @@ class MqttDiscoveryPublisher:
                 "device": mgmt_device, "icon": "mdi:test-tube",
                 "entity_category": "diagnostic",
             })
-        else:
-            # Unpublish debug-only entities so they disappear from HA when
-            # the add-on is not running in debug log level.
-            self.mqtt.publish(MgmtTopic.FLUSH_MAP_CONFIG, "", retain=True)
-            self.mqtt.publish(MgmtTopic.RUN_TESTS_CONFIG, "", retain=True)
-            self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", "", retain=True)
 
         # Initial sensor states
         self.mqtt.publish(MgmtTopic.UPTIME_STATE,      "0",    retain=True)
