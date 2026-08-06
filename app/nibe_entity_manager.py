@@ -442,9 +442,9 @@ class EntityManager:
         # _post_write_until records when the accelerated scan window ends.
         # During this window the main poll loop uses _post_write_interval
         # instead of bulk_interval so dynamic point changes surface quickly.
-        self._post_write_active:             bool  = False
+        self.post_write_active:             bool  = False
         self._post_write_until:              float = 0.0
-        self._post_write_interval:           int   = 5
+        self.post_write_interval:           int   = 5
         self._post_write_duration:           int   = _POST_WRITE_SCAN_S
         self._post_write_controlling_point:  int | None = None
         # Points confirmed present by _resolve_dynamic_points_fast, keyed to
@@ -684,7 +684,7 @@ class EntityManager:
                 initial_mode,
             )
 
-        self._apply_startup_action(action, applied_mode, initial_mode)
+        self.apply_startup_action(action, applied_mode, initial_mode)
 
         self.publish_enabled_state()
         log_discovery.info(
@@ -693,7 +693,7 @@ class EntityManager:
         )
         return True
 
-    def _apply_startup_action(
+    def apply_startup_action(
         self,
         action:       str,
         applied_mode: str | None,
@@ -1073,21 +1073,21 @@ class EntityManager:
         # Use faster polling during the post-write scan window so dynamic
         # point changes surface quickly after a switch write.
         # Outside that window use the normal user-configured poll interval.
-        if self._post_write_active and current_time > self._post_write_until:
-            self._post_write_active            = False
+        if self.post_write_active and current_time > self._post_write_until:
+            self.post_write_active            = False
             self._post_write_controlling_point = None
             log_commands.debug("Post-write scan window ended")
 
         effective_interval = (
-            self._post_write_interval
-            if self._post_write_active
+            self.post_write_interval
+            if self.post_write_active
             else self.bulk_interval
         )
 
         if (current_time - self.last_bulk_fetch) >= effective_interval:
             failures_before = self.api_consecutive_failures
             known_count   = len(self.dynamic_point_map.all_known_dynamic_point_ids())
-            should_detect = bool(known_count) or self._post_write_active
+            should_detect = bool(known_count) or self.post_write_active
             result        = self._fetch_bulk_data(detect_changes=should_detect)
             lock_was_busy = (result is False
                              and self.api_consecutive_failures == failures_before)
@@ -1145,7 +1145,7 @@ class EntityManager:
 
         if point_id not in self.bulk_data:
             if point_id in self.mqtt_enabled_points:
-                if self._post_write_active:
+                if self.post_write_active:
                     # Absence during a post-write scan means this is a dynamic
                     # point disappearing. Route through _publish_dynamic_changes
                     # so it is deindexed, its MQTT meta is cleared, the changelog
@@ -1354,7 +1354,7 @@ class EntityManager:
 
             current_point_ids = set()
             new_points        = []
-            if self._post_write_active:
+            if self.post_write_active:
                 scan_type = "post-write-scan"
             elif detect_changes:
                 known_count = len(self.dynamic_point_map.all_known_dynamic_point_ids())
@@ -1429,7 +1429,7 @@ class EntityManager:
                             and point_id not in self.baseline_point_ids
                             and point_id not in self.published_configs):
 
-                        if self._post_write_active:
+                        if self.post_write_active:
                             # Point appeared during post-write scan window.
                             # Route through _publish_dynamic_changes regardless
                             # of whether it is a known dynamic point or newly
@@ -1525,7 +1525,7 @@ class EntityManager:
 
                 # During post-write scan: baseline points that went absent
                 # are newly discovered dynamic disappearances.
-                if self._post_write_active:
+                if self.post_write_active:
                     newly_absent = (
                         self.baseline_point_ids
                         - current_point_ids
@@ -1553,7 +1553,7 @@ class EntityManager:
                     len(new_points), len(disappeared_points),
                 )
                 self._publish_dynamic_changes(new_points, disappeared_points)
-            elif detect_changes and self._post_write_active:
+            elif detect_changes and self.post_write_active:
                 log_discovery.debug(
                     "Post-write scan: no dynamic changes yet (known=%d)",
                     len(self.dynamic_point_map.all_known_dynamic_point_ids()),
@@ -2007,10 +2007,10 @@ class EntityManager:
         points_before = set(self.bulk_data.keys())
 
         # Activate post-write scan mode to get 5s polling
-        self._post_write_active = True
+        self.post_write_active = True
         self._post_write_until  = time.time() + _POST_WRITE_SCAN_S
 
-        poll_interval    = self._post_write_interval   # 5s
+        poll_interval    = self.post_write_interval   # 5s
         deadline         = time.time() + _POST_WRITE_SCAN_S
         last_size        = len(points_before)
 
@@ -2187,7 +2187,7 @@ class EntityManager:
                         prefix, point_id,
                     )
                     self._post_write_controlling_point = point_id
-                    self._post_write_active            = True
+                    self.post_write_active            = True
                     self._post_write_until             = time.time() + self._post_write_duration
 
                 else:
@@ -2196,7 +2196,7 @@ class EntityManager:
                     # always recorded so the map self-populates without manual
                     # intervention. The detection window runs and any dynamic
                     # changes observed are attributed to this write.
-                    self._post_write_active            = True
+                    self.post_write_active            = True
                     self._post_write_until             = time.time() + self._post_write_duration
                     self._post_write_controlling_point = point_id
                     if entry is not None and int_value is not None and int_value in entry.unprocessed_values:
