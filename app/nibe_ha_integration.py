@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import urllib.request
@@ -244,16 +245,10 @@ class HAEntityRegistryWatcher:
                 "ws://supervisor/core/websocket",
                 timeout=10,
             )
-            # Authenticate — recv auth_required first, then send auth, then check result.
-            greeting = json.loads(ws.recv())
-            if greeting.get("type") != "auth_required":
-                log_registry.debug("Registry refresh: unexpected greeting %s", greeting.get("type"))
-                ws.close()
-                return
-            ws.send(json.dumps({"type": "auth", "access_token": token}))
-            auth_result = json.loads(ws.recv())
-            if auth_result.get("type") != "auth_ok":
-                log_registry.warning("Registry refresh: auth failed (%s)", auth_result.get("type"))
+            try:
+                self._ws_authenticate(ws, token)
+            except RuntimeError as e:
+                log_registry.warning("Registry refresh: %s", e)
                 ws.close()
                 return
             # Fetch registry
@@ -331,17 +326,26 @@ class HAEntityRegistryWatcher:
         self._msg_id += 1
         return self._msg_id
 
-    def _connect_and_subscribe(self, token: str) -> object:
-        import websocket
-        ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=10)
+    @staticmethod
+    def _ws_authenticate(ws, token: str) -> None:
+        """Authenticate a newly opened WebSocket connection to the HA Supervisor.
 
+        Performs the three-step auth handshake expected by HA's WebSocket API:
+        wait for ``auth_required``, send credentials, confirm ``auth_ok``.
+
+        Args:
+            ws: Open WebSocket connection.
+            token: Supervisor access token.
+
+        Raises:
+            RuntimeError: When the greeting or auth response is unexpected.
+        """
         greeting = json.loads(ws.recv())
         if greeting.get("type") != "auth_required":
             ws.close()
             raise RuntimeError(
                 f"Unexpected WS greeting type: {greeting.get('type', 'unknown')}"
             )
-
         ws.send(json.dumps({"type": "auth", "access_token": token}))
         auth_result = json.loads(ws.recv())
         if auth_result.get("type") != "auth_ok":
@@ -349,6 +353,12 @@ class HAEntityRegistryWatcher:
             raise RuntimeError(
                 f"WS auth failed (response type: {auth_result.get('type', 'unknown')})"
             )
+
+    def _connect_and_subscribe(self, token: str) -> object:
+        import websocket
+        ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=10)
+
+        self._ws_authenticate(ws, token)
 
         sub_id = self._next_id()
         ws.send(json.dumps({
@@ -623,11 +633,6 @@ class HAEntityRegistryWatcher:
         point      = self._em.all_points_by_id.get(point_id)
         is_dynamic = point.get('is_dynamic', False) if point else False
 
-        # No controller map in the simplified design — live_dependents
-        # is always empty. Dynamic points manage their own lifecycle via
-        # the bulk fetch detection loop.
-        live_dependents: list[str] = []
-
         log_registry.debug(
             "Entity %s (point %s) disabled via HA — mirroring disable",
             ha_entity_id, point_id,
@@ -637,7 +642,7 @@ class HAEntityRegistryWatcher:
             point_id, ha_entity_id, action='disabled'
         )
 
-        if is_dynamic or live_dependents:
+        if is_dynamic:
             point_dict = self._em.all_points_by_id.get(point_id)
             if point_dict:
                 self._pub.publish_entity_discovery(point_dict, self._em.bulk_data)
@@ -859,12 +864,9 @@ class ManagementCommandHandler:
 
         def _do() -> None:
             try:
-                import subprocess
-                import os
-                import json as _json
-                import time as _time
-
-                import sys as _sys
+                _json = json
+                _time = time
+                _sys  = sys
                 addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 test_path = "/tests"
                 if not os.path.isdir(test_path):
