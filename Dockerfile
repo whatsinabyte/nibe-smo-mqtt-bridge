@@ -38,5 +38,11 @@ COPY config.yaml /
 COPY run.sh /
 RUN chmod a+x /run.sh
 
+# OCI image labels (previously in build.yaml — moved here per Supervisor requirement)
+LABEL org.opencontainers.image.title="Nibe S-Series MQTT Bridge"
+LABEL org.opencontainers.image.description="MQTT bridge for Nibe S-series heat pump controllers"
+LABEL org.opencontainers.image.source="https://github.com/whatsinabyte/nibe-smo-mqtt-bridge"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Python becomes PID 1 via exec in run.sh and receives signals directly
 CMD ["/run.sh"]
