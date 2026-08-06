@@ -75,7 +75,7 @@ schema:
   mqtt_ca_cert: str?
 
 map:
-  - config:rw
+  - homeassistant_config:rw
 
 # Versions that require a manual update acknowledgement.
 # Add a version here whenever a release changes the MQTT topic structure,
