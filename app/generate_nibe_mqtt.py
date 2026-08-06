@@ -52,7 +52,6 @@ import datetime
 import json
 import logging
 import os
-import pathlib
 import re
 import signal
 import ssl
@@ -97,20 +96,11 @@ from nibe_lovelace        import (
 )
 
 # ============================================================================
-# BRIDGE VERSION — read from config.yaml (single source of truth)
+# BRIDGE VERSION
 # ============================================================================
-def _read_bridge_version() -> str:
-    """Read version from config.yaml at the repo root (one level above app/)."""
-    for candidate in (
-        pathlib.Path(__file__).parent.parent / "config.yaml",  # real repo layout
-        pathlib.Path("/") / "config.yaml",                     # Docker image (COPY'd to /)
-    ):
-        if candidate.exists():
-            with open(candidate) as _f:
-                return yaml.safe_load(_f)["version"]
-    raise FileNotFoundError("config.yaml not found — cannot determine bridge version")
-
-BRIDGE_VERSION = _read_bridge_version()
+BRIDGE_VERSION = "1.0.1"
+# Keep in sync with version: in config.yaml — test_bridge_version_matches_config_yaml
+# in the test suite catches any mismatch automatically.
 
 # ============================================================================
 # CONFIGURATION
@@ -653,7 +643,7 @@ def _execute_startup_action(
 
     Logs the context-specific startup message for each action, then delegates
     the actual mutations (apply_mode / restore_from_mqtt / record_applied_mode)
-    to entity_manager._apply_startup_action() — the shared implementation also
+    to entity_manager.apply_startup_action() — the shared implementation also
     used by complete_deferred_discovery().
 
     apply     — fresh install: enable the configured mode.
@@ -665,7 +655,7 @@ def _execute_startup_action(
             "No existing MQTT configs — applying initial mode: %s", initial_mode
         )
     elif startup_action == "restore":
-        pass   # _apply_startup_action logs the applied-mode baseline message if needed
+        pass   # apply_startup_action logs the applied-mode baseline message if needed
     else:  # "reconcile"
         log_restore.info(
             "Entity mode changed from '%s' to '%s' — restoring then reconciling "
@@ -673,7 +663,7 @@ def _execute_startup_action(
             applied_mode, initial_mode,
         )
 
-    entity_manager._apply_startup_action(startup_action, applied_mode, initial_mode)
+    entity_manager.apply_startup_action(startup_action, applied_mode, initial_mode)
 
     # mode=none notification is a normal-startup-only concern — not replicated
     # in complete_deferred_discovery because deferred startups only reach this
@@ -1037,7 +1027,7 @@ def _run_startup_sequence(
     # intentionally not published here — doing so would trigger HA
     # automations on every restart.
     if log_level.lower() == 'debug':
-        import json as _json
+        _json = json
         mqtt_client.publish(MgmtTopic.RUN_TESTS_ATTRS, _json.dumps({
             "status": "ready",
             "summary": "No test run since last restart.",
@@ -1137,8 +1127,8 @@ def _poll_loop(
         try:
             current_time    = time.time()
             effective_outer = (
-                entity_manager._post_write_interval
-                if entity_manager._post_write_active
+                entity_manager.post_write_interval
+                if entity_manager.post_write_active
                 else entity_manager.bulk_interval
             )
 
