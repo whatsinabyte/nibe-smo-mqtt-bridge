@@ -833,6 +833,7 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
         import generate_nibe_mqtt as gn
         root = logging.getLogger('nibe')
         original_handlers = root.handlers[:]
+        original_level = root.level
         root.handlers.clear()
         try:
             gn._build_logging('debug')
@@ -841,6 +842,7 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
         finally:
             root.handlers.clear()
             root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
 
     def test_build_logging_invalid_level_falls_back_to_info(self):
         """An unrecognised level string must fall back to logging.INFO —
@@ -851,6 +853,7 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
         import generate_nibe_mqtt as gn
         root = logging.getLogger('nibe')
         original_handlers = root.handlers[:]
+        original_level = root.level
         root.handlers.clear()
         try:
             gn._build_logging('not_a_real_level')  # must not raise
@@ -858,12 +861,15 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
         finally:
             root.handlers.clear()
             root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
 
     def test_build_logging_skips_handler_when_already_configured(self):
         import logging
 
         import generate_nibe_mqtt as gn
         root = logging.getLogger('nibe')
+        original_handlers = root.handlers[:]
+        original_level = root.level
         sentinel = logging.NullHandler()
         root.handlers.clear()
         root.addHandler(sentinel)
@@ -874,6 +880,8 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
             self.assertEqual(root.level, logging.WARNING)
         finally:
             root.handlers.clear()
+            root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
 
 
 # ===========================================================================
