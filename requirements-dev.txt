@@ -6,7 +6,7 @@ pytest>=8.0
 pytest-cov>=5.0
 pytest-timeout>=2.3
 hypothesis>=6.0
-websocket-client>=1.6
+websocket-client>=1.9.0
 
 # JS card testing (development only — never installed in the Docker image;
 # no guaranteed prebuilt wheel on ARM64, and building the C extension isn't
