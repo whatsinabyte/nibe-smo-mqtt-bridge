@@ -1273,20 +1273,31 @@ class TestDynamicLearningDetection(unittest.TestCase):
 
     def test_deadline_exit_records_empty_outcome(self):
         em = self._em_with_bulk(initial_size=1)
-        # _post_write_until, deadline, loop check — padded with a repeating
-        # tail rather than a bare 3-value iterator. patch('nibe_entity_manager
-        # .time.time', ...) patches the real stdlib time module (nibe_entity_
-        # manager.time IS the time module, not a private reference), so it
-        # also intercepts time.time() calls made internally by the logging
-        # module's LogRecord creation whenever the "nibe.commands" logger's
-        # effective level allows the info() call at the top of
-        # _run_learning_detection through — which depends on global logger
-        # state other tests may have left behind, so it isn't safe to assume
-        # exactly 3 calls. A finite iterator raised StopIteration here under
-        # pytest-randomly when that extra call fired; repeat() never does.
+        # _post_write_until, deadline, loop check — exactly 3 real time.time()
+        # calls, padded with a repeating tail so a 4th call (if one ever
+        # happens) returns 999.0 forever rather than raising StopIteration.
+        #
+        # log_commands.info() is explicitly mocked out below (not just left
+        # to ambient logger state) because LogRecord creation internally
+        # calls time.time() *whenever the logger's effective level allows
+        # the info() call through* — which depends on global logging state
+        # other tests may have left behind. Previously this test only
+        # padded the iterator to survive that extra call without crashing;
+        # it didn't stop the extra call from silently shifting deadline's
+        # value to 999.0 + 90 while the loop's own "now" stayed pinned at
+        # 999.0 forever — deadline could never be reached, and since
+        # time.sleep is also mocked to a no-op, the loop spun as a genuine
+        # CPU-bound infinite loop until pytest-timeout killed it. That
+        # depended on test execution order (whether the logger happened to
+        # be INFO-enabled already), so it passed locally under one
+        # pytest-randomly seed and hung for real under another — this is
+        # what actually happened in CI. Mocking log_commands.info()
+        # unconditionally removes the ambiguity: exactly 3 time.time()
+        # calls, every time, regardless of what ran before this test.
         time_seq = itertools.chain([0.0, 0.0, 999.0], itertools.repeat(999.0))
         with patch('nibe_entity_manager.time.sleep'), \
              patch('nibe_entity_manager.time.time', side_effect=time_seq), \
+             patch('nibe_entity_manager.log_commands'), \
              patch.object(em.dynamic_point_map, 'record_outcome') as mock_rec, \
              patch.object(em, '_persist_dynamic_map'):
             em._run_learning_detection(10, 0, 'test')
