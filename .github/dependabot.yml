@@ -8,6 +8,10 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      runtime-dependencies:
+        patterns:
+          - "*"
 
   # requirements-dev.txt, requirements-test.txt — dev/test-only dependencies
   - package-ecosystem: "pip"
@@ -17,6 +21,10 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      dev-test-dependencies:
+        patterns:
+          - "*"
 
   # .github/workflows/publish-image.yml — GitHub Actions used in CI
   - package-ecosystem: "github-actions"
@@ -26,3 +34,7 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
