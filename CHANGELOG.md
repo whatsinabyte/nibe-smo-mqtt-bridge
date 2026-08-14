@@ -11,6 +11,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2] — 2026-08-14
+
+### Fixed
+- The "Run Test Suite" debug feature used `subprocess.run()` to launch the
+  bridge's own pytest suite, which blocks with no way to cancel it
+  externally. Python's own `atexit` hook for `ThreadPoolExecutor` then
+  blocked the whole add-on's process exit until that subprocess finished on
+  its own — up to the full 25-30+ minute run — so rebuilding or stopping
+  the add-on while a test run was in flight got the container SIGKILLed by
+  Docker's stop grace period (exit code 137) instead of shutting down
+  cleanly.
+- The pytest subprocess now launches with `start_new_session=True`, and a
+  new `abort_test_suite()` kills its *entire process group* (not just the
+  top-level PID) as the first step of the add-on's shutdown sequence —
+  killing only the top-level process left `pytest -n auto`'s xdist worker
+  subprocesses running as orphans, still holding the output pipes open, so
+  the shutdown sequence would hang waiting for pipe EOF that never came.
+- An aborted run (killed because the add-on is shutting down) is now
+  reported as a distinct `aborted` status with no HA notification, instead
+  of misreporting the kill's exit code as a real test **FAILED** result.
+- `run_test_suite` now resolves the pytest interpreter via `shutil.which()`
+  when `sys.executable` comes back empty — observed on the ODROID's
+  Alpine/musl container, where the bare `'python3'` fallback previously
+  depended on the *subprocess's* own `PATH` resolution and failed with
+  "no such file: python3".
+- Fixed the success-path test-result summary: the raw pytest-html report
+  line wasn't reliably stripped (the noise filter required an exact
+  3-dash prefix; real output sometimes used a different dash count),
+  skipped-test progress dots (`s`) weren't recognised as noise either, and
+  the replacement report link was written as plain text instead of a real
+  Markdown link, which silently broke its clickability. Added a
+  right-click hint, since Home Assistant's frontend intercepts same-origin
+  left-clicks for its own client-side router rather than opening the link.
+
+### Changed
+- `run_test_suite` now runs on its own dedicated single-worker executor
+  instead of sharing the 2-worker `mgmt_executor` pool with every other
+  management command, so a long test run can no longer be queued behind
+  (or itself block) unrelated commands like force-poll or snapshot
+  restore.
+
+[1.0.2]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.2
+
+---
+
 ## [1.0.1] — 2026-08-14
 
 ### Fixed
