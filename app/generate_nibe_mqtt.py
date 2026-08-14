@@ -103,6 +103,7 @@ from nibe_mqtt_publisher import (
     MgmtTopic,
     MqttDiscoveryPublisher,
 )
+from nibe_test_runner import abort_test_suite
 
 # ============================================================================
 # BRIDGE VERSION
@@ -1088,7 +1089,12 @@ def _run_startup_sequence(
     mgmt_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="nibe_mgmt"
     )
-    ManagementCommandHandler(mqtt_client, entity_manager, publisher, mgmt_executor).register_all()
+    test_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="nibe_test_runner"
+    )
+    ManagementCommandHandler(
+        mqtt_client, entity_manager, publisher, mgmt_executor, test_executor
+    ).register_all()
     entity_manager._mgmt_avail_topic = MGMT_AVAIL_TOPIC
 
     # ── Scan / restore / apply mode ──────────────────────────────────────────
@@ -1148,7 +1154,7 @@ def _run_startup_sequence(
         _ALARM_POLL_INTERVAL,
     )
 
-    return entity_manager, publisher, registry_watcher, mgmt_executor
+    return entity_manager, publisher, registry_watcher, mgmt_executor, test_executor
 
 
 # ============================================================================
@@ -1269,6 +1275,7 @@ def _shutdown(
     mqtt_client,
     registry_watcher,
     mgmt_executor,
+    test_executor,
     shutting_down:    list[bool],
     atexit_cleanup_fn,
 ) -> None:
@@ -1276,19 +1283,29 @@ def _shutdown(
 
     Steps (in order):
       1. Stop the HA registry watcher thread.
-      2. Drain the write and management executors with a timeout.
-      3. Publish 'offline' to every active entity's availability topic.
-      4. Optionally wipe all retained MQTT messages (NIBE_REMOVE_FRONTEND=1).
-      5. Tear down Lovelace resources.
-      6. Disconnect MQTT cleanly.
+      2. Kill an in-flight test-suite subprocess, if any.
+      3. Drain the write, management, and test executors with a timeout.
+      4. Publish 'offline' to every active entity's availability topic.
+      5. Optionally wipe all retained MQTT messages (NIBE_REMOVE_FRONTEND=1).
+      6. Tear down Lovelace resources.
+      7. Disconnect MQTT cleanly.
     """
     log_startup.info("Shutting down...")
     registry_watcher.stop()
+
+    # A test-suite run can legitimately take 25-30+ minutes, far longer than
+    # Docker's stop grace period — without this, Python's own atexit hook
+    # for ThreadPoolExecutor would block process exit until that subprocess
+    # finishes on its own, and the container gets SIGKILLed by Docker before
+    # that ever happens. Killing the subprocess directly lets the worker
+    # thread return immediately so the executor drain below is fast.
+    abort_test_suite("add-on shutting down")
 
     log_startup.info("Waiting for in-flight commands to complete...")
     for executor, name in [
         (entity_manager._write_executor, "write"),
         (mgmt_executor,                  "management"),
+        (test_executor,                  "test suite"),
     ]:
         t = threading.Thread(
             target=executor.shutdown, kwargs={"wait": True, "cancel_futures": False}
@@ -1382,7 +1399,7 @@ def main():  # pragma: no cover
     atexit.register(_atexit_cleanup)
 
     # ── Phase 2: startup sequence ─────────────────────────────────────────────
-    entity_manager, publisher, registry_watcher, mgmt_executor = \
+    entity_manager, publisher, registry_watcher, mgmt_executor, test_executor = \
         _run_startup_sequence(
             cfg, api_client, mqtt_client, response, device_id,
             initial_mode, log_level, set_entity_manager,
@@ -1408,7 +1425,7 @@ def main():  # pragma: no cover
     # ── Phase 4: shutdown ─────────────────────────────────────────────────────
     _shutdown(
         entity_manager, publisher, mqtt_client,
-        registry_watcher, mgmt_executor,
+        registry_watcher, mgmt_executor, test_executor,
         shutting_down, _atexit_cleanup,
     )
 

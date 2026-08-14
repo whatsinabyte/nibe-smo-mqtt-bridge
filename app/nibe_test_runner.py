@@ -33,6 +33,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +45,55 @@ from nibe_mqtt_publisher import MgmtTopic
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_commands = logging.getLogger('nibe.commands')
+
+# The in-flight pytest subprocess, if any — set right before it's launched
+# and cleared once it exits. Only one test run can be in flight at a time
+# (guarded by the caller's done_event), so a plain module-level reference is
+# sufficient. Lets abort_test_suite() (called from the add-on's shutdown
+# sequence) actually kill the process instead of leaving it to run for up to
+# its full 4-hour hard timeout while the container is trying to stop —
+# subprocess.run()'s own `timeout=` only bounds *our* wait, it has no way to
+# be cancelled from outside once it's blocked in communicate().
+_current_proc: subprocess.Popen | None = None
+
+# Set by abort_test_suite() right before it kills the process, and read by
+# run_test_suite() afterward to tell "killed on purpose because the add-on
+# is shutting down" apart from a genuine crash/negative-returncode failure —
+# without this, an aborted run would be reported as a real test FAILURE
+# (misleading — no tests actually finished running) rather than what it
+# actually is. Reset at the start of every run.
+_abort_reason: str | None = None
+
+
+def abort_test_suite(reason: str = 'add-on shutting down') -> None:
+    """Kill the in-flight pytest subprocess (and its whole process group),
+    if any, so it can't hold up a clean container stop. Safe to call when
+    no run is in flight (no-op).
+
+    Kills the *process group*, not just proc.pid, via os.killpg(). pytest
+    runs with -n auto (xdist), which forks a worker subprocess per CPU core
+    under the main pytest process — proc.kill() alone only kills that top
+    -level process, leaving the xdist workers running as orphans. Those
+    orphans inherited the same stdout/stderr pipe file descriptors, so they
+    can keep the write end of those pipes open even after the top-level
+    process is gone — and run_test_suite's post-kill communicate() call
+    reads until pipe EOF, so it would hang waiting for those orphaned
+    workers to exit on their own instead of returning promptly. The
+    subprocess is launched with start_new_session=True (see run_test_suite)
+    specifically so the whole group can be targeted here.
+    """
+    global _abort_reason
+    proc = _current_proc
+    if proc is None or proc.poll() is not None:
+        return
+    log_commands.warning('Aborting in-flight test suite run: %s', reason)
+    _abort_reason = reason
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        # Process (and thus its group) already exited between the poll()
+        # check above and this call — nothing left to kill.
+        pass
 
 
 def _extract_failure_lines(text: str) -> list[str]:
@@ -107,6 +158,8 @@ def run_test_suite(
         the caller sets it before submitting this function to an executor,
         as a duplicate-trigger guard.
     """
+    global _abort_reason
+    _abort_reason = None  # clear any stale reason left over from a prior run
     try:
         addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         test_path = '/tests'
@@ -119,7 +172,15 @@ def run_test_suite(
         pytest_ini = os.path.join(addon_dir, 'pytest.ini')
         run_dir = addon_dir if os.path.exists(pytest_ini) else '/tests'
 
-        python_exe = sys.executable or 'python3'
+        # sys.executable is normally the running interpreter's absolute path,
+        # but on some Alpine/musl container setups it comes back empty (the
+        # interpreter can't determine its own path in that environment). A
+        # bare 'python3' fallback then depends on the *subprocess's* PATH
+        # resolution succeeding, which isn't guaranteed to match what this
+        # process's own PATH would resolve — shutil.which() does a real
+        # PATH-aware lookup right here instead of hoping subprocess.run's
+        # own resolution works out.
+        python_exe = sys.executable or shutil.which('python3') or shutil.which('python') or 'python3'
         env = {
             **os.environ,
             'HYPOTHESIS_PROFILE': 'nightly',
@@ -141,8 +202,23 @@ def run_test_suite(
 
         t_start = time.monotonic()
         report_path = '/homeassistant/www/nibe_test_report.html'
+        global _current_proc
         try:
-            proc = subprocess.run(
+            # subprocess.Popen (rather than the simpler subprocess.run)
+            # so the Popen handle can be stashed in _current_proc —
+            # abort_test_suite() needs a live handle to kill if the add-on
+            # is asked to shut down mid-run; subprocess.run() blocks inside
+            # its own call and doesn't expose one.
+            #
+            # start_new_session=True makes pytest the leader of its own new
+            # process group, separate from this add-on's own group — so a
+            # kill can target that whole group (pytest -n auto plus all its
+            # xdist worker subprocesses) via os.killpg(), rather than only
+            # the top-level pytest process. Without this, killing just the
+            # top-level PID leaves orphaned xdist workers running, still
+            # holding the stdout/stderr pipes open, and communicate() would
+            # hang waiting for pipe EOF that never comes.
+            _current_proc = subprocess.Popen(
                 [
                     python_exe,
                     '-m',
@@ -156,27 +232,35 @@ def run_test_suite(
                     '-n',
                     'auto',  # xdist: one worker per CPU core (~4 on ODROID-M1)
                 ],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 cwd=run_dir,
                 env=env,
-                timeout=14400,  # 4 hour hard limit
+                start_new_session=True,
             )
-            elapsed = time.monotonic() - t_start
-            exit_code = proc.returncode
-            output = (proc.stdout + proc.stderr).strip()
-        except subprocess.TimeoutExpired:
-            elapsed = time.monotonic() - t_start
-            exit_code = -1
-            output = (
-                'Test suite process killed after 4-hour hard limit.\n'
-                'The nightly profile (500 examples, stateful_step_count=50) exceeded\n'
-                'the subprocess timeout. Consider reducing max_examples in conftest.py.'
-            )
+            try:
+                stdout, stderr = _current_proc.communicate(timeout=14400)  # 4 hour hard limit
+                elapsed = time.monotonic() - t_start
+                exit_code = _current_proc.returncode
+                output = (stdout + stderr).strip()
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(_current_proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                _current_proc.communicate()
+                elapsed = time.monotonic() - t_start
+                exit_code = -1
+                output = (
+                    'Test suite process killed after 4-hour hard limit.\n'
+                    'The nightly profile (500 examples, stateful_step_count=50) exceeded\n'
+                    'the subprocess timeout. Consider reducing max_examples in conftest.py.'
+                )
         except Exception as exc:
             elapsed = time.monotonic() - t_start
             exit_code = -2
-            output = f'Failed to run test suite: {exc}'
+            output = f'Failed to run test suite (python_exe={python_exe!r}): {exc}'
             # Log the full exception here — output only ever reaches the HA
             # notification body, which HA renders as Markdown. A bracketed
             # OSError string like "[Errno 13] Permission denied: '/tests'"
@@ -184,6 +268,8 @@ def run_test_suite(
             # stripped by the renderer, losing the one detail (the path)
             # needed to actually diagnose a launch failure.
             log_commands.exception('Failed to launch test suite subprocess')
+        finally:
+            _current_proc = None
 
         # Post-process the HTML report: inject a mobile viewport meta tag
         # and relax the min-width so the report is readable on phones.
@@ -232,7 +318,16 @@ def run_test_suite(
         )
 
         passed = exit_code == 0
-        if passed:
+        aborted = _abort_reason is not None
+        if aborted:
+            # Killed on purpose (abort_test_suite(), e.g. the add-on is
+            # shutting down) — no tests actually finished running, so this
+            # is not a real pass/fail/timeout result and must not be
+            # reported as one. Checked first: an abort can race with the
+            # 4-hour timeout path (both use os.killpg internally) and must
+            # take priority over whatever exit_code the kill produced.
+            status = 'aborted'
+        elif passed:
             status = 'passed'
         elif exit_code == -1:
             status = 'timed_out'
@@ -252,22 +347,44 @@ def run_test_suite(
         # xdist/pytest infrastructure lines to suppress from the summary
         _NOISE_PREFIXES = (
             'bringing up nodes',
-            'Generated html report',
+            'generated html report',
             '=== ',
             '--- ',
         )
 
-        if exit_code == 0:
+        def _is_noise_line(ln: str) -> bool:
+            # Strip whatever dash/equals padding pytest-html/xdist wraps a
+            # line in (the exact dash count isn't guaranteed, e.g.
+            # "---- Generated html report: ... ----") before comparing, so
+            # the prefix check doesn't depend on matching that padding
+            # verbatim.
+            core = ln.strip().strip('-= ').lower()
+            return core.startswith(_NOISE_PREFIXES) or ln.strip().lower().startswith(_NOISE_PREFIXES)
+
+        if aborted:
+            # The captured output is just whatever partial stdout/stderr
+            # happened to be flushed before the kill — not a meaningful
+            # pass/fail summary, so don't run it through that parsing at
+            # all; state plainly what happened instead.
+            summary = f'Test run aborted before completion: {_abort_reason}'
+        elif exit_code == 0:
             meaningful = [
                 ln
                 for ln in lines
                 if ln.strip()
-                and not set(ln.strip()).issubset(set('.FEx[] |\t0123456789%u'))
-                and not ln.strip().lower().startswith(_NOISE_PREFIXES)
+                and not set(ln.strip()).issubset(set('.FEsx[] |\t0123456789%u'))
+                and not _is_noise_line(ln)
             ]
             if counts_line and counts_line not in meaningful:
                 meaningful.append(counts_line)
             summary = '\n'.join(meaningful) if meaningful else counts_line
+            if report_exists:
+                summary += (
+                    f'\n\n📄 [View full report]({get_base_url_fn()}/local/nibe_test_report.html)\n'
+                    '(large file — may take a moment to load. Left-click opens the '
+                    'HA dashboard instead of the report — right-click and choose '
+                    '"Open link in new tab" to view it.)'
+                )
         else:
             fail_lines = _extract_failure_lines(output)
             parts = fail_lines + ([counts_line] if counts_line else [])
@@ -320,7 +437,14 @@ def run_test_suite(
         # (sensor attributes tab). On pass: dismiss any previous failure
         # notification. On fail: send a focused notification showing the
         # failing test name and assertion, with a clickable report link.
-        if passed:
+        # On an intentional abort: no notification at all — nothing failed,
+        # the run just never got to finish, and sending a FAILED-looking
+        # notification for a deliberate shutdown would be actively
+        # misleading. Any previous failure notification is left alone
+        # (not dismissed) since this run's outcome is genuinely unknown.
+        if aborted:
+            pass
+        elif passed:
             dismiss_fn(mqtt_client, 'nibe_test_suite_result')
         else:
             _MAX_NOTIF = 2048
@@ -352,15 +476,20 @@ def run_test_suite(
                 else:
                     body = f'```\n{summary}\n```'
 
+            report_link = (
+                f'[View full report]({get_base_url_fn()}/local/nibe_test_report.html) '
+                '(right-click → "Open link in new tab" — left-click opens the HA '
+                'dashboard instead)'
+            )
             message = (
                 f'{timestamp} — {counts_line} — {elapsed_str}\n\n'
                 f'{body}\n\n'
-                f'[View full report]({get_base_url_fn()}/local/nibe_test_report.html)'
+                f'{report_link}'
             )
             if len(message) > _MAX_NOTIF:
                 message = (
-                    message[: _MAX_NOTIF - 60] + '\n…\n\n'
-                    f'[View full report]({get_base_url_fn()}/local/nibe_test_report.html)'
+                    message[: _MAX_NOTIF - len(report_link) - 10] + '\n…\n\n'
+                    f'{report_link}'
                 )
             notify_fn(
                 mqtt_client,

@@ -705,7 +705,10 @@ class ManagementCommandHandler:
 
     Instantiate and call ``register_all()`` once after management discovery
     configs have been published.  Each handler dispatches blocking work to
-    ``mgmt_executor`` so the MQTT callback thread is never held.
+    ``mgmt_executor`` so the MQTT callback thread is never held. The test
+    suite runner is the one exception: it uses its own single-worker
+    ``test_executor`` so a 25-30 minute run can't be starved by, or starve,
+    other management commands sharing ``mgmt_executor``.
     """
 
     def __init__(
@@ -714,11 +717,18 @@ class ManagementCommandHandler:
         entity_manager,
         publisher: MqttDiscoveryPublisher,
         mgmt_executor: concurrent.futures.ThreadPoolExecutor,
+        test_executor: concurrent.futures.ThreadPoolExecutor | None = None,
     ) -> None:
         self._mqtt     = mqtt_client
         self._em       = entity_manager
         self._pub      = publisher
         self._executor = mgmt_executor
+        # Dedicated executor for run_test_suite so a 25-30 minute test run
+        # can never be starved by (or starve) other management commands
+        # sharing mgmt_executor's fixed worker pool.
+        self._test_executor = test_executor or concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="nibe_test_runner"
+        )
         self._test_running = threading.Event()
 
     def register_all(self) -> None:
@@ -934,7 +944,7 @@ class ManagementCommandHandler:
             return
         self._test_running.set()
 
-        self._executor.submit(
+        self._test_executor.submit(
             run_test_suite,
             self._em.mqtt, notify_ha, dismiss_ha, _get_ha_base_url,
             self._test_running,

@@ -2737,15 +2737,16 @@ class TestShutdown(unittest.TestCase):
         pub            = MagicMock()
         watcher        = MagicMock()
         mgmt_exec      = MagicMock()
+        test_exec      = MagicMock()
         shutting_down  = [False]
         atexit_fn      = MagicMock()
 
         with patch('generate_nibe_mqtt.teardown_lovelace'), \
              patch.dict('os.environ', {}, clear=False):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
-            _shutdown(em, pub, mc, watcher, mgmt_exec, shutting_down, atexit_fn)
+            _shutdown(em, pub, mc, watcher, mgmt_exec, test_exec, shutting_down, atexit_fn)
 
-        return mc, watcher, mgmt_exec, shutting_down, atexit_fn
+        return mc, watcher, mgmt_exec, test_exec, shutting_down, atexit_fn
 
     def test_publishes_offline_for_all_active_entities(self):
         """_shutdown must publish 'offline' to every active entity's avail topic."""
@@ -2787,7 +2788,7 @@ class TestShutdown(unittest.TestCase):
              patch.dict('os.environ', {}, clear=False):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
             from generate_nibe_mqtt import _shutdown
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), [False], MagicMock())
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(), [False], MagicMock())
         results_by_topic['nibe/avail/100'].wait_for_publish.assert_called_once_with(timeout=2.0)
         results_by_topic[MGMT_AVAIL_TOPIC].wait_for_publish.assert_called_once_with(timeout=2.0)
 
@@ -2798,13 +2799,14 @@ class TestShutdown(unittest.TestCase):
         watcher.stop.assert_called_once()
 
     def test_shuts_down_executors(self):
-        """Both write and mgmt executors must be shut down."""
+        """The write, mgmt, and test-suite executors must all be shut down."""
         from generate_nibe_mqtt import _shutdown
         em            = _make_em()
         mc            = MagicMock()
         pub           = MagicMock()
         watcher       = MagicMock()
         mgmt_exec     = MagicMock()
+        test_exec     = MagicMock()
         shutting_down = [False]
         atexit_fn     = MagicMock()
 
@@ -2815,10 +2817,11 @@ class TestShutdown(unittest.TestCase):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
             instance = MockThread.return_value
             instance.is_alive.return_value = False
-            _shutdown(em, pub, mc, watcher, mgmt_exec, shutting_down, atexit_fn)
+            _shutdown(em, pub, mc, watcher, mgmt_exec, test_exec, shutting_down, atexit_fn)
 
-        # Two threads should have been created: one per executor
-        self.assertEqual(MockThread.call_count, 2)
+        # Three threads should have been created: one per executor
+        # (write, management, test suite)
+        self.assertEqual(MockThread.call_count, 3)
 
     def test_thread_targets_executor_shutdown_with_correct_kwargs(self):
         """Each Thread must target executor.shutdown with wait=True and
@@ -2835,7 +2838,7 @@ class TestShutdown(unittest.TestCase):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
             instance = MockThread.return_value
             instance.is_alive.return_value = False
-            _shutdown(em, MagicMock(), mc, watcher, mgmt_exec, [False], MagicMock())
+            _shutdown(em, MagicMock(), mc, watcher, mgmt_exec, MagicMock(), [False], MagicMock())
 
         for call in MockThread.call_args_list:
             self.assertEqual(
@@ -2846,13 +2849,13 @@ class TestShutdown(unittest.TestCase):
     def test_sets_shutting_down_flag(self):
         """shutting_down[0] must be True after _shutdown completes."""
         em = _make_em()
-        _, _, _, shutting_down, _ = self._run_shutdown(em)
+        _, _, _, _, shutting_down, _ = self._run_shutdown(em)
         self.assertTrue(shutting_down[0])
 
     def test_unregisters_atexit(self):
         """atexit_cleanup_fn must be unregistered to prevent double-disconnect."""
         em = _make_em()
-        _, _, _, _, atexit_fn = self._run_shutdown(em)
+        _, _, _, _, _, atexit_fn = self._run_shutdown(em)
         # atexit.unregister was called with the function
         # (can't easily assert atexit.unregister directly; check loop_stop called)
         em2 = _make_em()
@@ -2873,7 +2876,7 @@ class TestShutdown(unittest.TestCase):
              patch('generate_nibe_mqtt.atexit.unregister') as mock_unregister:
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
             from generate_nibe_mqtt import _shutdown
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(),
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
                       [False], real_atexit_fn)
         mock_unregister.assert_called_once_with(real_atexit_fn)
 
@@ -2887,7 +2890,7 @@ class TestShutdown(unittest.TestCase):
         with patch('generate_nibe_mqtt.teardown_lovelace'), \
              patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1'}), \
              patch('generate_nibe_mqtt._cleanup_mqtt_retained') as mock_cleanup:
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(),
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
                       shutting_down, MagicMock())
 
         mock_cleanup.assert_called_once_with(mc)
@@ -2908,7 +2911,7 @@ class TestShutdown(unittest.TestCase):
              patch.dict('os.environ', {}, clear=False), \
              patch('generate_nibe_mqtt.log_mqtt') as mock_log:
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(),
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
                       shutting_down, MagicMock())
 
         # Must have logged a warning, not raised
@@ -2938,7 +2941,7 @@ class TestShutdown(unittest.TestCase):
         with patch('generate_nibe_mqtt.teardown_lovelace'), \
              patch.dict('os.environ', {}, clear=False):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(),
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
                       shutting_down, MagicMock())
 
         # Offline must not have been published for the entity with no avail topic
@@ -3321,10 +3324,11 @@ class TestRunStartupSequence(unittest.TestCase):
 
         return result, em_instance, pub_instance, MockWatcher
 
-    def test_returns_four_tuple(self):
-        """Must return (entity_manager, publisher, registry_watcher, mgmt_executor)."""
+    def test_returns_five_tuple(self):
+        """Must return (entity_manager, publisher, registry_watcher,
+        mgmt_executor, test_executor)."""
         result, *_ = self._run()
-        self.assertEqual(len(result), 4)
+        self.assertEqual(len(result), 5)
 
     def test_entity_manager_configured_from_cfg(self):
         """bulk_interval, api_failure_threshold, changelog_retention_days must be set."""
@@ -3834,7 +3838,7 @@ class TestShutdownExecutorTimeout(unittest.TestCase):
             os.environ.pop('NIBE_REMOVE_FRONTEND', None)
             instance = MockThread.return_value
             instance.is_alive.return_value = True   # simulate timeout
-            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(),
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
                       [False], MagicMock())
 
         # Warning must mention the timeout
