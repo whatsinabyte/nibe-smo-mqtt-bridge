@@ -10,25 +10,26 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from hypothesis import example, given
-from hypothesis import strategies as st
-
 from conftest import (
     _make_em,
     _nibe_point_id,
 )
+from hypothesis import example, given, strategies as st
+
 
 class TestRetryDelay(unittest.TestCase):
     def setUp(self):
-        from nibe_api import _retry_delay, _RETRY_BASE_S, _RETRY_MAX_S
+        from nibe_api import _RETRY_BASE_S, _RETRY_MAX_S, _retry_delay
         self.fn = _retry_delay
         self.cap = min(_RETRY_BASE_S, _RETRY_MAX_S)
 
     def test_non_negative(self):
-        for _ in range(50): self.assertGreaterEqual(self.fn(), 0)  # noqa: E701
+        for _ in range(50):
+            self.assertGreaterEqual(self.fn(), 0)
 
     def test_within_bounds(self):
-        for _ in range(50): self.assertLessEqual(self.fn(), self.cap)  # noqa: E701
+        for _ in range(50):
+            self.assertLessEqual(self.fn(), self.cap)
 
     def test_values_vary(self):
         d = [self.fn() for _ in range(20)]
@@ -39,6 +40,7 @@ class TestRetryDelay(unittest.TestCase):
 class TestWritePointValidation(unittest.TestCase):
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -95,6 +97,15 @@ class TestWritePointValidation(unittest.TestCase):
                    return_value=self._resp({"5": "error: no such param"})):
             self.assertFalse(self.c.write_point(5, 1, self._ei()))
 
+    def test_explicit_null_metadata_does_not_crash(self):
+        """entity_info['metadata'] explicitly None (present but None, not
+        absent) must not crash — .get(key, {}) only supplies its default
+        for a missing key. With no min/max known, range checks are skipped
+        (not rejected) and the write proceeds normally."""
+        entity_info = {'is_writable': True, 'is_degenerate_range': False, 'metadata': None}
+        with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
+            self.assertTrue(self.c.write_point(1, 50, entity_info))  # must not raise
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
@@ -105,8 +116,9 @@ class TestWritePointValidationProperties(unittest.TestCase):
     """Hypothesis properties for write_point range validation."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -199,6 +211,7 @@ class TestRequestRetry(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -216,7 +229,7 @@ class TestRequestRetry(unittest.TestCase):
     def _http_error(self, code: int):
         import urllib.error
         e = urllib.error.HTTPError(url='', code=code, msg='err',
-                                   hdrs=None, fp=None)
+                                   hdrs={}, fp=None)  # type: ignore[arg-type]
         return e
 
     # ── successful request ────────────────────────────────────────────────────
@@ -357,8 +370,9 @@ class TestRequestRetryProperties(unittest.TestCase):
     """Hypothesis properties for NibeApiClient.request() retry logic."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -456,8 +470,9 @@ class TestWriteValidationBoundaries(unittest.TestCase):
     def test_boundary_values_accepted(self):
         """min and max boundary values must pass both validation layers."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -475,6 +490,7 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         """A value rejected by _parse_command_payload must also be rejected
         by write_point — both use the same minValue/maxValue from entity_info."""
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -496,8 +512,9 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         """is_degenerate_range=True must bypass range checks in both
         _parse_command_payload and write_point."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -550,6 +567,7 @@ class TestNibeApiClientMethods(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -565,10 +583,10 @@ class TestNibeApiClientMethods(unittest.TestCase):
         return r
 
     def _http_error(self, code: int, body: str = ""):
-        import urllib.error
         import io
+        import urllib.error
         fp = io.BytesIO(body.encode()) if body else None
-        e  = urllib.error.HTTPError(url='', code=code, msg='err', hdrs=None, fp=fp)
+        e  = urllib.error.HTTPError(url='', code=code, msg='err', hdrs={}, fp=fp)  # type: ignore[arg-type]
         if body:
             e.read = lambda: body.encode()  # type: ignore[method-assign, misc, assignment]
         return e
@@ -629,6 +647,15 @@ class TestNibeApiClientMethods(unittest.TestCase):
     def test_fetch_notifications_returns_empty_list_when_no_alarms(self):
         with patch('urllib.request.urlopen',
                    return_value=self._ok({'alarms': []})):
+            result = self.client.fetch_notifications()
+        self.assertEqual(result, [])
+
+    def test_fetch_notifications_explicit_null_alarms_returns_empty_list(self):
+        """"alarms": null (present but None, not just absent) must return
+        [] like the missing-key case — a bare None would otherwise crash
+        the sole caller's len(alarms) with TypeError."""
+        with patch('urllib.request.urlopen',
+                   return_value=self._ok({'alarms': None})):
             result = self.client.fetch_notifications()
         self.assertEqual(result, [])
 
@@ -825,8 +852,9 @@ class TestNibeApiRequestProperties(unittest.TestCase):
     """Hypothesis properties for NibeApiClient.request."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -933,8 +961,9 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
     """
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -963,9 +992,10 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
     @example(pid=1)       # small pid
     def test_404_result_is_always_none(self, pid):
         """HTTP 404 for any point_id always returns None."""
-        import urllib.error
-        from nibe_api import NibeApiClient
         import ssl
+        import urllib.error
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1004,8 +1034,9 @@ class TestNibeApiFetchNotificationsProperties(unittest.TestCase):
     """Hypothesis properties for NibeApiClient.fetch_notifications."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1056,8 +1087,9 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
     """Hypothesis properties for NibeApiClient.write_point."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1143,8 +1175,9 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
     """
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1285,8 +1318,9 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
     """Hypothesis properties for NibeApiClient.reset_notifications."""
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1381,8 +1415,9 @@ class TestNibeApiWritePointDegenerateProperties(unittest.TestCase):
     """
 
     def _client(self):
-        from nibe_api import NibeApiClient
         import ssl
+
+        from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1454,6 +1489,7 @@ class TestNibeApiRemainingPaths(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -1533,7 +1569,7 @@ class TestRetryDelayLowerBound(unittest.TestCase):
 
     def test_retry_delay_upper_bound_is_min_of_base_and_max(self):
         """Upper bound is min(_RETRY_BASE_S, _RETRY_MAX_S) — cap prevents runaway."""
-        from nibe_api import _retry_delay, _RETRY_BASE_S, _RETRY_MAX_S
+        from nibe_api import _RETRY_BASE_S, _RETRY_MAX_S, _retry_delay
         with patch('nibe_api.random.uniform', return_value=1.0) as mock_uniform:
             _retry_delay()
         args = mock_uniform.call_args[0]
@@ -1630,6 +1666,40 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
             self.client.request('https://192.0.2.1:8443/test', method='PATCH')
         self.assertTrue(captured)
         self.assertEqual(captured[0].get_method(), 'PATCH')
+
+    def test_default_method_is_get(self):
+        """request() called without an explicit method= must default to a
+        real GET request — not just some non-empty string. A mutation to
+        'get' (lowercase) or a garbled literal previously survived because
+        nothing called request() without an explicit method and checked
+        the actual method sent."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{}'
+        captured = []
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_response
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertTrue(captured)
+        self.assertEqual(captured[0].get_method(), 'GET')
+
+    def test_authorization_header_sent_with_configured_auth(self):
+        """The request must carry a real 'Authorization' header with the
+        client's configured auth value — a renamed/garbled header key
+        would silently break authentication against the Nibe device
+        while still 'succeeding' in every test that only checks the
+        response body, not the actual outgoing headers."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{}'
+        captured = []
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_response
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertTrue(captured)
+        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
 
 
 class TestWritePointIsWritableDefault(unittest.TestCase):
@@ -2047,3 +2117,533 @@ class TestWriteDeviceModePayloadAndUrl(unittest.TestCase):
         mock_resp.read.return_value = b'{}'
         with patch('urllib.request.urlopen', return_value=mock_resp):
             self.assertTrue(self.client.write_device_mode('smartmode', 'normal'))
+
+
+# ===========================================================================
+# Phase 2 round 4 — write_point PATCH payload / headers, and log-message
+# survivors that don't change the return value (must distinguish via the
+# actual log record, not just True/False).
+# ===========================================================================
+
+
+class TestWritePointPayloadAndHeaders(unittest.TestCase):
+    """write_point: exact PATCH payload structure and request headers.
+
+    mutmut survivors:
+    - payload = json.dumps(None) instead of the point dict/list.
+    - each payload dict key ('type', 'variableId', 'integerValue', 'stringValue')
+      renamed/uppercased.
+    - data=payload.encode() dropped or replaced with None.
+    - headers dict entirely dropped, or a header key/value mutated.
+    None of these are caught by existing tests, which only ever check the
+    boolean return value of write_point — they never inspect the actual
+    urllib.request.Request that gets sent to the device.
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.ssl_context = MagicMock()
+
+    def _entity(self):
+        # No min/max constraints so any value proceeds straight to the network.
+        return {'is_writable': True, 'is_degenerate_range': False,
+                'metadata': {'minValue': None, 'maxValue': None}}
+
+    def _capture(self, point_id):
+        captured = []
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({str(point_id): 'modified'}).encode()
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_resp
+        return captured, capture
+
+    def test_payload_is_single_element_list_of_dict(self):
+        """Payload must decode to a one-element list containing a dict.
+
+        Kills mutmut_52 (payload = json.dumps(None) → decodes to None, not a list)."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        self.assertTrue(captured, "urlopen was never called")
+        body = json.loads(captured[0].data.decode())
+        self.assertIsInstance(body, list)
+        self.assertEqual(len(body), 1)
+        self.assertIsInstance(body[0], dict)
+
+    def test_payload_keys_are_exact(self):
+        """Payload dict must have exactly these four keys — no more, no less.
+
+        Kills key-rename mutants (53/54/57-59/60-62/63-65): any renamed or
+        uppercased key changes this set."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        body = json.loads(captured[0].data.decode())[0]
+        self.assertEqual(set(body.keys()),
+                          {'type', 'variableId', 'integerValue', 'stringValue'})
+
+    def test_payload_type_field_value(self):
+        """'type' field must literally be 'datavalue'. Kills 55/56."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        body = json.loads(captured[0].data.decode())[0]
+        self.assertEqual(body['type'], 'datavalue')
+
+    def test_payload_variableId_matches_point_id(self):
+        """'variableId' must equal the point_id argument (a value chosen
+        independently of the mock's own response, not read back from it)."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        body = json.loads(captured[0].data.decode())[0]
+        self.assertEqual(body['variableId'], 777)
+
+    def test_payload_integerValue_matches_value_argument(self):
+        """'integerValue' must equal the raw value argument passed in."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        body = json.loads(captured[0].data.decode())[0]
+        self.assertEqual(body['integerValue'], 4321)
+
+    def test_payload_stringValue_is_always_none(self):
+        """'stringValue' must always be JSON null — this is an integer-only write."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        body = json.loads(captured[0].data.decode())[0]
+        self.assertIsNone(body['stringValue'])
+
+    def test_request_data_is_the_encoded_payload(self):
+        """req.data must actually be set (not None/omitted).
+
+        Kills mutmut_69 (data=None) and mutmut_73 (data= kwarg dropped
+        entirely, which also defaults to None on urllib.request.Request)."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        self.assertIsNotNone(captured[0].data)
+        # Round-trips to a JSON body — would raise on None.data before this point.
+
+    def test_request_headers_authorization(self):
+        """Authorization header must carry self.client.auth verbatim.
+
+        Kills 76/77/78 (key renamed/re-cased — urllib header lookup would miss)
+        and 74 (headers dict dropped entirely)."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+
+    def test_request_headers_accept(self):
+        """Accept header must be exactly 'application/json'. Kills 79-83."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+
+    def test_request_headers_content_type(self):
+        """Content-Type header must be exactly 'application/json'. Kills 84-88."""
+        point_id, value = 777, 4321
+        captured, capture = self._capture(point_id)
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_point(point_id, value, self._entity())
+        self.assertEqual(captured[0].get_header('Content-type'), 'application/json')
+
+
+class TestWritePointFullObjectMissingValueKey(unittest.TestCase):
+    """write_point: dv = point_resp.get('value', {}) default when 'value' is absent.
+
+    mutmut_102/104: default changed from {} to None. Both variants make
+    write_point() return False for a dict response missing the 'value' key —
+    but for different reasons: the real code falls into the documented
+    "isOk=False" error-log branch (dv.get('isOk') on an empty dict is falsy),
+    while the mutant crashes inside dv.get('isOk') (AttributeError on None)
+    and is caught by the generic `except Exception` handler, which logs an
+    "Unexpected error" message instead. The return value (False) is identical
+    either way, so only the specific log message distinguishes correct
+    behaviour from the mutant — verified here via assertLogs.
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic x'
+        self.client.ssl_context = MagicMock()
+
+    def _entity(self):
+        return {'is_writable': True, 'is_degenerate_range': False,
+                'metadata': {'minValue': 0, 'maxValue': 100}}
+
+    def test_dict_response_missing_value_key_returns_false(self):
+        """A dict response without 'value' must still return False (either path)."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"42": {}}).encode()
+        with patch('urllib.request.urlopen', return_value=mock_resp):
+            result = self.client.write_point(42, 1, self._entity())
+        self.assertIs(result, False)
+
+    def test_dict_response_missing_value_key_logs_isok_false_not_crash(self):
+        """The documented path must log the isOk=False error, not the generic
+        'Unexpected error' handler — proving dv defaults to {} not None."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"42": {}}).encode()
+        with patch('urllib.request.urlopen', return_value=mock_resp):
+            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
+                self.client.write_point(42, 1, self._entity())
+        joined = '\n'.join(ctx.output)
+        self.assertIn('isOk=False', joined)
+        self.assertNotIn('Unexpected error', joined)
+
+
+class TestWritePointErrorStringExactBranch(unittest.TestCase):
+    """write_point: == vs != for the two known error strings must select the
+    documented, specific log message — not silently fall through to the
+    generic 'unexpected API response' branch.
+
+    mutmut_121: point_resp == "error: no such param" → != (inverted)
+    mutmut_127: point_resp == "error: read only value" → != (inverted)
+    Both inversions still return False (every branch here returns False), so
+    a return-value assertion alone cannot distinguish them — existing tests
+    in TestWritePointErrorStringComparisons only check assertFalse(result).
+    These tests check which specific log message was emitted instead.
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic x'
+        self.client.ssl_context = MagicMock()
+
+    def _entity(self):
+        return {'is_writable': True, 'is_degenerate_range': False,
+                'metadata': {'minValue': 0, 'maxValue': 100}}
+
+    def _mock_response(self, point_id, response_value):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({str(point_id): response_value}).encode()
+        return mock_resp
+
+    def test_no_such_param_logs_register_does_not_exist(self):
+        """'error: no such param' must log the specific 'does not exist' message,
+        not the generic 'unexpected API response' fallback."""
+        with patch('urllib.request.urlopen',
+                   return_value=self._mock_response(100, 'error: no such param')):
+            with self.assertLogs('nibe.commands', level='ERROR') as ctx:
+                self.client.write_point(100, 50, self._entity())
+        joined = '\n'.join(ctx.output)
+        self.assertIn('does not exist in this firmware version', joined)
+        self.assertNotIn('unexpected API response', joined)
+
+    def test_read_only_value_logs_register_is_read_only(self):
+        """'error: read only value' must log the specific 'read-only' message,
+        not the generic 'unexpected API response' fallback."""
+        with patch('urllib.request.urlopen',
+                   return_value=self._mock_response(100, 'error: read only value')):
+            with self.assertLogs('nibe.commands', level='ERROR') as ctx:
+                self.client.write_point(100, 50, self._entity())
+        joined = '\n'.join(ctx.output)
+        self.assertIn('register is read-only', joined)
+        self.assertNotIn('unexpected API response', joined)
+
+
+class TestWritePointHttpErrorBodyDefault(unittest.TestCase):
+    """write_point HTTPError handler: body = "" default when e.read() itself
+    raises (can't read the error body at all).
+
+    mutmut_141: default changed from "" to None → error log prints 'None'.
+    mutmut_142: default changed from "" to "XXXX" → error log prints 'XXXX'.
+    Neither changes the return value (still False), only the logged body text
+    for the unreadable-body case — verified here via assertLogs.
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic x'
+        self.client.ssl_context = MagicMock()
+
+    def _entity(self):
+        return {'is_writable': True, 'is_degenerate_range': False,
+                'metadata': {'minValue': 0, 'maxValue': 100}}
+
+    def _unreadable_http_error(self, code):
+        import urllib.error
+        err = urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+        # e.read() itself raises, so the inner try/except never assigns `body`
+        # and the outer default is what ends up in the log message.
+        err.read = MagicMock(side_effect=OSError("body already consumed"))
+        return err
+
+    def test_unreadable_body_falls_back_to_empty_string_in_500_log(self):
+        """HTTP 500 with unreadable body: log must show body as '' (empty),
+        not 'None' or the mutant's 'XXXX' placeholder."""
+        with patch('urllib.request.urlopen',
+                   side_effect=self._unreadable_http_error(500)):
+            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
+                result = self.client.write_point(100, 50, self._entity())
+        self.assertIs(result, False)
+        # Find the final "Write HTTP 500 for point 100: <body>" record.
+        final = [line for line in ctx.output if 'Write HTTP 500 for point 100' in line]
+        self.assertTrue(final, f"expected a 'Write HTTP 500' log line, got: {ctx.output}")
+        self.assertTrue(final[0].endswith(': '),
+                         f"expected body to render as empty string, got: {final[0]!r}")
+        self.assertNotIn('None', final[0])
+        self.assertNotIn('XXXX', final[0])
+
+
+class TestRequestHeaders(unittest.TestCase):
+    """request(): exact header names/values sent on every call.
+
+    mutmut survivors:
+    - 'Authorization' key renamed/re-cased (5, 6).
+    - 'Accept' key renamed/re-cased (7, 8, 9) or its value changed (10, 11).
+    - 'Content-Type' key renamed/re-cased (14, 15) or value changed (16, 17),
+      only added when `data` is truthy (12: value replaced with None).
+    No existing test ever inspects request()'s header dict — every existing
+    test only checks the JSON body or the return value.
+    """
+
+    def setUp(self):
+        import ssl
+        from nibe_api import NibeApiClient
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        self.client = NibeApiClient('https://192.0.2.1:8443', 'Basic dXNlcjpwYXNz', ctx)
+
+    def _capture(self):
+        captured = []
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{}'
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_resp
+        return captured, capture
+
+    def test_authorization_header_present_and_correct(self):
+        """Authorization header must carry self.auth verbatim. Kills 5/6."""
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+
+    def test_accept_header_present_and_correct(self):
+        """Accept header must be exactly 'application/json'. Kills 7/8/9/10/11."""
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+
+    def test_content_type_header_only_set_when_data_provided(self):
+        """Content-Type must be absent with no data, and exactly
+        'application/json' when data is provided. Kills 12/14/15/16/17."""
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNone(captured[0].get_header('Content-type'),
+                           "Content-Type must not be set for a bodyless GET")
+
+        captured2, capture2 = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture2):
+            self.client.request('https://192.0.2.1:8443/test', data='{"x": 1}')
+        self.assertEqual(captured2[0].get_header('Content-type'), 'application/json')
+
+
+class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
+    """request(): the generic `except Exception` handler must log with
+    exc_info=True so the traceback is captured for debugging.
+
+    mutmut_59: exc_info=True → exc_info=False. This doesn't change the
+    return value (still None) or the formatted message text, only whether
+    the LogRecord carries exception/traceback info — verified here by
+    inspecting the captured LogRecord's exc_info attribute directly rather
+    than the formatted string.
+    """
+
+    def setUp(self):
+        import ssl
+        from nibe_api import NibeApiClient
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        self.client = NibeApiClient('https://192.0.2.1:8443', 'Basic x', ctx)
+
+    def test_unexpected_error_log_record_carries_exc_info(self):
+        """A non-network, non-HTTPError exception from urlopen must produce
+        a log record with exc_info populated (a real (type, value, tb) tuple)."""
+        with patch('urllib.request.urlopen', side_effect=ValueError("boom")):
+            with self.assertLogs('nibe.api', level='ERROR') as ctx:
+                result = self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNone(result)
+        matching = [r for r in ctx.records if 'Unexpected error' in r.getMessage()]
+        self.assertTrue(matching, f"expected an 'Unexpected error' record, got: {ctx.output}")
+        self.assertIsNotNone(matching[0].exc_info,
+                              "exc_info must be attached so tracebacks are logged")
+        self.assertIs(matching[0].exc_info[1].__class__, ValueError)
+
+
+class TestWriteDeviceModeHeaders(unittest.TestCase):
+    """write_device_mode: request headers must be present and correct.
+
+    mutmut survivors:
+    - 11: headers dict dropped entirely.
+    - 13, 16, 21: 'Authorization'/'Accept'/'Content-Type' keys mangled with
+      an XX marker (a genuinely different string, not just re-cased).
+    - 19, 20, 24, 25: header values mutated/re-cased.
+    (8/12 — method=None/dropped — and 14/15/17/18/22/23 — pure ASCII
+    case-only header key mutations — are equivalent: urllib.request.Request
+    normalizes header names via str.capitalize() and falls back to POST
+    for get_method() whenever data is present and method is unset, so the
+    actual outgoing request is byte-identical regardless of those specific
+    mutations. Verified empirically before being excluded here.)
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.ssl_context = MagicMock()
+
+    def _capture(self):
+        captured = []
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{}'
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_resp
+        return captured, capture
+
+    def test_authorization_header_present_and_correct(self):
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_device_mode('smartmode', 'away')
+        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+
+    def test_accept_header_present_and_correct(self):
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_device_mode('smartmode', 'away')
+        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+
+    def test_content_type_header_present_and_correct(self):
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.write_device_mode('smartmode', 'away')
+        self.assertEqual(captured[0].get_header('Content-type'), 'application/json')
+
+
+class TestWriteDeviceModeHttpErrorBodyDefault(unittest.TestCase):
+    """write_device_mode HTTPError handler: body = "" default when e.read()
+    itself raises. Mirrors TestWritePointHttpErrorBodyDefault but for
+    write_device_mode's independent copy of this fallback logic.
+
+    mutmut_29: default changed to None.
+    mutmut_30: default changed to "XXXX".
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic x'
+        self.client.ssl_context = MagicMock()
+
+    def _unreadable_http_error(self, code):
+        import urllib.error
+        err = urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+        err.read = MagicMock(side_effect=OSError("body already consumed"))
+        return err
+
+    def test_unreadable_body_falls_back_to_empty_string_in_500_log(self):
+        with patch('urllib.request.urlopen',
+                   side_effect=self._unreadable_http_error(500)):
+            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
+                result = self.client.write_device_mode('smartmode', 'away')
+        self.assertIs(result, False)
+        final = [line for line in ctx.output if 'Device mode smartmode failed: HTTP 500' in line]
+        self.assertTrue(final, f"expected a 'Device mode smartmode failed' log line, got: {ctx.output}")
+        self.assertTrue(final[0].endswith(' — '),
+                         f"expected body to render as empty string, got: {final[0]!r}")
+        self.assertNotIn('None', final[0])
+        self.assertNotIn('XXXX', final[0])
+
+
+class TestResetNotificationsHeaders(unittest.TestCase):
+    """reset_notifications: request headers must be present and correct.
+
+    mutmut survivors:
+    - 2: 'Authorization' key mangled to 'XXAuthorizationXX'.
+    - 5: 'Accept' key mangled to 'XXAcceptXX'.
+    - 8: 'Accept' value mangled to 'XXapplication/jsonXX'.
+    - 15: the headers=headers kwarg dropped from the Request() call entirely.
+    (3/4 and 6/7/9 — pure ASCII case-only key mutations — are equivalent for
+    the same urllib.request.Request normalization reason documented in
+    TestRequestHeaders/TestWriteDeviceModeHeaders.)
+    """
+
+    def setUp(self):
+        from nibe_api import NibeApiClient
+        self.client = NibeApiClient.__new__(NibeApiClient)
+        self.client.base_url = 'https://192.0.2.1:8443'
+        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.ssl_context = MagicMock()
+
+    def _capture(self):
+        captured = []
+        def capture(req, **kwargs):
+            captured.append(req)
+            return MagicMock()
+        return captured, capture
+
+    def test_authorization_header_present_and_correct(self):
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.reset_notifications()
+        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+
+    def test_accept_header_present_and_correct(self):
+        captured, capture = self._capture()
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.reset_notifications()
+        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+
+
+class TestNibeApiClientInit(unittest.TestCase):
+    """NibeApiClient.__init__ must store all three constructor arguments
+    verbatim on the instance.
+
+    mutmut_2: self.auth = auth → self.auth = None.
+    mutmut_3: self.ssl_context = ssl_context → self.ssl_context = None.
+    Every other test in this file bypasses __init__ via NibeApiClient.__new__
+    and sets attributes manually, so nothing else in the suite actually
+    exercises the constructor body.
+    """
+
+    def test_init_stores_base_url_auth_and_ssl_context(self):
+        import ssl
+        from nibe_api import NibeApiClient
+        ctx = ssl.create_default_context()
+        client = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0',
+                                'Basic dGVzdC1hdXRoLXZhbHVl', ctx)
+        self.assertEqual(client.base_url, 'https://192.0.2.9:8443/api/v1/devices/0')
+        self.assertEqual(client.auth, 'Basic dGVzdC1hdXRoLXZhbHVl')
+        self.assertIs(client.ssl_context, ctx)

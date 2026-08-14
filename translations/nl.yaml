@@ -70,7 +70,8 @@ configuration:
       handmatig inschakelt. Dit wordt toegepast bij het opstarten — wijzigen
       vereist een herstart van de add-on. Overschakelen naar een andere modus
       schakelt entiteiten uit die niet in de nieuwe selectie zitten, inclusief
-      entiteiten die u handmatig hebt ingeschakeld via de Entity Manager-kaart.
+      entiteiten die u handmatig hebt ingeschakeld via de Entity Manager-kaart
+      — deze blijven wel behouden bij een herstart in dezelfde modus.
       "essential" is het aanbevolen startpunt.
   log_level:
     name: Logniveau

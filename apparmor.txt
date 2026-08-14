@@ -7,7 +7,6 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
   capability dac_override,
   capability setuid,
   capability setgid,
-  capability net_bind_service,
 
   # Signal handling — allow clean shutdown from Supervisor
   signal (send,receive) set=(kill,term,int,hup,cont),
@@ -58,8 +57,15 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
   # Add-on data directory — options.json, flag files, dynamic map
   /data/**               rw,
 
-  # Mapped config volume — Lovelace card, test reports, secrets.yaml
-  /config/**             rw,
+  # Mapped config volume — the homeassistant_config map target actually
+  # mounts at /homeassistant in this container (confirmed empirically —
+  # /config does not exist here despite being the conventional name used
+  # elsewhere in HA add-on documentation). Lovelace card, test reports.
+  /homeassistant/**      rw,
+  # /config/secrets.yaml is only ever tried as a fallback candidate path
+  # (see generate_nibe_mqtt.py) — harmless to allow read access in case
+  # a future mount configuration ever does provide it.
+  /config/secrets.yaml   r,
 
   # Network — outbound TCP only (controller + MQTT broker)
   network tcp,

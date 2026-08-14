@@ -8,9 +8,17 @@ pytest-timeout>=2.3
 hypothesis>=6.0
 websocket-client>=1.6
 
+# JS card testing (development only — never installed in the Docker image;
+# no guaranteed prebuilt wheel on ARM64, and building the C extension isn't
+# worth requiring on an ODROID-M1 just for the on-device test button).
+# Lets test_card.py execute the real nibe-entity-manager-card.js instead of
+# a hand-written Python mirror of its logic. Tests skip cleanly if absent.
+quickjs>=1.19
+
 # Static analysis (development only — never installed in the Docker image)
 ruff>=0.9
 mypy>=1.0
+types-PyYAML>=6.0
 vulture>=2.0
 bandit>=1.8
 pip-audit>=2.0

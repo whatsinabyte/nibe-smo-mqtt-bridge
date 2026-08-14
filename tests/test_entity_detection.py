@@ -11,17 +11,16 @@ import unittest
 import urllib.error
 from unittest.mock import MagicMock, patch
 
-from hypothesis import assume, example, given
-from hypothesis import strategies as st
-
 from conftest import (
     _make_em,
-    _nibe_raw_value,
     _nibe_divisor,
     _nibe_point_id,
-    _unicode_text,
+    _nibe_raw_value,
     _nibe_title_chars,
+    _unicode_text,
 )
+from hypothesis import assume, example, given, strategies as st
+
 
 class TestApplyDivisor(unittest.TestCase):
     def setUp(self):
@@ -184,7 +183,7 @@ class TestReverseDivisorProperties(unittest.TestCase):
     @example(raw=-100,  divisor=10)    # negative value
     def test_roundtrip_with_apply_divisor(self, raw, divisor):
         """reverse_divisor(apply_divisor(raw, d), d) == raw."""
-        from nibe_entity_detection import reverse_divisor, apply_divisor
+        from nibe_entity_detection import apply_divisor, reverse_divisor
         display = float(apply_divisor(raw, divisor))
         result = reverse_divisor(display, divisor)
         self.assertEqual(result, raw)
@@ -203,7 +202,7 @@ class TestReverseDivisorProperties(unittest.TestCase):
            st.integers(min_value=1, max_value=1000))
     def test_always_returns_int(self, raw, divisor):
         """reverse_divisor always returns an int."""
-        from nibe_entity_detection import reverse_divisor, apply_divisor
+        from nibe_entity_detection import apply_divisor, reverse_divisor
         display = float(apply_divisor(raw, divisor))
         result = reverse_divisor(display, divisor)
         self.assertIsInstance(result, int)
@@ -335,6 +334,7 @@ class TestApplyDivisorExtendedProperties(unittest.TestCase):
     def test_decimal_places_bounded_by_divisor(self, raw_value, divisor):
         """For divisor ≥ 2, result has at most ceil(log10(divisor)) decimal places."""
         import math
+
         from nibe_entity_detection import apply_divisor
         result = apply_divisor(raw_value, divisor)
         max_dp = math.ceil(math.log10(divisor))
@@ -496,6 +496,17 @@ class TestIsSwitchAndNumberCandidateProperties(unittest.TestCase):
         from nibe_entity_detection import is_number_candidate
         self.assertFalse(is_number_candidate({'unit': ''}))
 
+    def test_explicit_null_unit_does_not_crash(self):
+        """metadata "unit": null (present but None, not just absent) must
+        not crash — .get(key, '') only supplies its default when the key
+        is missing entirely, not when it's present with a None value."""
+        from nibe_entity_detection import is_number_candidate
+        self.assertFalse(is_number_candidate({'unit': None}))
+
+    def test_missing_unit_key_not_number_candidate(self):
+        from nibe_entity_detection import is_number_candidate
+        self.assertFalse(is_number_candidate({}))
+
     def test_canonical_switch_shape_is_switch_candidate(self):
         from nibe_entity_detection import is_switch_candidate
         self.assertTrue(is_switch_candidate(self._holding_u8_binary))
@@ -575,7 +586,7 @@ class TestDetectEntityTypeProperties(unittest.TestCase):
 
     def test_overridden_point_returns_override_type(self):
         """ENTITY_TYPE_OVERRIDES always beats auto-detection."""
-        from nibe_entity_detection import detect_entity_type, ENTITY_TYPE_OVERRIDES
+        from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, detect_entity_type
         for pid, expected_type in list(ENTITY_TYPE_OVERRIDES.items())[:10]:
             point = self._point(pid)
             entity_type, _ = detect_entity_type(point)
@@ -1053,8 +1064,8 @@ class TestGetRegisterType(unittest.TestCase):
 
 class TestParseDescriptionMapping(unittest.TestCase):
     def setUp(self):
-        from nibe_entity_detection import parse_description_mapping
         import nibe_entity_detection as ned
+        from nibe_entity_detection import parse_description_mapping
         ned._description_mapping_cache.clear()
         self.fn = parse_description_mapping
 
@@ -1348,8 +1359,9 @@ class TestApiSpecConformance(unittest.TestCase):
     def test_patch_response_modified_string(self):
         """Spec documents "modified" as the success response string."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1365,8 +1377,9 @@ class TestApiSpecConformance(unittest.TestCase):
     def test_patch_response_no_such_param(self):
         """Spec documents "error: no such param" as a rejection string."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1382,8 +1395,9 @@ class TestApiSpecConformance(unittest.TestCase):
     def test_patch_response_read_only_value(self):
         """Spec documents "error: read only value" as a rejection string."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1481,8 +1495,9 @@ class TestApiSpecConformance(unittest.TestCase):
         name, manufacturer, firmwareId}.  Verify the bridge reads the fields
         it actually uses."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1511,8 +1526,9 @@ class TestApiSpecConformance(unittest.TestCase):
         """Spec defines alarms with: alarmId, description, header, severity,
         time, equipName.  Verify fetch_notifications returns these."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1544,8 +1560,9 @@ class TestApiSpecConformance(unittest.TestCase):
     def test_aidmode_valid_enum_values(self):
         """Spec: aidMode enum is exactly 'off' and 'on'."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -1562,8 +1579,9 @@ class TestApiSpecConformance(unittest.TestCase):
     def test_smartmode_valid_enum_values(self):
         """Spec: smartMode enum is exactly 'normal' and 'away'."""
         import ssl
+        from unittest.mock import MagicMock, patch
+
         from nibe_api import NibeApiClient
-        from unittest.mock import patch, MagicMock
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
@@ -2010,7 +2028,10 @@ class TestParseDescriptionMappingEdgeCases(unittest.TestCase):
         self.assertIsNone(parse_description_mapping(None))
 
     def test_result_is_cached(self):
-        from nibe_entity_detection import parse_description_mapping, _description_mapping_cache
+        from nibe_entity_detection import (
+            _description_mapping_cache,
+            parse_description_mapping,
+        )
         desc = '0=Off,1=On'
         parse_description_mapping(desc)
         self.assertIn(desc, _description_mapping_cache)
@@ -2026,7 +2047,10 @@ class TestParseDescriptionMappingEdgeCases(unittest.TestCase):
         """452->454: when _description_mapping_cache is at capacity,
         result is returned but not stored in the cache."""
         import nibe_entity_detection as ned
-        from nibe_entity_detection import parse_description_mapping, _description_mapping_cache
+        from nibe_entity_detection import (
+            _description_mapping_cache,
+            parse_description_mapping,
+        )
         _description_mapping_cache.clear()
         orig_max = ned._DESCRIPTION_CACHE_MAX
         try:
@@ -2048,7 +2072,7 @@ class TestGetValueMappingEdgeCases(unittest.TestCase):
     """get_value_mapping falls back to description when no manual entry."""
 
     def test_manual_mapping_takes_precedence(self):
-        from nibe_entity_detection import get_value_mapping, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, get_value_mapping
         # Use a point_id known to be in VALUE_MAPPINGS under 'holding'
         for pid in VALUE_MAPPINGS.get('holding', {}):
             result = get_value_mapping(pid, {}, register_type='holding')
@@ -2256,7 +2280,7 @@ class TestMapDeviceClassEdgeCases(unittest.TestCase):
     def test_unitless_keyword_class_returned_when_class_allows_no_unit(self):
         """A keyword that maps to a unitless class (e.g. 'enum') is returned
         even when the sensor has no unit — line 864."""
-        from nibe_entity_detection import map_device_class, _SENSOR_KEYWORD_RULES
+        from nibe_entity_detection import _SENSOR_KEYWORD_RULES, map_device_class
         # Patch a temporary unitless class rule so we can test the branch
         # without relying on a specific keyword in the real table.
         original = list(_SENSOR_KEYWORD_RULES)
@@ -2290,8 +2314,8 @@ class TestBinarySensorMultiStateExclusion(unittest.TestCase):
         """A point that looks binary by shape (u8, min=0, max=1) but has
         a 3-state VALUE_MAPPINGS entry must be excluded from binary_sensor
         auto-detection — the firmware enum is the ground truth."""
-        from nibe_entity_detection import _is_auto_binary_sensor
         import nibe_entity_detection as ned
+        from nibe_entity_detection import _is_auto_binary_sensor
         test_pid = 88888
         # minValue=0, maxValue=1 → passes the shape checks
         # but VALUE_MAPPINGS has 3 states → must return False
@@ -2357,7 +2381,7 @@ class TestEntityDetectionRemainingPaths2(unittest.TestCase):
 
     def test_holding_register_with_value_mapping_returns_select(self):
         """A writable holding register with a VALUE_MAPPINGS entry → select."""
-        from nibe_entity_detection import detect_entity_type, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, detect_entity_type
         holding = VALUE_MAPPINGS.get('holding', {})
         if not holding:
             self.skipTest('No holding VALUE_MAPPINGS defined')
@@ -2471,7 +2495,10 @@ class TestEntityDetectionRemainingPaths(unittest.TestCase):
     def test_binary_sensor_exclusion_id_returns_false(self):
         """A point whose ID is in _BINARY_SENSOR_EXCLUSIONS must not be
         classified as binary_sensor even if it meets all other criteria."""
-        from nibe_entity_detection import _is_auto_binary_sensor, _BINARY_SENSOR_EXCLUSIONS
+        from nibe_entity_detection import (
+            _BINARY_SENSOR_EXCLUSIONS,
+            _is_auto_binary_sensor,
+        )
         excluded_id = next(iter(_BINARY_SENSOR_EXCLUSIONS))
         point = {'variableId': excluded_id, 'description': ''}
         result = _is_auto_binary_sensor(point, self._binary_candidate_metadata())
@@ -2480,7 +2507,7 @@ class TestEntityDetectionRemainingPaths(unittest.TestCase):
     def test_binary_sensor_value_mapping_more_than_2_states_returns_false(self):
         """A point in VALUE_MAPPINGS['input'] with >2 states must not be
         classified as binary_sensor."""
-        from nibe_entity_detection import _is_auto_binary_sensor, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, _is_auto_binary_sensor
         inp = VALUE_MAPPINGS.get('input', {})
         multi_state_id = next(pid for pid, m in inp.items() if len(m) > 2)
         point = {'variableId': multi_state_id, 'description': ''}
@@ -3042,7 +3069,7 @@ class TestGetEntityOptionsHoldingCheck(unittest.TestCase):
 
     def test_input_register_type_detected_correctly(self):
         """No 'HOLDING' in 'MODBUS_INPUT_REGISTER' → register_type='input'."""
-        from nibe_entity_detection import get_entity_options, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, get_entity_options
         meta = {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
                 'minValue': 0, 'maxValue': 1}
         known_input_id = next(iter(VALUE_MAPPINGS.get('input', {0: None})), None)
@@ -3266,5 +3293,237 @@ class TestDetectEntityTypeDispatch(unittest.TestCase):
         p = self._point('MODBUS_HOLDING_REGISTER')
         p['metadata']['isWritable'] = False
         et, cat = detect_entity_type(p)
+        self.assertEqual(et, 'sensor')
+        self.assertEqual(cat, 'diagnostic')
+
+
+class TestMutmutPhase2Survivors(unittest.TestCase):
+    """Phase 2 mutmut survivor closure for nibe_entity_detection.py.
+
+    Each test below targets a specific real (non-log-text, non-equivalent)
+    surviving mutant identified by inspecting `mutmut show` diffs directly —
+    not guessed from reading the source alone. The large remainder of the
+    188 Phase 2 survivors for this module were judged equivalent after
+    tracing them by hand:
+
+      - Mutations to log-message string content (case/wording changes) —
+        never observable via return value.
+      - Mutations inside the floating-point / binary variableType branches
+        of _detect_holding_entity / _detect_input_entity, which only log
+        and always fall through with no `return` — the branch condition
+        cannot affect the function's return value.
+      - `.get(key, default)` default-value swaps where the real key is
+        always present in the dict being queried (e.g. VALUE_MAPPINGS has
+        both "input" and "holding" keys unconditionally), so the default
+        is structurally unreachable.
+      - `.get(key, default)` default-value swaps where every candidate
+        default (e.g. '', None, 'XXXX') is equally non-matching against
+        the values compared against downstream, so the branch taken is
+        identical regardless of which default is used.
+      - `_detect_input_entity`'s tail branches, which all converge on the
+        same return value ("sensor", "diagnostic") whichever branch is
+        taken, except for the two branches covered by
+        test_detect_input_entity_value_mapping_sensor_content and
+        test_detect_input_entity_description_branch_category below.
+      - `apply_divisor`/`reverse_divisor`'s `divisor != 0` vs `divisor !=
+        1` swaps, which are unobservable because divisor is always an int
+        and 0/1 are the only values where the two conditions could differ,
+        and both give the same effective result at those values.
+      - `map_device_class`'s tuple-membership and truthy/falsy-init swaps,
+        which are masked by the function's own redundant second check
+        (entity_type in ("binary_sensor", "number")) or by dict lookups
+        that return None for the mutated key either way.
+    """
+
+    # ── clean_string: strip() character-set mutations ─────────────────────
+
+    def test_clean_string_strip_double_quote_charset(self):
+        """strip('"') must only strip quote chars, not stray 'X' chars —
+        distinguishes strip('"') from the mutant strip('XX"XX')."""
+        from nibe_entity_detection import clean_string
+        self.assertEqual(clean_string('Xhello"'), 'Xhello')
+
+    def test_clean_string_strip_single_quote_charset(self):
+        """strip("'") must only strip apostrophe chars, not stray 'X' chars —
+        distinguishes strip("'") from the mutant strip("XX'XX")."""
+        from nibe_entity_detection import clean_string
+        self.assertEqual(clean_string("Xworld'"), 'Xworld')
+
+    # ── clean_unit: _UNIT_NORMALISE lookup must use the cleaned string ─────
+
+    def test_clean_unit_normalises_days_using_cleaned_key(self):
+        """_UNIT_NORMALISE.get(cleaned, cleaned) must look up by `cleaned`,
+        not None — 'days' is only remapped to 'd' if the real key is used."""
+        from nibe_entity_detection import clean_unit
+        self.assertEqual(clean_unit('days'), 'd')
+
+    # ── get_value_mapping: unknown register_type must not crash ────────────
+
+    def test_get_value_mapping_unknown_register_type_returns_none(self):
+        """VALUE_MAPPINGS.get(register_type, {}) must default to {} (not None)
+        for an unrecognised register_type, or the follow-up .get(point_id)
+        raises AttributeError on None.get()."""
+        from nibe_entity_detection import get_value_mapping
+        result = get_value_mapping(1, {'description': ''}, register_type='bogus')
+        self.assertIsNone(result)
+
+    # ── get_entity_options: register_type selection must pick the right table ─
+
+    def test_get_entity_options_holding_register_uses_holding_table(self):
+        """A HOLDING register must resolve register_type='holding' and read
+        VALUE_MAPPINGS['holding'][3745] (language select) — not 'input'."""
+        from nibe_entity_detection import get_entity_options
+        options = get_entity_options(
+            3745, {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}, ''
+        )
+        self.assertEqual(len(options), 25)
+        self.assertEqual(options[0], 'English')
+
+    def test_get_entity_options_input_register_uses_input_table(self):
+        """A non-HOLDING register must resolve register_type='input' and read
+        VALUE_MAPPINGS['input'][1758] (priority select) — not 'holding'."""
+        from nibe_entity_detection import get_entity_options
+        options = get_entity_options(
+            1758, {'modbusRegisterType': 'MODBUS_INPUT_REGISTER'}, ''
+        )
+        self.assertEqual(options, ['Off', 'Hot water', 'Heating', 'Pool', 'Cooling'])
+
+    # ── is_switch_candidate: each metadata key must be read under its own name ─
+
+    def test_is_switch_candidate_reads_actual_min_value(self):
+        """A present-but-nonzero minValue must be read by its real key —
+        a wrong-key mutant falls back to the default 0 and wrongly passes."""
+        from nibe_entity_detection import is_switch_candidate
+        metadata = {
+            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+            'unit': '', 'variableSize': 'u8',
+            'minValue': 5, 'maxValue': 1, 'divisor': 1,
+        }
+        self.assertFalse(is_switch_candidate(metadata))
+
+    def test_is_switch_candidate_reads_actual_divisor(self):
+        """A present-but-nonone divisor must be read by its real key —
+        a wrong-key mutant falls back to the default 1 and wrongly passes."""
+        from nibe_entity_detection import is_switch_candidate
+        metadata = {
+            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+            'unit': '', 'variableSize': 'u8',
+            'minValue': 0, 'maxValue': 1, 'divisor': 5,
+        }
+        self.assertFalse(is_switch_candidate(metadata))
+
+    # ── _is_auto_binary_sensor: real logic-affecting branches ──────────────
+
+    def test_is_auto_binary_sensor_requires_or_not_and_between_first_clauses(self):
+        """The guard clause is a chain of `or`s — variableSize=='u8' (first
+        clause False) combined with minValue!=0 (second clause True) must
+        still short-circuit to 'not a candidate' via `or`, not require both
+        via `and`."""
+        from nibe_entity_detection import _is_auto_binary_sensor
+        point = {'variableId': 999901}
+        metadata = {
+            'variableSize': 'u8', 'minValue': 5, 'maxValue': 1,
+            'unit': '', 'isWritable': False,
+        }
+        self.assertFalse(_is_auto_binary_sensor(point, metadata))
+
+    def test_is_auto_binary_sensor_default_max_value_rejects_when_absent(self):
+        """When maxValue is absent from metadata, the default used for the
+        comparison must be a number (99) that correctly rejects the point —
+        a None default raises TypeError on `None > 1`."""
+        from nibe_entity_detection import _is_auto_binary_sensor
+        point = {'variableId': 999902}
+        metadata = {'variableSize': 'u8', 'minValue': 0, 'unit': '', 'isWritable': False}
+        self.assertFalse(_is_auto_binary_sensor(point, metadata))
+
+    def test_is_auto_binary_sensor_exactly_two_states_is_still_binary(self):
+        """A VALUE_MAPPINGS entry with exactly 2 states (point 1838: Off/On)
+        must NOT be rejected — only > 2 states disqualifies it, not >= 2."""
+        from nibe_entity_detection import _is_auto_binary_sensor
+        point = {'variableId': 1838}
+        metadata = {
+            'variableSize': 'u8', 'minValue': 0, 'maxValue': 1,
+            'unit': '', 'isWritable': False,
+        }
+        self.assertTrue(_is_auto_binary_sensor(point, metadata))
+
+    # ── detect_entity_type: metadata-missing safety + override category ────
+
+    def test_detect_entity_type_missing_metadata_key_does_not_crash(self):
+        """point.get('metadata', {}) must default to {} (not None) when the
+        'metadata' key is absent, or the subsequent .get() on it raises."""
+        from nibe_entity_detection import detect_entity_type
+        point = {'variableId': 999903}
+        et, cat = detect_entity_type(point)
+        self.assertEqual(et, 'sensor')
+        self.assertEqual(cat, 'diagnostic')
+
+    def test_detect_entity_type_override_to_non_config_type_is_diagnostic(self):
+        """An ENTITY_TYPE_OVERRIDES target that is NOT in CONFIG_ENTITY_TYPES
+        (e.g. 'binary_sensor' for point 22077) must get category='diagnostic',
+        not a mutated string that happens to still be truthy."""
+        from nibe_entity_detection import detect_entity_type
+        point = {
+            'variableId': 22077,
+            'metadata': {
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'variableSize': 'u8', 'minValue': 0, 'maxValue': 1,
+                'unit': '', 'isWritable': True,
+            },
+        }
+        et, cat = detect_entity_type(point)
+        self.assertEqual(et, 'binary_sensor')
+        self.assertEqual(cat, 'diagnostic')
+
+    # ── _detect_holding_entity: select-branch category must be 'config' ────
+
+    def test_detect_holding_entity_value_mapping_select_category(self):
+        """The VALUE_MAPPINGS-based select branch must return category
+        'config', not a mutated string."""
+        from nibe_entity_detection import _detect_holding_entity
+        point = {'variableId': 3745, 'description': ''}
+        metadata = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER', 'isWritable': True}
+        et, cat = _detect_holding_entity(point, metadata)
+        self.assertEqual(et, 'select')
+        self.assertEqual(cat, 'config')
+
+    def test_detect_holding_entity_description_select_category(self):
+        """The description-enum-based select branch must return category
+        'config', not a mutated string."""
+        from nibe_entity_detection import _detect_holding_entity
+        point = {'variableId': 999904, 'description': '0=Off, 1=On'}
+        metadata = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER', 'isWritable': True}
+        et, cat = _detect_holding_entity(point, metadata)
+        self.assertEqual(et, 'select')
+        self.assertEqual(cat, 'config')
+
+    # ── _detect_input_entity: the two branches whose return VALUE differs ──
+
+    def test_detect_input_entity_value_mapping_sensor_content(self):
+        """The VALUE_MAPPINGS-based branch must return the literal string
+        'sensor', not a mutated case/content variant. Point 1758 is in
+        VALUE_MAPPINGS['input'] but excluded from binary_sensor auto-detect
+        (multi-state priority register), so this branch is the one taken."""
+        from nibe_entity_detection import _detect_input_entity
+        point = {'variableId': 1758, 'description': ''}
+        metadata = {
+            'variableType': 'integer', 'variableSize': 'u8',
+            'minValue': 0, 'maxValue': 60, 'unit': '', 'isWritable': False,
+        }
+        et, cat = _detect_input_entity(point, metadata)
+        self.assertEqual(et, 'sensor')
+        self.assertEqual(cat, 'diagnostic')
+
+    def test_detect_input_entity_description_branch_category(self):
+        """The description-enum-based branch (reached when the point is not
+        u8-shaped, so not auto-binary, and not in VALUE_MAPPINGS) must
+        return category 'diagnostic', not a mutated string."""
+        from nibe_entity_detection import _detect_input_entity
+        point = {'variableId': 999905, 'description': '0=Low, 1=High'}
+        metadata = {
+            'variableType': 'integer', 'variableSize': 'u16',
+            'minValue': 0, 'maxValue': 1000, 'unit': '', 'isWritable': False,
+        }
+        et, cat = _detect_input_entity(point, metadata)
         self.assertEqual(et, 'sensor')
         self.assertEqual(cat, 'diagnostic')

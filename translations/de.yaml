@@ -1,0 +1,159 @@
+configuration:
+  nibe_host:
+    name: IP-Adresse des Reglers
+    description: >-
+      IP-Adresse oder Hostname Ihres Nibe S-Series Reglers in Ihrem
+      lokalen Netzwerk. Es wird dringend empfohlen, über Ihren Router
+      eine statische IP-Adresse zuzuweisen.
+  nibe_port:
+    name: API-Port des Reglers
+    description: >-
+      HTTPS-Port der lokalen REST-API des Reglers. Der Standardwert 8443
+      ist für alle S-Series-Produkte korrekt und muss normalerweise
+      nicht geändert werden.
+  nibe_username:
+    name: API-Benutzername des Reglers
+    description: >-
+      Benutzername, der im Service-Menü des Reglers (Menü 7.5.15)
+      festgelegt wurde. Muss exakt mit dem auf dem Regler konfigurierten
+      Wert übereinstimmen.
+  nibe_password:
+    name: API-Passwort des Reglers
+    description: >-
+      Passwort, das im Service-Menü des Reglers (Menü 7.5.15) festgelegt
+      wurde. Groß-/Kleinschreibung wird beachtet.
+  mqtt_host:
+    name: Hostname des MQTT-Brokers
+    description: >-
+      Hostname oder IP-Adresse Ihres MQTT-Brokers. Der Standardwert
+      "core-mosquitto" funktioniert mit dem offiziellen Mosquitto-Add-on.
+      Verwenden Sie für andere Broker eine IP-Adresse oder einen
+      Hostnamen.
+  mqtt_port:
+    name: Port des MQTT-Brokers
+    description: >-
+      TCP-Port Ihres MQTT-Brokers. Der Standardwert 1883 ist der übliche
+      unverschlüsselte MQTT-Port. Wenn Sie unten "MQTT TLS" aktivieren,
+      ändern Sie diesen auf 8883 (den üblichen verschlüsselten Port, den
+      Mosquitto verwendet).
+  mqtt_username:
+    name: MQTT-Benutzername
+    description: >-
+      Benutzername für die Authentifizierung am MQTT-Broker. Leer
+      lassen, wenn Ihr Broker keine Authentifizierung erfordert.
+  mqtt_password:
+    name: MQTT-Passwort
+    description: >-
+      Passwort für die Authentifizierung am MQTT-Broker. Leer lassen,
+      wenn Ihr Broker keine Authentifizierung erfordert.
+  device_name:
+    name: Gerätename
+    description: >-
+      Wie der Regler in Home Assistant angezeigt wird. Standardmäßig
+      "Nibe SMO S40", Sie können dies aber an Ihre tatsächliche Hardware
+      anpassen (z. B. "Nibe S1155" oder "Nibe VVM S320").
+  poll_interval:
+    name: Abfrageintervall
+    description: >-
+      Wie oft alle Datenpunkte vom Regler abgerufen werden, in Sekunden.
+      30 Sekunden werden empfohlen. Der Regler ist ein eingebettetes
+      Gerät — seine REST-API ist der Hauptaufgabe, Ihre Wärmepumpe zu
+      steuern, nachgeordnet. Nach Ändern dieser Einstellung ist ein
+      Neustart erforderlich.
+  mode:
+    name: Entitätsmodus
+    description: >-
+      Welche Gruppe von Entitäten die Bridge bereitstellt: "essential"
+      umfasst Kerntemperaturen, Warmwasserstatus, Energiesummen und
+      grundlegende Sollwerte — ein guter Ausgangspunkt für jede
+      Installation. "monitoring" fügt Vor-/Rücklaufleitungen,
+      Kompressorstatus und Effizienzindikatoren hinzu. "advanced" fügt
+      den vollständigen Kältekreislauf und Feinabstimmungsregister
+      hinzu. "menus" stellt jeden Punkt bereit, der für das
+      Nibe-Menüs-Dashboard benötigt wird, und erstellt dieses Dashboard.
+      "all" stellt jeden erkannten Punkt bereit; "none" stellt nichts
+      bereit, bis Sie Entitäten manuell aktivieren. Dies wird beim Start
+      angewendet — eine Änderung erfordert einen Neustart des Add-ons,
+      und ein Wechsel in einen anderen Modus deaktiviert Entitäten, die
+      nicht im neu ausgewählten Satz enthalten sind — auch Entitäten,
+      die Sie manuell über die Entity-Manager-Karte aktiviert haben,
+      werden beim Moduswechsel entfernt, bleiben aber bei einem Neustart
+      im selben Modus erhalten. "essential" ist der empfohlene
+      Ausgangspunkt.
+  log_level:
+    name: Protokollstufe
+    description: >-
+      Ausführlichkeit des Add-on-Protokolls. "info" wird für den
+      normalen Gebrauch empfohlen. Verwenden Sie "debug", um
+      Verbindungs- oder Entitätsprobleme zu diagnostizieren — dies
+      erzeugt eine große Menge an Ausgaben und sollte danach wieder auf
+      "info" zurückgesetzt werden.
+  debug_mode:
+    name: Debug-Modus
+    description: >-
+      Aktiviert die Testsuite-Schaltfläche und den Ergebnissensor auf
+      dem Management-Gerät. Nützlich, um die nächtliche Testsuite
+      auszuführen, ohne die Protokollstufe auf debug zu setzen. Wenn
+      log_level auf "debug" gesetzt ist, werden die
+      Testsuite-Entitäten unabhängig von dieser Einstellung ebenfalls
+      angezeigt.
+  api_failure_threshold:
+    name: Schwellenwert für API-Fehler
+    description: >-
+      Anzahl aufeinanderfolgender fehlgeschlagener Abfragen, bevor eine
+      dauerhafte Benachrichtigung in der HA-Benachrichtigungsglocke
+      erscheint. Der Standardwert 3 bedeutet drei aufeinanderfolgende
+      Fehlschläge (90 Sekunden beim Standardintervall), bevor gewarnt
+      wird. Erhöhen Sie diesen Wert bei einem instabilen Netzwerk, um
+      Fehlalarme zu vermeiden.
+  changelog_retention_days:
+    name: Aufbewahrung des Änderungsprotokolls (Tage)
+    description: >-
+      Wie viele Tage Einträge im Änderungsprotokoll des Entity Managers
+      aufbewahrt werden, bevor sie entfernt werden. Einträge, die älter
+      sind, werden bei jedem Neustart der Bridge entfernt. Der
+      Standardwert von 90 Tagen eignet sich für die meisten
+      Installationen.
+  remove_frontend:
+    name: Frontend beim Herunterfahren entfernen
+    description: >-
+      Auf true setzen, bevor Sie das Add-on stoppen, um beim nächsten
+      normalen Herunterfahren automatisch das Nibe-Bridge-Dashboard, die
+      Lovelace-Ressourcenregistrierung, die Kartendatei und alle
+      beibehaltenen MQTT-Nachrichten zu entfernen. Nur bei der
+      Deinstallation verwenden. Normale Neustarts sind davon nicht
+      betroffen. Siehe die Dokumentation für das vollständige
+      Deinstallationsverfahren.
+  nibe_ca_cert:
+    name: Pfad zum CA-Zertifikat des Nibe-Reglers
+    description: >-
+      Optional. Absoluter Pfad zu einer CA-Zertifikatsdatei im
+      PEM-Format, die zur Verifizierung des HTTPS-Zertifikats des
+      Reglers verwendet wird. Wenn gesetzt, werden vollständige
+      TLS-Kettenverifizierung und Hostnamenprüfung für alle API-Aufrufe
+      an den Regler aktiviert. Leer lassen, um das eingebaute
+      selbstsignierte Zertifikat des Reglers ohne Verifizierung zu
+      akzeptieren — dies ist die Standardeinstellung und in einem
+      vertrauenswürdigen Heimnetzwerk akzeptabel, bedeutet aber, dass
+      ein Man-in-the-Middle-Angriff in Ihrem LAN den Datenverkehr zum
+      Regler abfangen könnte. Beispiel: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Aktiviert die TLS-Verschlüsselung für den gesamten Datenverkehr
+      zwischen der Bridge und dem MQTT-Broker. Schützt Ihre
+      MQTT-Zugangsdaten und alle Entitätsbefehle davor, von anderen
+      Geräten im lokalen Netzwerk gelesen zu werden. Erfordert, dass Ihr
+      Broker für TLS konfiguriert ist — ändern Sie den "MQTT broker
+      port" auf 8883, wenn Sie das Mosquitto-Add-on verwenden.
+      Standardmäßig deaktiviert.
+  mqtt_ca_cert:
+    name: Pfad zum CA-Zertifikat des MQTT-Brokers
+    description: >-
+      Optional. Wird nur verwendet, wenn "MQTT TLS" aktiviert ist.
+      Absoluter Pfad zu einer CA-Zertifikatsdatei im PEM-Format, die zur
+      Verifizierung des TLS-Zertifikats des Brokers verwendet wird. Leer
+      lassen, um den System-CA-Speicher zu verwenden, was für Broker mit
+      einem von einer öffentlichen CA signierten Zertifikat korrekt ist.
+      Setzen Sie dies, wenn Ihr Broker ein selbstsigniertes oder privat
+      signiertes Zertifikat verwendet. Beispiel: /ssl/mqtt-ca.pem

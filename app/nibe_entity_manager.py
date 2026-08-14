@@ -17,17 +17,19 @@ Responsibilities
 - Persistent changelog: recording dynamic point appearances/disappearances
   in MQTT so the frontend card can display history across sessions.
 - Value cache: suppressing redundant MQTT publishes via change-threshold
-  and minimum-interval guards (ValueCache).
+  and minimum-interval guards (ValueCache, imported from nibe_caching.py).
 
 What this module does NOT do
 -----------------------------
 - No raw HTTP (all API calls go through NibeApiClient).
 - No topic string construction (all MQTT publishing through MqttDiscoveryPublisher).
 - No HA registry watching or notification sending.
+- No generic caching primitives — ValueCache and LRUCache live in
+  nibe_caching.py; they have no dependency on EntityManager and are
+  reused as plain data structures (e.g. entity-type detection caching).
 
 Public surface
 --------------
-ValueCache
 EntityManager(api_client, publisher, notify_fn, dismiss_fn, mqtt_client)
     .discover_points()
     .scan_mqtt_discovery()  → set[int]
@@ -56,22 +58,25 @@ import threading
 import time
 import urllib.error
 import uuid
-from collections import deque, OrderedDict
+from collections import deque
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import date as _date, timedelta as _timedelta
+from typing import Any
 
-from nibe_utils import fmt_ts as _fmt_ts
+from nibe_caching import LRUCache, ValueCache
 from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
 from nibe_entity_detection import (
     MODES,
+    apply_divisor,
     clean_string,
     detect_entity_type,
     get_register_type,
     get_value_mapping,
-    apply_divisor,
     reverse_divisor,
 )
-from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_config
+from nibe_utils import fmt_ts as _fmt_ts
 
 log_api       = logging.getLogger("nibe.api")
 log_mqtt      = logging.getLogger("nibe.mqtt")
@@ -159,145 +164,6 @@ def _decompress_payload(payload: bytes | str) -> bytes:
 
     compressed = base64.b64decode(text[len(_GZIP_SENTINEL):])
     return gzip.decompress(compressed)
-
-# ============================================================================
-# VALUE CACHE
-# ============================================================================
-
-class ValueCache:
-    """Rate-limits MQTT state publishes via a change-threshold and minimum interval.
-
-    Without this cache every bulk fetch would republish every entity on every
-    poll cycle regardless of whether the value changed, producing unnecessary
-    MQTT traffic and HA history entries.
-
-    _cache stores the last-published raw integer value per point_id.
-    _last_publish stores the timestamp of the last publish per point_id.
-    These are kept separate so _cache stays a simple int lookup.
-    """
-    __slots__ = ('_cache', '_last_publish', '_lock')
-
-    def __init__(self):
-        self._cache        = {}   # point_id → last published raw int value
-        self._last_publish = {}   # point_id → timestamp of last publish
-        self._lock         = threading.Lock()
-
-    def should_publish(
-        self,
-        point_id: int,
-        raw_value: int,
-        threshold: int,
-        force: bool = False,
-        min_interval: int = 30,
-    ) -> bool:
-        """Return True if the value warrants publishing to MQTT."""
-        current_time = time.time()
-        with self._lock:
-            if force or point_id not in self._cache:
-                self._cache[point_id]        = raw_value
-                self._last_publish[point_id] = current_time
-                return True
-
-            if point_id in self._last_publish:
-                if current_time - self._last_publish[point_id] < min_interval and not force:
-                    return False
-
-            old_value = self._cache[point_id]
-            if abs(raw_value - old_value) >= threshold:
-                self._cache[point_id]        = raw_value
-                self._last_publish[point_id] = current_time
-                return True
-        return False
-
-    def update(self, point_id: int, raw_value: int) -> None:
-        """Update cached value without triggering a publish decision."""
-        with self._lock:
-            self._cache[point_id] = raw_value
-
-    def discard(self, point_id: int) -> None:
-        """Remove all cached state for a point (called on entity disable)."""
-        with self._lock:
-            self._cache.pop(point_id, None)
-            self._last_publish.pop(point_id, None)
-
-
-class LRUCache:
-    """Memory-efficient LRU (Least Recently Used) cache with automatic cleanup.
-    
-    This cache automatically removes least recently used items when the cache
-    exceeds its maximum size, making it ideal for caching data where some
-    items are more important than others.
-    
-    Parameters
-    ----------
-    max_size : int
-        Maximum number of items to keep in cache. When exceeded, LRU items are removed.
-    """
-    
-    def __init__(self, max_size: int = 1000):
-        self.max_size = max_size
-        self._cache: OrderedDict = OrderedDict()  # OrderedDict maintains insertion order
-        self._hits = 0
-        self._misses = 0
-    
-    def get(self, key):
-        """Get item from cache, marking it as recently used."""
-        try:
-            value = self._cache.pop(key)
-            self._cache[key] = value  # Move to end (most recently used)
-            self._hits += 1
-            return value
-        except KeyError:
-            self._misses += 1
-            return None
-    
-    def put(self, key, value):
-        """Add item to cache, removing LRU item if max_size exceeded."""
-        if key in self._cache:
-            # Update existing item - move to end
-            self._cache.pop(key)
-        elif len(self._cache) >= self.max_size:
-            # Remove least recently used item
-            self._cache.popitem(last=False)
-        
-        self._cache[key] = value
-    
-    def __contains__(self, key):
-        return key in self._cache
-    
-    def __len__(self):
-        return len(self._cache)
-    
-    def pop(self, key, default=None):
-        """Remove and return item from cache. Compatible with dict.pop()."""
-        if key in self._cache:
-            value = self._cache.pop(key)
-            return value
-        return default
-    
-    def __getitem__(self, key):
-        """Support dict-like access: cache[key]. Promotes to MRU and counts as a hit."""
-        value = self._cache.pop(key)        # raises KeyError if absent — correct
-        self._cache[key] = value            # re-insert at end (most recently used)
-        self._hits += 1
-        return value
-    
-    def clear(self):
-        """Clear the cache."""
-        self._cache.clear()
-        self._hits = 0
-        self._misses = 0
-    
-    def get_stats(self):
-        """Return cache statistics."""
-        return {
-            'size': len(self._cache),
-            'capacity': self.max_size,
-            'hit_rate': self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0,
-            'hits': self._hits,
-            'misses': self._misses
-        }
-
 
 # ============================================================================
 # STARTUP MODE DECISION (pure — unit-testable without mocking main())
@@ -398,6 +264,35 @@ class EntityManager:
         # Dict keyed by point_id; .active_entities property wraps it as a list.
         self.active_entities_by_id: dict[int, dict] = {}
         self._active_entities_lock = threading.Lock()
+
+        # ── EntityManager state lock ──────────────────────────────────────────
+        # Reentrant lock that serialises mutations to mqtt_enabled_points,
+        # last_states, and active_dynamic_points across three concurrent
+        # callers:
+        #   • write executor  (_handle_command_worker)
+        #   • management executor (enable/disable via ManagementCommandHandler)
+        #   • watcher thread  (_on_entity_enabled / _on_entity_disabled)
+        # RLock is required because apply_mode, _publish_dynamic_changes, and
+        # _reconcile_dynamic_points all acquire this lock and then call
+        # enable_entity / disable_entity, which also acquire it.
+        #
+        # NOTE: all_points_by_id and baseline_point_ids are NOT fully covered
+        # by this lock. _enable_entity_locked/_disable_entity_locked read and
+        # (via _index_point/_deindex_point) mutate all_points_by_id under this
+        # lock, but _fetch_bulk_data mutates both attributes directly from the
+        # main poll thread WITHOUT acquiring it — that function is excluded
+        # from refactoring per CLAUDE.md, so this lock cannot give full mutual
+        # exclusion against the poll thread for those two attributes. In
+        # practice this is tolerable only because CPython's GIL makes each
+        # individual dict/set get/set/add/discard atomic; anything doing more
+        # than a single such op against all_points_by_id or baseline_point_ids
+        # from a non-poll thread must not assume this lock is sufficient.
+        self._em_lock = threading.RLock()
+
+        # ── Post-write scan flag ──────────────────────────────────────────────
+        # Protects post_write_active and _post_write_until which are written
+        # by the write executor and read/cleared by the main poll thread.
+        self._post_write_lock = threading.Lock()
 
         # ── Enabled-state tracking ────────────────────────────────────────────
         self.mqtt_enabled_points: set[int] = set()
@@ -601,7 +496,7 @@ class EntityManager:
             log_discovery.error("Initial discovery failed")
             return False
 
-        self.baseline_point_ids = set(p['variableId'] for p in self.all_points)
+        self.baseline_point_ids = {p['variableId'] for p in self.all_points}
         self.initial_discovery_complete = True
         log_discovery.info("Baseline established: %d static points", len(self.baseline_point_ids))
 
@@ -622,6 +517,19 @@ class EntityManager:
 
         # Restore firmware_removed status for any entries that reappeared
         self.dynamic_point_map.restore_from_bulk(self.baseline_point_ids)
+
+        # Mark entries whose point_id is no longer in the firmware's bulk
+        # response as firmware_removed — suppresses future learning-mode
+        # probes on switches/selects the firmware has removed.
+        newly_removed = self.dynamic_point_map.mark_absent_as_firmware_removed(
+            self.baseline_point_ids
+        )
+        if newly_removed:
+            log_discovery.info(
+                "DynamicPointMap: %d point(s) marked firmware_removed (absent from bulk): %s",
+                len(newly_removed), sorted(newly_removed),
+            )
+            self._persist_dynamic_map()
 
         # Reconcile dynamic point active state against persisted ACTIVE_DYNAMIC
         self._reconcile_dynamic_points()
@@ -766,10 +674,12 @@ class EntityManager:
         self.mqtt.message_callback_add(_SENTINEL_TOPIC, on_sentinel)
         self.mqtt.publish(_SENTINEL_TOPIC, "scan", retain=False)
 
-        if not sentinel_received.wait(timeout=_MQTT_SCAN_TIMEOUT_S):
+        sentinel_ok = sentinel_received.wait(timeout=_MQTT_SCAN_TIMEOUT_S)
+        if not sentinel_ok:
             log_discovery.warning(
-                "Sentinel timeout after %ds — retained message delivery may be incomplete",
-                _MQTT_SCAN_TIMEOUT_S,
+                "Sentinel timeout after %ds — retained message delivery may be incomplete. "
+                "%d configs received so far; some entities may be missing until the next restart.",
+                _MQTT_SCAN_TIMEOUT_S, len(discovered_points),
             )
 
         self.mqtt.message_callback_remove(config_topic)
@@ -777,9 +687,14 @@ class EntityManager:
         self.mqtt.unsubscribe(config_topic)
         self.mqtt.unsubscribe(_SENTINEL_TOPIC)
 
-        self.mqtt_enabled_points.clear()
-        self.mqtt_enabled_points.update(discovered_points)
-        log_discovery.debug("Found %d existing MQTT discovery configs", len(discovered_points))
+        with self._em_lock:
+            self.mqtt_enabled_points.clear()
+            self.mqtt_enabled_points.update(discovered_points)
+        log_discovery.debug(
+            "Found %d existing MQTT discovery configs%s",
+            len(discovered_points),
+            " (scan may be partial — sentinel timed out)" if not sentinel_ok else "",
+        )
         return discovered_points
 
     def restore_from_mqtt(self) -> int:
@@ -861,6 +776,11 @@ class EntityManager:
 
     def enable_entity(self, point_id: int) -> bool:
         """Publish an MQTT discovery config for a point, making it visible in HA."""
+        with self._em_lock:
+            return self._enable_entity_locked(point_id)
+
+    def _enable_entity_locked(self, point_id: int) -> bool:
+        """Implementation of enable_entity — caller must hold _em_lock."""
         point = self.all_points_by_id.get(point_id)
         if not point:
             log_entities.warning(
@@ -924,6 +844,11 @@ class EntityManager:
 
     def disable_entity(self, point_id: int) -> bool:
         """Remove the MQTT discovery config for a point, hiding it from HA."""
+        with self._em_lock:
+            return self._disable_entity_locked(point_id)
+
+    def _disable_entity_locked(self, point_id: int) -> bool:
+        """Implementation of disable_entity — caller must hold _em_lock."""
         if point_id not in self.mqtt_enabled_points:
             return True
 
@@ -931,7 +856,6 @@ class EntityManager:
             entity_info = self.active_entities_by_id.pop(point_id, None)
 
         if entity_info:
-            from nibe_mqtt_publisher import t_config
             config_topic = t_config(entity_info['entity_type'], entity_info['entity_id'])
             self.mqtt.publish(config_topic, "", retain=True)
             # Invalidate the cached config hash so the next enable unconditionally
@@ -952,6 +876,13 @@ class EntityManager:
         self.value_cache.discard(point_id)
         self._point_string_cache.pop(point_id, None)
         self._entity_type_cache.pop(point_id, None)
+        # A write triggered just before disable would otherwise leak here
+        # forever: pending_writes is only ever cleared by _update_entity_state
+        # (which stops running for this point once it's disabled) or an
+        # explicit write failure — neither fires for a point that's been
+        # disabled mid-flight.
+        with self._pending_writes_lock:
+            self.pending_writes.pop(point_id, None)
 
         point           = self.all_points_by_id.get(point_id, {})
         entity_type_key = point.get('entity_type', 'unknown')
@@ -1030,20 +961,21 @@ class EntityManager:
         # rather than _is_suppressed() + a separate lock acquisition — the two-step
         # pattern has a TOCTOU window where another thread could change the depth
         # between the read and the increment, leaving depth miscounted.
-        with self._suppress_lock:
-            was_suppressed = self._suppress_enabled_state_depth > 0
-            if not was_suppressed:
-                self._suppress_enabled_state_depth += 1
+        with self._em_lock:
+            with self._suppress_lock:
+                was_suppressed = self._suppress_enabled_state_depth > 0
+                if not was_suppressed:
+                    self._suppress_enabled_state_depth += 1
 
-        try:
-            for point_id in to_enable:
-                self.enable_entity(point_id)
-            for point_id in to_disable:
-                self.disable_entity(point_id)
-        finally:
-            if not was_suppressed:
-                with self._suppress_lock:
-                    self._suppress_enabled_state_depth -= 1
+            try:
+                for point_id in to_enable:
+                    self._enable_entity_locked(point_id)
+                for point_id in to_disable:
+                    self._disable_entity_locked(point_id)
+            finally:
+                if not was_suppressed:
+                    with self._suppress_lock:
+                        self._suppress_enabled_state_depth -= 1
 
         self.publish_enabled_state()
         self._persist_applied_mode(mode_name)
@@ -1073,21 +1005,23 @@ class EntityManager:
         # Use faster polling during the post-write scan window so dynamic
         # point changes surface quickly after a switch write.
         # Outside that window use the normal user-configured poll interval.
-        if self.post_write_active and current_time > self._post_write_until:
-            self.post_write_active            = False
-            self._post_write_controlling_point = None
-            log_commands.debug("Post-write scan window ended")
+        with self._post_write_lock:
+            if self.post_write_active and current_time > self._post_write_until:
+                self.post_write_active            = False
+                self._post_write_controlling_point = None
+                log_commands.debug("Post-write scan window ended")
+            _post_write_now_active = self.post_write_active
 
         effective_interval = (
             self.post_write_interval
-            if self.post_write_active
+            if _post_write_now_active
             else self.bulk_interval
         )
 
         if (current_time - self.last_bulk_fetch) >= effective_interval:
             failures_before = self.api_consecutive_failures
             known_count   = len(self.dynamic_point_map.all_known_dynamic_point_ids())
-            should_detect = bool(known_count) or self.post_write_active
+            should_detect = bool(known_count) or _post_write_now_active
             result        = self._fetch_bulk_data(detect_changes=should_detect)
             lock_was_busy = (result is False
                              and self.api_consecutive_failures == failures_before)
@@ -1145,7 +1079,10 @@ class EntityManager:
 
         if point_id not in self.bulk_data:
             if point_id in self.mqtt_enabled_points:
-                if self.post_write_active:
+                with self._post_write_lock:
+                    post_write_snapshot = self.post_write_active
+                    controlling_point_snapshot = self._post_write_controlling_point
+                if post_write_snapshot:
                     # Absence during a post-write scan means this is a dynamic
                     # point disappearing. Route through _publish_dynamic_changes
                     # so it is deindexed, its MQTT meta is cleared, the changelog
@@ -1159,7 +1096,9 @@ class EntityManager:
                             "treating as dynamic disappearance", point_id
                         )
                         self.baseline_point_ids.discard(point_id)
-                        self._publish_dynamic_changes([], {point_id})
+                        self._publish_dynamic_changes(
+                            [], {point_id}, controlling_point_snapshot,
+                        )
                 else:
                     log_entities.info(
                         "Point %d absent from bulk data — disabling entity", point_id
@@ -1214,60 +1153,71 @@ class EntityManager:
             # Convert seconds-since-midnight to HH:MM:SS for HA time entity.
             # Firmware stores time registers as integer seconds; the
             # controller display shows HH:MM. We always emit :00 seconds.
-            secs = int(raw_value) % 86400
-            state_value = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:00"
+            try:
+                secs = int(raw_value) % 86400
+                state_value = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:00"
+            except (ValueError, TypeError):
+                state_value = str(raw_value)
         elif entity_type == 'sensor' and point_id == 2685:
             # Next periodic increase date — stored as days since 2010-01-01.
             # Convert to ISO date string for HA device_class=date sensor.
             try:
-                from datetime import date, timedelta
-                d = date(2010, 1, 1) + timedelta(days=int(raw_value))
+                d = _date(2010, 1, 1) + _timedelta(days=int(raw_value))
                 state_value = d.isoformat()  # YYYY-MM-DD
             except (ValueError, OverflowError):
                 state_value = str(raw_value)
         elif entity_type == 'sensor' and point_id in (2453, 14987):
             # EB101 firmware version — encoded as major<<12 | minor<<6 | patch.
             # e.g. 12481 → 3.3.1. Confirmed from S2125-12 firmware 3.3.1.
-            v = int(raw_value)
-            major = (v >> 12) & 0x3F
-            minor = (v >> 6)  & 0x3F
-            patch = v         & 0x3F
-            state_value = f"{major}.{minor}.{patch}"
+            try:
+                v = int(raw_value)
+                major = (v >> 12) & 0x3F
+                minor = (v >> 6)  & 0x3F
+                patch = v         & 0x3F
+                state_value = f"{major}.{minor}.{patch}"
+            except (ValueError, TypeError):
+                state_value = str(raw_value)
         elif entity_type == 'sensor' and point_id == 2509:
             # SMO S40 (EB100) firmware version — encoded as major<<8 | minor.
             # e.g. 1035 = 0x040B → 4.11 (patch not available in this register).
-            v = int(raw_value)
-            major = (v >> 8) & 0xFF
-            minor = v & 0xFF
-            state_value = f"{major}.{minor}"
+            try:
+                v = int(raw_value)
+                major = (v >> 8) & 0xFF
+                minor = v & 0xFF
+                state_value = f"{major}.{minor}"
+            except (ValueError, TypeError):
+                state_value = str(raw_value)
         elif entity_type == 'sensor' and point_id == 2022:
             # Current status bitfield — community-decoded from SMO S40 register 31121.
             # Mode bits (high): 14=HW boost, 13=Hot water, 12=Heating, 20=Cooling
             # State bits (low): 4=Compressor starting, 2=Compressor running, 3=Pump running
-            v = int(raw_value)
-            _MODE_BITS = {
-                20: "Cooling",
-                14: "Hot water boost",
-                13: "Hot water",
-                12: "Heating",
-            }
-            # Compressor state: bit4=starting, bit2+4=running, neither=preheating/pump only
-            modes = [label for bit, label in _MODE_BITS.items() if v & (1 << bit)]
-            v_bit2 = bool(v & (1 << 2))
-            v_bit4 = bool(v & (1 << 4))
-            if v_bit2 and v_bit4:
-                comp_state = "Running"
-            elif v_bit4:
-                comp_state = "Starting"
-            elif modes:  # mode active but no compressor bits
-                comp_state = "Preheating"
-            else:
-                comp_state = ""
-            if modes:
-                mode_str = ' + '.join(modes)
-                state_value = f"{mode_str} ({comp_state})" if comp_state else mode_str
-            else:
-                state_value = 'Idle'
+            try:
+                v = int(raw_value)
+                _MODE_BITS = {
+                    20: "Cooling",
+                    14: "Hot water boost",
+                    13: "Hot water",
+                    12: "Heating",
+                }
+                # Compressor state: bit4=starting, bit2+4=running, neither=preheating/pump only
+                modes = [label for bit, label in _MODE_BITS.items() if v & (1 << bit)]
+                v_bit2 = bool(v & (1 << 2))
+                v_bit4 = bool(v & (1 << 4))
+                if v_bit2 and v_bit4:
+                    comp_state = "Running"
+                elif v_bit4:
+                    comp_state = "Starting"
+                elif modes:  # mode active but no compressor bits
+                    comp_state = "Preheating"
+                else:
+                    comp_state = ""
+                if modes:
+                    mode_str = ' + '.join(modes)
+                    state_value = f"{mode_str} ({comp_state})" if comp_state else mode_str
+                else:
+                    state_value = 'Idle'
+            except (ValueError, TypeError):
+                state_value = str(raw_value)
         elif entity_type == 'select':
             mapping = entity_info.get('value_mapping')
             if mapping is None:
@@ -1312,7 +1262,8 @@ class EntityManager:
                 )
                 return
             self.mqtt.publish(entity_info['state_topic'], state_value, retain=True)
-            self.last_states[point_id] = state_value
+            with self._em_lock:
+                self.last_states[point_id] = state_value
 
 
     # ------------------------------------------------------------------ #
@@ -1354,7 +1305,20 @@ class EntityManager:
 
             current_point_ids = set()
             new_points        = []
-            if self.post_write_active:
+            # Snapshot post_write_active and _post_write_controlling_point
+            # together, once, for the whole fetch cycle. The write executor
+            # does not block for the scan window — it sets these flags and
+            # returns immediately, so a second write (to a different
+            # controlling switch) can update _post_write_controlling_point
+            # while this cycle is still running. Re-reading the live
+            # attribute later (e.g. when _publish_dynamic_changes attributes
+            # newly-appeared points) would risk crediting this cycle's
+            # changes to that *other* write's controlling point. Snapshotting
+            # once, up front, ties the whole cycle to one consistent value.
+            with self._post_write_lock:
+                post_write_snapshot = self.post_write_active
+                controlling_point_snapshot = self._post_write_controlling_point
+            if post_write_snapshot:
                 scan_type = "post-write-scan"
             elif detect_changes:
                 known_count = len(self.dynamic_point_map.all_known_dynamic_point_ids())
@@ -1373,8 +1337,15 @@ class EntityManager:
                     point_id = int(point_id_str)
                     current_point_ids.add(point_id)
 
-                    value_data = point_data.get('value', {})
-                    metadata   = point_data.get('metadata', {})
+                    # `or {}` (not just a .get default) also covers the API
+                    # sending an explicit "value": null / "metadata": null —
+                    # .get()'s default only applies when the key is absent,
+                    # so a present-but-null value would otherwise reach the
+                    # .get() calls below as None and raise AttributeError,
+                    # which isn't caught by the (ValueError, KeyError) below
+                    # and would abort the whole bulk fetch for every point.
+                    value_data = point_data.get('value') or {}
+                    metadata   = point_data.get('metadata') or {}
 
                     # ── String cache (Finding 2) ──────────────────────────────
                     # title and description never change between firmware updates.
@@ -1429,7 +1400,7 @@ class EntityManager:
                             and point_id not in self.baseline_point_ids
                             and point_id not in self.published_configs):
 
-                        if self.post_write_active:
+                        if post_write_snapshot:
                             # Point appeared during post-write scan window.
                             # Route through _publish_dynamic_changes regardless
                             # of whether it is a known dynamic point or newly
@@ -1476,10 +1447,15 @@ class EntityManager:
                                 })
                                 self.baseline_point_ids.add(point_id)
                                 if entity_type_p in ('switch', 'select'):
-                                    self.dynamic_point_map.populate_from_bulk(
-                                        {point_id: self.all_points_by_id.get(point_id, {})},
-                                        {point_id: entity_type_p},
-                                    )
+                                    # dynamic_point_map._table is also mutated
+                                    # (unlocked otherwise) by _run_learning_detection
+                                    # and _publish_dynamic_changes — _em_lock
+                                    # serializes all of them.
+                                    with self._em_lock:
+                                        self.dynamic_point_map.populate_from_bulk(
+                                            {point_id: self.all_points_by_id.get(point_id, {})},
+                                            {point_id: entity_type_p},
+                                        )
                                 point_obj = self.all_points_by_id.get(point_id)
                                 if point_obj:
                                     self._pub.publish_point_metadata(point_obj)
@@ -1525,7 +1501,7 @@ class EntityManager:
 
                 # During post-write scan: baseline points that went absent
                 # are newly discovered dynamic disappearances.
-                if self.post_write_active:
+                if post_write_snapshot:
                     newly_absent = (
                         self.baseline_point_ids
                         - current_point_ids
@@ -1552,8 +1528,10 @@ class EntityManager:
                     "Dynamic changes detected: +%d new, -%d disappeared",
                     len(new_points), len(disappeared_points),
                 )
-                self._publish_dynamic_changes(new_points, disappeared_points)
-            elif detect_changes and self.post_write_active:
+                self._publish_dynamic_changes(
+                    new_points, disappeared_points, controlling_point_snapshot,
+                )
+            elif detect_changes and post_write_snapshot:
                 log_discovery.debug(
                     "Post-write scan: no dynamic changes yet (known=%d)",
                     len(self.dynamic_point_map.all_known_dynamic_point_ids()),
@@ -1658,7 +1636,18 @@ class EntityManager:
         self,
         new_points:          list[tuple[int, dict]],
         disappeared_points:  set[int],
+        controlling_point_id: int | None = None,
     ) -> None:
+        """``controlling_point_id`` must be a snapshot of
+        ``_post_write_controlling_point`` taken by the caller (under
+        ``_post_write_lock``) at the moment this scan cycle's post-write
+        status was decided — not re-read from ``self._post_write_controlling_point``
+        here. The write executor doesn't block for the scan window, so a
+        second write (to a different controlling switch) can overwrite that
+        attribute while this call is still attributing the first write's
+        detected changes; re-reading it here would risk crediting those
+        changes to the wrong switch.
+        """
         if not new_points and not disappeared_points:
             return
 
@@ -1675,9 +1664,13 @@ class EntityManager:
             'triggered_by':  None,
         }
 
-        with self._suppress_enabled_state():
+        with self._em_lock, self._suppress_enabled_state():
             for point_id, point_data in new_points:
-                metadata    = point_data.get('metadata', {})
+                # `or {}` also covers an explicit "metadata": null from the
+                # API — .get()'s default only applies when the key is
+                # absent, matching the same guard already applied in
+                # _fetch_bulk_data for this exact same raw API response shape.
+                metadata    = point_data.get('metadata', {}) or {}
                 title       = clean_string(point_data.get('title', f'Point {point_id}'))
                 description = clean_string(point_data.get('description', ''))
 
@@ -1699,9 +1692,16 @@ class EntityManager:
                 }
                 self._index_point(processed)
                 self._pub.publish_point_metadata(processed)
-                self.enable_entity(point_id)
+                if not self._enable_entity_locked(point_id):
+                    # Discovery publish failed — do not mark this point as
+                    # active in our own bookkeeping when HA was never told
+                    # about it. Leaving it out of active_dynamic_points also
+                    # lets the reconciliation path above retry activation on
+                    # a future poll rather than presenting a permanently
+                    # false "active" state.
+                    continue
                 self.active_dynamic_points.add(point_id)
-                
+
                 change_event['added'].append({  # type: ignore[attr-defined]
                     'id': point_id, 'title': title,
                     'type': entity_type, 'is_dynamic': True,
@@ -1714,55 +1714,61 @@ class EntityManager:
         # so the map is populated identically regardless of learning mode.
         # This ensures known_dynamic is correct for dashboard suppression
         # and injection — both in learning mode and normal operation.
-        controlling = self._post_write_controlling_point
+        controlling = controlling_point_id
         if controlling and new_points:
             new_pids = [p for p, _ in new_points]
             controlling_raw = self.bulk_data.get(controlling, {}).get('raw_value', 1)
-            entry = self.dynamic_point_map.get(controlling)
-            if entry is None:
-                # First time this controlling point is seen — create the entry
-                controlling_point = self.all_points_by_id.get(controlling, {})
-                controlling_meta  = controlling_point.get('metadata', {})
-                mn = controlling_meta.get('minValue', 0)
-                mx = controlling_meta.get('maxValue', 1)
-                entry = DynamicPointEntry(
-                    point_id          = controlling,
-                    title             = controlling_point.get('display_title')
-                                        or controlling_point.get('title', f'Point {controlling}'),
-                    entity_type       = controlling_point.get('entity_type', 'switch'),
-                    unprocessed_values = set(range(int(mn), int(mx) + 1)),
-                )
-                self.dynamic_point_map._table[controlling] = entry
-                log_discovery.debug(
-                    "Created dynamic map entry for controlling point %d", controlling
-                )
-            self.dynamic_point_map.record_outcome(controlling, controlling_raw, new_pids)
-            self._persist_dynamic_map()
+            # dynamic_point_map._table is also mutated (unlocked, from the
+            # write-executor thread) by _run_learning_detection's own
+            # record_outcome call, and read/iterated by populate_from_bulk
+            # on the poll thread — _em_lock serializes all of them.
+            with self._em_lock:
+                entry = self.dynamic_point_map.get(controlling)
+                if entry is None:
+                    # First time this controlling point is seen — create the entry
+                    controlling_point = self.all_points_by_id.get(controlling, {})
+                    controlling_meta  = controlling_point.get('metadata', {})
+                    mn = controlling_meta.get('minValue', 0)
+                    mx = controlling_meta.get('maxValue', 1)
+                    entry = DynamicPointEntry(
+                        point_id          = controlling,
+                        title             = controlling_point.get('display_title')
+                                            or controlling_point.get('title', f'Point {controlling}'),
+                        entity_type       = controlling_point.get('entity_type', 'switch'),
+                        unprocessed_values = set(range(int(mn), int(mx) + 1)),
+                    )
+                    self.dynamic_point_map._table[controlling] = entry
+                    log_discovery.debug(
+                        "Created dynamic map entry for controlling point %d", controlling
+                    )
+                self.dynamic_point_map.record_outcome(controlling, controlling_raw, new_pids)
+                self._persist_dynamic_map()
             log_discovery.debug(
                 "Recorded %d dynamic point(s) under controlling point %d "
                 "(value=%d) via post-write scan",
                 len(new_pids), controlling, controlling_raw,
             )
 
-        for point_id in disappeared_points:
-            entity = self.all_points_by_id.get(point_id)
-            if entity:
-                self._deindex_point(point_id)
-                self._pub.invalidate_config_hash(point_id)
-                self.mqtt.publish(BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True)
-                if point_id in self.mqtt_enabled_points:
-                    self.disable_entity(point_id)
-                self.active_dynamic_points.discard(point_id)
-                change_event['removed'].append({  # type: ignore[attr-defined]
-                    'id':         point_id,
-                    'title':      entity.get('display_title', f'Point {point_id}'),
-                    'type':       entity.get('entity_type', 'unknown'),
-                    'is_dynamic': True,
-                })
-                log_discovery.info("Dynamic entity disappeared: %d", point_id)
-                # Persist active set immediately after removal — write-ahead
-                # ordering so a crash after this line leaves correct state.
-                self._persist_active_dynamic()
+        with self._em_lock:
+            for point_id in disappeared_points:
+                entity = self.all_points_by_id.get(point_id)
+                if entity:
+                    self._deindex_point(point_id)
+                    self._pub.invalidate_config_hash(point_id)
+                    self.mqtt.publish(BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True)
+                    if point_id in self.mqtt_enabled_points:
+                        self._disable_entity_locked(point_id)
+                    self.active_dynamic_points.discard(point_id)
+                    change_event['removed'].append({  # type: ignore[attr-defined]
+                        'id':         point_id,
+                        'title':      entity.get('display_title', f'Point {point_id}'),
+                        'type':       entity.get('entity_type', 'unknown'),
+                        'is_dynamic': True,
+                    })
+                    log_discovery.info("Dynamic entity disappeared: %d", point_id)
+                    # Persist active set immediately after removal — write-ahead
+                    # ordering so a crash after this line leaves correct state.
+                    self._persist_active_dynamic()
 
         if new_points:
             self.publish_enabled_state()
@@ -1770,7 +1776,7 @@ class EntityManager:
         if disappeared_points:
             self.publish_enabled_state()
 
-        if not change_event['added'] and not change_event['removed']:  # type: ignore[attr-defined]
+        if not change_event['added'] and not change_event['removed']:
             return
 
         # Persist active_dynamic_points for appearance events.
@@ -1781,9 +1787,9 @@ class EntityManager:
         self._pub.publish_point_list(self.all_points_by_id)
 
         # Populate triggered_by now that added/removed are fully built.
-        # _post_write_controlling_point is set when a write activates the scan
-        # window; None for startup / periodic-poll discoveries.
-        controlling = self._post_write_controlling_point
+        # controlling_point_id is set when a write activates the scan window;
+        # None for startup / periodic-poll discoveries.
+        controlling = controlling_point_id
         if controlling:
             cp = self.all_points_by_id.get(controlling, {})
             ctrl_title = cp.get('display_title') or cp.get('title', f'Point {controlling}')
@@ -2007,8 +2013,9 @@ class EntityManager:
         points_before = set(self.bulk_data.keys())
 
         # Activate post-write scan mode to get 5s polling
-        self.post_write_active = True
-        self._post_write_until  = time.time() + _POST_WRITE_SCAN_S
+        with self._post_write_lock:
+            self.post_write_active = True
+            self._post_write_until  = time.time() + _POST_WRITE_SCAN_S
 
         poll_interval    = self.post_write_interval   # 5s
         deadline         = time.time() + _POST_WRITE_SCAN_S
@@ -2036,9 +2043,12 @@ class EntityManager:
         points_after  = set(self.bulk_data.keys())
         new_point_ids = sorted(points_after - points_before)
 
-        # Record outcome in map
-        self.dynamic_point_map.record_outcome(point_id, value, new_point_ids)
-        self._persist_dynamic_map()
+        # Record outcome in map — dynamic_point_map._table is also mutated
+        # by _publish_dynamic_changes on the poll thread; _em_lock
+        # serializes both against each other.
+        with self._em_lock:
+            self.dynamic_point_map.record_outcome(point_id, value, new_point_ids)
+            self._persist_dynamic_map()
 
         log_commands.info(
             "%sLearning detection complete for point %d value=%d: "
@@ -2062,7 +2072,7 @@ class EntityManager:
                 "Malformed UTF-8 payload on topic %s — ignoring", message.topic
             )
             return
-        
+
         point_id = entity_info['point_id']
         cmd_id   = uuid.uuid4().hex[:_CMD_ID_LENGTH]
 
@@ -2088,10 +2098,34 @@ class EntityManager:
             self._handle_command_worker, entity_info, value, payload, cmd_id
         )
 
+    def _open_post_write_scan(self, point_id: int) -> None:
+        """Activate the post-write scan window for a write to ``point_id``.
+
+        Sets ``_post_write_controlling_point``, ``post_write_active``, and
+        ``_post_write_until`` under ``_post_write_lock`` in a single, fixed
+        order — controlling point first, active flag last. Several readers
+        elsewhere (_fetch_bulk_data, _publish_dynamic_changes) check
+        ``post_write_active`` without holding ``_post_write_lock`` themselves;
+        setting the controlling point before the active flag ensures that by
+        the time such a reader can observe ``post_write_active`` become True,
+        ``_post_write_controlling_point`` is already current — an unlocked
+        reader can otherwise be scheduled between the individual attribute
+        assignments even while this method holds the lock, since the GIL only
+        guarantees atomicity per bytecode instruction, not for the block as a
+        whole. Without this fixed order, a write to point B arriving right
+        after a scan window for point A closed could be observed as
+        ``post_write_active=True`` while ``_post_write_controlling_point``
+        still read A, misattributing point B's dynamic-point changes to A.
+        """
+        with self._post_write_lock:
+            self._post_write_controlling_point = point_id
+            self.post_write_active             = True
+            self._post_write_until             = time.time() + self._post_write_duration
+
     def _handle_command_worker(
         self,
         entity_info: dict,
-        value: int | float | str,
+        value: float | str,
         payload: str,
         cmd_id: str = "",
     ) -> None:
@@ -2143,7 +2177,8 @@ class EntityManager:
                 state_value = str(value)
             if entity_info.get('state_topic'):
                 self.mqtt.publish(entity_info['state_topic'], state_value, retain=True)
-                self.last_states[point_id] = state_value
+                with self._em_lock:
+                    self.last_states[point_id] = state_value
 
             # ── Post-write dynamic point handling ─────────────────────────────
             # Only switches and selects can be controlling points.
@@ -2186,9 +2221,7 @@ class EntityManager:
                         "%sPoint %d is fully-processed controlling — opening scan window",
                         prefix, point_id,
                     )
-                    self._post_write_controlling_point = point_id
-                    self.post_write_active            = True
-                    self._post_write_until             = time.time() + self._post_write_duration
+                    self._open_post_write_scan(point_id)
 
                 else:
                     # Case A3 / B: unprocessed value or not in map.
@@ -2196,9 +2229,7 @@ class EntityManager:
                     # always recorded so the map self-populates without manual
                     # intervention. The detection window runs and any dynamic
                     # changes observed are attributed to this write.
-                    self.post_write_active            = True
-                    self._post_write_until             = time.time() + self._post_write_duration
-                    self._post_write_controlling_point = point_id
+                    self._open_post_write_scan(point_id)
                     if entry is not None and int_value is not None and int_value in entry.unprocessed_values:
                         log_commands.info(
                             "%sPoint %d value=%d is unprocessed — "
@@ -2478,14 +2509,25 @@ class EntityManager:
             )
 
         if is_dynamic:
-            # Look up the controlling switch from the persistent controller map.
-            # The controller map maps ctrl_id → {dynamic_points: [...]}, so we
-            # reverse-search for the controlling point of this dynamic point.
-            context = (
-                'This entity appeared during a firmware-controlled state change. '
-                'It will disappear automatically when the operating mode that '
-                'activates it is no longer active.'
+            # Look up the controlling switch/select so the notification can
+            # name it rather than describing the mechanism generically.
+            controller = (
+                self.dynamic_point_map.controlling_entry_for_dynamic(point_id)
+                if point_id else None
             )
+            if controller:
+                context = (
+                    f'This entity appeared because of a change to '
+                    f'"{controller.title}" (#{controller.point_id}). '
+                    'It will disappear automatically when that switch/select '
+                    'is no longer in the state that activates it.'
+                )
+            else:
+                context = (
+                    'This entity appeared during a firmware-controlled state change. '
+                    'It will disappear automatically when the operating mode that '
+                    'activates it is no longer active.'
+                )
             return (
                 'Nibe Bridge: Dynamic entity disabled in HA',
                 (f'Dynamic data point {display} was disabled via the HA entity settings. '
@@ -2511,17 +2553,23 @@ class EntityManager:
     def mark_changelog_read(self) -> None:
         """Mark all changelog entries as read."""
         log_history.info("Marking all changelog entries as read")
-        for entry in self.change_history:
-            entry['unread'] = False
-        self._history_seq       += 1
-        self._last_published_seq = self._history_seq
-        history_payload = {
-            'history':       list(self.change_history),
-            'total_entries': len(self.change_history),
-            'unread_count':  0,
-            'last_updated':  time.time(),
-            '_seq':          self._history_seq,
-        }
+        # change_history is also mutated from the poll thread
+        # (_update_changelog_history) and the MQTT callback thread
+        # (_setup_history_loading's handlers) — _em_lock (an RLock,
+        # so safe to nest with callers that already hold it) serializes
+        # all of them against each other.
+        with self._em_lock:
+            for entry in self.change_history:
+                entry['unread'] = False
+            self._history_seq       += 1
+            self._last_published_seq = self._history_seq
+            history_payload = {
+                'history':       list(self.change_history),
+                'total_entries': len(self.change_history),
+                'unread_count':  0,
+                'last_updated':  time.time(),
+                '_seq':          self._history_seq,
+            }
         self.mqtt.publish(
             BrowserTopic.CHANGELOG_HISTORY, _compress_payload(history_payload), retain=True
         )
@@ -2549,20 +2597,23 @@ class EntityManager:
         retention_days = self.changelog_retention_days
         cutoff_ts      = now - retention_days * 86400
 
-        valid   = [e for e in self.change_history
-                   if (isinstance(e, dict)
-                       and 'added' in e and 'removed' in e
-                       and 'timestamp' in e and 'iso_timestamp' in e)]
-        recent  = [e for e in valid if e.get('timestamp', 0) >= cutoff_ts]
-        old     = [e for e in valid if e.get('timestamp', 0) <  cutoff_ts]
+        # _em_lock is an RLock — safe to nest under _update_changelog_history,
+        # which already holds it when calling this.
+        with self._em_lock:
+            valid   = [e for e in self.change_history
+                       if (isinstance(e, dict)
+                           and 'added' in e and 'removed' in e
+                           and 'timestamp' in e and 'iso_timestamp' in e)]
+            recent  = [e for e in valid if e.get('timestamp', 0) >= cutoff_ts]
+            old     = [e for e in valid if e.get('timestamp', 0) <  cutoff_ts]
 
-        needed  = max(0, _CHANGELOG_MIN_ENTRIES - len(recent))
-        kept    = recent + old[:needed]
+            needed  = max(0, _CHANGELOG_MIN_ENTRIES - len(recent))
+            kept    = recent + old[:needed]
 
-        pruned  = len(self.change_history) - len(kept)
-        if pruned > 0:
-            self.change_history = deque(kept, maxlen=self.change_history.maxlen)
-            log_history.debug("Changelog pruned: removed %d expired entries", pruned)
+            pruned  = len(self.change_history) - len(kept)
+            if pruned > 0:
+                self.change_history = deque(kept, maxlen=self.change_history.maxlen)
+                log_history.debug("Changelog pruned: removed %d expired entries", pruned)
         return True
 
     def _update_changelog_history(self, change_event: dict) -> None:
@@ -2577,22 +2628,26 @@ class EntityManager:
             'source':        change_event.get('source', 'firmware'),
             'triggered_by':  change_event.get('triggered_by'),
         }
-        self.change_history.appendleft(history_entry)
-        # Time-based pruning runs at most hourly — the deque hard cap already
-        # prevents unbounded growth between prune cycles.
-        self._prune_changelog_if_due()
+        # change_history is also mutated from mark_changelog_read (MQTT
+        # command-handler thread) and _setup_history_loading's callbacks
+        # (MQTT client thread) — _em_lock serializes all of them.
+        with self._em_lock:
+            self.change_history.appendleft(history_entry)
+            # Time-based pruning runs at most hourly — the deque hard cap
+            # already prevents unbounded growth between prune cycles.
+            self._prune_changelog_if_due()
 
-        unread_count = sum(1 for e in self.change_history if e.get('unread', False))
+            unread_count = sum(1 for e in self.change_history if e.get('unread', False))
 
-        self._history_seq += 1
+            self._history_seq += 1
 
-        history_payload = {
-            'history':       list(self.change_history),
-            'total_entries': len(self.change_history),
-            'unread_count':  unread_count,
-            'last_updated':  time.time(),
-            '_seq':          self._history_seq,
-        }
+            history_payload = {
+                'history':       list(self.change_history),
+                'total_entries': len(self.change_history),
+                'unread_count':  unread_count,
+                'last_updated':  time.time(),
+                '_seq':          self._history_seq,
+            }
         self.mqtt.publish(
             BrowserTopic.CHANGELOG_HISTORY, _compress_payload(history_payload), retain=True
         )
@@ -2619,38 +2674,43 @@ class EntityManager:
                 incoming_seq = data.get('_seq', -1)
                 if incoming_seq != -1 and incoming_seq == self._last_published_seq:
                     return
-                if 'history' in data and isinstance(data['history'], list):
-                    clean_history = deque(maxlen=self.change_history.maxlen)
-                    for entry in data['history']:
-                        if isinstance(entry, dict):
-                            cleaned = {
-                                'timestamp':     entry.get('timestamp', time.time()),
-                                'iso_timestamp': entry.get('iso_timestamp', _fmt_ts()),
-                                'added':         entry.get('added', []),
-                                'removed':       entry.get('removed', []),
-                                'id':            entry.get('id', f"change_{int(time.time()*1000)}"),
-                                'unread':        entry.get('unread', False),
-                                'source':        entry.get('source', 'firmware'),
-                                'triggered_by':  entry.get('triggered_by'),
-                            }
-                            if (isinstance(cleaned['added'], list)
-                                    and isinstance(cleaned['removed'], list)):
-                                clean_history.append(cleaned)
-                    self.change_history = clean_history
-                    # Force prune on load regardless of last-prune timestamp so
-                    # stale entries don't accumulate across restarts with no changes.
-                    self._last_prune_time = 0.0
-                    self._prune_changelog_if_due()
-                    unread = sum(1 for e in self.change_history if e.get('unread', False))
-                    log_history.info("Loaded %d historical changes from MQTT", len(self.change_history))
-                    if unread > 0:
-                        log_history.info("%d unread changes", unread)
+                # change_history is also mutated from the poll thread and
+                # mark_changelog_read — _em_lock (RLock) serializes them
+                # against this MQTT-client-thread callback.
+                with self._em_lock:
+                    if 'history' in data and isinstance(data['history'], list):
+                        clean_history = deque(maxlen=self.change_history.maxlen)
+                        for entry in data['history']:
+                            if isinstance(entry, dict):
+                                cleaned = {
+                                    'timestamp':     entry.get('timestamp', time.time()),
+                                    'iso_timestamp': entry.get('iso_timestamp', _fmt_ts()),
+                                    'added':         entry.get('added', []),
+                                    'removed':       entry.get('removed', []),
+                                    'id':            entry.get('id', f"change_{int(time.time()*1000)}"),
+                                    'unread':        entry.get('unread', False),
+                                    'source':        entry.get('source', 'firmware'),
+                                    'triggered_by':  entry.get('triggered_by'),
+                                }
+                                if (isinstance(cleaned['added'], list)
+                                        and isinstance(cleaned['removed'], list)):
+                                    clean_history.append(cleaned)
+                        self.change_history = clean_history
+                        # Force prune on load regardless of last-prune timestamp so
+                        # stale entries don't accumulate across restarts with no changes.
+                        self._last_prune_time = 0.0
+                        self._prune_changelog_if_due()
+                        unread = sum(1 for e in self.change_history if e.get('unread', False))
+                        log_history.info("Loaded %d historical changes from MQTT", len(self.change_history))
+                        if unread > 0:
+                            log_history.info("%d unread changes", unread)
             except Exception as e:
                 log_history.warning(
                     "Could not load changelog history from MQTT retained message "
                     "(the message may be from an older bridge version): %s", e,
                 )
-                self.change_history = deque(maxlen=self.change_history.maxlen)
+                with self._em_lock:
+                    self.change_history = deque(maxlen=self.change_history.maxlen)
 
         def on_unread_message(_client, _userdata, message):
             try:
@@ -2658,13 +2718,18 @@ class EntityManager:
                     return
                 data         = json.loads(message.payload.decode('utf-8'))
                 unread_count = data.get('unread_count', 0)
-                for entry in self.change_history:
-                    entry['unread'] = False
-                if unread_count > 0 and self.change_history:
-                    # deque doesn't support slice notation — convert to list
-                    # for the tail operation.  The list is temporary and small.
-                    for entry in list(self.change_history)[-unread_count:]:
-                        entry['unread'] = True
+                with self._em_lock:
+                    for entry in self.change_history:
+                        entry['unread'] = False
+                    if unread_count > 0 and self.change_history:
+                        # deque doesn't support slice notation — convert to list
+                        # for the tail operation.  The list is temporary and small.
+                        # Cap to history length: after a prune, unread_count from the
+                        # broker may exceed the number of surviving entries; without
+                        # the cap list[-n:] returns all entries, over-marking them.
+                        safe_count = min(unread_count, len(self.change_history))
+                        for entry in list(self.change_history)[-safe_count:]:
+                            entry['unread'] = True
             except Exception as e:
                 log_history.warning(
                     "Could not restore changelog unread state from MQTT: %s", e,
@@ -2741,7 +2806,7 @@ class EntityManager:
         if path is None:
             path = _APPLIED_MODE_FILE
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 mode = f.read().strip()
             return mode or None
         except OSError:
@@ -2820,83 +2885,89 @@ class EntityManager:
         activated = 0
         removed   = 0
 
-        # Case 1 + 2: process expected active set
-        for point_id in expected_active:
-            if point_id in bulk_present:
-                # Point is expected and present — ensure it is active
-                if point_id not in self.mqtt_enabled_points:
-                    point_data = self.bulk_data.get(point_id, {})
-                    metadata   = point_data.get('metadata', {})
-                    title      = point_data.get('title', f'Point {point_id}')
-                    description = point_data.get('description', '')
-                    entity_type, category = self._get_cached_entity_type({
-                        'variableId':  point_id,
-                        'metadata':    metadata,
-                        'title':       title,
-                        'description': description,
-                    })
-                    self._index_point({
-                        'variableId':      point_id,
-                        'display_title':   title,
-                        'description':     description,
-                        'metadata':        metadata,
-                        'entity_type':     entity_type,
-                        'entity_category': category,
-                        'is_writable':     metadata.get('isWritable', False),
-                        'is_dynamic':      True,
-                    })
-                    self.enable_entity(point_id)
-                    self.active_dynamic_points.add(point_id)
-                    activated += 1
-                    log_discovery.debug(
-                        "Reconcile: activated dynamic point %d '%s'",
-                        point_id, title,
-                    )
-                else:
-                    # Already enabled — still need to publish online and
-                    # current state so HA doesn't show the entity as unavailable.
-                    entity_info = self.active_entities_by_id.get(point_id)
-                    if entity_info:
-                        self.mqtt.publish(
-                            entity_info['availability_topic'], "online", retain=True
+        with self._em_lock:
+            # Case 1 + 2: process expected active set
+            for point_id in expected_active:
+                if point_id in bulk_present:
+                    # Point is expected and present — ensure it is active
+                    if point_id not in self.mqtt_enabled_points:
+                        point_data = self.bulk_data.get(point_id, {})
+                        metadata   = point_data.get('metadata', {})
+                        title      = point_data.get('title', f'Point {point_id}')
+                        description = point_data.get('description', '')
+                        entity_type, category = self._get_cached_entity_type({
+                            'variableId':  point_id,
+                            'metadata':    metadata,
+                            'title':       title,
+                            'description': description,
+                        })
+                        self._index_point({
+                            'variableId':      point_id,
+                            'display_title':   title,
+                            'description':     description,
+                            'metadata':        metadata,
+                            'entity_type':     entity_type,
+                            'entity_category': category,
+                            'is_writable':     metadata.get('isWritable', False),
+                            'is_dynamic':      True,
+                        })
+                        if not self._enable_entity_locked(point_id):
+                            # Discovery publish failed — leave this point out
+                            # of active_dynamic_points so it isn't falsely
+                            # marked active when HA was never told about it;
+                            # this same reconcile pass will retry it next time.
+                            continue
+                        self.active_dynamic_points.add(point_id)
+                        activated += 1
+                        log_discovery.debug(
+                            "Reconcile: activated dynamic point %d '%s'",
+                            point_id, title,
                         )
-                        self._update_entity_state(entity_info)
-                    self.active_dynamic_points.add(point_id)
-            else:
-                # Point is expected but absent from bulk fetch
-                if point_id in self.active_dynamic_points:
-                    self._deindex_point(point_id)
-                    self._pub.invalidate_config_hash(point_id)
-                    self.mqtt.publish(
-                        BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
-                    )
-                    if point_id in self.mqtt_enabled_points:
-                        self.disable_entity(point_id)
-                    self.active_dynamic_points.discard(point_id)
-                    removed += 1
-                    log_discovery.info(
-                        "Reconcile: removed stale dynamic point %d "
-                        "(expected but absent from bulk — firmware update?)",
-                        point_id,
-                    )
+                    else:
+                        # Already enabled — still need to publish online and
+                        # current state so HA doesn't show the entity as unavailable.
+                        entity_info = self.active_entities_by_id.get(point_id)
+                        if entity_info:
+                            self.mqtt.publish(
+                                entity_info['availability_topic'], "online", retain=True
+                            )
+                            self._update_entity_state(entity_info)
+                        self.active_dynamic_points.add(point_id)
+                else:
+                    # Point is expected but absent from bulk fetch
+                    if point_id in self.active_dynamic_points:
+                        self._deindex_point(point_id)
+                        self._pub.invalidate_config_hash(point_id)
+                        self.mqtt.publish(
+                            BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
+                        )
+                        if point_id in self.mqtt_enabled_points:
+                            self._disable_entity_locked(point_id)
+                        self.active_dynamic_points.discard(point_id)
+                        removed += 1
+                        log_discovery.info(
+                            "Reconcile: removed stale dynamic point %d "
+                            "(expected but absent from bulk — firmware update?)",
+                            point_id,
+                        )
 
-        # Case 3: stale persisted entries not in expected set
-        stale = persisted_active - expected_active
-        for point_id in stale:
-            self._deindex_point(point_id)
-            self._pub.invalidate_config_hash(point_id)
-            self.mqtt.publish(
-                BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
-            )
-            if point_id in self.mqtt_enabled_points:
-                self.disable_entity(point_id)
-            self.active_dynamic_points.discard(point_id)
-            removed += 1
-            log_discovery.info(
-                "Reconcile: removed stale dynamic point %d "
-                "(in persisted active but not in expected — controlling switch changed?)",
-                point_id,
-            )
+            # Case 3: stale persisted entries not in expected set
+            stale = persisted_active - expected_active
+            for point_id in stale:
+                self._deindex_point(point_id)
+                self._pub.invalidate_config_hash(point_id)
+                self.mqtt.publish(
+                    BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
+                )
+                if point_id in self.mqtt_enabled_points:
+                    self._disable_entity_locked(point_id)
+                self.active_dynamic_points.discard(point_id)
+                removed += 1
+                log_discovery.info(
+                    "Reconcile: removed stale dynamic point %d "
+                    "(in persisted active but not in expected — controlling switch changed?)",
+                    point_id,
+                )
 
         if activated or removed:
             self._persist_active_dynamic()
@@ -2928,7 +2999,6 @@ class EntityManager:
                 raw = message.payload.decode('utf-8')
                 # Decompress if gzip-encoded
                 if raw.startswith(_GZIP_SENTINEL):
-                    import base64
                     data = json.loads(
                         gzip.decompress(base64.b64decode(raw[len(_GZIP_SENTINEL):])).decode('utf-8')
                     )
@@ -2973,39 +3043,45 @@ class EntityManager:
         self.mqtt.subscribe(BrowserTopic.ACTIVE_DYNAMIC)
         self.mqtt.message_callback_add(BrowserTopic.ACTIVE_DYNAMIC, on_active_dynamic_message)
 
-    def get_memory_usage(self) -> dict[str, int]:
+    def get_memory_usage(self) -> dict[str, Any]:
         """Return memory usage statistics for debugging and monitoring.
-        
+
         Returns
         -------
-        dict[str, int]
+        dict[str, Any]
             Dictionary with memory usage metrics including:
             - total_points: Total number of points tracked
             - active_entities: Number of active entities
             - cache_sizes: Sizes of various caches
             - estimated_memory_mb: Estimated memory usage in MB
         """
-        
-        stats = {
+
+        stats: dict[str, Any] = {
             'total_points':            len(self.all_points_by_id),
             'active_entities':         len(self.active_entities_by_id),
             'mqtt_enabled_points':     len(self.mqtt_enabled_points),
             'active_dynamic_points':   len(self.active_dynamic_points),
-            'value_cache_size':        len(self.value_cache._cache),
+            'value_cache_size':        len(self.value_cache),
             'last_states_size':        len(self.last_states),
             'point_string_cache_size': len(self._point_string_cache),
             'pending_writes':          len(self.pending_writes),
         }
+
+        # Hit rate reveals whether the entity-type-detection cache is
+        # actually earning its keep — a persistently low rate would mean
+        # max_cache_size is too small for this installation's point count.
+        cache_stats = self._point_string_cache.get_stats()
+        stats['point_string_cache_hit_rate'] = round(cache_stats['hit_rate'], 3)
 
         estimated_bytes = (
             stats['total_points'] * 100 +
             stats['active_entities'] * 500 +
             sum(stats[f'{cache}_size'] for cache in ['value_cache', 'last_states', 'point_string_cache']) * 50
         )
-        stats['estimated_memory_mb'] = round(estimated_bytes / (1024 * 1024), 2)  # type: ignore[assignment]
+        stats['estimated_memory_mb'] = round(estimated_bytes / (1024 * 1024), 2)
 
         try:
-            stats['actual_object_size_mb'] = round(sys.getsizeof(self) / (1024 * 1024), 2)  # type: ignore[assignment]
+            stats['actual_object_size_mb'] = round(sys.getsizeof(self) / (1024 * 1024), 2)
         except Exception:
             stats['actual_object_size_mb'] = None
 
@@ -3044,7 +3120,7 @@ class EntityManager:
         if path is None:
             path = _SNAPSHOTS_FILE
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if isinstance(data, list):
                 return data
@@ -3080,7 +3156,6 @@ class EntityManager:
         if not name:
             return False, "Snapshot name must not be empty."
 
-        import time as _time
         snapshots = self._load_snapshots(path=path)
 
         # Replace existing snapshot with the same name
@@ -3094,7 +3169,7 @@ class EntityManager:
 
         snapshot = {
             'name':        name,
-            'timestamp':   _time.strftime('%Y-%m-%d %H:%M:%S'),
+            'timestamp':   time.strftime('%Y-%m-%d %H:%M:%S'),
             'point_ids':   sorted(self.mqtt_enabled_points),
             'point_count': len(self.mqtt_enabled_points),
             'mode':        self._read_applied_mode_from_file() or 'unknown',
@@ -3150,26 +3225,27 @@ class EntityManager:
 
         protected = set(self.active_dynamic_points)
 
-        with self._suppress_lock:
-            was_suppressed = self._suppress_enabled_state_depth > 0
-            if not was_suppressed:
-                self._suppress_enabled_state_depth += 1
+        with self._em_lock:
+            with self._suppress_lock:
+                was_suppressed = self._suppress_enabled_state_depth > 0
+                if not was_suppressed:
+                    self._suppress_enabled_state_depth += 1
 
-        try:
-            if mode == 'flush':
-                # Disable everything not in the snapshot (protect dynamic points)
-                to_disable = (self.mqtt_enabled_points - valid_ids) - protected
-                for pid in to_disable:
-                    self.disable_entity(pid)
+            try:
+                if mode == 'flush':
+                    # Disable everything not in the snapshot (protect dynamic points)
+                    to_disable = (self.mqtt_enabled_points - valid_ids) - protected
+                    for pid in to_disable:
+                        self._disable_entity_locked(pid)
 
-            # Enable all valid snapshot points not already enabled
-            to_enable = valid_ids - self.mqtt_enabled_points
-            for pid in to_enable:
-                self.enable_entity(pid)
-        finally:
-            if not was_suppressed:
-                with self._suppress_lock:
-                    self._suppress_enabled_state_depth -= 1
+                # Enable all valid snapshot points not already enabled
+                to_enable = valid_ids - self.mqtt_enabled_points
+                for pid in to_enable:
+                    self._enable_entity_locked(pid)
+            finally:
+                if not was_suppressed:
+                    with self._suppress_lock:
+                        self._suppress_enabled_state_depth -= 1
 
         self.publish_enabled_state()
 

@@ -1,0 +1,149 @@
+configuration:
+  nibe_host:
+    name: Adres IP sterownika
+    description: >-
+      Adres IP lub nazwa hosta sterownika Nibe S-series w sieci lokalnej.
+      Zdecydowanie zaleca się przypisanie statycznego adresu IP za pomocą
+      routera.
+  nibe_port:
+    name: Port API sterownika
+    description: >-
+      Port HTTPS lokalnego REST API sterownika. Domyślna wartość 8443
+      jest prawidłowa dla wszystkich produktów z serii S i zwykle nie
+      wymaga zmiany.
+  nibe_username:
+    name: Nazwa użytkownika API sterownika
+    description: >-
+      Nazwa użytkownika ustawiona w menu serwisowym sterownika
+      (menu 7.5.15). Musi dokładnie odpowiadać wartości skonfigurowanej
+      na sterowniku.
+  nibe_password:
+    name: Hasło API sterownika
+    description: >-
+      Hasło ustawione w menu serwisowym sterownika (menu 7.5.15).
+      Rozróżniana jest wielkość liter.
+  mqtt_host:
+    name: Nazwa hosta brokera MQTT
+    description: >-
+      Nazwa hosta lub adres IP brokera MQTT. Domyślna wartość
+      "core-mosquitto" działa z oficjalnym dodatkiem Mosquitto. W
+      przypadku innego brokera użyj adresu IP lub nazwy hosta.
+  mqtt_port:
+    name: Port brokera MQTT
+    description: >-
+      Port TCP brokera MQTT. Domyślna wartość 1883 to standardowy,
+      nieszyfrowany port MQTT. Jeśli włączysz poniżej "MQTT TLS", zmień
+      go na 8883 (standardowy szyfrowany port używany przez Mosquitto).
+  mqtt_username:
+    name: Nazwa użytkownika MQTT
+    description: >-
+      Nazwa użytkownika do uwierzytelniania w brokerze MQTT. Pozostaw
+      puste, jeśli broker nie wymaga uwierzytelniania.
+  mqtt_password:
+    name: Hasło MQTT
+    description: >-
+      Hasło do uwierzytelniania w brokerze MQTT. Pozostaw puste, jeśli
+      broker nie wymaga uwierzytelniania.
+  device_name:
+    name: Nazwa urządzenia
+    description: >-
+      Sposób wyświetlania sterownika w Home Assistant. Domyślnie
+      "Nibe SMO S40", ale można to dostosować do rzeczywistego sprzętu
+      (np. "Nibe S1155" lub "Nibe VVM S320").
+  poll_interval:
+    name: Interwał odpytywania
+    description: >-
+      Jak często wszystkie punkty danych są pobierane ze sterownika, w
+      sekundach. Zalecane jest 30 sekund. Sterownik jest urządzeniem
+      wbudowanym — jego REST API jest drugorzędne wobec głównego
+      zadania, jakim jest sterowanie pompą ciepła. Po zmianie tego
+      ustawienia wymagany jest restart.
+  mode:
+    name: Tryb encji
+    description: >-
+      Który zestaw encji udostępnia bridge: "essential" obejmuje
+      podstawowe temperatury, status ciepłej wody, sumy energii i
+      podstawowe wartości zadane — dobry punkt wyjścia dla każdej
+      instalacji. "monitoring" dodaje przewody zasilające/powrotne,
+      status sprężarki i wskaźniki wydajności. "advanced" dodaje pełny
+      obwód czynnika chłodniczego oraz rejestry dostrojenia. "menus"
+      udostępnia każdy punkt potrzebny do pulpitu Menu Nibe i buduje ten
+      pulpit. "all" udostępnia każdy wykryty punkt; "none" nie
+      udostępnia niczego, dopóki nie włączysz encji ręcznie. Jest to
+      stosowane przy uruchomieniu — zmiana wymaga ponownego uruchomienia
+      dodatku, a przełączenie na inny tryb wyłącza encje, które nie
+      znajdują się w nowo wybranym zestawie — encje włączone ręcznie za
+      pomocą karty Entity Manager są również usuwane przy zmianie trybu,
+      ale zachowywane przy ponownym uruchomieniu w tym samym trybie.
+      "essential" to zalecany punkt wyjścia.
+  log_level:
+    name: Poziom logowania
+    description: >-
+      Szczegółowość dziennika dodatku. "info" jest zalecane do
+      normalnego użytku. Użyj "debug", aby diagnozować problemy z
+      połączeniem lub encjami — generuje to dużą ilość danych
+      wyjściowych i powinno zostać przywrócone do "info" po zakończeniu
+      diagnostyki.
+  debug_mode:
+    name: Tryb debugowania
+    description: >-
+      Włącza przycisk pakietu testów i czujnik wyników na urządzeniu
+      zarządzającym. Przydatne do uruchamiania nocnego pakietu testów
+      bez ustawiania poziomu logowania na debug. Gdy log_level jest
+      ustawiony na "debug", encje pakietu testów są również widoczne
+      niezależnie od tego ustawienia.
+  api_failure_threshold:
+    name: Próg błędów API
+    description: >-
+      Liczba kolejnych nieudanych odpytań, zanim w dzwonku powiadomień
+      HA pojawi się trwałe powiadomienie. Domyślna wartość 3 oznacza
+      trzy kolejne niepowodzenia (90 sekund przy domyślnym interwale)
+      przed ostrzeżeniem. Zwiększ tę wartość w przypadku niestabilnej
+      sieci, aby uniknąć fałszywych alarmów.
+  changelog_retention_days:
+    name: Przechowywanie dziennika zmian (dni)
+    description: >-
+      Ile dni wpisy w dzienniku zmian Entity Manager są przechowywane
+      przed usunięciem. Wpisy starsze niż ta wartość są usuwane przy
+      każdym restarcie bridge'a. Domyślna wartość 90 dni odpowiada
+      większości instalacji.
+  remove_frontend:
+    name: Usuń frontend przy zamykaniu
+    description: >-
+      Ustaw na true przed zatrzymaniem dodatku, aby automatycznie
+      usunąć pulpit Nibe Bridge, rejestrację zasobu Lovelace, plik
+      karty oraz wszystkie zachowane wiadomości MQTT przy następnym
+      normalnym zamknięciu. Używaj tego tylko przy odinstalowywaniu.
+      Normalne restarty nie są tym objęte. Pełną procedurę
+      odinstalowania opisano w dokumentacji.
+  nibe_ca_cert:
+    name: Ścieżka do certyfikatu CA sterownika Nibe
+    description: >-
+      Opcjonalne. Bezwzględna ścieżka do pliku certyfikatu CA w
+      formacie PEM, używanego do weryfikacji certyfikatu HTTPS
+      sterownika. Po ustawieniu włączana jest pełna weryfikacja
+      łańcucha TLS oraz sprawdzanie nazwy hosta dla wszystkich wywołań
+      API do sterownika. Pozostaw puste, aby zaakceptować wbudowany,
+      samopodpisany certyfikat sterownika bez weryfikacji — jest to
+      ustawienie domyślne i akceptowalne w zaufanej sieci domowej, ale
+      oznacza, że atak typu man-in-the-middle w sieci LAN mógłby
+      przechwycić ruch do sterownika. Przykład: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Włącza szyfrowanie TLS dla całego ruchu między bridge'em a
+      brokerem MQTT. Chroni dane logowania MQTT oraz wszystkie
+      polecenia encji przed odczytaniem przez inne urządzenia w sieci
+      lokalnej. Wymaga, aby broker był skonfigurowany do obsługi TLS —
+      zmień "MQTT broker port" na 8883, jeśli używasz dodatku
+      Mosquitto. Domyślnie wyłączone.
+  mqtt_ca_cert:
+    name: Ścieżka do certyfikatu CA brokera MQTT
+    description: >-
+      Opcjonalne. Używane tylko, gdy "MQTT TLS" jest włączone.
+      Bezwzględna ścieżka do pliku certyfikatu CA w formacie PEM,
+      używanego do weryfikacji certyfikatu TLS brokera. Pozostaw puste,
+      aby użyć systemowego magazynu CA, co jest prawidłowe dla
+      brokerów z certyfikatem podpisanym przez publiczne CA. Ustaw tę
+      wartość, jeśli broker używa certyfikatu samopodpisanego lub
+      podpisanego prywatnie. Przykład: /ssl/mqtt-ca.pem

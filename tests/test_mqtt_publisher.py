@@ -10,22 +10,26 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from hypothesis import example, given
-from hypothesis import strategies as st
-
 from conftest import (
     _make_em,
-    _nibe_raw_value,
     _nibe_point_id,
-    _unicode_text,
+    _nibe_raw_value,
     _safe_entity_id,
+    _unicode_text,
 )
+from hypothesis import example, given, strategies as st
 
 # Topic builder functions — imported at module level so mutmut can replace the
 # module cleanly between test runs without triggering import-lock timeouts.
 from nibe_mqtt_publisher import (
-    t_config, t_state, t_command, t_available, t_attributes, t_press,
+    t_attributes,
+    t_available,
+    t_command,
+    t_config,
+    t_press,
+    t_state,
 )
+
 
 class TestTopicFunctionProperties(unittest.TestCase):
     """Hypothesis properties for MQTT topic builder functions."""
@@ -149,7 +153,7 @@ class TestResolveUnitProperties(unittest.TestCase):
            st.text(max_size=20))
     def test_overridden_point_returns_true_flag(self, point_id, raw_unit):
         """Points in UNIT_OVERRIDES always return was_overridden=True."""
-        from nibe_mqtt_publisher import resolve_unit, UNIT_OVERRIDES
+        from nibe_mqtt_publisher import UNIT_OVERRIDES, resolve_unit
         if point_id in UNIT_OVERRIDES:
             _, was_overridden = resolve_unit(point_id, raw_unit)
             self.assertTrue(was_overridden)
@@ -230,7 +234,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
     def test_create_entity_id_in_all_topic_functions(self, pid):
         """create_entity_id(pid) fed into any t_* function always contains str(pid)."""
         from nibe_entity_detection import create_entity_id
-        from nibe_mqtt_publisher import t_config, t_state, t_command, t_available, t_attributes
+        from nibe_mqtt_publisher import t_attributes, t_available, t_command, t_config, t_state
         entity_id = create_entity_id(pid)
         for fn in (t_config, t_state, t_command, t_available, t_attributes):
             topic = fn('sensor', entity_id)
@@ -242,7 +246,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
     def test_clean_unit_does_not_affect_apply_divisor(self, raw_value, unit):
         """clean_unit and apply_divisor are independent: cleaning the unit
         must not change apply_divisor's output."""
-        from nibe_entity_detection import clean_unit, apply_divisor
+        from nibe_entity_detection import apply_divisor, clean_unit
         result_before = apply_divisor(raw_value, 10)
         _ = clean_unit(unit)  # should have no effect on divisor arithmetic
         result_after = apply_divisor(raw_value, 10)
@@ -252,7 +256,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
     def test_parse_description_with_two_plus_entries_gives_nonempty_options(self, description):
         """If parse_description_mapping returns a dict with ≥2 entries,
         get_entity_options on the same description should return ≥2 options."""
-        from nibe_entity_detection import parse_description_mapping, get_entity_options
+        from nibe_entity_detection import get_entity_options, parse_description_mapping
         mapping = parse_description_mapping(description)
         if mapping is not None and len(mapping) >= 2:
             meta = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
@@ -330,7 +334,8 @@ class TestDiscoveryConfigSnapshots(unittest.TestCase):
 
     def _get_config(self, mqtt, entity_type, pid):
         import json as _json
-        from nibe_mqtt_publisher import t_config, create_entity_id
+
+        from nibe_mqtt_publisher import create_entity_id, t_config
         topic = t_config(entity_type, create_entity_id(pid))
         calls = [c for c in mqtt.publish.call_args_list if c.args[0] == topic]
         self.assertTrue(calls, f"No discovery config published for pid={pid}")
@@ -639,7 +644,7 @@ class TestEntityDetectionConstantsProperties(unittest.TestCase):
     @example(3754)    # ENTITY_TYPE_OVERRIDES switch (Forced control max=0 quirk)
     def test_entity_type_override_never_produces_invalid_type(self, pid):
         """If a point has an override, detect_entity_type must return that type."""
-        from nibe_entity_detection import detect_entity_type, ENTITY_TYPE_OVERRIDES
+        from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, detect_entity_type
         if pid in ENTITY_TYPE_OVERRIDES:
             point = {
                 'variableId': pid, 'title': 'Test', 'description': '',
@@ -824,7 +829,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
     """Hypothesis properties for DynamicPointMap.flush."""
 
     def _map_with_entries(self, pids):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         for pid in pids:
             entry = DynamicPointEntry(
@@ -848,7 +853,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
         """After flush, all entries must have is_controlling=None."""
         m = self._map_with_entries(pids)
         pts = self._all_points(pids)
-        types = {pid: 'switch' for pid in pids}
+        types = dict.fromkeys(pids, 'switch')
         m.flush(pts, types)
         for entry in m._table.values():
             self.assertIsNone(entry.is_controlling)
@@ -858,7 +863,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
         """After flush, all processed_values must be empty."""
         m = self._map_with_entries(pids)
         pts = self._all_points(pids)
-        types = {pid: 'switch' for pid in pids}
+        types = dict.fromkeys(pids, 'switch')
         m.flush(pts, types)
         for entry in m._table.values():
             self.assertEqual(entry.processed_values, set())
@@ -868,7 +873,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
         """After flush, dynamic_points_by_value must be empty."""
         m = self._map_with_entries(pids)
         pts = self._all_points(pids)
-        types = {pid: 'switch' for pid in pids}
+        types = dict.fromkeys(pids, 'switch')
         m.flush(pts, types)
         for entry in m._table.values():
             self.assertEqual(entry.dynamic_points_by_value, {})
@@ -878,7 +883,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
         """After flush, unprocessed_values must be non-empty (reset to all values)."""
         m = self._map_with_entries(pids)
         pts = self._all_points(pids)
-        types = {pid: 'switch' for pid in pids}
+        types = dict.fromkeys(pids, 'switch')
         m.flush(pts, types)
         for entry in m._table.values():
             self.assertGreater(len(entry.unprocessed_values), 0)
@@ -887,7 +892,7 @@ class TestDynamicPointMapFlushProperties(unittest.TestCase):
     def test_flush_never_raises(self, pids):
         m = self._map_with_entries(pids)
         pts = self._all_points(pids)
-        types = {pid: 'switch' for pid in pids}
+        types = dict.fromkeys(pids, 'switch')
         m.flush(pts, types)  # must not raise
 
     def test_flush_empty_map_never_raises(self):
@@ -907,35 +912,35 @@ class TestBuildSensorConfigProperties(unittest.TestCase):
     @given(_safe_entity_id, _nibe_point_id, st.text(max_size=10),
            st.text(max_size=50))
     def test_always_sets_state_topic(self, entity_id, pid, unit, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, entity_id, pid, unit, title, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), pid, unit, title, {})
         self.assertIn('state_topic', config)
 
     @given(_safe_entity_id, _nibe_point_id, st.text(max_size=10),
            st.text(max_size=50))
     def test_state_topic_consistent_with_t_state(self, entity_id, pid, unit, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, t_state
+        from nibe_mqtt_publisher import t_state
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, entity_id, pid, unit, title, {})
+        import nibe_discovery_config as discovery_config
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), pid, unit, title, {})
         self.assertEqual(config['state_topic'], t_state('sensor', entity_id))
 
     def test_point_2685_always_gets_date_device_class(self):
         """Point 2685 is a special date sensor — must always get device_class='date'."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, 'nibe_2685', 2685, '', 'Days since commissioning', {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_2685'), 2685, '', 'Days since commissioning', {})
         self.assertEqual(config.get('device_class'), 'date')
 
     def test_point_2685_config_minimal(self):
         """Point 2685 returns early after setting device_class — no unit etc."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, 'nibe_2685', 2685, 'days', 'Title', {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_2685'), 2685, 'days', 'Title', {})
         self.assertNotIn('unit_of_measurement', config)
 
     @given(_safe_entity_id,
@@ -944,10 +949,10 @@ class TestBuildSensorConfigProperties(unittest.TestCase):
            st.text(max_size=50))
     def test_unit_present_sets_unit_of_measurement(self, entity_id, pid, unit, title):
         """Non-empty unit must always produce unit_of_measurement in config."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, entity_id, pid, unit, title, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), pid, unit, title, {})
         self.assertIn('unit_of_measurement', config)
         self.assertEqual(config['unit_of_measurement'], unit)
 
@@ -956,19 +961,19 @@ class TestBuildSensorConfigProperties(unittest.TestCase):
            st.text(max_size=50))
     def test_no_unit_no_unit_of_measurement(self, entity_id, pid, title):
         """Empty unit must not produce unit_of_measurement in config."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, entity_id, pid, '', title, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), pid, '', title, {})
         self.assertNotIn('unit_of_measurement', config)
 
     @given(_safe_entity_id, _nibe_point_id, st.text(max_size=10),
            st.text(max_size=50))
     def test_never_raises(self, entity_id, pid, unit, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_sensor_config(
-            config, entity_id, pid, unit, title, {})  # must not raise
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), pid, unit, title, {})  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -980,7 +985,7 @@ class TestRecordOutcomeProperties(unittest.TestCase):
     """Hypothesis properties for DynamicPointMap.record_outcome."""
 
     def _map_with(self, pid, values):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[pid] = DynamicPointEntry(
             point_id=pid, title='Test', entity_type='switch',
@@ -1072,8 +1077,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
     def test_always_sets_state_and_command_topics(self, entity_id, pid, mn, mx):
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', '',
-                                 self._meta(mn, mx), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', '', self._meta(mn, mx), {}, pub._range_warnings_issued)
         self.assertIn('state_topic', config)
         self.assertIn('command_topic', config)
 
@@ -1083,8 +1089,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
         post-write learning detection windows."""
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, 'test_id', 9999, 'Test', '',
-                                 self._meta(), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'Test', '', self._meta(), {}, pub._range_warnings_issued)
         self.assertFalse(config.get('optimistic', True),
                          "number discovery config must include optimistic:false")
 
@@ -1092,11 +1099,11 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
            st.integers(min_value=-100, max_value=100),
            st.integers(min_value=-100, max_value=100))
     def test_topics_consistent_with_t_state_t_command(self, entity_id, pid, mn, mx):
-        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_mqtt_publisher import t_command, t_state
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', '',
-                                 self._meta(mn, mx), {})
+        import nibe_discovery_config as discovery_config
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', '', self._meta(mn, mx), {}, pub._range_warnings_issued)
         self.assertEqual(config['state_topic'],   t_state('number', entity_id))
         self.assertEqual(config['command_topic'], t_command('number', entity_id))
 
@@ -1106,8 +1113,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
     def test_unit_present_sets_unit_of_measurement(self, entity_id, pid, mn, unit):
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', unit,
-                                 self._meta(mn, mn + 2), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', unit, self._meta(mn, mn + 2), {}, pub._range_warnings_issued)
         self.assertIn('unit_of_measurement', config)
         self.assertEqual(config['unit_of_measurement'], unit)
 
@@ -1116,8 +1124,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
     def test_no_unit_no_unit_of_measurement(self, entity_id, pid, mn):
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', '',
-                                 self._meta(mn, mn + 2), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', '', self._meta(mn, mn + 2), {}, pub._range_warnings_issued)
         self.assertNotIn('unit_of_measurement', config)
 
     @given(_safe_entity_id, _nibe_point_id, st.integers(min_value=1, max_value=100))
@@ -1125,8 +1134,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
         """step value must always be > 0."""
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', '',
-                                 self._meta(0, 100, change=change), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', '', self._meta(0, 100, change=change), {}, pub._range_warnings_issued)
         if 'step' in config:
             self.assertGreater(config['step'], 0)
 
@@ -1136,8 +1146,9 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
     def test_never_raises(self, entity_id, pid, mn, mx):
         pub = self._pub()
         config = {}
-        pub._build_number_config(config, entity_id, pid, 'Test', '',
-                                 self._meta(mn, mx), {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', entity_id), t_command('number', entity_id), pid, 'Test', '', self._meta(mn, mx), {}, pub._range_warnings_issued)
 
 
 # ---------------------------------------------------------------------------
@@ -1289,7 +1300,7 @@ class TestPublishEntityDiscoveryProperties(unittest.TestCase):
     @given(_nibe_point_id,
            st.sampled_from(['sensor', 'switch', 'binary_sensor']))
     def test_result_availability_topic_consistent(self, pid, entity_type):
-        from nibe_mqtt_publisher import t_available, create_entity_id
+        from nibe_mqtt_publisher import create_entity_id, t_available
         pub, _ = self._pub()
         result = pub.publish_entity_discovery(self._point(pid, entity_type), {})
         if result is not None:
@@ -1299,7 +1310,7 @@ class TestPublishEntityDiscoveryProperties(unittest.TestCase):
     @given(_nibe_point_id,
            st.sampled_from(['sensor', 'switch', 'binary_sensor']))
     def test_publishes_to_config_topic(self, pid, entity_type):
-        from nibe_mqtt_publisher import t_config, create_entity_id
+        from nibe_mqtt_publisher import create_entity_id, t_config
         pub, mqtt = self._pub()
         pub.publish_entity_discovery(self._point(pid, entity_type), {})
         expected = t_config(entity_type, create_entity_id(pid))
@@ -1311,7 +1322,8 @@ class TestPublishEntityDiscoveryProperties(unittest.TestCase):
     def test_published_config_contains_unique_id(self, pid, entity_type):
         """The published discovery config must always contain unique_id=nibe_{pid}."""
         import json as _json
-        from nibe_mqtt_publisher import t_config, create_entity_id
+
+        from nibe_mqtt_publisher import create_entity_id, t_config
         pub, mqtt = self._pub()
         pub.publish_entity_discovery(self._point(pid, entity_type), {})
         config_topic = t_config(entity_type, create_entity_id(pid))
@@ -1366,7 +1378,7 @@ class TestPublishEntityDiscoveryProperties(unittest.TestCase):
         """Publishing the same point twice without invalidating the hash must
         result in exactly one MQTT publish (not two) — the dedup guard works
         for all entity types."""
-        from nibe_mqtt_publisher import t_config, create_entity_id
+        from nibe_mqtt_publisher import create_entity_id, t_config
         pub, mqtt = self._pub()
         pub.publish_entity_discovery(self._point(pid, entity_type), {})
         pub.publish_entity_discovery(self._point(pid, entity_type), {})
@@ -1403,8 +1415,8 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
         em._read_applied_mode_from_file('/nonexistent/path/mode.txt')
 
     def test_empty_file_returns_none(self):
-        import tempfile
         import os
+        import tempfile
         em = _make_em()
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
             f.write('')
@@ -1416,8 +1428,8 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
             os.unlink(path)
 
     def test_whitespace_only_file_returns_none(self):
-        import tempfile
         import os
+        import tempfile
         em = _make_em()
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
             f.write('   \n  ')
@@ -1432,8 +1444,8 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
                    alphabet=st.characters(categories=['L', 'N'],
                                           include_characters='_')))
     def test_file_with_content_returns_stripped_content(self, mode):
-        import tempfile
         import os
+        import tempfile
         em = _make_em()
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
             f.write(f'  {mode}  \n')
@@ -1448,8 +1460,8 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
                    alphabet=st.characters(categories=['L', 'N'],
                                           include_characters='_')))
     def test_result_always_stripped(self, mode):
-        import tempfile
         import os
+        import tempfile
         em = _make_em()
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
             f.write(mode)
@@ -1557,6 +1569,7 @@ class TestPublishStatsProperties(unittest.TestCase):
 
     def _get_attrs(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import MgmtTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == MgmtTopic.STATS_ATTRS]
@@ -2107,6 +2120,7 @@ class TestPublishAllMetadataProperties(unittest.TestCase):
 
     def _get_payload(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import BrowserTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == BrowserTopic.ALL_METADATA]
@@ -2205,6 +2219,7 @@ class TestPublishBridgeStatusProperties(unittest.TestCase):
 
     def _get_payload(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import BrowserTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == BrowserTopic.BRIDGE_STATUS]
@@ -2306,6 +2321,7 @@ class TestPublishPointListProperties(unittest.TestCase):
 
     def _get_payload(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import BrowserTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == BrowserTopic.POINT_LIST]
@@ -2387,6 +2403,7 @@ class TestPublishUptimeProperties(unittest.TestCase):
 
     def _get_attrs(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import MgmtTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == MgmtTopic.UPTIME_ATTRS]
@@ -2473,6 +2490,7 @@ class TestPublishAlarmStateProperties(unittest.TestCase):
 
     def _get_attrs(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import MgmtTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == MgmtTopic.ALARM_ATTRS]
@@ -2537,6 +2555,7 @@ class TestPublishEnabledStateProperties(unittest.TestCase):
 
     def _get_payload(self, mqtt):
         import json as _json
+
         from nibe_mqtt_publisher import BrowserTopic
         calls = [c for c in mqtt.publish.call_args_list
                  if c.args[0] == BrowserTopic.ENABLED_STATE]
@@ -2638,30 +2657,34 @@ class TestBuildButtonConfigProperties(unittest.TestCase):
 
     @given(_safe_entity_id)
     def test_always_sets_command_topic(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_button_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press(entity_id))
         self.assertIn('command_topic', config)
 
     @given(_safe_entity_id)
     def test_command_topic_contains_entity_id(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_button_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press(entity_id))
         self.assertIn(entity_id, config['command_topic'])
 
     @given(_safe_entity_id)
     def test_command_topic_contains_press(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_button_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press(entity_id))
         self.assertIn('press', config['command_topic'])
 
     @given(_safe_entity_id)
     def test_sets_exactly_one_key(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_button_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press(entity_id))
         self.assertEqual(set(config.keys()), {'command_topic'})
 
 
@@ -2671,47 +2694,53 @@ class TestBuildSwitchConfigProperties(unittest.TestCase):
 
     @given(_safe_entity_id)
     def test_always_sets_required_keys(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         for key in ('state_topic', 'command_topic', 'payload_on', 'payload_off', 'optimistic'):
             self.assertIn(key, config)
 
     @given(_safe_entity_id)
     def test_payload_on_is_one(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         self.assertEqual(config['payload_on'], '1')
 
     @given(_safe_entity_id)
     def test_payload_off_is_zero(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         self.assertEqual(config['payload_off'], '0')
 
     @given(_safe_entity_id)
     def test_optimistic_is_false(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         self.assertFalse(config['optimistic'])
 
     @given(_safe_entity_id)
     def test_all_topics_contain_entity_id(self, entity_id):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         self.assertIn(entity_id, config['state_topic'])
         self.assertIn(entity_id, config['command_topic'])
 
     @given(_safe_entity_id)
     def test_consistent_with_t_state_t_command(self, entity_id):
         """state_topic and command_topic must match t_state/t_command output."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, t_state, t_command
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_switch_config(config, entity_id)
+        import nibe_discovery_config as discovery_config
+        discovery_config.build_switch_config(config, t_state('switch', entity_id), t_command('switch', entity_id))
         self.assertEqual(config['state_topic'], t_state('switch', entity_id))
         self.assertEqual(config['command_topic'], t_command('switch', entity_id))
 
@@ -2722,37 +2751,42 @@ class TestBuildBinarySensorConfigProperties(unittest.TestCase):
 
     @given(_safe_entity_id, st.text(max_size=50))
     def test_always_sets_state_topic(self, entity_id, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_binary_sensor_config(config, entity_id, title)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', entity_id), title)
         self.assertIn('state_topic', config)
 
     @given(_safe_entity_id, st.text(max_size=50))
     def test_payload_on_is_ON(self, entity_id, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_binary_sensor_config(config, entity_id, title)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', entity_id), title)
         self.assertEqual(config['payload_on'], 'ON')
 
     @given(_safe_entity_id, st.text(max_size=50))
     def test_payload_off_is_OFF(self, entity_id, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_binary_sensor_config(config, entity_id, title)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', entity_id), title)
         self.assertEqual(config['payload_off'], 'OFF')
 
     @given(_safe_entity_id, st.text(max_size=50))
     def test_state_topic_contains_entity_id(self, entity_id, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         config = {}
-        MqttDiscoveryPublisher._build_binary_sensor_config(config, entity_id, title)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', entity_id), title)
         self.assertIn(entity_id, config['state_topic'])
 
     @given(_safe_entity_id, st.text(max_size=50))
     def test_consistent_with_t_state(self, entity_id, title):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, t_state
+        from nibe_mqtt_publisher import t_state
         config = {}
-        MqttDiscoveryPublisher._build_binary_sensor_config(config, entity_id, title)
+        import nibe_discovery_config as discovery_config
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', entity_id), title)
         self.assertEqual(config['state_topic'], t_state('binary_sensor', entity_id))
 
 
@@ -2808,72 +2842,96 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
 
     def test_switch_has_state_and_command_topics(self):
         config = {}
-        self.pub._build_switch_config(config, 'nibe_1000')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', 'nibe_1000'), t_command('switch', 'nibe_1000'))
         self.assertIn('state_topic',   config)
         self.assertIn('command_topic', config)
 
     def test_switch_payloads_are_1_and_0(self):
         config = {}
-        self.pub._build_switch_config(config, 'nibe_1000')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', 'nibe_1000'), t_command('switch', 'nibe_1000'))
         self.assertEqual(config['payload_on'],  '1')
         self.assertEqual(config['payload_off'], '0')
 
     def test_switch_not_optimistic(self):
         config = {}
-        self.pub._build_switch_config(config, 'nibe_1000')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_switch_config(config, t_state('switch', 'nibe_1000'), t_command('switch', 'nibe_1000'))
         self.assertFalse(config['optimistic'])
 
     # ── button ───────────────────────────────────────────────────────────────
 
     def test_button_has_command_topic(self):
         config = {}
-        self.pub._build_button_config(config, 'nibe_1000')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press('nibe_1000'))
         self.assertIn('command_topic', config)
 
     def test_button_has_no_state_topic(self):
         config = {}
-        self.pub._build_button_config(config, 'nibe_1000')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_press
+        discovery_config.build_button_config(config, t_press('nibe_1000'))
         self.assertNotIn('state_topic', config)
 
     # ── binary_sensor ────────────────────────────────────────────────────────
 
     def test_binary_sensor_payloads(self):
         config = {}
-        self.pub._build_binary_sensor_config(config, 'nibe_1000', 'Test')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', 'nibe_1000'), 'Test')
         self.assertEqual(config['payload_on'],  'ON')
         self.assertEqual(config['payload_off'], 'OFF')
 
     def test_binary_sensor_has_state_topic(self):
         config = {}
-        self.pub._build_binary_sensor_config(config, 'nibe_1000', 'Test')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', 'nibe_1000'), 'Test')
         self.assertIn('state_topic', config)
 
     # ── sensor ───────────────────────────────────────────────────────────────
 
     def test_sensor_has_state_topic(self):
         config = {}
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, '°C', 'Temp', self._meta())
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '°C', 'Temp', self._meta())
         self.assertIn('state_topic', config)
 
     def test_sensor_with_unit_gets_unit_of_measurement(self):
         config = {}
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, '°C', 'Temp', self._meta())
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '°C', 'Temp', self._meta())
         self.assertEqual(config['unit_of_measurement'], '°C')
 
     def test_sensor_without_unit_no_unit_of_measurement(self):
         config = {}
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, '', 'Count', self._meta())
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '', 'Count', self._meta())
         self.assertNotIn('unit_of_measurement', config)
 
     def test_sensor_temperature_gets_measurement_state_class(self):
         config = {}
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, '°C', 'Temp', self._meta())
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '°C', 'Temp', self._meta())
         self.assertEqual(config.get('state_class'), 'measurement')
 
     def test_sensor_energy_accumulator_gets_total_increasing(self):
         config = {}
         meta = self._meta(divisor=1, maxValue=99999)
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, 'kWh', 'Energy', meta)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, 'kWh', 'Energy', meta)
         self.assertEqual(config.get('state_class'), 'total_increasing')
         self.assertEqual(config.get('device_class'), 'energy')
 
@@ -2881,22 +2939,26 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         """kWh sensor with divisor=100 and maxValue=0 is treated as instantaneous power."""
         config = {}
         meta = self._meta(divisor=100, maxValue=0)
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, 'kWh', 'Power', meta)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, 'kWh', 'Power', meta)
         self.assertEqual(config.get('state_class'), 'measurement')
         self.assertNotIn('device_class', config)
 
     def test_sensor_no_unit_no_state_class(self):
         config = {}
-        self.pub._build_sensor_config(config, 'nibe_1000', 1000, '', 'Status', self._meta())
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '', 'Status', self._meta())
         self.assertNotIn('state_class', config)
 
     def test_sensor_decimal_sets_suggested_display_precision(self):
         """Firmware decimal field must propagate to suggested_display_precision
         so HA shows the right number of decimal places by default."""
         config = {}
-        self.pub._build_sensor_config(
-            config, 'nibe_1000', 1000, '°C', 'Temp', self._meta(decimal=1)
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '°C', 'Temp', self._meta(decimal=1))
         self.assertEqual(config['suggested_display_precision'], 1)
 
     def test_sensor_zero_decimal_sets_suggested_display_precision_zero(self):
@@ -2904,9 +2966,9 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         overriding HA's default heuristic which may guess more decimal places
         for certain device classes (e.g. temperature)."""
         config = {}
-        self.pub._build_sensor_config(
-            config, 'nibe_1000', 1000, '°C', 'Temp', self._meta(decimal=0)
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '°C', 'Temp', self._meta(decimal=0))
         self.assertEqual(config['suggested_display_precision'], 0)
 
     def test_sensor_without_unit_never_gets_suggested_display_precision(self):
@@ -2923,113 +2985,104 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         the entity now claims to be numeric.
         """
         config = {}
-        self.pub._build_sensor_config(
-            config, 'nibe_1000', 1000, '', 'Compressor Status', self._meta(decimal=0)
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_1000'), 1000, '', 'Compressor Status', self._meta(decimal=0))
         self.assertNotIn('suggested_display_precision', config)
 
     # ── number ───────────────────────────────────────────────────────────────
 
     def test_number_has_state_and_command_topics(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '°C', self._meta(minValue=0, maxValue=100), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '°C', self._meta(minValue=0, maxValue=100), {}, self.pub._range_warnings_issued)
         self.assertIn('state_topic',   config)
         self.assertIn('command_topic', config)
 
     def test_number_min_max_divided_by_divisor(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '°C',
-            self._meta(minValue=0, maxValue=1000, divisor=10), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '°C', self._meta(minValue=0, maxValue=1000, divisor=10), {}, self.pub._range_warnings_issued)
         self.assertAlmostEqual(config['min'], 0.0)
         self.assertAlmostEqual(config['max'], 100.0)
 
     def test_number_step_matches_divisor(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '°C',
-            self._meta(minValue=0, maxValue=1000, divisor=10), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '°C', self._meta(minValue=0, maxValue=1000, divisor=10), {}, self.pub._range_warnings_issued)
         self.assertAlmostEqual(config['step'], 0.1)
 
     def test_number_step_is_1_for_integer_register(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '',
-            self._meta(minValue=0, maxValue=10, divisor=1), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '', self._meta(minValue=0, maxValue=10, divisor=1), {}, self.pub._range_warnings_issued)
         self.assertEqual(config['step'], 1)
 
     def test_number_mode_is_box(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '',
-            self._meta(minValue=0, maxValue=10), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '', self._meta(minValue=0, maxValue=10), {}, self.pub._range_warnings_issued)
         self.assertEqual(config['mode'], 'box')
 
     def test_number_degenerate_range_sets_flag(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '',
-            self._meta(minValue=5, maxValue=5), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '', self._meta(minValue=5, maxValue=5), {}, self.pub._range_warnings_issued)
         self.assertTrue(config.get('_degenerate_range'))
 
     def test_number_degenerate_range_uses_fallback_bounds(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '',
-            self._meta(minValue=5, maxValue=5), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '', self._meta(minValue=5, maxValue=5), {}, self.pub._range_warnings_issued)
         self.assertLessEqual(config['min'], -100)
         self.assertGreaterEqual(config['max'], 100)
 
     def test_number_degenerate_range_anchors_to_current_value(self):
         """When current value is known, fallback bounds anchor to it."""
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '',
-            self._meta(minValue=5, maxValue=5),
-            {1000: {'raw_value': 500}}   # current raw = 500, divisor=1
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '', self._meta(minValue=5, maxValue=5), {1000: {'raw_value': 500}}, self.pub._range_warnings_issued)
         self.assertLessEqual(config['min'], 500)
         self.assertGreaterEqual(config['max'], 500)
 
     def test_number_unit_added_when_present(self):
         config = {}
-        self.pub._build_number_config(
-            config, 'nibe_1000', 1000, 'Test', '°C',
-            self._meta(minValue=0, maxValue=100), {}
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_1000'), t_command('number', 'nibe_1000'), 1000, 'Test', '°C', self._meta(minValue=0, maxValue=100), {}, self.pub._range_warnings_issued)
         self.assertEqual(config['unit_of_measurement'], '°C')
 
     # ── select ───────────────────────────────────────────────────────────────
 
     def test_select_has_state_and_command_topics(self):
         config = {}
-        self.pub._build_select_config(
-            config, 'nibe_1000', 1000, self._meta(), '0=Off,1=On'
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '0=Off,1=On')
         self.assertIn('state_topic',   config)
         self.assertIn('command_topic', config)
 
     def test_select_options_parsed_from_description(self):
         config = {}
-        self.pub._build_select_config(
-            config, 'nibe_1000', 1000, self._meta(), '0=Off,1=On'
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '0=Off,1=On')
         self.assertIn('options', config)
         self.assertEqual(len(config['options']), 2)
 
     def test_select_no_options_when_description_empty(self):
         config = {}
-        self.pub._build_select_config(
-            config, 'nibe_1000', 1000, self._meta(), ''
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '')
         self.assertNotIn('options', config)
 
     # ── publish_entity_discovery integration ─────────────────────────────────
@@ -3432,13 +3485,13 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         """Default behaviour (warned=None) must not touch the logger at all —
         confirms pure-mode callers (e.g. _build_point_metadata_dict) get zero
         side effects."""
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', 'Some title')
             mock_warn.assert_not_called()
 
     def test_override_with_warned_set_logs_once(self):
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', 'Manual pump speed', warned)
@@ -3448,7 +3501,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
     def test_override_warning_message_content(self):
         """Confirms the trimmed message shape: point id, title, raw value,
         resolved value — no extra padding."""
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', 'Manual pump speed', warned)
@@ -3463,7 +3516,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         """The actual dedup contract: calling resolve_unit for the same
         point_id multiple times (e.g. once from publish_entity_discovery,
         hypothetically again from a retry) must only log the first time."""
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', 'Manual pump speed', warned)
@@ -3472,7 +3525,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         mock_warn.assert_called_once()
 
     def test_different_points_each_log_independently(self):
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', 'Manual pump speed', warned)
@@ -3481,7 +3534,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         self.assertEqual(warned, {4562, 50827})
 
     def test_non_overridden_point_never_logs(self):
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(999999, '°C', 'Some sensor', warned)
@@ -3489,7 +3542,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         self.assertEqual(warned, set())
 
     def test_missing_title_falls_back_to_point_label(self):
-        from nibe_mqtt_publisher import resolve_unit, log_mqtt
+        from nibe_mqtt_publisher import log_mqtt, resolve_unit
         warned = set()
         with patch.object(log_mqtt, 'warning') as mock_warn:
             resolve_unit(4562, '%', '', warned)
@@ -3514,6 +3567,7 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
         pub._range_warnings_issued = set()
         pub._unit_override_warnings_issued = set()
         pub._config_hashes = {}
+        pub._point_entity_types = {}
         return pub
 
     def _point(self, point_id, unit='', entity_type='switch', category='config', writable=True):
@@ -3589,8 +3643,9 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         config = {}
         metadata = {'minValue': 0, 'maxValue': 0, 'divisor': 1, 'intDefaultValue': 0}
         with patch.object(log_entities, 'warning') as mock_warn:
-            pub._build_number_config(config, 'number.nibe_2500', 2500,
-                                      'Compressor status', '', metadata, {})
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_command, t_state
+            discovery_config.build_number_config(config, t_state('number', 'number.nibe_2500'), t_command('number', 'number.nibe_2500'), 2500, 'Compressor status', '', metadata, {}, pub._range_warnings_issued)
         mock_warn.assert_called_once()
         msg = mock_warn.call_args.args[0]
         self.assertIn('degenerate range', msg)
@@ -3605,8 +3660,9 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         metadata = {'minValue': 0, 'maxValue': 100, 'divisor': 1}
         bulk_data = {3898: {'raw_value': 150}}
         with patch.object(log_entities, 'warning') as mock_warn:
-            pub._build_number_config(config, 'number.nibe_3898', 3898,
-                                      'Some setting', '', metadata, bulk_data)
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_command, t_state
+            discovery_config.build_number_config(config, t_state('number', 'number.nibe_3898'), t_command('number', 'number.nibe_3898'), 3898, 'Some setting', '', metadata, bulk_data, pub._range_warnings_issued)
         mock_warn.assert_called_once()
         msg = mock_warn.call_args.args[0]
         self.assertIn('outside firmware range', msg)
@@ -3619,8 +3675,12 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         pub = self._publisher()
         metadata = {'minValue': 0, 'maxValue': 0, 'divisor': 1, 'intDefaultValue': 0}
         with patch.object(log_entities, 'warning') as mock_warn:
-            pub._build_number_config({}, 'number.nibe_2500', 2500, 'Compressor status', '', metadata, {})
-            pub._build_number_config({}, 'number.nibe_2500', 2500, 'Compressor status', '', metadata, {})
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_command, t_state
+            discovery_config.build_number_config({}, t_state('number', 'number.nibe_2500'), t_command('number', 'number.nibe_2500'), 2500, 'Compressor status', '', metadata, {}, pub._range_warnings_issued)
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_command, t_state
+            discovery_config.build_number_config({}, t_state('number', 'number.nibe_2500'), t_command('number', 'number.nibe_2500'), 2500, 'Compressor status', '', metadata, {}, pub._range_warnings_issued)
         mock_warn.assert_called_once()
 
 
@@ -3634,7 +3694,7 @@ class TestPublishBrowserFunctions(unittest.TestCase):
     All are pure publish functions — build a JSON payload and call mqtt.publish."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
         self.pub = MqttDiscoveryPublisher(
@@ -3749,7 +3809,7 @@ class TestPublishManagementSensors(unittest.TestCase):
     state/attribute topics via _pub_state."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
         self.pub = MqttDiscoveryPublisher(
@@ -3882,7 +3942,7 @@ class TestPublishManagementSensors(unittest.TestCase):
 class TestPublishBridgeHealthFunctions(unittest.TestCase):
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
         self.pub = MqttDiscoveryPublisher(
@@ -3936,19 +3996,19 @@ class TestPublishBridgeHealthFunctions(unittest.TestCase):
     def _status_payload(self, **kwargs):
         import json
         import time
-        defaults = dict(
-            bridge_start_time=time.time() - 3600,
-            api_consecutive_failures=0,
-            api_failure_threshold=3,
-            api_last_success_time=time.time(),
-            last_fetch_duration=1.2,
-            write_total=10, write_success=9, write_failed=1,
-            last_write_error=None,
-            pending_write_count=0,
-            mqtt_enabled_count=283,
-            all_points_count=1158,
-            known_dynamic_count=5,
-        )
+        defaults = {
+            'bridge_start_time': time.time() - 3600,
+            'api_consecutive_failures': 0,
+            'api_failure_threshold': 3,
+            'api_last_success_time': time.time(),
+            'last_fetch_duration': 1.2,
+            'write_total': 10, 'write_success': 9, 'write_failed': 1,
+            'last_write_error': None,
+            'pending_write_count': 0,
+            'mqtt_enabled_count': 283,
+            'all_points_count': 1158,
+            'known_dynamic_count': 5,
+        }
         defaults.update(kwargs)
         self.pub.publish_bridge_status(**defaults)
         return json.loads(self.mqtt.publish.call_args[0][1])
@@ -4013,7 +4073,7 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
     seed the read-only mode sensor's initial state."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
         self.pub = MqttDiscoveryPublisher(
@@ -4084,6 +4144,14 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
         for topic in _LEGACY_PRESET_TOPICS:
             self.assertEqual(published.get(topic), "")
 
+    def test_known_dynamic_legacy_topic_cleared(self):
+        """The pre-DynamicPointMap known_dynamic_points topic must be
+        cleared on every startup, same as the other retired topics."""
+        from nibe_mqtt_publisher import BrowserTopic
+        self.pub.publish_management_discovery('essential')
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list}
+        self.assertEqual(published.get(BrowserTopic.KNOWN_DYNAMIC), "")
+
     def test_publishes_stats_config(self):
         self.pub.publish_management_discovery('essential')
         self.assertIn(self.MgmtTopic.STATS_CONFIG, self._published_topics())
@@ -4131,7 +4199,7 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
     def test_non_debug_mode_unpublishes_debug_entities(self):
         """When debug_mode=False, empty retained payloads are sent to the
         three debug-only discovery topics so HA removes those entities."""
-        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        from nibe_mqtt_publisher import _HA_BASE, MgmtTopic
         self.pub.publish_management_discovery('essential', debug_mode=False)
         published = {
             call.args[0]: call.args[1]
@@ -4152,7 +4220,7 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
     def test_debug_mode_does_not_unpublish_debug_entities(self):
         """When debug_mode=True, debug entity topics are published with
         real config payloads — not empty strings."""
-        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        from nibe_mqtt_publisher import _HA_BASE, MgmtTopic
         self.pub.publish_management_discovery('essential', debug_mode=True)
         published = {
             call.args[0]: call.args[1]
@@ -4171,6 +4239,225 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
                                 f"Expected non-empty payload for debug topic {topic}")
 
 
+class TestPublishManagementDiscoveryExactPayloads(unittest.TestCase):
+    """Pins the COMPLETE discovery-config payload for every management
+    entity, not just topic presence or a single spot-checked field.
+
+    Added after a mutation-testing run (mutmut phase 1) showed 250
+    surviving mutants concentrated in publish_management_discovery —
+    almost entirely individual field values (icon, entity_category,
+    device_class, name text, unit_of_measurement, etc.) inside the
+    per-entity config dicts that nothing was pinning exactly. The
+    existing TestPublishManagementDiscoveryPayload class above checks
+    topic presence/a few individual fields; this class checks full
+    dict equality so any single-field mutation is caught."""
+
+    def setUp(self):
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
+        self.mqtt = MagicMock()
+        self.mqtt.publish.return_value = MagicMock(rc=0)
+        self.pub = MqttDiscoveryPublisher(
+            mqtt_client=self.mqtt,
+            device_info={'identifiers': ['nibe_test'], 'model': 'S-series',
+                         'manufacturer': 'NIBE', 'serial_number': '12345'},
+            device_id='test', device_name='Test Device',
+        )
+        self.M = MgmtTopic
+        self.avail = MgmtTopic.AVAIL
+        self.mgmt_device = {
+            "identifiers":   ["test_management"],
+            "name":          "Test Device Management",
+            "manufacturer":  "NIBE",
+            "model":         "S-series",
+            "serial_number": "12345",
+        }
+
+    def _payload(self, topic):
+        import json
+        for call in self.mqtt.publish.call_args_list:
+            if call.args[0] == topic:
+                return json.loads(call.args[1])
+        self.fail(f"No publish call found for topic {topic}")
+
+    def test_mode_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.MODE_CONFIG), {
+            "name": "Entity Mode", "unique_id": "nibe_active_mode",
+            "state_topic":   self.M.MODE_STATE,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:tune",
+            "entity_category": "diagnostic",
+        })
+
+    def test_stats_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.STATS_CONFIG), {
+            "name": "Test Device Enabled Entity Stats", "unique_id": "nibe_entity_stats",
+            "state_topic": self.M.STATS_STATE, "json_attributes_topic": self.M.STATS_ATTRS,
+            "availability_topic": self.avail, "device": self.mgmt_device,
+            "icon": "mdi:chart-box", "entity_category": "diagnostic",
+            "state_class": "measurement", "unit_of_measurement": "entities",
+        })
+
+    def test_aid_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.AID_CONFIG), {
+            "name": "Aid Mode", "unique_id": "nibe_aid_mode",
+            "state_topic":   self.M.AID_STATE,
+            "command_topic": self.M.AID_SET,
+            "availability_topic": self.avail,
+            "payload_on": "ON", "payload_off": "OFF",
+            "device": self.mgmt_device, "icon": "mdi:alert-circle",
+            "entity_category": "config",
+        })
+
+    def test_smart_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.SMART_CONFIG), {
+            "name": "Smart Mode", "unique_id": "nibe_smart_mode",
+            "state_topic":   self.M.SMART_STATE,
+            "command_topic": self.M.SMART_SET,
+            "availability_topic": self.avail,
+            "options": ["normal", "away"],
+            "device": self.mgmt_device, "icon": "mdi:home-account",
+            "entity_category": "config",
+        })
+
+    def test_alarm_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.ALARM_CONFIG), {
+            "name": "Test Device Active Alarms", "unique_id": "nibe_notifications",
+            "state_topic": self.M.ALARM_STATE, "json_attributes_topic": self.M.ALARM_ATTRS,
+            "availability_topic": self.avail, "device": self.mgmt_device,
+            "icon": "mdi:bell-alert", "entity_category": "diagnostic",
+            "state_class": "measurement", "unit_of_measurement": "alarms",
+        })
+
+    def test_alarm_reset_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.ALARM_RESET_CONFIG), {
+            "name": "Reset Alarms", "unique_id": "nibe_reset_alarms",
+            "command_topic": self.M.ALARM_RESET_PRESS,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:bell-off",
+            "entity_category": "config",
+        })
+
+    def test_force_poll_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.FORCE_POLL_CONFIG), {
+            "name": "Force Poll", "unique_id": "nibe_force_poll",
+            "command_topic": self.M.FORCE_POLL_PRESS,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:refresh",
+            "entity_category": "config",
+        })
+
+    def test_regen_dash_config_exact_payload_in_menus_mode(self):
+        self.pub.publish_management_discovery('menus')
+        self.assertEqual(self._payload(self.M.REGEN_DASH_CONFIG), {
+            "name": "Regenerate Dashboard", "unique_id": "nibe_regen_dashboard",
+            "command_topic": self.M.REGEN_DASH_PRESS,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:view-dashboard-edit",
+            "entity_category": "config",
+        })
+
+    def test_uptime_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.UPTIME_CONFIG), {
+            "name": "Test Device Bridge Uptime", "unique_id": "nibe_bridge_uptime",
+            "state_topic": self.M.UPTIME_STATE, "json_attributes_topic": self.M.UPTIME_ATTRS,
+            "availability_topic": self.avail, "device": self.mgmt_device,
+            "icon": "mdi:clock-outline", "entity_category": "diagnostic",
+            "device_class": "duration", "unit_of_measurement": "s",
+            "state_class": "total_increasing",
+        })
+
+    def test_last_fetch_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.LAST_FETCH_CONFIG), {
+            "name": "API Last Fetch", "unique_id": "nibe_last_fetch_timestamp",
+            "state_topic": self.M.LAST_FETCH_STATE,
+            "availability_topic": self.avail, "device": self.mgmt_device,
+            "icon": "mdi:clock-check", "entity_category": "diagnostic",
+            "device_class": "timestamp",
+        })
+
+    def test_fetch_dur_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.FETCH_DUR_CONFIG), {
+            "name": "API Fetch Duration", "unique_id": "nibe_fetch_duration",
+            "state_topic": self.M.FETCH_DUR_STATE,
+            "availability_topic": self.avail, "device": self.mgmt_device,
+            "icon": "mdi:timer-sand", "entity_category": "diagnostic",
+            "unit_of_measurement": "s", "device_class": "duration",
+            "state_class": "measurement",
+        })
+
+    def test_api_ok_config_exact_payload(self):
+        self.pub.publish_management_discovery('essential')
+        self.assertEqual(self._payload(self.M.API_OK_CONFIG), {
+            "name": "API Reachable", "unique_id": "nibe_api_reachable",
+            "state_topic": self.M.API_OK_STATE,
+            "availability_topic": self.avail,
+            "payload_on": "ON", "payload_off": "OFF",
+            "device_class": "connectivity",
+            "device": self.mgmt_device, "icon": "mdi:api",
+            "entity_category": "diagnostic",
+        })
+
+    def test_flush_map_config_exact_payload_in_debug_mode(self):
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        self.assertEqual(self._payload(self.M.FLUSH_MAP_CONFIG), {
+            "name": "Flush Dynamic Map (DEBUG)", "unique_id": "nibe_flush_dynamic_map",
+            "command_topic": self.M.FLUSH_MAP_PRESS,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:table-refresh",
+            "entity_category": "config",
+        })
+
+    def test_run_tests_config_exact_payload_in_debug_mode(self):
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        self.assertEqual(self._payload(self.M.RUN_TESTS_CONFIG), {
+            "name": "Run Test Suite (DEBUG)", "unique_id": "nibe_run_tests",
+            "command_topic": self.M.RUN_TESTS_PRESS,
+            "availability_topic": self.avail,
+            "device": self.mgmt_device, "icon": "mdi:test-tube",
+            "entity_category": "config",
+        })
+
+    def test_test_suite_result_sensor_exact_payload_in_debug_mode(self):
+        from nibe_mqtt_publisher import _HA_BASE
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        self.assertEqual(
+            self._payload(f"{_HA_BASE}/sensor/nibe_test_suite_result/config"), {
+                "name": "Test Suite Result (DEBUG)",
+                "unique_id": "nibe_test_suite_result",
+                "state_topic": self.M.RUN_TESTS_STATE,
+                "json_attributes_topic": self.M.RUN_TESTS_ATTRS,
+                "availability_topic": self.avail,
+                "device": self.mgmt_device, "icon": "mdi:test-tube",
+                "entity_category": "diagnostic",
+            })
+
+    def test_debug_mode_default_is_false(self):
+        """publish_management_discovery(mode) with no debug_mode argument
+        must default to debug_mode=False — pins the parameter default
+        itself, not just its effect when explicitly passed."""
+        self.pub.publish_management_discovery('essential')
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list}
+        self.assertEqual(published.get(self.M.RUN_TESTS_CONFIG), "")
+
+    def test_mgmt_device_identifiers_key_present(self):
+        """The management device's 'identifiers' field groups all
+        management entities under one HA device entry — a renamed or
+        missing key would silently break that grouping."""
+        self.pub.publish_management_discovery('essential')
+        payload = self._payload(self.M.MODE_CONFIG)
+        self.assertEqual(payload['device']['identifiers'], ['test_management'])
+
+
 # ===========================================================================
 # 73. MqttDiscoveryPublisher — browser and management topic publishers
 # ===========================================================================
@@ -4181,7 +4468,7 @@ class TestPublishAllMetadata(unittest.TestCase):
     containing metadata for all known points."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4244,7 +4531,7 @@ class TestPublishPointList(unittest.TestCase):
     """publish_point_list publishes a retained list of all known point IDs."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4281,7 +4568,7 @@ class TestPublishEnabledState(unittest.TestCase):
     """publish_enabled_state publishes the current set of enabled point IDs."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4318,7 +4605,7 @@ class TestPublishBridgeAlert(unittest.TestCase):
     """publish_bridge_alert publishes a non-retained edge-triggered alert."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4365,7 +4652,7 @@ class TestPublishBridgeStatus(unittest.TestCase):
     """publish_bridge_status publishes a retained consolidated health snapshot."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4374,19 +4661,19 @@ class TestPublishBridgeStatus(unittest.TestCase):
         )
 
     def _publish(self, **overrides):
-        defaults = dict(
-            bridge_start_time=0.0,
-            api_consecutive_failures=0,
-            api_failure_threshold=3,
-            api_last_success_time=0.0,
-            last_fetch_duration=1.2,
-            write_total=10, write_success=9, write_failed=1,
-            last_write_error=None,
-            pending_write_count=0,
-            mqtt_enabled_count=100,
-            all_points_count=1158,
-            known_dynamic_count=5,
-        )
+        defaults = {
+            'bridge_start_time': 0.0,
+            'api_consecutive_failures': 0,
+            'api_failure_threshold': 3,
+            'api_last_success_time': 0.0,
+            'last_fetch_duration': 1.2,
+            'write_total': 10, 'write_success': 9, 'write_failed': 1,
+            'last_write_error': None,
+            'pending_write_count': 0,
+            'mqtt_enabled_count': 100,
+            'all_points_count': 1158,
+            'known_dynamic_count': 5,
+        }
         defaults.update(overrides)
         self.pub.publish_bridge_status(**defaults)
         import json
@@ -4438,7 +4725,7 @@ class TestPublishManagementDiscovery(unittest.TestCase):
     debug-only entities are conditionally included."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4551,7 +4838,7 @@ class TestPublishStats(unittest.TestCase):
     """publish_stats publishes entity count statistics to the HA stats sensor."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4560,11 +4847,11 @@ class TestPublishStats(unittest.TestCase):
         )
 
     def _publish(self, **kwargs):
-        defaults = dict(
-            all_points_count=1158, mqtt_enabled_count=283,
-            active_count=283, type_counts={}, category_counts={},
-            writable_count=100,
-        )
+        defaults = {
+            'all_points_count': 1158, 'mqtt_enabled_count': 283,
+            'active_count': 283, 'type_counts': {}, 'category_counts': {},
+            'writable_count': 100,
+        }
         defaults.update(kwargs)
         self.pub.publish_stats(**defaults)
 
@@ -4604,7 +4891,7 @@ class TestPublishAlarmState(unittest.TestCase):
     """publish_alarm_state publishes alarm count and details."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4639,7 +4926,7 @@ class TestPublishDeviceModes(unittest.TestCase):
     """publish_device_modes publishes aid mode and smart mode states."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4673,7 +4960,7 @@ class TestPublishInitialDeviceModes(unittest.TestCase):
     these entities during the first poll cycle."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -4865,18 +5152,16 @@ class TestPublishEntityDiscoveryMqttBranches(unittest.TestCase):
             device_id='test2', device_name='Test',
         )
         config = {}
-        pub._build_number_config(
-            config, 'nibe_200', 200, 'Test', '',
-            {
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'nibe_200'), t_command('number', 'nibe_200'), 200, 'Test', '', {
                 'minValue': None, 'maxValue': None,
                 'divisor': 1, 'decimal': 0, 'change': 1,
                 'modbusRegisterID': 200,
                 'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
                 'variableType': 'integer', 'variableSize': 's16',
                 'intDefaultValue': None, 'stringDefaultValue': '',
-            },
-            {}
-        )
+            }, {}, pub._range_warnings_issued)
         self.assertNotIn('min', config)
         self.assertNotIn('max', config)
 
@@ -4884,36 +5169,34 @@ class TestPublishEntityDiscoveryMqttBranches(unittest.TestCase):
         """613->exit: when decimal metadata is None, suggested_display_precision
         must not be set in the config (HA would reject it)."""
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
-        pub = MqttDiscoveryPublisher(
+        MqttDiscoveryPublisher(
             mqtt_client=self.mqtt, device_info={},
             device_id='test4', device_name='Test',
         )
         config = {}
         # unit='°C' → has_numeric_value=True; decimal=None → skip precision
-        pub._build_sensor_config(
-            config, 'nibe_400', 400, '°C', 'Outdoor temp',
-            {'decimal': None, 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_400'), 400, '°C', 'Outdoor temp', {'decimal': None, 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
              'variableType': 'integer', 'variableSize': 's16',
-             'minValue': -400, 'maxValue': 400},
-        )
+             'minValue': -400, 'maxValue': 400})
         self.assertNotIn('suggested_display_precision', config)
 
     def test_sensor_without_unit_skips_suggested_display_precision(self):
         """613->exit: has_numeric_value is False (no unit) → the entire
         suggested_display_precision block is skipped."""
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
-        pub = MqttDiscoveryPublisher(
+        MqttDiscoveryPublisher(
             mqtt_client=self.mqtt, device_info={},
             device_id='test3', device_name='Test',
         )
         config = {}
         # sensor entity with no unit → has_numeric_value = False
-        pub._build_sensor_config(
-            config, 'nibe_300', 300, '', 'Alarm status',
-            {'decimal': 2, 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_300'), 300, '', 'Alarm status', {'decimal': 2, 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
              'variableType': 'integer', 'variableSize': 'u8',
-             'minValue': 0, 'maxValue': 5},
-        )
+             'minValue': 0, 'maxValue': 5})
         self.assertNotIn('suggested_display_precision', config)
 
     def test_static_attributes_include_description_when_present(self):
@@ -4957,14 +5240,18 @@ class TestBuildBinarySensorConfigDeviceClass(unittest.TestCase):
         # Find a title that produces a non-None device class for binary_sensor
         # 'motion' maps to 'motion' device class
         config = {'state_topic': 'test/state'}
-        with patch('nibe_mqtt_publisher.map_device_class', return_value='motion'):
-            self.pub._build_binary_sensor_config(config, 'nibe_test', 'Motion sensor')
+        with patch('nibe_discovery_config.map_device_class', return_value='motion'):
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_state
+            discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', 'nibe_test'), 'Motion sensor')
         self.assertEqual(config.get('device_class'), 'motion')
 
     def test_no_device_class_when_title_does_not_map(self):
         config = {'state_topic': 'test/state'}
-        with patch('nibe_mqtt_publisher.map_device_class', return_value=None):
-            self.pub._build_binary_sensor_config(config, 'nibe_test', 'Status')
+        with patch('nibe_discovery_config.map_device_class', return_value=None):
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_state
+            discovery_config.build_binary_sensor_config(config, t_state('binary_sensor', 'nibe_test'), 'Status')
         self.assertNotIn('device_class', config)
 
 
@@ -4987,27 +5274,27 @@ class TestBuildSensorConfigRemainingBranches(unittest.TestCase):
     def test_point_2685_gets_date_device_class(self):
         """Point 2685 (periodic hot water date) is hard-coded as device_class=date."""
         config = {}
-        self.pub._build_sensor_config(
-            config, 'nibe_2685', 2685, '', 'Date sensor', self._metadata()
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_2685'), 2685, '', 'Date sensor', self._metadata())
         self.assertEqual(config.get('device_class'), 'date')
 
     def test_point_2685_returns_early_no_unit(self):
         """Point 2685 must not get unit_of_measurement — it returns early."""
         config = {}
-        self.pub._build_sensor_config(
-            config, 'nibe_2685', 2685, '°C', 'Date sensor', self._metadata()
-        )
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_2685'), 2685, '°C', 'Date sensor', self._metadata())
         self.assertNotIn('unit_of_measurement', config)
 
     def test_device_class_without_unit_sets_state_class(self):
         """When device_class resolves but no unit is present, state_class
         should still be set to measurement."""
         config = {}
-        with patch('nibe_mqtt_publisher.map_device_class', return_value='duration'):
-            self.pub._build_sensor_config(
-                config, 'nibe_100', 100, '', 'Duration sensor', self._metadata()
-            )
+        with patch('nibe_discovery_config.map_device_class', return_value='duration'):
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_state
+            discovery_config.build_sensor_config(config, t_state('sensor', 'nibe_100'), 100, '', 'Duration sensor', self._metadata())
         self.assertEqual(config.get('device_class'), 'duration')
         self.assertEqual(config.get('state_class'), 'measurement')
 
@@ -5072,7 +5359,7 @@ class TestPublishApiReachabilityLastSuccess(unittest.TestCase):
     api_last_success_time > 0."""
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -5260,7 +5547,7 @@ class TestPublishApiReachabilityLastFetchFormat(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -5310,7 +5597,7 @@ class TestPublishManagementDiscoveryEntityConfig(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
@@ -5447,7 +5734,7 @@ class TestPublishManagementDiscoveryIconKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.mqtt.publish.return_value = MagicMock(rc=0)
@@ -5504,7 +5791,7 @@ class TestManagementDiscoveryPayloadContent(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -5878,7 +6165,7 @@ class TestPublishStatsPayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -5887,12 +6174,12 @@ class TestPublishStatsPayloadKeys(unittest.TestCase):
         )
 
     def _attrs(self, **kwargs):
-        defaults = dict(
-            all_points_count=1158, mqtt_enabled_count=283,
-            active_count=280, type_counts={'sensor': 200},
-            category_counts={'diagnostic': 100}, writable_count=50,
-            write_total=10, write_success=9, write_failed=1,
-        )
+        defaults = {
+            'all_points_count': 1158, 'mqtt_enabled_count': 283,
+            'active_count': 280, 'type_counts': {'sensor': 200},
+            'category_counts': {'diagnostic': 100}, 'writable_count': 50,
+            'write_total': 10, 'write_success': 9, 'write_failed': 1,
+        }
         defaults.update(kwargs)
         self.pub.publish_stats(**defaults)
         attr_calls = [c for c in self.mqtt.publish.call_args_list
@@ -5956,9 +6243,13 @@ class TestBuildNumberConfigValues(unittest.TestCase):
         return pub
 
     def _call(self, config, entity_id, point_id, metadata, bulk_data=None):
-        self._pub()._build_number_config.__func__(
-            self._pub(), config, entity_id, point_id,
-            'Test', '', metadata, bulk_data or {},
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        pub = self._pub()
+        discovery_config.build_number_config(
+            config, t_state('number', entity_id), t_command('number', entity_id),
+            point_id, 'Test', '', metadata, bulk_data or {},
+            pub._range_warnings_issued,
         )
 
     def _build(self, divisor=1, min_val=0, max_val=100,
@@ -5971,7 +6262,9 @@ class TestBuildNumberConfigValues(unittest.TestCase):
         config = {}
         metadata = {'minValue': min_val, 'maxValue': max_val, 'divisor': divisor}
         bulk = {point_id: {'raw_value': current_raw}} if current_raw is not None else {}
-        pub._build_number_config(config, 'test_id', point_id, 'T', '', metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), point_id, 'T', '', metadata, bulk, pub._range_warnings_issued)
         return config
 
     def test_step_for_divisor_1(self):
@@ -6025,7 +6318,7 @@ class TestPublishBridgeStatusPayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6035,17 +6328,17 @@ class TestPublishBridgeStatusPayloadKeys(unittest.TestCase):
 
     def _call(self, **kwargs):
         import time as _time
-        defaults = dict(
-            bridge_start_time=_time.time() - 3600,
-            api_consecutive_failures=0,
-            api_failure_threshold=3,
-            api_last_success_time=_time.time(),
-            last_fetch_duration=0.5,
-            write_total=10, write_success=9, write_failed=1,
-            last_write_error=None, pending_write_count=0,
-            mqtt_enabled_count=283, all_points_count=1158,
-            known_dynamic_count=5,
-        )
+        defaults = {
+            'bridge_start_time': _time.time() - 3600,
+            'api_consecutive_failures': 0,
+            'api_failure_threshold': 3,
+            'api_last_success_time': _time.time(),
+            'last_fetch_duration': 0.5,
+            'write_total': 10, 'write_success': 9, 'write_failed': 1,
+            'last_write_error': None, 'pending_write_count': 0,
+            'mqtt_enabled_count': 283, 'all_points_count': 1158,
+            'known_dynamic_count': 5,
+        }
         defaults.update(kwargs)
         self.pub.publish_bridge_status(**defaults)
         calls = [c for c in self.mqtt.publish.call_args_list
@@ -6220,10 +6513,11 @@ class TestBuildSensorConfigPayloadContent(unittest.TestCase):
 
     def _build(self, point_id=9999, unit='', title='T',
                metadata=None, entity_id='sensor_test'):
-        pub = self._pub()
+        self._pub()
         config = {}
-        pub._build_sensor_config(config, entity_id, point_id, unit, title,
-                                 metadata or {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', entity_id), point_id, unit, title, metadata or {})
         return config
 
     def test_energy_accumulator_state_class_and_device_class(self):
@@ -6283,7 +6577,7 @@ class TestPublishInitialDeviceModesValues(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6326,7 +6620,7 @@ class TestPublishPointListPayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6368,20 +6662,24 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
 
     def test_options_key_name_when_options_present(self):
         """Key must be 'options' exactly — HA selects won't populate otherwise."""
-        pub = self._pub()
+        self._pub()
         config = {}
         metadata = {'minValue': 0, 'maxValue': 1, 'divisor': 1}
         description = '0=Manual\n1=Auto'
-        pub._build_select_config(config, 'test_id', 9999, metadata, description)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, metadata, description)
         if 'options' in config:  # only if get_entity_options returns non-empty
             self.assertIsInstance(config['options'], list)
             self.assertGreater(len(config['options']), 0)
 
     def test_options_absent_when_no_mapping(self):
         """When no options are found, config must not have 'options' key."""
-        pub = self._pub()
+        self._pub()
         config = {}
-        pub._build_select_config(config, 'test_id', 9999, {}, '')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, {}, '')
         # No options → key must not be present (HA would render empty select)
         if 'options' in config:
             self.assertIsInstance(config['options'], list)
@@ -6390,9 +6688,11 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
         """select entities must set optimistic:false so HA waits for a state
         confirmation before updating the UI — prevents the flip-back UX issue
         during post-write learning detection windows."""
-        pub = self._pub()
+        self._pub()
         config = {}
-        pub._build_select_config(config, 'test_id', 9999, {}, '')
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, {}, '')
         self.assertFalse(config.get('optimistic', True),
                          "select discovery config must include optimistic:false")
 
@@ -6405,7 +6705,7 @@ class TestPublishBridgeAlertPayloadContent(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6414,8 +6714,8 @@ class TestPublishBridgeAlertPayloadContent(unittest.TestCase):
         )
 
     def _payload(self, **kwargs):
-        defaults = dict(alert_type='api_unreachable', severity='warning',
-                        message='API timeout')
+        defaults = {'alert_type': 'api_unreachable', 'severity': 'warning',
+                        'message': 'API timeout'}
         defaults.update(kwargs)
         self.pub.publish_bridge_alert(**defaults)
         call = self.mqtt.publish.call_args_list[0]
@@ -6463,7 +6763,7 @@ class TestPublishAllMetadataPayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6515,7 +6815,7 @@ class TestPublishEnabledStatePayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6549,7 +6849,7 @@ class TestPublishUptimePayloadKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6559,11 +6859,11 @@ class TestPublishUptimePayloadKeys(unittest.TestCase):
 
     def _attrs(self, **kwargs):
         import time as _time
-        defaults = dict(
-            bridge_start_time=_time.time() - 3600,
-            api_last_success_time=_time.time(),
-            api_consecutive_failures=0,
-        )
+        defaults = {
+            'bridge_start_time': _time.time() - 3600,
+            'api_last_success_time': _time.time(),
+            'api_consecutive_failures': 0,
+        }
         defaults.update(kwargs)
         self.pub.publish_uptime(**defaults)
         attr_calls = [c for c in self.mqtt.publish.call_args_list
@@ -6591,7 +6891,7 @@ class TestPublishStatsRemainingKeys(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6728,7 +7028,9 @@ class TestNumberConfigDivisorZeroHandling(unittest.TestCase):
         pub._range_warnings_issued = set()
         config = {}
         metadata = {'minValue': min_val, 'maxValue': max_val, 'divisor': divisor}
-        pub._build_number_config(config, 'test_id', point_id, 'T', '', metadata, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), point_id, 'T', '', metadata, {}, pub._range_warnings_issued)
         return config
 
     def test_divisor_zero_treated_as_one(self):
@@ -6747,7 +7049,9 @@ class TestNumberConfigDivisorZeroHandling(unittest.TestCase):
         pub._range_warnings_issued = set()
         config = {}
         metadata = {'minValue': 0, 'maxValue': 10, 'divisor': None}
-        pub._build_number_config(config, 'test_id', 9999, 'T', '', metadata, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'T', '', metadata, {}, pub._range_warnings_issued)
         self.assertEqual(config['step'], 1.0)
 
     def test_step_rounding_precision_10_decimal_places(self):
@@ -6767,7 +7071,7 @@ class TestManagementDiscoveryIconsAndNames(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6944,7 +7248,7 @@ class TestPublishStatsDefaultValues(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -6953,10 +7257,10 @@ class TestPublishStatsDefaultValues(unittest.TestCase):
         )
 
     def _attrs(self, **kwargs):
-        defaults = dict(
-            all_points_count=100, mqtt_enabled_count=50, active_count=50,
-            type_counts={}, category_counts={}, writable_count=10,
-        )
+        defaults = {
+            'all_points_count': 100, 'mqtt_enabled_count': 50, 'active_count': 50,
+            'type_counts': {}, 'category_counts': {}, 'writable_count': 10,
+        }
         defaults.update(kwargs)
         self.pub.publish_stats(**defaults)
         calls = [c for c in self.mqtt.publish.call_args_list
@@ -6994,7 +7298,7 @@ class TestPublishBridgeAlertDefaults(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7003,8 +7307,8 @@ class TestPublishBridgeAlertDefaults(unittest.TestCase):
         )
 
     def _call(self, **kwargs):
-        defaults = dict(alert_type='api_unreachable', severity='warning',
-                        message='msg')
+        defaults = {'alert_type': 'api_unreachable', 'severity': 'warning',
+                        'message': 'msg'}
         defaults.update(kwargs)
         self.pub.publish_bridge_alert(**defaults)
         call = self.mqtt.publish.call_args_list[0]
@@ -7035,7 +7339,7 @@ class TestPublishInitialDeviceModesDefaults(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7077,7 +7381,7 @@ class TestPublishPointListDefaults(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7111,7 +7415,7 @@ class TestPublishAllMetadataDefaults(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7150,7 +7454,7 @@ class TestPublishEnabledStateDefaults(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7193,7 +7497,9 @@ class TestPublishNumberConfigDefaults(unittest.TestCase):
         if max_val is not None:
             metadata['maxValue'] = max_val
         bulk = {point_id: {'raw_value': current_raw}} if current_raw is not None else {}
-        pub._build_number_config(config, 'test_id', point_id, 'T', '', metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), point_id, 'T', '', metadata, bulk, pub._range_warnings_issued)
         return config
 
     def test_no_min_max_in_metadata_sets_no_min_max_in_config(self):
@@ -7231,7 +7537,9 @@ class TestPublishNumberConfigDefaults(unittest.TestCase):
         pub._range_warnings_issued = set()
         config = {}
         metadata = {'minValue': 0, 'maxValue': 100, 'divisor': 1}
-        pub._build_number_config(config, 'test_id', 9999, 'T', '', metadata, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'T', '', metadata, {}, pub._range_warnings_issued)
         self.assertNotIn('unit_of_measurement', config)
 
     def test_unit_of_measurement_present_when_unit_given(self):
@@ -7242,7 +7550,9 @@ class TestPublishNumberConfigDefaults(unittest.TestCase):
         pub._range_warnings_issued = set()
         config = {}
         metadata = {'minValue': 0, 'maxValue': 100, 'divisor': 1}
-        pub._build_number_config(config, 'test_id', 9999, 'T', '°C', metadata, {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'T', '°C', metadata, {}, pub._range_warnings_issued)
         self.assertEqual(config['unit_of_measurement'], '°C')
 
 # ===========================================================================
@@ -7274,7 +7584,9 @@ class TestBuildNumberConfigLogicGaps(unittest.TestCase):
         if max_val is not None:
             metadata['maxValue'] = max_val
         bulk = {point_id: {'raw_value': current_raw}} if current_raw is not None else {}
-        pub._build_number_config(config, 'test_id', point_id, 'T', unit, metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), point_id, 'T', unit, metadata, bulk, pub._range_warnings_issued)
         return config
 
     def test_min_only_no_max_skips_range(self):
@@ -7309,7 +7621,9 @@ class TestBuildNumberConfigLogicGaps(unittest.TestCase):
         # current_raw == min_val exactly → NOT out of range → no warning issued
         metadata = {'minValue': 100, 'maxValue': 200, 'divisor': 1}
         bulk = {9993: {'raw_value': 100}}  # exactly at min
-        pub._build_number_config(config, 'test_id', 9993, 'T', '', metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9993, 'T', '', metadata, bulk, pub._range_warnings_issued)
         self.assertNotIn(9993, pub._range_warnings_issued)
 
     def test_out_of_range_below_min_triggers_warning(self):
@@ -7322,7 +7636,9 @@ class TestBuildNumberConfigLogicGaps(unittest.TestCase):
         config = {}
         metadata = {'minValue': 100, 'maxValue': 200, 'divisor': 1}
         bulk = {9992: {'raw_value': 99}}  # one below min
-        pub._build_number_config(config, 'test_id', 9992, 'T', '', metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9992, 'T', '', metadata, bulk, pub._range_warnings_issued)
         self.assertIn(9992, pub._range_warnings_issued)
 
     def test_step_precision_is_10_not_11(self):
@@ -7347,7 +7663,7 @@ class TestPublishStatsLogicGaps(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7356,10 +7672,10 @@ class TestPublishStatsLogicGaps(unittest.TestCase):
         )
 
     def _attrs(self, **kwargs):
-        defaults = dict(
-            all_points_count=100, mqtt_enabled_count=50, active_count=50,
-            type_counts={}, category_counts={}, writable_count=10,
-        )
+        defaults = {
+            'all_points_count': 100, 'mqtt_enabled_count': 50, 'active_count': 50,
+            'type_counts': {}, 'category_counts': {}, 'writable_count': 10,
+        }
         defaults.update(kwargs)
         self.pub.publish_stats(**defaults)
         calls = [c for c in self.mqtt.publish.call_args_list
@@ -7417,8 +7733,9 @@ class TestBuildSensorConfigLogicGaps(unittest.TestCase):
         pub.mqtt = MagicMock()
         pub.device_info = {}
         config = {}
-        pub._build_sensor_config(config, 'test_id', point_id, unit, title,
-                                 metadata or {})
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
+        discovery_config.build_sensor_config(config, t_state('sensor', 'test_id'), point_id, unit, title, metadata or {})
         return config
 
     def test_gas_unit_gives_accumulating_state_class(self):
@@ -7514,6 +7831,31 @@ class TestPublishEntityDiscoveryLogicGaps(unittest.TestCase):
         self.assertIn('command_topic', payload)
         # Must NOT have unit_of_measurement (time entities show HH:MM)
         self.assertNotIn('unit_of_measurement', payload)
+
+    def test_time_entity_optimistic_is_false(self):
+        """time entities are writable — must set optimistic:false like every
+        other writable entity type, so HA waits for a state confirmation
+        before updating the UI instead of flipping back during writes."""
+        pub, mqtt = self._pub()
+        point = self._base_point(101, entity_type='time')
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        self.assertIs(payload.get('optimistic'), False)
+
+    def test_text_entity_optimistic_is_false(self):
+        """text entities are writable — must set optimistic:false like every
+        other writable entity type."""
+        pub, mqtt = self._pub()
+        point = self._base_point(102, entity_type='text')
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        self.assertIs(payload.get('optimistic'), False)
 
     def test_point_without_metadata_key_does_not_crash(self):
         """metadata = point.get('metadata', {}) — missing key → empty dict, not None."""
@@ -7618,7 +7960,7 @@ class TestPublishPointListAndMetadataRetain(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7661,7 +8003,7 @@ class TestPublishBridgeStatusBoundaries(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, BrowserTopic
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
         self.BrowserTopic = BrowserTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(
@@ -7671,16 +8013,16 @@ class TestPublishBridgeStatusBoundaries(unittest.TestCase):
 
     def _call(self, **kwargs):
         import time as _t
-        defaults = dict(
-            bridge_start_time=_t.time() - 3600,
-            api_consecutive_failures=0, api_failure_threshold=3,
-            api_last_success_time=_t.time(),
-            last_fetch_duration=0.5,
-            write_total=10, write_success=9, write_failed=1,
-            last_write_error=None, pending_write_count=0,
-            mqtt_enabled_count=283, all_points_count=1158,
-            known_dynamic_count=5,
-        )
+        defaults = {
+            'bridge_start_time': _t.time() - 3600,
+            'api_consecutive_failures': 0, 'api_failure_threshold': 3,
+            'api_last_success_time': _t.time(),
+            'last_fetch_duration': 0.5,
+            'write_total': 10, 'write_success': 9, 'write_failed': 1,
+            'last_write_error': None, 'pending_write_count': 0,
+            'mqtt_enabled_count': 283, 'all_points_count': 1158,
+            'known_dynamic_count': 5,
+        }
         defaults.update(kwargs)
         self.pub.publish_bridge_status(**defaults)
         return json.loads(self.mqtt.publish.call_args_list[-1][0][1])
@@ -7733,7 +8075,9 @@ class TestBuildNumberConfigUpperBoundary(unittest.TestCase):
         config = {}
         metadata = {'minValue': min_val, 'maxValue': max_val, 'divisor': 1}
         bulk = {point_id: {'raw_value': current_raw}}
-        pub._build_number_config(config, 'test_id', point_id, 'T', '', metadata, bulk)
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), point_id, 'T', '', metadata, bulk, pub._range_warnings_issued)
         return pub._range_warnings_issued
 
     def test_current_at_max_does_not_trigger_warning(self):
@@ -7871,6 +8215,129 @@ class TestPublishEntityDiscoveryRetainAndHash(unittest.TestCase):
                         if '/config' in c[0][0]]
         self.assertTrue(config_calls, "Changed config must be republished")
 
+    def test_entity_type_change_clears_old_discovery_topic(self):
+        """t_config() embeds entity_type in the topic path — if a point's
+        entity_type is ever re-derived to something different (metadata
+        reclassification), the OLD topic's retained discovery config must
+        be explicitly cleared, or HA would show a ghost/duplicate entity
+        that nothing else ever removes."""
+        pub, mqtt = self._pub()
+        point = self._point(100)
+        point['entity_type'] = 'sensor'
+        pub.publish_entity_discovery(point, {})
+        old_config_topic = next(
+            c[0][0] for c in mqtt.publish.call_args_list if '/config' in c[0][0]
+        )
+        mqtt.reset_mock()
+
+        point['entity_type'] = 'binary_sensor'
+        pub.publish_entity_discovery(point, {})
+
+        # The old sensor topic must have been cleared with an empty retained payload
+        clear_call = next(
+            (c for c in mqtt.publish.call_args_list if c[0][0] == old_config_topic), None
+        )
+        self.assertIsNotNone(clear_call, "Old entity_type's discovery topic must be cleared")
+        self.assertEqual(clear_call[0][1], '')
+        # And a new discovery config must be published on the new topic
+        new_config_calls = [
+            c for c in mqtt.publish.call_args_list
+            if '/config' in c[0][0] and c[0][0] != old_config_topic
+        ]
+        self.assertTrue(new_config_calls, "New entity_type's discovery config must be published")
+
+    def test_invalidate_config_hash_clears_entity_type_tracking(self):
+        """invalidate_config_hash must also forget the tracked entity_type,
+        so a point that disappears and reappears under the same entity_type
+        doesn't spuriously trigger the old-topic-clear logic against itself."""
+        pub, mqtt = self._pub()
+        point = self._point(100)
+        pub.publish_entity_discovery(point, {})
+        pub.invalidate_config_hash(100)
+        self.assertNotIn(100, pub._point_entity_types)
+
+
+class TestPublishEntityDiscoveryExactBasePayload(unittest.TestCase):
+    """Pins the base discovery-config fields publish_entity_discovery
+    builds before delegating to the per-type builders (name, unique_id,
+    device, availability_topic, payload_available/not_available,
+    entity_category) — added after a mutation-testing run showed 143
+    surviving mutants here, including 'title = point['display_title']'
+    mutated to 'title = None' going completely uncaught."""
+
+    def _pub(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        return MqttDiscoveryPublisher(
+            mqtt_client=mqtt,
+            device_info={'identifiers': ['nibe_test']},
+            device_id='test', device_name='Test',
+        ), mqtt
+
+    def _point(self, point_id=100, entity_category=''):
+        return {
+            'variableId': point_id, 'display_title': 'Outdoor Temperature',
+            'entity_type': 'sensor', 'entity_category': entity_category,
+            'description': '', 'is_writable': False, 'is_dynamic': False,
+            'metadata': {'unit': '°C', 'minValue': 0, 'maxValue': 100,
+                         'modbusRegisterID': point_id, 'divisor': 10,
+                         'decimal': 1, 'change': 0,
+                         'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                         'variableType': 'integer', 'variableSize': 's16',
+                         'shortUnit': 'C'},
+        }
+
+    def _config_payload(self, mqtt, entity_id='nibe_100'):
+        import json
+        for call in mqtt.publish.call_args_list:
+            if call.args[0].endswith(f'/{entity_id}/config'):
+                return json.loads(call.args[1])
+        self.fail("No discovery config publish found")
+
+    def test_name_is_display_title(self):
+        """'name' must be the point's real display_title — a mutation to
+        None (or any other value) here would show every entity in HA
+        with a blank/wrong name."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(), {})
+        payload = self._config_payload(mqtt)
+        self.assertEqual(payload['name'], 'Outdoor Temperature')
+
+    def test_unique_id_is_nibe_prefixed_point_id(self):
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(100), {})
+        payload = self._config_payload(mqtt)
+        self.assertEqual(payload['unique_id'], 'nibe_100')
+
+    def test_device_block_is_device_info(self):
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(), {})
+        payload = self._config_payload(mqtt)
+        self.assertEqual(payload['device'], {'identifiers': ['nibe_test']})
+
+    def test_payload_available_and_not_available_exact(self):
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(), {})
+        payload = self._config_payload(mqtt)
+        self.assertEqual(payload['payload_available'], 'online')
+        self.assertEqual(payload['payload_not_available'], 'offline')
+
+    def test_entity_category_present_when_set(self):
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(entity_category='diagnostic'), {})
+        payload = self._config_payload(mqtt)
+        self.assertEqual(payload['entity_category'], 'diagnostic')
+
+    def test_entity_category_absent_when_empty(self):
+        """An empty entity_category must not be published at all — HA
+        treats a present-but-empty entity_category as invalid, so this
+        must be an omitted key, not an empty string."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(entity_category=''), {})
+        payload = self._config_payload(mqtt)
+        self.assertNotIn('entity_category', payload)
+
 # ===========================================================================
 # Round 6 — final genuine gaps from mutmut diff analysis
 # ===========================================================================
@@ -7887,7 +8354,7 @@ class TestManagementDiscoveryDebugModeRetain(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, MgmtTopic
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         self.MgmtTopic = MgmtTopic
         self.mqtt = MagicMock()
         self.pub = MqttDiscoveryPublisher(

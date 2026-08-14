@@ -7,9 +7,10 @@ Shared fixtures are in conftest.py.
 """
 
 import unittest
+from unittest.mock import patch
 
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
+
 
 class TestFmtTsProperties(unittest.TestCase):
     """Hypothesis properties for fmt_ts."""
@@ -33,6 +34,28 @@ class TestFmtTsProperties(unittest.TestCase):
         from nibe_utils import fmt_ts
         result = fmt_ts(t)
         self.assertRegex(result, r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
+
+    def test_given_timestamp_actually_used_not_ignored(self):
+        """fmt_ts(t) must call time.localtime(t) with the REAL t — not
+        silently ignore it and use the current-time branch instead. Every
+        other test here only checks output FORMAT (regex), which a mutant
+        that always uses the current time would still satisfy, including
+        the monotonic-ordering property test (two current-time calls in
+        the same second are trivially equal, satisfying <=)."""
+        from nibe_utils import fmt_ts
+        with patch('nibe_utils.time.localtime') as mock_localtime, \
+             patch('nibe_utils.time.strftime', return_value='formatted'):
+            fmt_ts(1234567890.0)
+        mock_localtime.assert_called_once_with(1234567890.0)
+
+    def test_none_uses_current_time_not_given_value(self):
+        """fmt_ts(None) must call the zero-arg time.localtime() (current
+        time) branch — not the t-argument branch."""
+        from nibe_utils import fmt_ts
+        with patch('nibe_utils.time.localtime') as mock_localtime, \
+             patch('nibe_utils.time.strftime', return_value='formatted'):
+            fmt_ts(None)
+        mock_localtime.assert_called_once_with()
 
 
 

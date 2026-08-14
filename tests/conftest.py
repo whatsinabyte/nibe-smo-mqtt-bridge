@@ -27,9 +27,10 @@ database=None
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 try:
-    from hypothesis import settings, HealthCheck
-    from hypothesis import strategies as st
+    from hypothesis import HealthCheck, settings, strategies as st
 
     # HealthCheck.too_slow: common in property-based tests with complex strategies.
     # HealthCheck.differing_executors: fires when pytest is invoked in-process
@@ -131,7 +132,7 @@ try:
     #
     # The combination catches both future unknown IDs and known tricky IDs.
     def _make_nibe_point_id_strategy():
-        from nibe_entity_detection import VALUE_MAPPINGS, ENTITY_TYPE_OVERRIDES
+        from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, VALUE_MAPPINGS
         known_pids = list({
             pid
             for reg in VALUE_MAPPINGS.values()
@@ -237,3 +238,40 @@ if not os.path.exists(_MENU_YAML):
     _MENU_YAML = os.path.join(_REPO_DIR, 'app', 'menu_structure.yaml')
 if not os.path.exists(_MENU_YAML):
     _MENU_YAML = os.path.join(_REPO_DIR, 'menu_structure.yaml')
+
+
+# ---------------------------------------------------------------------------
+# menu_structure.yaml cache reset — global, not per-file
+# ---------------------------------------------------------------------------
+# nibe_lovelace._load_menu_structure_yaml() caches parsed menu_structure.yaml
+# per path for the life of the process (see nibe_lovelace.py). Several test
+# files mock open()/yaml.safe_load for the SAME real path this cache uses
+# (test_ha_integration.py, test_lovelace.py, test_generate.py), so a mocked
+# or fake-YAML result from one test can silently leak into a later test in
+# ANY file expecting the real content — this bit us for real once already
+# (two test_ha_integration.py failures under pytest-randomly, caused by a
+# test_ha_integration.py test earlier in randomized order poisoning the
+# cache for TestBuildMenuPointsProperties later in the same file). A
+# per-file fixture isn't enough since the pollution isn't confined to one
+# file — this must be global and autouse for every test in the suite.
+@pytest.fixture(autouse=True)
+def _reset_menu_structure_cache():
+    import nibe_lovelace as nl
+    nl._reset_menu_structure_cache()
+    yield
+    nl._reset_menu_structure_cache()
+
+
+# nibe_entity_detection._description_mapping_cache is the same kind of
+# process-lifetime, path/description-keyed module cache as the menu cache
+# above. It's currently reset manually via .clear() in a handful of
+# test_entity_detection.py tests rather than automatically — that's the
+# exact pattern that let the menu-cache pollution bug above go undetected
+# for a long time under pytest-randomly. Resetting it here for every test,
+# not just the ones that remember to, closes that same latent risk.
+@pytest.fixture(autouse=True)
+def _reset_description_mapping_cache():
+    import nibe_entity_detection as ned
+    ned._description_mapping_cache.clear()
+    yield
+    ned._description_mapping_cache.clear()

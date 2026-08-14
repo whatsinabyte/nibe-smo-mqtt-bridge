@@ -56,9 +56,11 @@ import re
 import signal
 import ssl
 import sys
-import time
 import threading
+import time
 import urllib.error
+from dataclasses import dataclass, field
+
 import yaml
 
 try:
@@ -72,11 +74,10 @@ except ImportError:
 
 
 
-from nibe_api             import NibeApiClient
-from nibe_entity_manager  import EntityManager, _build_device_info, decide_startup_action
+from nibe_api import NibeApiClient
 from nibe_entity_detection import MODES
-from nibe_mqtt_publisher  import MqttDiscoveryPublisher, MgmtTopic, MGMT_AVAIL_TOPIC
-from nibe_ha_integration  import (
+from nibe_entity_manager import EntityManager, _build_device_info, decide_startup_action
+from nibe_ha_integration import (
     HAEntityRegistryWatcher,
     ManagementCommandHandler,
     dismiss_ha,
@@ -85,28 +86,62 @@ from nibe_ha_integration  import (
     update_device_modes,
     update_stats_and_health,
 )
-from nibe_lovelace        import (
+from nibe_lovelace import (
+    _build_point_to_menu,
+    _load_menu_structure_yaml,
     build_menu_points,
     copy_card_file,
     provision_lovelace_ui,
-    schedule_menu_dashboard_regen,
     remove_menu_dashboard,
+    schedule_menu_dashboard_regen,
     teardown_lovelace,
-    _build_point_to_menu,
+)
+from nibe_mqtt_publisher import (
+    MGMT_AVAIL_TOPIC,
+    MQTT_PREFIX,
+    BrowserTopic,
+    MgmtTopic,
+    MqttDiscoveryPublisher,
 )
 
 # ============================================================================
 # BRIDGE VERSION
 # ============================================================================
-BRIDGE_VERSION = "1.0.1"
-# Keep in sync with version: in config.yaml — test_bridge_version_matches_config_yaml
-# in the test suite catches any mismatch automatically.
+
+
+def _load_bridge_version() -> str:
+    """Read the version: field from config.yaml — the single source of truth
+    for the add-on version (matches the HA add-on store listing and the
+    GitHub release tag). Never hardcode a duplicate version string here; a
+    prior hardcoded literal silently drifted from config.yaml with no test
+    catching it — see test_bridge_version_matches_config_yaml, which now
+    guards against that regression.
+
+    Tries /config.yaml first (the path config.yaml is copied to in the
+    Docker image, see Dockerfile), then falls back to repo-relative paths
+    for local/dev runs and sandboxed test environments outside the container.
+    """
+    candidates = [
+        '/config.yaml',
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml'),
+        '/mnt/project/config.yaml',
+    ]
+    for path in candidates:
+        try:
+            with open(path, encoding='utf-8') as f:
+                return yaml.safe_load(f)['version']
+        except (OSError, KeyError, TypeError, yaml.YAMLError):
+            continue
+    raise RuntimeError(
+        'Could not determine BRIDGE_VERSION: config.yaml not found at any known path'
+    )
+
+
+BRIDGE_VERSION = _load_bridge_version()
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
-from dataclasses import dataclass, field  # noqa: E402
 
 
 @dataclass
@@ -313,28 +348,47 @@ def load_config(cli_args=None) -> BridgeConfig:
     # Supervisor Services API — these are Supervisor-injected values, not
     # user-provided secrets, and are treated as infrastructure plumbing.
     env = os.environ
-    if env.get('NIBE_API_HOST'):    cfg.api_host    = env['NIBE_API_HOST']     # noqa: E701
-    if env.get('NIBE_API_PORT'):    cfg.api_port    = int(env['NIBE_API_PORT']) # noqa: E701
-    if env.get('NIBE_MQTT_BROKER'): cfg.mqtt_broker = env['NIBE_MQTT_BROKER']  # noqa: E701
-    if env.get('NIBE_MQTT_PORT'):   cfg.mqtt_port   = int(env['NIBE_MQTT_PORT'])# noqa: E701
-    if env.get('NIBE_MQTT_SVC_USERNAME'): cfg.mqtt_username = env['NIBE_MQTT_SVC_USERNAME']  # noqa: E701
-    if env.get('NIBE_MQTT_SVC_PASSWORD'): cfg.mqtt_password = env['NIBE_MQTT_SVC_PASSWORD']  # noqa: E701
-    if env.get('NIBE_DEVICE_NAME'): cfg.device_name = env['NIBE_DEVICE_NAME']  # noqa: E701
-    if env.get('NIBE_LOG_LEVEL'):   cfg.log_level   = env['NIBE_LOG_LEVEL']    # noqa: E701
-    if env.get('NIBE_MODE'):        cfg.mode        = env['NIBE_MODE']          # noqa: E701
-    if env.get('NIBE_POLL_INTERVAL'):
-        cfg.poll_interval = _validated_poll(
-            max(15, int(env['NIBE_POLL_INTERVAL'])), "NIBE_POLL_INTERVAL"
-        )
-    if env.get('NIBE_API_FAILURE_THRESHOLD'):
-        cfg.api_failure_threshold = max(1, int(env['NIBE_API_FAILURE_THRESHOLD']))
+    if env.get('NIBE_API_HOST'):
+        cfg.api_host = env['NIBE_API_HOST']
+    if env.get('NIBE_MQTT_BROKER'):
+        cfg.mqtt_broker = env['NIBE_MQTT_BROKER']
+    if env.get('NIBE_MQTT_SVC_USERNAME'):
+        cfg.mqtt_username = env['NIBE_MQTT_SVC_USERNAME']
+    if env.get('NIBE_MQTT_SVC_PASSWORD'):
+        cfg.mqtt_password = env['NIBE_MQTT_SVC_PASSWORD']
+    if env.get('NIBE_DEVICE_NAME'):
+        cfg.device_name = env['NIBE_DEVICE_NAME']
+    if env.get('NIBE_LOG_LEVEL'):
+        cfg.log_level = env['NIBE_LOG_LEVEL']
+    if env.get('NIBE_MODE'):
+        cfg.mode = env['NIBE_MODE']
+    # Numeric env vars get their own try/except, unlike the plain string
+    # settings above — a misconfigured/non-numeric value here must not crash
+    # the whole add-on at startup (load_config runs before any exception
+    # handling is installed), matching the defensive pattern already used
+    # for options.json above.
+    try:
+        if env.get('NIBE_API_PORT'):
+            cfg.api_port = int(env['NIBE_API_PORT'])
+        if env.get('NIBE_MQTT_PORT'):
+            cfg.mqtt_port = int(env['NIBE_MQTT_PORT'])
+        if env.get('NIBE_POLL_INTERVAL'):
+            cfg.poll_interval = _validated_poll(
+                max(15, int(env['NIBE_POLL_INTERVAL'])), "NIBE_POLL_INTERVAL"
+            )
+        if env.get('NIBE_API_FAILURE_THRESHOLD'):
+            cfg.api_failure_threshold = max(1, int(env['NIBE_API_FAILURE_THRESHOLD']))
+    except (ValueError, TypeError) as e:
+        deferred_warnings.append(f"Could not parse numeric environment variable: {e}")
 
     # ── 4. CLI arguments — log level and mode only ───────────────────────
     # run.sh passes --log-level and --mode; other settings come from
     # options.json so the add-on UI remains the single source of truth.
     if cli_args:
-        if getattr(cli_args, 'log_level', None): cfg.log_level = cli_args.log_level  # noqa: E701
-        if getattr(cli_args, 'mode',      None): cfg.mode      = cli_args.mode        # noqa: E701
+        if getattr(cli_args, 'log_level', None):
+            cfg.log_level = cli_args.log_level
+        if getattr(cli_args, 'mode', None):
+            cfg.mode = cli_args.mode
 
     # ── Derived values ─────────────────────────────────────────────────────
     cfg.api_base_url = f"https://{cfg.api_host}:{cfg.api_port}/api/v1/devices/0"
@@ -429,7 +483,7 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
         The connected paho MQTT client instance.
     """
     _SCAN_TIMEOUT = 15
-    _SENTINEL     = "nibe/browser/scan_sentinel"
+    _SENTINEL     = BrowserTopic.SCAN_SENTINEL.value
 
     log_startup.info("Collecting retained MQTT topics for cleanup...")
     retained_topics = set()
@@ -457,7 +511,7 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
     # then only clear the ones that belong to this bridge (unique_id starts
     # with "nibe_"), relying on the payload filter in _on_retained.
     ha_wildcard      = "homeassistant/+/+/+"
-    browser_wildcard = "nibe/browser/#"
+    browser_wildcard = f"{MQTT_PREFIX}/#"
 
     mqtt_client.subscribe(ha_wildcard)
     mqtt_client.subscribe(browser_wildcard)
@@ -747,9 +801,7 @@ def _load_menu_structure(app_dir: str, log_if_mode: bool = True) -> tuple[dict, 
     """
     try:
         menu_path = os.path.join(app_dir, "menu_structure.yaml")
-        with open(menu_path, encoding="utf-8") as f:
-            menu_data = yaml.safe_load(f)
-        point_to_menu = _build_point_to_menu(menu_data.get("menus", []))
+        point_to_menu = _build_point_to_menu(_load_menu_structure_yaml(menu_path))
         menu_points   = build_menu_points(menu_path)
         if log_if_mode:
             log_startup.debug("Built point→menu map: %d entries", len(point_to_menu))
@@ -900,7 +952,7 @@ def _build_infrastructure(
             sys.exit(1)
 
         if not mqtt_client.is_connected():
-            log_mqtt.warning("MQTT not yet connected — broker may be slow, continuing anyway")
+            log_mqtt.info("MQTT not yet connected after 2s — broker may be slow, continuing")
         else:
             log_mqtt.info("MQTT client connection verified")
 
@@ -1286,7 +1338,7 @@ def _shutdown(
 # MAIN — thin orchestrator: parse, configure, call the four phases
 # ============================================================================
 
-def main():
+def main():  # pragma: no cover
     """Initialise all subsystems and run the polling loop.
 
     Startup sequence:
@@ -1295,6 +1347,12 @@ def main():
       3.  Run startup sequence: assemble subsystems, restore state, start threads.
       4.  Enter the polling loop (exits only via KeyboardInterrupt / signal).
       5.  On shutdown: drain executors, publish offline, disconnect.
+
+    Not unit tested directly — each phase it orchestrates (parse_arguments,
+    load_config, _build_infrastructure, _run_startup_sequence, _poll_loop,
+    _shutdown) has its own dedicated test coverage. Testing this function
+    itself would require a live-ish integration harness for signal handling
+    and process lifecycle, for little incremental value over the phase tests.
     """
     args      = parse_arguments()
     cfg       = load_config(cli_args=args)
@@ -1355,5 +1413,5 @@ def main():
     )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

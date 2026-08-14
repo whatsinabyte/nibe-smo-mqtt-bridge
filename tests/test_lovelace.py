@@ -10,14 +10,17 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from hypothesis import given
-from hypothesis import strategies as st
-
 from conftest import (
+    _dyn_map_entry,
     _nibe_point_id,
     _safe_entity_id,
-    _dyn_map_entry,
 )
+from hypothesis import given, strategies as st
+
+# menu_structure.yaml cache reset — see conftest.py's global autouse
+# _reset_menu_structure_cache fixture. It applies to every test file
+# automatically, so no per-file fixture is needed here.
+
 
 class TestPublisherLovelaceConstantsProperties(unittest.TestCase):
     """Structural invariants for nibe_mqtt_publisher and nibe_lovelace constants."""
@@ -87,7 +90,7 @@ class TestDynamicPointMapLookupProperties(unittest.TestCase):
     """
 
     def _make_map(self, entries):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         seen_pids = set()
         for e in entries:
@@ -176,7 +179,7 @@ class TestBuildDynamicInjectionProperties(unittest.TestCase):
     """Hypothesis properties for _build_dynamic_injection."""
 
     def _make_map_with_entry(self, controlling_pid, dynamic_pids):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         entry = DynamicPointEntry(
             point_id=controlling_pid, title='Test', entity_type='switch',
@@ -224,8 +227,8 @@ class TestBuildDynamicInjectionProperties(unittest.TestCase):
     @given(st.integers(min_value=1, max_value=500),
            st.sets(st.integers(min_value=1000, max_value=2000), min_size=1, max_size=5))
     def test_firmware_removed_entry_excluded(self, controlling, dynamic_pids):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         from nibe_lovelace import _build_dynamic_injection
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
         m = DynamicPointMap()
         entry = DynamicPointEntry(
             point_id=controlling, title='Removed', entity_type='switch',
@@ -237,6 +240,24 @@ class TestBuildDynamicInjectionProperties(unittest.TestCase):
         rw.entity_id_for.return_value = 'sensor.test'
         result = _build_dynamic_injection(m, dynamic_pids, rw, {})
         self.assertNotIn(controlling, result)
+
+    def test_explicit_null_min_max_does_not_crash(self):
+        """metadata "minValue"/"maxValue": null (present but None, not just
+        absent) must not crash the division — .get(key, 0) only supplies
+        its default when the key is missing entirely."""
+        from nibe_lovelace import _build_dynamic_injection
+        controlling, dyn_pid = 42, 1500
+        m = self._make_map_with_entry(controlling, {dyn_pid})
+        rw = MagicMock()
+        rw.entity_id_for.return_value = 'sensor.test'
+        all_points_by_id = {
+            dyn_pid: {
+                'title': 'Null range point',
+                'metadata': {'minValue': None, 'maxValue': None, 'divisor': 1},
+            }
+        }
+        result = _build_dynamic_injection(m, {dyn_pid}, rw, all_points_by_id)
+        self.assertIn(controlling, result)
 
     def test_empty_active_dynamic_points_gives_empty_result(self):
         from nibe_lovelace import _build_dynamic_injection
@@ -276,7 +297,7 @@ class TestRetryDelayProperties(unittest.TestCase):
 
     @given(st.integers(min_value=0, max_value=100))
     def test_bounded_by_retry_max(self, _n):
-        from nibe_api import _retry_delay, _RETRY_MAX_S
+        from nibe_api import _RETRY_MAX_S, _retry_delay
         self.assertLessEqual(_retry_delay(), _RETRY_MAX_S)
 
 
@@ -514,8 +535,8 @@ class TestMetadataDictTypeCrossModuleProperties(unittest.TestCase):
     def test_cached_entity_type_agrees_with_metadata_dict_type(self, pid, modbus, writable):
         """_get_cached_entity_type and _build_point_metadata_dict must agree on type
         when both are given the same raw point dict."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         from nibe_entity_detection import detect_entity_type
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
         pub = MqttDiscoveryPublisher(
             mqtt_client=MagicMock(), device_info={},
             device_id='test', device_name='Test',
@@ -568,30 +589,36 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_always_sets_state_and_command_topic(self, pid, entity_id, description):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         self.assertIn('state_topic', config)
         self.assertIn('command_topic', config)
 
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_topics_contain_entity_id(self, pid, entity_id, description):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         self.assertIn(entity_id, config['state_topic'])
         self.assertIn(entity_id, config['command_topic'])
 
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_options_when_present_are_list_of_strings(self, pid, entity_id, description):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         if 'options' in config:
             self.assertIsInstance(config['options'], list)
             for opt in config['options']:
@@ -600,10 +627,12 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_options_when_present_have_no_duplicates(self, pid, entity_id, description):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         if 'options' in config:
             opts = config['options']
             self.assertEqual(len(opts), len(set(opts)))
@@ -612,20 +641,24 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
            _safe_entity_id, st.text(max_size=100))
     def test_options_when_present_have_at_least_two(self, pid, entity_id, description):
         """A single option is not a valid select — options must be ≥2 or absent."""
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         if 'options' in config:
             self.assertGreaterEqual(len(config['options']), 2)
 
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_consistent_with_t_state_t_command(self, pid, entity_id, description):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher, t_state, t_command
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
         config = {}
-        MqttDiscoveryPublisher._build_select_config(
-            config, entity_id, pid, self._meta, description)
+        discovery_config.build_select_config(
+            config, t_state('select', entity_id), t_command('select', entity_id),
+            pid, self._meta, description)
         self.assertEqual(config['state_topic'], t_state('select', entity_id))
         self.assertEqual(config['command_topic'], t_command('select', entity_id))
 
@@ -640,8 +673,9 @@ class TestBuildMenuDashboardConfigProperties(unittest.TestCase):
 
     @given(_menu_list)
     def test_never_raises(self, menus):
-        from nibe_lovelace import _build_menu_dashboard_config
         from unittest.mock import MagicMock
+
+        from nibe_lovelace import _build_menu_dashboard_config
         rw = MagicMock()
         rw.entity_id_for.return_value = None
         _build_menu_dashboard_config(menus, rw)
@@ -649,8 +683,9 @@ class TestBuildMenuDashboardConfigProperties(unittest.TestCase):
     @given(_menu_list)
     def test_empty_produces_none_or_none_views(self, menus):
         """Empty menus list → returns None (no views generated)."""
-        from nibe_lovelace import _build_menu_dashboard_config
         from unittest.mock import MagicMock
+
+        from nibe_lovelace import _build_menu_dashboard_config
         rw = MagicMock()
         rw.entity_id_for.return_value = None
         result = _build_menu_dashboard_config([], rw)
@@ -658,8 +693,9 @@ class TestBuildMenuDashboardConfigProperties(unittest.TestCase):
 
     @given(_menu_list)
     def test_nonempty_result_has_views_key(self, menus):
-        from nibe_lovelace import _build_menu_dashboard_config
         from unittest.mock import MagicMock
+
+        from nibe_lovelace import _build_menu_dashboard_config
         rw = MagicMock()
         rw.entity_id_for.return_value = 'sensor.nibe_100'
         result = _build_menu_dashboard_config(menus, rw)
@@ -669,8 +705,9 @@ class TestBuildMenuDashboardConfigProperties(unittest.TestCase):
 
     @given(_menu_list)
     def test_result_is_dict_or_none(self, menus):
-        from nibe_lovelace import _build_menu_dashboard_config
         from unittest.mock import MagicMock
+
+        from nibe_lovelace import _build_menu_dashboard_config
         rw = MagicMock()
         rw.entity_id_for.return_value = None
         result = _build_menu_dashboard_config(menus, rw)
@@ -689,7 +726,7 @@ class TestMenuFunctionConsistencyProperties(unittest.TestCase):
     def test_build_point_to_menu_keys_subset_of_collect_menu_points(self, menus):
         """_build_point_to_menu keys must be a subset of _collect_menu_points output.
         (They should be equal for single-level menus with no None point_ids.)"""
-        from nibe_lovelace import _collect_menu_points, _build_point_to_menu
+        from nibe_lovelace import _build_point_to_menu, _collect_menu_points
         collected = _collect_menu_points(menus)
         mapped = set(_build_point_to_menu(menus).keys())
         self.assertTrue(mapped.issubset(collected))
@@ -697,12 +734,12 @@ class TestMenuFunctionConsistencyProperties(unittest.TestCase):
     @given(_menu_list)
     def test_collect_menu_points_superset_of_build_point_to_menu_keys(self, menus):
         """Every key in _build_point_to_menu is in _collect_menu_points."""
-        from nibe_lovelace import _collect_menu_points, _build_point_to_menu
+        from nibe_lovelace import _build_point_to_menu, _collect_menu_points
         for pid in _build_point_to_menu(menus).keys():
             self.assertIn(pid, _collect_menu_points(menus))
 
     def test_both_functions_agree_on_empty_input(self):
-        from nibe_lovelace import _collect_menu_points, _build_point_to_menu
+        from nibe_lovelace import _build_point_to_menu, _collect_menu_points
         self.assertEqual(_collect_menu_points([]), set())
         self.assertEqual(_build_point_to_menu([]), {})
 
@@ -772,6 +809,28 @@ class TestBuildUnplacedViewProperties(unittest.TestCase):
         rw = MagicMock()
         result = _build_unplaced_view({}, set(), rw, {})
         self.assertIsNone(result)
+
+    def test_explicit_null_min_max_does_not_crash(self):
+        """metadata "minValue"/"maxValue": null (present but None) must not
+        crash the range-string division."""
+        from nibe_lovelace import _build_unplaced_view
+        bulk = {
+            9001: {
+                'raw_value': 1, 'is_ok': True,
+                'title': 'Null range point',
+                'metadata': {
+                    'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                    'isWritable': False,
+                    'variableSize': 's16', 'variableType': 'integer',
+                    'minValue': None, 'maxValue': None, 'divisor': 1,
+                    'unit': '', 'shortUnit': '',
+                },
+                'description': '',
+            }
+        }
+        rw = MagicMock()
+        rw.entity_id_for.return_value = None
+        _build_unplaced_view(bulk, set(), rw, {})  # must not raise
 
     @given(st.sets(st.integers(min_value=1000, max_value=2000), min_size=1, max_size=10))
     def test_menu_points_excluded_from_result(self, menu_pids):
@@ -954,6 +1013,71 @@ class TestRegenMenuDashboard(unittest.TestCase):
             mock_timer.assert_called_once()
             mock_timer.return_value.start.assert_called_once()
 
+    def test_default_schedule_retry_timer_args_and_kwargs_dict_exact(self):
+        """The default schedule_retry path must construct
+        threading.Timer(retry_delay, _regen_menu_dashboard, kwargs={...})
+        with the exact positional args and an exact kwargs dict — every
+        key spelled correctly and every value the real (not off-by-one
+        or swapped) value. A single dict-equality assertion here pins
+        every kwarg key/value mutant (registry_watcher, debug_mode,
+        attempt, max_attempts, retry_delay, open_ws_fn,
+        setup_dashboard_fn all present with correct keys and values;
+        attempt specifically must be attempt+1, not attempt-1/attempt+2)
+        as well as the Timer's two positional args (retry_delay,
+        _regen_menu_dashboard) and the un-injected default argument
+        values for attempt/max_attempts/retry_delay themselves — a
+        mutated default (e.g. attempt: int = 2) changes the resulting
+        kwargs['attempt'] from 2 to 3.
+        """
+        import nibe_lovelace as nl
+        registry_watcher = MagicMock()
+        open_ws_fn = MagicMock()
+        setup_dashboard_fn = MagicMock(return_value=True)  # forces needs_retry
+
+        with patch('threading.Timer') as mock_timer:
+            # No attempt / max_attempts / retry_delay overrides — exercises
+            # the real default values (1, 3, 3.0), and no schedule_retry_fn
+            # override — exercises the real _default_schedule_retry.
+            nl._regen_menu_dashboard(
+                registry_watcher, debug_mode=False,
+                open_ws_fn=open_ws_fn, setup_dashboard_fn=setup_dashboard_fn,
+            )
+
+        self.assertEqual(mock_timer.call_args.args[0], 3.0)
+        self.assertIs(mock_timer.call_args.args[1], nl._regen_menu_dashboard)
+
+        kwargs = mock_timer.call_args.kwargs['kwargs']
+        schedule_retry_fn = kwargs.pop('schedule_retry_fn')
+        self.assertTrue(callable(schedule_retry_fn))
+        self.assertEqual(
+            kwargs,
+            {
+                'registry_watcher': registry_watcher,
+                'debug_mode': False,
+                'attempt': 2,
+                'max_attempts': 3,
+                'retry_delay': 3.0,
+                'open_ws_fn': open_ws_fn,
+                'setup_dashboard_fn': setup_dashboard_fn,
+            },
+        )
+
+    def test_default_timer_thread_is_daemon_with_expected_name(self):
+        """The retry Timer thread must be marked daemon (so it doesn't
+        block interpreter shutdown) and given the identifying name
+        "nibe_menu_regen_retry" (used to recognise this thread in thread
+        dumps / debugging, not a log message)."""
+        import nibe_lovelace as nl
+        setup_dashboard_fn = MagicMock(return_value=True)
+        with patch('threading.Timer') as mock_timer:
+            nl._regen_menu_dashboard(
+                MagicMock(), debug_mode=False, attempt=1,
+                open_ws_fn=MagicMock(), setup_dashboard_fn=setup_dashboard_fn,
+            )
+        t = mock_timer.return_value
+        self.assertIs(t.daemon, True)
+        self.assertEqual(t.name, "nibe_menu_regen_retry")
+
 
 # ===========================================================================
 # 40. _on_enabled_state_change_factory debounce wiring
@@ -1002,6 +1126,61 @@ class TestOnEnabledStateChangeFactory(unittest.TestCase):
             t = mock_timer.return_value
             self.assertTrue(t.daemon)
             self.assertEqual(t.name, "nibe_menu_regen")
+
+    def test_concurrent_calls_never_orphan_a_timer(self):
+        """Regression test: publish_enabled_state() (which invokes this
+        handler) is called from the write executor, management executor,
+        watcher thread, and poll thread — so the handler can genuinely be
+        entered concurrently. Without a lock around the cancel-and-reschedule
+        sequence, two threads racing the check-cancel-create-assign steps can
+        each create their own Timer and overwrite the shared cell, orphaning
+        one Timer that is never cancelled — defeating the debounce. Exactly
+        one Timer (the last one created) must survive uncancelled."""
+        import threading as _threading
+
+        import nibe_lovelace as nl
+        registry_watcher = MagicMock()
+        handler = nl._on_enabled_state_change_factory(registry_watcher, debug_mode=False)
+
+        created = []
+        creation_lock = _threading.Lock()
+
+        class _FakeTimer:
+            def __init__(self, *a, **kw):
+                self.cancelled = False
+                with creation_lock:
+                    created.append(self)
+
+            def cancel(self):
+                self.cancelled = True
+
+            def start(self):
+                pass
+
+            daemon = False
+            name = ""
+
+        barrier = _threading.Barrier(20)
+
+        def _call_handler():
+            barrier.wait()  # maximize contention — all threads race together
+            handler()
+
+        with patch('threading.Timer', _FakeTimer):
+            threads = [_threading.Thread(target=_call_handler) for _ in range(20)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+        self.assertEqual(len(created), 20, "every call must still create a timer")
+        survivors = [t for t in created if not t.cancelled]
+        self.assertEqual(
+            len(survivors), 1,
+            f"exactly one timer must survive uncancelled, got {len(survivors)} — "
+            "an orphaned timer means the debounce lock isn't serializing "
+            "concurrent callers correctly",
+        )
 
 
 
@@ -1082,9 +1261,10 @@ class TestBuildMenuPoints(unittest.TestCase):
     or enabled entities with no dashboard card)."""
 
     def test_returns_frozenset(self):
-        import nibe_lovelace as nl
-        import tempfile
         import os
+        import tempfile
+
+        import nibe_lovelace as nl
         import yaml
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
         yaml.dump({'menus': [{'id': '1', 'settings': [{'point_id': 42}], 'submenus': []}]},
@@ -1104,9 +1284,10 @@ class TestBuildMenuPoints(unittest.TestCase):
         self.assertEqual(len(result), 0)
 
     def test_empty_yaml_returns_empty_frozenset(self):
-        import nibe_lovelace as nl
-        import tempfile
         import os
+        import tempfile
+
+        import nibe_lovelace as nl
         import yaml
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
         yaml.dump({'menus': []}, tmp)
@@ -1132,8 +1313,9 @@ class TestBuildMenuPoints(unittest.TestCase):
 
         Tests that patch MODES['menus'] directly for isolation are fine —
         this test verifies the real startup wiring, so it uses the real file."""
-        import nibe_lovelace as nl
         import os
+
+        import nibe_lovelace as nl
         yaml_path = os.path.join(os.path.dirname(__import__('nibe_lovelace').__file__), 'menu_structure.yaml')
         if not os.path.exists(yaml_path):
             self.skipTest("menu_structure.yaml not present in test directory")
@@ -1164,9 +1346,10 @@ class TestMenuPointsYamlSync(unittest.TestCase):
         """Every point in menu_structure.yaml must appear in what
         build_menu_points() returns. A miss here means a dashboard card
         will reference an entity that was never enabled — a Spook ghost."""
+        import os
+
         import nibe_lovelace as nl
         import yaml
-        import os
 
         yaml_path = os.path.join(os.path.dirname(__import__('nibe_lovelace').__file__), 'menu_structure.yaml')
         if not os.path.exists(yaml_path):
@@ -1743,6 +1926,65 @@ class TestBuildUnplacedView(unittest.TestCase):
         self.assertIn('1 read-only', content)
         self.assertIn('0 writable (review)', content)
 
+    def test_grouped_pattern_smart_energy_source(self):
+        """The 'smart energy source' group pattern (SG-ready related
+        points) must actually route matching titles to the grouped
+        section — not just the patterns exercised by other tests."""
+        import nibe_lovelace as nl
+        bulk = {100: self._holding_point('Smart energy source priority')}
+        result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
+        content = result['cards'][0]['cards'][0]['content']
+        self.assertIn('1 writable (series/grouped)', content)
+        self.assertIn('0 writable (review)', content)
+
+    def test_missing_metadata_key_treated_as_no_register_type(self):
+        """A bulk_data entry with NO 'metadata' key at all (not even an
+        empty dict) must be treated the same as an entry whose metadata
+        lacks a recognised register type — excluded, not a crash. The
+        `.get('metadata', {})` default only fires when the key is fully
+        absent, distinct from `.get('metadata', {}).get(...)` calls that
+        assume a dict is always present."""
+        import nibe_lovelace as nl
+        bulk = {100: {'title': 'No metadata at all'}}
+        result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
+        self.assertIsNone(result)
+
+    def test_missing_min_value_defaults_to_zero(self):
+        """meta.get('minValue', 0) — when 'minValue' is entirely absent
+        (not just falsy), the default must be 0, matching maxValue=0's
+        default and correctly hitting the degenerate-range exclusion.
+        A wrong default (e.g. 1) would make mn != mx and wrongly include
+        an otherwise-degenerate point."""
+        import nibe_lovelace as nl
+        bulk = {100: {
+            'title': 'No minValue key',
+            'metadata': {
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'maxValue': 0, 'isWritable': True, 'divisor': 1,
+            },
+        }}
+        result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
+        self.assertIsNone(result)  # mn=0 == mx=0 → degenerate, excluded
+
+    def test_divisor_key_actually_used_in_range_string(self):
+        """meta.get('divisor', 1) must read the REAL 'divisor' key, not a
+        wrong/misspelled key that would silently always fall back to the
+        default and ignore a real non-1 divisor value."""
+        import nibe_lovelace as nl
+        bulk = {100: {
+            'title': 'Scaled setting',
+            'metadata': {
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'minValue': 0, 'maxValue': 1000, 'isWritable': True,
+                'divisor': 10, 'unit': '',
+            },
+        }}
+        result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
+        rows = result['cards'][0]['cards'][1]['entities']
+        # divisor=10 → range "0 – 100", not "0 – 1000" (undivided)
+        self.assertTrue(any('0 – 100' in row.get('label', '') for row in rows))
+        self.assertFalse(any('0 – 1000' in row.get('label', '') for row in rows))
+
     def test_missing_title_falls_back_to_point_id_label(self):
         import nibe_lovelace as nl
         bulk = {777: {
@@ -2032,6 +2274,22 @@ class TestBuildMenuView(unittest.TestCase):
         divider_idx = next(i for i, e in enumerate(entities)
                             if e.get('label') == '↳ Humidity  ·  0 – 100 %')
         self.assertEqual(entities[divider_idx + 1], {'entity': 'sensor.humidity'})
+
+    def test_dynamic_injection_divider_appends_default_not_replaces(self):
+        """When the injected dynamic point has a real default value, the
+        divider must be the title/range prefix WITH the default appended
+        (+=), not replaced entirely by just the default text (=). Every
+        other dynamic_injection test uses an empty-string default, which
+        can't distinguish '+=' from '=' since the append is a no-op."""
+        import nibe_lovelace as nl
+        menu = self._menu(settings=[{'label': 'Controlling switch', 'point_id': 100}])
+        cards = nl._build_menu_view(
+            menu, self._watcher({100: 'switch.controller'}),
+            dynamic_injection={100: [('sensor.humidity', 'Humidity', '0 – 100 %', '50%')]},
+        )
+        entities_card = next(c for c in cards if c['type'] == 'entities')
+        labels = [e.get('label', '') for e in entities_card['entities']]
+        self.assertIn('↳ Humidity  ·  0 – 100 %  ·  default: 50%', labels)
 
     def test_dynamic_injection_only_appears_when_controlling_point_resolved(self):
         """If the controlling switch itself isn't enabled yet, its injected
@@ -2362,15 +2620,16 @@ class TestRegistryStabilityCompletenessThreshold(unittest.TestCase):
 
     @property
     def threshold(self):
-        import nibe_lovelace as nl
         import inspect
-        # Extract the local constant from _setup_menu_dashboard's source.
+
+        import nibe_lovelace as nl
+        # Extract the local constant from _wait_for_registry_stable's source.
         # It's a function-local var (not module-level) so we read the source.
-        src = inspect.getsource(nl._setup_menu_dashboard)
+        src = inspect.getsource(nl._wait_for_registry_stable)
         for line in src.splitlines():
             if '_completeness_threshold' in line and '=' in line and 'def' not in line:
                 return float(line.split('=')[1].strip())
-        raise AssertionError("_completeness_threshold not found in _setup_menu_dashboard source")
+        raise AssertionError("_completeness_threshold not found in _wait_for_registry_stable source")
 
     def _is_complete(self, menu_resolved, available):
         t = self.threshold
@@ -2567,7 +2826,7 @@ class TestEntityDetectionFinalGaps(unittest.TestCase):
     def test_get_entity_options_returns_sorted_list_from_value_mappings(self):
         """When a point has a VALUE_MAPPINGS entry, get_entity_options must return
         a sorted option list from that mapping (line 549)."""
-        from nibe_entity_detection import get_entity_options, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, get_entity_options
         holding = VALUE_MAPPINGS.get('holding', {})
         self.assertTrue(holding, 'No holding VALUE_MAPPINGS — test precondition failed')
         pid = next(iter(holding))
@@ -2578,7 +2837,7 @@ class TestEntityDetectionFinalGaps(unittest.TestCase):
     def test_input_register_in_value_mappings_returns_sensor(self):
         """An input register whose variableId appears in VALUE_MAPPINGS['input']
         must be classified as sensor/diagnostic (line 748)."""
-        from nibe_entity_detection import detect_entity_type, VALUE_MAPPINGS
+        from nibe_entity_detection import VALUE_MAPPINGS, detect_entity_type
         input_map = VALUE_MAPPINGS.get('input', {})
         self.assertTrue(input_map, 'No input VALUE_MAPPINGS — test precondition failed')
         pid = next(iter(input_map))
@@ -2617,6 +2876,19 @@ class TestCopyCardFile(unittest.TestCase):
         self.assertTrue(result)
         mk.assert_called_once()
         cp.assert_called_once()
+
+    def test_success_uses_real_source_and_destination_paths(self):
+        """makedirs/copy2 must receive the real source/destination paths —
+        not just be called with *some* arguments."""
+        import nibe_lovelace as nl
+        with patch('nibe_lovelace.os.makedirs') as mk, \
+             patch('nibe_lovelace.shutil.copy2') as cp:
+            nl._copy_card_file()
+        mk.assert_called_once_with("/homeassistant/www", exist_ok=True)
+        cp.assert_called_once_with(
+            "/app/nibe-entity-manager-card.js",
+            "/homeassistant/www/nibe-entity-manager-card.js",
+        )
 
     def test_exception_returns_false(self):
         import nibe_lovelace as nl
@@ -2707,6 +2979,142 @@ class TestOpenHaWebSocket(unittest.TestCase):
         self.assertEqual(next_id(), 1)
         self.assertEqual(next_id(), 2)
 
+    def test_create_connection_called_with_correct_url_and_timeout(self):
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "auth_ok"}),
+        ]
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.dict('sys.modules', {'websocket': ws_mod}):
+            nl._open_ha_websocket()
+        ws_mod.create_connection.assert_called_once_with(
+            "ws://supervisor/core/websocket", timeout=10,
+        )
+
+
+
+class TestRemoveMenuDashboardWsCloseSwallowed(unittest.TestCase):
+    """_remove_menu_dashboard: ws.close() raising during teardown must not
+    propagate — a deliberate except Exception: pass since we're already
+    tearing down and there's nothing useful to do with a close error."""
+
+    def test_ws_close_exception_is_swallowed(self):
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        ws.close.side_effect = RuntimeError("socket already closed")
+        next_id = MagicMock(return_value=1)
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=(ws, next_id)), \
+             patch('nibe_lovelace._ws_call', return_value={'success': True, 'result': []}):
+            nl._remove_menu_dashboard()  # must not raise despite ws.close() failing
+        ws.close.assert_called_once()
+
+
+class TestRemoveMenuDashboard(unittest.TestCase):
+    """_remove_menu_dashboard: main logic — previously exercised only via
+    the ws.close()-exception test above, which never touches any of the
+    dashboard-found/not-found/delete-failure/flag-removal branches."""
+
+    def _run(self, ws_call_side_effect, remove_side_effect=None):
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        next_id = iter(range(1, 100)).__next__
+        calls = []
+        def fake_ws_call(_ws, _mid, payload, _timeout=10):
+            calls.append(payload)
+            return ws_call_side_effect(payload)
+        rm_kwargs = {'side_effect': remove_side_effect} if remove_side_effect else {}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=(ws, next_id)), \
+             patch('nibe_lovelace._ws_call', side_effect=fake_ws_call), \
+             patch('nibe_lovelace.os.remove', **rm_kwargs) as mock_remove:
+            nl._remove_menu_dashboard()
+        return calls, mock_remove
+
+    def test_no_supervisor_token_does_nothing(self):
+        import nibe_lovelace as nl
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('nibe_lovelace._open_ha_websocket') as mock_open:
+            nl._remove_menu_dashboard()
+        mock_open.assert_not_called()
+
+    def test_websocket_unavailable_does_nothing(self):
+        import nibe_lovelace as nl
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=None), \
+             patch('nibe_lovelace.os.remove') as mock_remove:
+            nl._remove_menu_dashboard()
+        mock_remove.assert_not_called()
+
+    def test_dashboard_found_and_deleted_removes_flag(self):
+        from nibe_lovelace import _MENU_DASHBOARD_FLAG
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': [{'url_path': 'nibe-menus', 'id': 42}]}
+            if t == 'lovelace/dashboards/delete':
+                return {'success': True}
+            return {'success': True}
+        calls, mock_remove = self._run(ws_resp)
+        delete_call = next(c for c in calls if c.get('type') == 'lovelace/dashboards/delete')
+        self.assertEqual(delete_call, {
+            'type': 'lovelace/dashboards/delete', 'dashboard_id': 42,
+        })
+        mock_remove.assert_called_once_with(_MENU_DASHBOARD_FLAG)
+
+    def test_dashboard_not_found_but_list_succeeded_removes_flag(self):
+        """List succeeded, dashboard genuinely absent — the flag must
+        still be removed (nothing to retry)."""
+        from nibe_lovelace import _MENU_DASHBOARD_FLAG
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        _, mock_remove = self._run(ws_resp)
+        mock_remove.assert_called_once_with(_MENU_DASHBOARD_FLAG)
+
+    def test_list_call_failed_does_not_remove_flag(self):
+        """A failed/stale list response must NOT remove the flag — we
+        don't know whether the dashboard still exists, so the next
+        startup must retry rather than silently giving up."""
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {}  # stale connection: success=False implicitly
+            return {'success': True}
+        _, mock_remove = self._run(ws_resp)
+        mock_remove.assert_not_called()
+
+    def test_delete_failure_does_not_remove_flag(self):
+        """A found dashboard whose delete call fails must NOT remove the
+        flag — even though the list call itself succeeded — so the next
+        startup retries the delete."""
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': [{'url_path': 'nibe-menus', 'id': 7}]}
+            if t == 'lovelace/dashboards/delete':
+                return {'success': False}
+            return {'success': True}
+        _, mock_remove = self._run(ws_resp)
+        mock_remove.assert_not_called()
+
+    def test_exception_during_teardown_does_not_remove_flag(self):
+        def ws_resp(payload):
+            raise OSError("connection dropped")
+        _, mock_remove = self._run(ws_resp)
+        mock_remove.assert_not_called()
+
+    def test_flag_removal_oserror_is_swallowed(self):
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        # must not raise despite os.remove failing
+        self._run(ws_resp, remove_side_effect=OSError("already gone"))
 
 
 class TestSetupLovelace(unittest.TestCase):
@@ -2742,6 +3150,91 @@ class TestSetupLovelace(unittest.TestCase):
         mock_dash.assert_called_once()
         mock_menu.assert_not_called()
         ws.close.assert_called()
+
+    def test_resource_and_dashboard_called_with_exact_positional_args(self):
+        """_setup_lovelace_resource must receive (ws, next_id, versioned_url)
+        and _setup_lovelace_dashboard must receive
+        (ws, next_id, device_name, _FLAG_FILE) — the exact ws/next_id
+        objects from _open_ha_websocket's return, the real device_name
+        argument, and the module-level _LOVELACE_FLAG constant (not None
+        or a positionally-shifted/dropped argument).
+        """
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        next_id = MagicMock(return_value=1)
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=(ws, next_id)), \
+             patch('nibe_lovelace.open', MagicMock(side_effect=OSError), create=True), \
+             patch('nibe_lovelace._setup_lovelace_resource') as mock_res, \
+             patch('nibe_lovelace._setup_lovelace_dashboard') as mock_dash, \
+             patch('nibe_lovelace._regen_menu_dashboard'):
+            nl._setup_lovelace("1.0", "Nibe the Device", registry_watcher=None)
+
+        res_args = mock_res.call_args.args
+        self.assertIs(res_args[0], ws)
+        self.assertIs(res_args[1], next_id)
+        self.assertTrue(res_args[2].startswith("/local/nibe-entity-manager-card.js?v="))
+
+        dash_args = mock_dash.call_args.args
+        self.assertIs(dash_args[0], ws)
+        self.assertIs(dash_args[1], next_id)
+        self.assertEqual(dash_args[2], "Nibe the Device")
+        self.assertEqual(dash_args[3], nl._LOVELACE_FLAG)
+
+    def test_card_path_opened_in_binary_mode_and_hash_drives_versioned_url(self):
+        """The card JS file must be opened at the real path
+        ("/app/nibe-entity-manager-card.js") in binary mode ("rb"), and
+        the resulting versioned_url must carry a 12-hex-char sha256
+        prefix of that file's contents — not a truncated/different-length
+        slice, and not a wrong/dropped path or mode argument to open().
+        """
+        import hashlib
+
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        next_id = MagicMock(return_value=1)
+        fake_content = b"console.log('nibe card');"
+        expected_hash = hashlib.sha256(fake_content).hexdigest()[:12]
+
+        m_open = MagicMock()
+        m_open.return_value.__enter__.return_value.read.return_value = fake_content
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=(ws, next_id)), \
+             patch('nibe_lovelace.open', m_open, create=True), \
+             patch('nibe_lovelace._setup_lovelace_resource') as mock_res, \
+             patch('nibe_lovelace._setup_lovelace_dashboard'), \
+             patch('nibe_lovelace._regen_menu_dashboard'):
+            nl._setup_lovelace("1.0", "Nibe", registry_watcher=None)
+
+        m_open.assert_called_once_with("/app/nibe-entity-manager-card.js", "rb")
+        versioned_url = mock_res.call_args.args[2]
+        self.assertEqual(
+            versioned_url,
+            f"/local/nibe-entity-manager-card.js?v={expected_hash}",
+        )
+        self.assertEqual(len(expected_hash), 12)
+
+    def test_card_path_open_failure_falls_back_to_version_string(self):
+        """When the card file can't be opened (OSError), cache_key must
+        fall back to the real *version* argument — not None — so the
+        versioned_url still resolves to a usable (if non-hash-based) URL.
+        """
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        next_id = MagicMock(return_value=1)
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('nibe_lovelace._open_ha_websocket', return_value=(ws, next_id)), \
+             patch('nibe_lovelace.open', MagicMock(side_effect=OSError), create=True), \
+             patch('nibe_lovelace._setup_lovelace_resource') as mock_res, \
+             patch('nibe_lovelace._setup_lovelace_dashboard'), \
+             patch('nibe_lovelace._regen_menu_dashboard'):
+            nl._setup_lovelace("7.7.7", "Nibe", registry_watcher=None)
+
+        versioned_url = mock_res.call_args.args[2]
+        self.assertEqual(
+            versioned_url, "/local/nibe-entity-manager-card.js?v=7.7.7",
+        )
 
     def test_registry_watcher_triggers_menu_dashboard(self):
         """Step 3 now routes through _regen_menu_dashboard (not a bare
@@ -2852,6 +3345,26 @@ class TestSetupLovelaceResource(unittest.TestCase):
         self.assertEqual(len(delete_calls), 1)
         self.assertEqual(delete_calls[0].get('resource_id'), 2)
 
+    def test_update_payload_exact_fields(self):
+        resources = [{'id': 5, 'url': '/local/nibe-entity-manager-card.js?v=old'}]
+        calls = self._run(resources, '/local/nibe-entity-manager-card.js?v=new')
+        update_call = next(c for c in calls if c.get('type') == 'lovelace/resources/update')
+        self.assertEqual(update_call, {
+            'type':        'lovelace/resources/update',
+            'resource_id': 5,
+            'res_type':    'module',
+            'url':         '/local/nibe-entity-manager-card.js?v=new',
+        })
+
+    def test_create_payload_exact_fields(self):
+        calls = self._run([], '/local/nibe-entity-manager-card.js?v=new')
+        create_call = next(c for c in calls if c.get('type') == 'lovelace/resources/create')
+        self.assertEqual(create_call, {
+            'type':     'lovelace/resources/create',
+            'res_type': 'module',
+            'url':      '/local/nibe-entity-manager-card.js?v=new',
+        })
+
     def test_update_failure_logged(self):
         """A failed update must not raise — just logs a warning."""
         import nibe_lovelace as nl
@@ -2872,9 +3385,10 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
     """_setup_lovelace_dashboard: flag exists, dashboard exists, create paths."""
 
     def _run(self, flag_exists, ws_call_side_effect, device_name="Nibe"):
-        import nibe_lovelace as nl
-        import tempfile
         import os
+        import tempfile
+
+        import nibe_lovelace as nl
         ws = MagicMock()
         with tempfile.NamedTemporaryFile(delete=False) as f:
             flag_file = f.name
@@ -2888,7 +3402,12 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             with patch('nibe_lovelace._ws_call', side_effect=fake_ws_call):
                 nl._setup_lovelace_dashboard(ws, iter(range(1, 100)).__next__,
                                              device_name, flag_file)
-            return calls, flag_file
+            try:
+                with open(flag_file) as f:
+                    flag_content = f.read()
+            except OSError:
+                flag_content = None
+            return calls, flag_file, flag_content
         finally:
             try:
                 os.unlink(flag_file)
@@ -2896,7 +3415,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
                 pass
 
     def test_flag_exists_skips_everything(self):
-        calls, _ = self._run(True, lambda p: {})
+        calls, _, _ = self._run(True, lambda p: {})
         self.assertEqual(calls, [])
 
     def test_existing_dashboard_writes_flag_and_returns(self):
@@ -2904,7 +3423,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if payload.get('type') == 'lovelace/dashboards/list':
                 return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
             return {'success': True}
-        calls, flag_file = self._run(False, ws_resp)
+        calls, flag_file, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
         self.assertNotIn('lovelace/dashboards/create', types)
 
@@ -2918,7 +3437,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if t == 'lovelace/config/save':
                 return {'success': True}
             return {'success': True}
-        calls, _ = self._run(False, ws_resp)
+        calls, _, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
         self.assertIn('lovelace/dashboards/create', types)
         self.assertIn('lovelace/config/save', types)
@@ -2931,7 +3450,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'message': 'already in use'}}
             return {'success': True}
-        calls, _ = self._run(False, ws_resp)
+        calls, _, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
         # url_already_exists — must not proceed to config/save
         self.assertNotIn('lovelace/config/save', types)
@@ -2944,7 +3463,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'message': 'internal error'}}
             return {'success': True}
-        calls, _ = self._run(False, ws_resp)
+        calls, _, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
         self.assertNotIn('lovelace/config/save', types)
 
@@ -2958,8 +3477,128 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if t == 'lovelace/config/save':
                 return {'success': False}
             return {'success': True}
-        # Must not raise
-        self._run(False, ws_resp)
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self._run(False, ws_resp)
+        self.assertTrue(any('card config could not be written' in msg for msg in cm.output))
+
+    def test_create_payload_exact_fields(self):
+        """The 'lovelace/dashboards/create' payload must use the real
+        dashboard slug/title/icon and the documented sidebar/admin flags —
+        not just *some* payload of that type."""
+        from nibe_lovelace import _DASHBOARD_ICON, _DASHBOARD_SLUG, _DASHBOARD_TITLE
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': True, 'result': {'id': 42}}
+            return {'success': True}
+        calls, _, _ = self._run(False, ws_resp)
+        create_call = next(c for c in calls if c.get('type') == 'lovelace/dashboards/create')
+        self.assertEqual(create_call, {
+            'type':            'lovelace/dashboards/create',
+            'url_path':        _DASHBOARD_SLUG,
+            'mode':            'storage',
+            'title':           _DASHBOARD_TITLE,
+            'icon':            _DASHBOARD_ICON,
+            'show_in_sidebar': True,
+            'require_admin':   False,
+        })
+
+    def test_config_save_payload_exact_structure(self):
+        """The 'lovelace/config/save' payload's dashboard config must use
+        the real device_name as the view title and the real card type/
+        pageSize/suppressInitialToasts — not just *a* config."""
+        from nibe_lovelace import _CARD_TYPE, _DASHBOARD_ICON, _DASHBOARD_SLUG
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': True, 'result': {'id': 42}}
+            return {'success': True}
+        calls, _, _ = self._run(False, ws_resp, device_name="Distinctive Device Name")
+        save_call = next(c for c in calls if c.get('type') == 'lovelace/config/save')
+        self.assertEqual(save_call['url_path'], _DASHBOARD_SLUG)
+        self.assertEqual(save_call['config'], {
+            'views': [{
+                'title': 'Distinctive Device Name',
+                'path':  'home',
+                'icon':  _DASHBOARD_ICON,
+                'type':  'panel',
+                'cards': [{
+                    'type':                  _CARD_TYPE,
+                    'title':                 '',
+                    'pageSize':              50,
+                    'suppressInitialToasts': True,
+                }],
+            }]
+        })
+
+    def test_existing_dashboard_writes_provisioned_flag_content(self):
+        """The flag file's written content must be exactly 'provisioned\\n' —
+        not empty or missing — since a truthy-but-wrong content would still
+        satisfy os.path.exists() on the next restart."""
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
+            return {'success': True}
+        _, _, flag_content = self._run(False, ws_resp)
+        self.assertEqual(flag_content, 'provisioned\n')
+
+    def test_create_success_writes_provisioned_flag_content(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': True, 'result': {'id': 42}}
+            return {'success': True}
+        _, _, flag_content = self._run(False, ws_resp)
+        self.assertEqual(flag_content, 'provisioned\n')
+
+    def test_url_already_exists_writes_provisioned_flag_content(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': False, 'error': {'message': 'already in use'}}
+            return {'success': True}
+        _, _, flag_content = self._run(False, ws_resp)
+        self.assertEqual(flag_content, 'provisioned\n')
+
+    def test_url_already_exists_detected_via_translation_key(self):
+        """error_code == 'url_already_exists' (translation_key) must be
+        treated the same as the message-substring match — not only the
+        'already in use' text path."""
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': False, 'error': {'translation_key': 'url_already_exists'}}
+            return {'success': True}
+        calls, _, flag_content = self._run(False, ws_resp)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('lovelace/config/save', types)
+        self.assertEqual(flag_content, 'provisioned\n')
+
+    def test_flag_file_write_error_does_not_raise_on_existing_dashboard(self):
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
+            return {'success': True}
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        calls = []
+        def fake_ws_call(_ws, _mid, payload, _timeout=10):
+            calls.append(payload)
+            return ws_resp(payload)
+        with patch('nibe_lovelace._ws_call', side_effect=fake_ws_call), \
+             patch('builtins.open', side_effect=OSError("read-only fs")):
+            nl._setup_lovelace_dashboard(ws, iter(range(1, 100)).__next__,
+                                         "Nibe", "/some/flag/path")  # must not raise
 
 
 
@@ -3008,6 +3647,31 @@ class TestWsCallRemainingBranches(unittest.TestCase):
             result = nl._ws_call(ws, 1, {"type": "ping"})
         self.assertEqual(result.get("success"), True)
 
+    def test_per_recv_timeout_shrinks_with_elapsed_time(self):
+        """Regression test: the socket timeout passed to settimeout() must
+        be the REMAINING budget, not the full `timeout` every time — a
+        stream of interleaved irrelevant messages, each arriving just under
+        its own recv timeout, must not be able to extend the total wait past
+        `timeout` seconds by resetting a fixed per-recv window on every
+        iteration."""
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            json.dumps({"id": 99, "type": "result", "success": True}),  # wrong id
+            json.dumps({"id": 1,  "type": "result", "success": True}),  # correct
+        ]
+        with patch('nibe_lovelace.time') as mock_time:
+            # deadline calc, then two loop iterations 3s and 8s into the call.
+            mock_time.time.side_effect = [0, 3, 8]
+            result = nl._ws_call(ws, 1, {"type": "ping"}, timeout=10)
+        self.assertEqual(result.get("success"), True)
+        timeouts_used = [c.args[0] for c in ws.settimeout.call_args_list
+                         if c.args[0] is not None]
+        self.assertEqual(timeouts_used, [7, 2],
+                          "settimeout must be called with the shrinking "
+                          "remaining budget (10-3=7, then 10-8=2), not a "
+                          "fixed value repeated every iteration")
+
 
 
 class TestTeardownLovelace(unittest.TestCase):
@@ -3029,31 +3693,26 @@ class TestTeardownLovelace(unittest.TestCase):
 
     def test_card_file_removed_when_exists(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1'}), \
+        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=True), \
-             patch('nibe_lovelace.os.remove') as mock_rm, \
-             patch('nibe_lovelace.os.environ.get', side_effect=lambda k, d=None:
-                   '1' if k == 'NIBE_REMOVE_FRONTEND' else None):
+             patch('nibe_lovelace.os.remove') as mock_rm:
             nl._teardown_lovelace()
-        mock_rm.assert_any_call('/config/www/nibe-entity-manager-card.js')
+        mock_rm.assert_any_call('/homeassistant/www/nibe-entity-manager-card.js')
 
     def test_card_file_remove_error_does_not_raise(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1'}), \
+        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=True), \
-             patch('nibe_lovelace.os.remove', side_effect=OSError("busy")), \
-             patch('nibe_lovelace.os.environ.get', side_effect=lambda k, d=None:
-                   '1' if k == 'NIBE_REMOVE_FRONTEND' else None):
+             patch('nibe_lovelace.os.remove', side_effect=OSError("busy")):
             nl._teardown_lovelace()  # must not raise
 
     def test_no_supervisor_token_skips_ws(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1'}), \
+        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
-             patch('nibe_lovelace.os.environ.get', side_effect=lambda k, d=None:
-                   '1' if k == 'NIBE_REMOVE_FRONTEND' else None), \
-             patch('nibe_lovelace._open_ha_websocket'):
+             patch('nibe_lovelace._open_ha_websocket') as mock_open_ws:
             nl._teardown_lovelace()
+        mock_open_ws.assert_not_called()
 
     def _make_teardown_ws(self, dashboard_id=7, resource_id=3,
                           dash_delete_success=True, res_delete_success=True):
@@ -3122,8 +3781,12 @@ class TestTeardownLovelace(unittest.TestCase):
         with patch.dict('os.environ',
                         {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
-             patch.dict('sys.modules', {'websocket': ws_mod}):
-            nl._teardown_lovelace()  # must not raise
+             patch.dict('sys.modules', {'websocket': ws_mod}), \
+             patch('nibe_lovelace._ws_call') as mock_ws_call, \
+             self.assertLogs('nibe.startup', level='WARNING') as cm:
+            nl._teardown_lovelace()
+        self.assertTrue(any('Could not connect to HA WebSocket' in msg for msg in cm.output))
+        mock_ws_call.assert_not_called()
 
     def test_wrong_auth_greeting_returns_early(self):
         import nibe_lovelace as nl
@@ -3134,8 +3797,13 @@ class TestTeardownLovelace(unittest.TestCase):
         with patch.dict('os.environ',
                         {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
-             patch.dict('sys.modules', {'websocket': ws_mod}):
-            nl._teardown_lovelace()  # must not raise
+             patch.dict('sys.modules', {'websocket': ws_mod}), \
+             patch('nibe_lovelace._ws_call') as mock_ws_call, \
+             self.assertLogs('nibe.startup', level='WARNING') as cm:
+            nl._teardown_lovelace()
+        self.assertTrue(any('Unexpected HA WebSocket greeting' in msg for msg in cm.output))
+        ws.close.assert_called_once()
+        mock_ws_call.assert_not_called()
 
     def test_auth_fails_returns_early(self):
         import nibe_lovelace as nl
@@ -3149,8 +3817,13 @@ class TestTeardownLovelace(unittest.TestCase):
         with patch.dict('os.environ',
                         {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
-             patch.dict('sys.modules', {'websocket': ws_mod}):
-            nl._teardown_lovelace()  # must not raise
+             patch.dict('sys.modules', {'websocket': ws_mod}), \
+             patch('nibe_lovelace._ws_call') as mock_ws_call, \
+             self.assertLogs('nibe.startup', level='WARNING') as cm:
+            nl._teardown_lovelace()
+        self.assertTrue(any('HA WebSocket auth failed' in msg for msg in cm.output))
+        ws.close.assert_called_once()
+        mock_ws_call.assert_not_called()
 
 
 
@@ -3263,8 +3936,9 @@ class TestSetupLovelaceDashboardFlagWriteFailure(unittest.TestCase):
     """Flag file write failures (OSError) in all three paths of _setup_lovelace_dashboard."""
 
     def _make_ws_and_call(self, ws_responses):
-        import nibe_lovelace as nl
         import tempfile
+
+        import nibe_lovelace as nl
         ws = MagicMock()
         flag_file = tempfile.mktemp()
 
@@ -3333,12 +4007,17 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
         ws_mod.create_connection.return_value = ws
 
         rm_effects = {'side_effect': remove_side_effect} if remove_side_effect else {}
+        calls = []
+        def tracked_ws_call(ws_arg, mid, payload, _timeout=10):
+            calls.append(payload)
+            return ws_call_side_effect(ws_arg, mid, payload, _timeout)
+        self._teardown_calls = calls
         with patch.dict('os.environ',
                         {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch('nibe_lovelace.os.remove', **rm_effects), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
-             patch('nibe_lovelace._ws_call', side_effect=ws_call_side_effect):
+             patch('nibe_lovelace._ws_call', side_effect=tracked_ws_call):
             nl._teardown_lovelace()  # must not raise
 
     def test_dashboard_delete_failure_logs_warning(self):
@@ -3351,7 +4030,9 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             if t == 'lovelace/resources/list':
                 return {'result': []}
             return {'success': True}
-        self._run_teardown(fake)
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any('Could not remove dashboard' in msg for msg in cm.output))
 
     def test_dashboard_list_exception_logs_warning(self):
         call_count = [0]
@@ -3362,7 +4043,9 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             if payload.get('type') == 'lovelace/resources/list':
                 return {'result': []}
             return {'success': True}
-        self._run_teardown(fake)
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any('Dashboard removal failed' in msg for msg in cm.output))
 
     def test_resource_delete_failure_logs_warning(self):
         def fake(ws, _mid, payload, _timeout=10):
@@ -3376,7 +4059,9 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             if t == 'lovelace/resources/delete':
                 return {'success': False}
             return {'success': True}
-        self._run_teardown(fake)
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any('Could not remove Lovelace resource' in msg for msg in cm.output))
 
     def test_resource_not_found_skips_delete(self):
         def fake(ws, _mid, payload, _timeout=10):
@@ -3387,6 +4072,8 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
                 return {'result': []}  # no matching resource
             return {'success': True}
         self._run_teardown(fake)
+        types = [c.get('type') for c in self._teardown_calls]
+        self.assertNotIn('lovelace/resources/delete', types)
 
     def test_resource_list_exception_logs_warning(self):
         call_count = [0]
@@ -3396,7 +4083,9 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             if t == 'lovelace/dashboards/list':
                 return {'result': []}
             raise OSError("ws error")  # resources/list raises
-        self._run_teardown(fake)
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any('Resource removal failed' in msg for msg in cm.output))
 
     def test_ws_close_raises_in_finally(self):
         def fake(ws, _mid, payload, _timeout=10):
@@ -3419,8 +4108,259 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             return {'success': True}
         self._run_teardown(fake, remove_side_effect=OSError("no such file"))
 
+    def test_ws_call_receives_the_real_websocket_not_none(self):
+        """Every _ws_call invocation during teardown must be passed the real
+        `ws` object returned by _open_ha_websocket, not None or some other
+        placeholder — otherwise a real WebSocket send would fail immediately
+        with an AttributeError in production, invisible to a mocked test."""
+        import nibe_lovelace as nl
+        seen_ws_args = []
+        def fake(ws, _mid, payload, _timeout=10):
+            seen_ws_args.append(ws)
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/resources/list':
+                return {'result': []}
+            return {'success': True}
+        self._run_teardown(fake)
+        self.assertTrue(seen_ws_args, "expected at least one _ws_call invocation")
+        self.assertTrue(all(ws is not None for ws in seen_ws_args))
+        # All calls must use the SAME ws instance (the one opened once for
+        # this teardown run), not a fresh/different object per call.
+        self.assertEqual(len(set(id(ws) for ws in seen_ws_args)), 1)
+
+    def test_dashboard_delete_success_logs_removed_with_id(self):
+        """A successful dashboard delete (resp['success'] is True) must log
+        the 'Removed Nibe Bridge dashboard' message with the real id — not
+        silently take the warning branch (resp.get(None) would always be
+        falsy regardless of the real success value)."""
+        def fake(ws, _mid, payload, _timeout=10):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': [{'url_path': 'nibe-bridge', 'id': 99}]}
+            if t == 'lovelace/dashboards/delete':
+                return {'success': True}
+            if t == 'lovelace/resources/list':
+                return {'result': []}
+            return {'success': True}
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any(
+            'Removed Nibe Bridge dashboard' in msg and 'id=99' in msg
+            for msg in cm.output
+        ))
+        self.assertFalse(any('Could not remove dashboard' in msg for msg in cm.output))
+
+    def test_resource_delete_success_logs_removed(self):
+        """A successful resource delete must log the removal-confirmed
+        message, not the warning branch."""
+        def fake(ws, _mid, payload, _timeout=10):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'result': []}
+            if t == 'lovelace/resources/list':
+                return {'result': [{'url': 'nibe-entity-manager-card.js', 'id': 3}]}
+            if t == 'lovelace/resources/delete':
+                return {'success': True}
+            return {'success': True}
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            self._run_teardown(fake)
+        self.assertTrue(any('Removed Lovelace resource registration' in msg for msg in cm.output))
+        self.assertFalse(any('Could not remove Lovelace resource' in msg for msg in cm.output))
 
 
+
+
+
+# ===========================================================================
+# _setup_menu_dashboard_lovelace — direct tests (previously zero direct
+# coverage: every other reference to this function mocks it out entirely
+# from its caller, _setup_menu_dashboard).
+# ===========================================================================
+
+
+class TestSetupMenuDashboardLovelace(unittest.TestCase):
+    def _run(self, ws_call_side_effect, available_menu_points=None,
+              active_dynamic_points=None, resolved_pids=None):
+        import nibe_lovelace as nl
+        ws = MagicMock()
+        em = MagicMock()
+        em.active_dynamic_points = active_dynamic_points or set()
+        rw = MagicMock()
+        resolved = set(resolved_pids or [])
+        rw.entity_id_for = lambda pid: f"sensor.nibe_{pid}" if pid in resolved else None
+        calls = []
+        def fake_ws_call(_ws, _mid, payload, _timeout=10):
+            calls.append(payload)
+            return ws_call_side_effect(payload)
+        dashboard_config = {'views': [{'title': 'Menu', 'cards': []}]}
+        with patch('nibe_lovelace._ws_call', side_effect=fake_ws_call):
+            result = nl._setup_menu_dashboard_lovelace(
+                ws, iter(range(1, 100)).__next__, dashboard_config,
+                em, rw, available_menu_points or set(), active_dynamic_points or set(),
+            )
+        return result, calls
+
+    def test_create_and_save_success_no_retry(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': True}
+            if t == 'lovelace/config/save':
+                return {'success': True}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        self.assertFalse(result)
+        types = [c.get('type') for c in calls]
+        self.assertIn('lovelace/dashboards/create', types)
+        self.assertIn('lovelace/config/save', types)
+        self.assertIn('fire_event', types)
+
+    def test_create_payload_exact_fields(self):
+        from nibe_lovelace import _MENU_DASHBOARD_SLUG, _MENU_DASHBOARD_TITLE
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        _, calls = self._run(ws_resp)
+        create_call = next(c for c in calls if c.get('type') == 'lovelace/dashboards/create')
+        self.assertEqual(create_call, {
+            'type':            'lovelace/dashboards/create',
+            'url_path':        _MENU_DASHBOARD_SLUG,
+            'mode':            'storage',
+            'title':           _MENU_DASHBOARD_TITLE,
+            'icon':            'mdi:book-open-outline',
+            'show_in_sidebar': True,
+        })
+
+    def test_create_fatal_error_returns_false_skips_save(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': False, 'error': {'message': 'internal error'}}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        self.assertFalse(result)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('lovelace/config/save', types)
+
+    def test_create_already_exists_proceeds_to_save(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': False, 'error': {'message': 'already in use'}}
+            if t == 'lovelace/config/save':
+                return {'success': True}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        self.assertFalse(result)
+        types = [c.get('type') for c in calls]
+        self.assertIn('lovelace/config/save', types)
+
+    def test_dashboards_list_failure_returns_true_for_retry(self):
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {'success': False}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        self.assertTrue(result)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('lovelace/config/save', types)
+
+    def test_dashboard_already_exists_skips_create(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': [
+                    {'url_path': 'nibe-menus', 'id': 3},
+                ]}
+            if t == 'lovelace/config/save':
+                return {'success': True}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('lovelace/dashboards/create', types)
+        self.assertIn('lovelace/config/save', types)
+
+    def test_config_save_failure_returns_false(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            if t == 'lovelace/dashboards/create':
+                return {'success': True}
+            if t == 'lovelace/config/save':
+                return {'success': False}
+            return {'success': True}
+        result, calls = self._run(ws_resp)
+        self.assertFalse(result)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('fire_event', types)
+
+    def test_config_save_payload_exact_fields(self):
+        from nibe_lovelace import _MENU_DASHBOARD_SLUG
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        _, calls = self._run(ws_resp)
+        save_call = next(c for c in calls if c.get('type') == 'lovelace/config/save')
+        self.assertEqual(save_call['url_path'], _MENU_DASHBOARD_SLUG)
+        self.assertEqual(save_call['config'], {'views': [{'title': 'Menu', 'cards': []}]})
+
+    def test_fire_event_payload_exact_fields(self):
+        from nibe_lovelace import _MENU_DASHBOARD_SLUG
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        _, calls = self._run(ws_resp)
+        fire_call = next(c for c in calls if c.get('type') == 'fire_event')
+        self.assertEqual(fire_call, {
+            'type':       'fire_event',
+            'event_type': 'lovelace_updated',
+            'event_data': {'url_path': _MENU_DASHBOARD_SLUG},
+        })
+
+    def test_missing_dynamic_points_after_save_triggers_retry(self):
+        """Save succeeds, menu points resolved, but an active dynamic point
+        isn't yet in the registry — must return True (retry)."""
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        result, _ = self._run(
+            ws_resp,
+            available_menu_points={100},
+            active_dynamic_points={9001},
+            resolved_pids={100},   # menu point resolved, dynamic point 9001 not
+        )
+        self.assertTrue(result)
+
+    def test_all_resolved_after_save_no_retry(self):
+        def ws_resp(payload):
+            t = payload.get('type')
+            if t == 'lovelace/dashboards/list':
+                return {'success': True, 'result': []}
+            return {'success': True}
+        result, _ = self._run(
+            ws_resp,
+            available_menu_points={100},
+            active_dynamic_points={9001},
+            resolved_pids={100, 9001},
+        )
+        self.assertFalse(result)
 
 
 # ===========================================================================
@@ -3625,6 +4565,59 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
         self.assertIs(call_args.args[0], ws)
         self.assertFalse(result)
 
+    def test_available_menu_points_is_intersection_not_inverse(self):
+        """available_menu_points must be all_menu_points ∩ all_points_by_id
+        — passed directly as _wait_for_registry_stable's 2nd positional
+        arg, which makes it directly observable. pid 4 is a real menu
+        point (from menu_structure.yaml) that IS added to all_points_by_id
+        here, so the correct filtered set must include it; the buggy
+        'not in' inversion would exclude it instead."""
+        menu_pids = [4]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
+        rw = self._make_registry_watcher(em, resolved_pids=set(menu_pids))
+        open_ws_fn = MagicMock(return_value=None)
+
+        import nibe_lovelace as nl
+        with patch('nibe_lovelace.time.sleep'), \
+             patch('nibe_lovelace._wait_for_registry_stable') as mock_wait, \
+             patch('nibe_lovelace._build_point_defaults', return_value={}), \
+             patch('nibe_lovelace._build_dynamic_injection', return_value={}), \
+             patch('nibe_lovelace._build_menu_dashboard_config',
+                   return_value={'views': [{'title': 'Menu', 'cards': []}]}):
+            nl._setup_menu_dashboard(open_ws_fn, rw, debug_mode=False)
+
+        actual_available = mock_wait.call_args.args[1]
+        self.assertIn(4, actual_available)
+
+    def test_dynamic_injection_and_dashboard_config_called_with_real_args(self):
+        """_build_dynamic_injection and _build_menu_dashboard_config must
+        receive the real registry_watcher / point_defaults / all_points_by_id
+        — not None or omitted — collaborators mocked out everywhere else,
+        never checked for what they were actually called with."""
+        menu_pids = [4, 54, 57, 78, 121, 187, 212, 513, 601, 900]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
+        rw = self._make_registry_watcher(em, resolved_pids=set(menu_pids))
+        open_ws_fn = MagicMock(return_value=None)
+        real_point_defaults = {4: 'default-val'}
+
+        import nibe_lovelace as nl
+        with patch('nibe_lovelace.time.sleep'), \
+             patch('nibe_lovelace._build_point_defaults', return_value=real_point_defaults), \
+             patch('nibe_lovelace._build_dynamic_injection', return_value={}) as mock_bdi, \
+             patch('nibe_lovelace._build_menu_dashboard_config',
+                   return_value={'views': [{'title': 'Menu', 'cards': []}]}) as mock_bmdc:
+            nl._setup_menu_dashboard(open_ws_fn, rw, debug_mode=False)
+
+        bdi_args = mock_bdi.call_args.args
+        self.assertIs(bdi_args[2], rw)                       # registry_watcher
+        self.assertIs(bdi_args[3], em.all_points_by_id)       # all_points_by_id
+        self.assertEqual(bdi_args[4], real_point_defaults)    # point_defaults
+
+        bmdc_args = mock_bmdc.call_args.args
+        self.assertIs(bmdc_args[1], rw)                       # registry_watcher
+        bmdc_kwargs = mock_bmdc.call_args.kwargs
+        self.assertEqual(bmdc_kwargs.get('debug_mode'), False)
+
     def test_ws_close_called_in_finally(self):
         """ws.close() is called in the finally block even when
         _setup_menu_dashboard_lovelace raises.
@@ -3704,3 +4697,360 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
 
         self.assertFalse(result)
         ws.close.assert_called()
+
+
+class TestWaitForRegistryStableDirect(unittest.TestCase):
+    """Direct tests of _wait_for_registry_stable, calling it standalone
+    (not through _setup_menu_dashboard) so the internal arithmetic
+    constants (_step, _prev_count sentinel, _stable_need, the +=
+    accumulation, and the >= boundary check) can be pinned precisely.
+
+    time.sleep is patched to a no-op so the loop spins through its
+    polling ticks instantly; entity_id_for's return value is controlled
+    per-call via a tick-counting closure so we know exactly how many
+    "sweeps" (polling ticks) occurred before the function returned.
+    """
+
+    def _counting_rw(self, num_points, resolved_at_tick):
+        """Return a MagicMock registry_watcher whose entity_id_for resolves
+        pid <= resolved_at_tick(sweep_index) on each call, and which tracks
+        the total number of entity_id_for() calls made.
+
+        sweep_index is 0-based: it increments once every num_points calls
+        (i.e. once per full iteration over available_menu_points, assuming
+        active_dynamic is empty so it contributes no calls).
+        """
+        state = {"n": 0}
+        rw = MagicMock()
+
+        def entity_id_for(pid):
+            sweep = state["n"] // num_points
+            state["n"] += 1
+            threshold = resolved_at_tick(sweep)
+            return f"sensor.nibe_{pid}" if pid <= threshold else None
+
+        rw.entity_id_for = entity_id_for
+        rw._state = state
+        return rw
+
+    def test_exact_call_count_pins_step_need_sentinel_and_boundary(self):
+        """Single point, always resolved, no dynamic points.
+
+        Real code: tick1 (sweep0) has current_count=1 vs _prev_count=-1 —
+        mismatch, so _prev_count is set to 1 and _stable_for stays 0.
+        From sweep1 onward every tick matches (count stays 1), so
+        _stable_for accumulates by _step=0.5 each tick. It needs to reach
+        _stable_need=3.0, i.e. 6 further matching ticks (0.5*6=3.0), and
+        the exit check uses >= so it fires the instant _stable_for hits
+        3.0 exactly (not one tick later). Total sweeps to exit = 1 + 6 = 7,
+        each sweep calling entity_id_for once (1 available point, 0
+        dynamic points) => exactly 7 calls.
+
+        This single exact count pins FOUR separate mutants at once:
+        - _step changed from 0.5 (mutant 2) shifts the tick cadence.
+        - _prev_count sentinel changed from -1 (mutant 8) makes sweep0
+          spuriously match immediately, losing a tick.
+        - _stable_for -= instead of += (mutant 32) would never reach 3.0
+          and the loop would run to the 60s timeout instead (many more
+          calls).
+        - >= changed to > (mutant 38) would require a 7th matching tick,
+          i.e. 8 sweeps instead of 7.
+        - _stable_need changed from 3.0 (mutant 13) would need a
+          different number of matching ticks (e.g. 4.0 needs 8 ticks).
+        """
+        available = {1}
+        rw = self._counting_rw(num_points=1, resolved_at_tick=lambda sweep: 1)
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"):
+            nl._wait_for_registry_stable(rw, available, set())
+
+        self.assertEqual(rw._state["n"], 7)
+
+    def test_current_count_none_causes_premature_spurious_stability(self):
+        """current_count set to None (instead of menu_resolved+dyn_resolved,
+        mutant 28) makes every tick after the first spuriously "equal"
+        (None == None is always True), even while the real resolved count
+        is still genuinely climbing wave-by-wave. This lets the loop exit
+        far earlier than it should, as soon as the (unrelated,
+        still-correctly-computed) menu_complete threshold is crossed.
+
+        Ten menu points resolve one-by-one across sweeps: sweep0 resolves
+        pid<=1, sweep1 resolves pid<=2, ..., sweep9+ resolves all 10 (then
+        plateaus).
+
+        Real code: current_count keeps changing every tick until the
+        plateau at sweep9 (count=10), then needs 6 more matching ticks
+        (sweeps 10-15) to reach _stable_for=3.0, exiting after sweep15
+        (16 sweeps total, 0-based indices 0..15) => 16*10 = 160 calls.
+
+        Mutant (current_count=None): sweep0 sets _prev_count=None
+        (mismatch vs -1). From sweep1 on, None==None always matches, so
+        _stable_for accumulates every tick regardless of the real
+        (climbing) count. By sweep6, _stable_for=3.0 AND the real
+        menu_resolved has reached 7/10 (>=70% threshold) simultaneously,
+        so it exits after sweep6 (7 sweeps total) => 7*10 = 70 calls —
+        drastically fewer than the real 160.
+        """
+        available = set(range(1, 11))
+        rw = self._counting_rw(
+            num_points=10,
+            resolved_at_tick=lambda sweep: min(sweep + 1, 10),
+        )
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"):
+            nl._wait_for_registry_stable(rw, available, set())
+
+        self.assertEqual(rw._state["n"], 160)
+
+    def test_menu_resolved_count_sum_reflected_exactly_in_log(self):
+        """The menu-resolved sum(1 for p in ... if entity_id_for(p)) must
+        count 1 per resolved point, not e.g. 2 (a constant-replacement
+        mutant on the `1`). With 4 points resolved out of 4 available and
+        0 dynamic points, the ideal-exit debug log must report "4/4 menu"
+        — a mutant that doubles the per-point increment would instead
+        compute and log 8/4.
+        """
+        available = {1, 2, 3, 4}
+        rw = self._counting_rw(num_points=4, resolved_at_tick=lambda sweep: 4)
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"), \
+             self.assertLogs("nibe.startup", level="DEBUG") as cm:
+            nl._wait_for_registry_stable(rw, available, set())
+
+        joined = "\n".join(cm.output)
+        self.assertIn("4/4 menu", joined)
+        self.assertIn("0/0 dynamic", joined)
+
+    def test_dyn_resolved_count_sum_reflected_exactly_in_log(self):
+        """Same as above but for the dynamic-point sum: 2 active dynamic
+        points, both resolved, must log "2/2 dynamic" — not a doubled
+        (4/2) or halved count from a mutated increment constant.
+        """
+        available = {1}
+
+        state = {"n": 0}
+        rw = MagicMock()
+
+        def entity_id_for(pid):
+            state["n"] += 1
+            # Both the single menu point and both dynamic points always
+            # resolve, so the loop is stable from the very first repeated
+            # tick.
+            return f"sensor.nibe_{pid}"
+
+        rw.entity_id_for = entity_id_for
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"), \
+             self.assertLogs("nibe.startup", level="DEBUG") as cm:
+            nl._wait_for_registry_stable(rw, available, {101, 102})
+
+        joined = "\n".join(cm.output)
+        self.assertIn("1/1 menu", joined)
+        self.assertIn("2/2 dynamic", joined)
+
+    def test_timeout_path_exact_call_count_pins_limit_and_waited_and_boundary(self):
+        """Nothing ever resolves (menu_resolved stays 0, so the
+        `menu_resolved > 0` exit guard never passes) — the loop must run
+        all the way to the 60s `_limit` and fall through to the
+        while/else timeout branch.
+
+        With _step=0.5 and _limit=60.0 starting from _waited=0.0, the
+        loop body runs while the pre-increment _waited < 60.0, i.e. for
+        waited values 0.0, 0.5, ..., 59.5 — exactly 120 iterations, each
+        making exactly one entity_id_for() call (1 available point, 0
+        dynamic points).
+
+        After the loop, the timeout warning branch itself makes one more
+        entity_id_for() call per available menu point (its own
+        independent sum() over available_menu_points; active_dynamic is
+        empty here so it contributes no extra calls) — so the total is
+        120 + 1 = 121.
+
+        This exact count of 121 pins three independent mutants:
+        - _limit changed from 60.0 (e.g. to 61.0) extends the loop to
+          122 iterations (123 total).
+        - _waited initialised to 1.0 instead of 0.0 shortens the loop to
+          118 iterations (119 total).
+        - `_waited < _limit` changed to `<=` admits one extra iteration
+          at the boundary (waited==60.0 exactly), giving 121 loop
+          iterations (122 total).
+
+        Also pins time.sleep being called with the real _step (0.5), not
+        a mutated/None argument — irrelevant to the mocked sleep's
+        behaviour, but still an observable call argument.
+        """
+        available = {1}
+        state = {"n": 0}
+        rw = MagicMock()
+
+        def entity_id_for(pid):
+            state["n"] += 1
+            return None  # never resolves
+
+        rw.entity_id_for = entity_id_for
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep") as mock_sleep:
+            nl._wait_for_registry_stable(rw, available, set())
+
+        self.assertEqual(state["n"], 121)
+        mock_sleep.assert_called_with(0.5)
+
+    def test_timeout_warning_log_reflects_real_sums_not_doubled_or_none_arg(self):
+        """When the loop times out, the final warning log recomputes the
+        menu/dynamic resolved counts via its own independent sum()
+        expressions (separate from the main-loop computation). These
+        must count 1 per resolved point using the real point id — not a
+        doubled increment, and not entity_id_for(None) in place of the
+        real point id.
+
+        Menu points 1/2/3 are available but only point 1 ever resolves
+        (1/3 = 33%, permanently below the 70% completeness threshold),
+        so menu_complete is always False and the loop can never exit
+        early via either the ideal-exit or 8s-more branches — it must
+        run to the 60s timeout and hit the warning log. Dynamic point
+        101 resolves (fully), so the dynamic sum is real/nonzero too,
+        making a doubled-multiplier mutant on that sum observable as
+        well (2/1 instead of the real 1/1).
+        """
+        available = {1, 2, 3}
+        active_dynamic = {101}
+        resolved = {1, 101}
+
+        rw = MagicMock()
+        rw.entity_id_for = lambda pid: f"sensor.nibe_{pid}" if pid in resolved else None
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"), \
+             self.assertLogs("nibe.startup", level="WARNING") as cm:
+            nl._wait_for_registry_stable(rw, available, active_dynamic)
+
+        joined = "\n".join(cm.output)
+        self.assertIn("timed out", joined)
+        self.assertIn("1/3 menu", joined)
+        self.assertIn("1/1 dynamic", joined)
+
+    def test_dyn_resolved_arithmetic_and_pid_argument_gate_ideal_exit(self):
+        """current_count must be menu_resolved + dyn_resolved (not a
+        subtraction), and the dynamic sum must call
+        registry_watcher.entity_id_for(p) with the real point id (not
+        None) — both feed into the `dyn_resolved == len(active_dynamic)`
+        check that gates the fast ideal-exit path vs. the slower
+        8-second-more fallback path.
+
+        Setup: 1 menu point (always resolved) + 2 dynamic points (both
+        always resolved, constantly). Real current_count = 1+2 = 3
+        (constant), which never collides with the initial _prev_count
+        sentinel (-1), so the loop takes the ideal-exit path as soon as
+        stability is reached: mismatch at sweep 0 (establishing
+        _prev_count=3), then 6 matching sweeps (1-6) to reach
+        _stable_for=3.0, exiting at sweep 6 (7 sweeps total, 0-indexed
+        0..6) => 7 * 3 = 21 entity_id_for() calls.
+
+        A mutant computing current_count = menu_resolved - dyn_resolved
+        gets 1-2 = -1 constant — which DOES collide with the -1 sentinel
+        at sweep 0, causing a spurious immediate "match" one full tick
+        early and reaching stability at sweep 5 instead (6 sweeps total)
+        => 6 * 3 = 18 calls, distinguishably fewer than 21.
+
+        A mutant passing None instead of the real pid into
+        entity_id_for() for the dynamic sum would make dyn_resolved
+        always 0 (never matching len(active_dynamic)=2), which blocks
+        the ideal-exit path entirely and forces the much slower 8-second
+        fallback (needing _stable_for>=8.0), producing a very different
+        call count.
+        """
+        available = {1}
+        active_dynamic = {101, 102}
+        resolved = {1, 101, 102}
+
+        rw = MagicMock()
+        state = {"n": 0}
+
+        def entity_id_for(pid):
+            state["n"] += 1
+            return f"sensor.nibe_{pid}" if pid in resolved else None
+
+        rw.entity_id_for = entity_id_for
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"):
+            nl._wait_for_registry_stable(rw, available, active_dynamic)
+
+        self.assertEqual(state["n"], 21)
+
+    def test_menu_complete_threshold_boundary_uses_greater_or_equal(self):
+        """menu_complete = menu_resolved >= len(available) * 0.70 must use
+        >=, not >, at the exact boundary.
+
+        10 available points, exactly 7 resolved (constantly) = exactly
+        70% = the threshold itself. With >=, 7 >= 7.0 is True and the
+        loop takes the ideal-exit path once stable: mismatch at sweep 0,
+        then 6 matching sweeps (1-6), exiting at sweep 6 (7 sweeps total)
+        => 7 * 10 = 70 calls (0 dynamic points).
+
+        A mutant using > instead of >= would find 7 > 7.0 False forever,
+        blocking both exit paths permanently and forcing the full 60s
+        timeout (120 sweeps => 1200 calls) — drastically different.
+        """
+        available = set(range(1, 11))
+        resolved = {1, 2, 3, 4, 5, 6, 7}
+
+        rw = MagicMock()
+        state = {"n": 0}
+
+        def entity_id_for(pid):
+            state["n"] += 1
+            return f"sensor.nibe_{pid}" if pid in resolved else None
+
+        rw.entity_id_for = entity_id_for
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"):
+            nl._wait_for_registry_stable(rw, available, set())
+
+        self.assertEqual(state["n"], 70)
+
+    def test_eight_second_fallback_boundary_uses_greater_or_equal_eight(self):
+        """The 8-second-more fallback (`if _stable_for >= 8.0`) must fire
+        the instant _stable_for reaches 8.0, not require it to exceed 8.0
+        (mutant: > 8.0) or reach a different threshold like 9.0 (mutant:
+        >= 9.0).
+
+        1 menu point (always resolved, so menu_complete is trivially
+        satisfied) + 1 dynamic point that never resolves, so the ideal
+        exit (dyn_resolved == len(active_dynamic)) never fires and the
+        loop must fall into the 8s-fallback branch.
+
+        current_count = 1 (menu) + 0 (dyn) is constant from the start:
+        mismatch at sweep 0 (establishing _prev_count=1), then matching
+        sweeps accumulate _stable_for by 0.5 each. _stable_for first
+        reaches exactly 8.0 after 16 matching sweeps (sweeps 1-16),
+        i.e. at sweep 16 (17 sweeps total, 0-indexed 0..16)
+        => 17 * 2 = 34 calls.
+
+        With > 8.0 the loop needs one more matching sweep (18 sweeps
+        total => 36 calls). With >= 9.0 it needs 18 matching sweeps
+        (19 sweeps total => 38 calls). Both differ from the real 34.
+        """
+        available = {1}
+        active_dynamic = {101}
+
+        rw = MagicMock()
+        state = {"n": 0}
+
+        def entity_id_for(pid):
+            state["n"] += 1
+            return "sensor.nibe_1" if pid == 1 else None
+
+        rw.entity_id_for = entity_id_for
+
+        import nibe_lovelace as nl
+        with patch("nibe_lovelace.time.sleep"):
+            nl._wait_for_registry_stable(rw, available, active_dynamic)
+
+        self.assertEqual(state["n"], 34)

@@ -19,9 +19,12 @@ Public surface
 DynamicPointEntry           — dataclass, one row in the table
 DynamicPointMap             — the table itself; load/save, lookup, update
 
-The module has NO I/O of its own — all persistence calls are delegated to
-the caller (EntityManager).  The only external imports are from the standard
-library and nibe_utils.
+The table's data model and mutation logic are pure (``serialise()`` /
+``deserialise()``); ``to_file()`` / ``from_file()`` are the only I/O in this
+module and are thin, self-contained wrappers around ``json`` + ``os.replace``
+for atomic persistence — callers may use them directly or serialise/
+deserialise themselves and handle storage elsewhere. The only external
+imports are from the standard library and nibe_utils.
 """
 
 import json
@@ -128,8 +131,8 @@ class DynamicPointEntry:
             point_id                = int(d['point_id']),
             title                   = str(d.get('title', '')),
             entity_type             = str(d.get('entity_type', 'switch')),
-            processed_values        = set(int(v) for v in d.get('processed_values', [])),
-            unprocessed_values      = set(int(v) for v in d.get('unprocessed_values', [])),
+            processed_values        = {int(v) for v in d.get('processed_values', [])},
+            unprocessed_values      = {int(v) for v in d.get('unprocessed_values', [])},
             is_controlling          = d.get('is_controlling'),
             dynamic_points_by_value = {
                 int(k): list(v)
@@ -322,6 +325,24 @@ class DynamicPointMap:
                 entry.firmware_removed = False
                 log.debug("DynamicPointMap: point %d restored (reappeared in bulk)", point_id)  # pragma: no mutate
 
+    def mark_absent_as_firmware_removed(self, bulk_point_ids: set[int]) -> set[int]:
+        """Mark every known point absent from bulk_point_ids as firmware_removed.
+
+        Symmetric to restore_from_bulk: when a tracked switch/select's
+        point_id is no longer present in the firmware's bulk fetch response,
+        it has been removed by a firmware update — suppress future
+        learning-mode probes on it. Already-removed entries are left as-is.
+
+        Returns the set of point_ids newly marked (for logging).
+        """
+        newly_marked = {
+            point_id for point_id, entry in self._table.items()
+            if point_id not in bulk_point_ids and not entry.firmware_removed
+        }
+        for point_id in newly_marked:
+            self.mark_firmware_removed(point_id)
+        return newly_marked
+
     # ------------------------------------------------------------------
     # Recording learning outcomes
     # ------------------------------------------------------------------
@@ -485,7 +506,7 @@ class DynamicPointMap:
     def from_file(self, path: str = _FILE_FALLBACK) -> int:
         """Load the table from a JSON file.  Returns number of entries loaded."""
         try:
-            with open(path, 'r', encoding='utf-8') as f:  # pragma: no mutate
+            with open(path, encoding='utf-8') as f:  # pragma: no mutate
                 data = f.read()
             count = self.deserialise(data)
             log.info("DynamicPointMap: loaded %d entries from file %s", count, path)  # pragma: no mutate

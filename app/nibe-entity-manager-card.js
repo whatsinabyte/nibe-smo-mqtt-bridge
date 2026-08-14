@@ -110,6 +110,7 @@ class NibeEntityManager extends HTMLElement {
     this.mqttSubscriptions = [];
     this.changelog = [];
     this.changelogCap = null;  // set by bridge via total_entries in changelog payload
+    this._lastChangelogSeq = null;  // last-applied _seq — see handleChangelogHistoryMessage
     this.snapshots = [];       // list of snapshot objects from nibe/browser/snapshots
     this.appliedMode = '';     // current applied mode from nibe/browser/applied_mode
     this.unreadChanges = 0;
@@ -1616,6 +1617,62 @@ class NibeEntityManager extends HTMLElement {
    *
    * @param {Object} msg - MQTT message with topic and payload fields.
    */
+  /**
+   * A changelog "added"/"removed" item is only trusted if it is a plain
+   * object with a numeric id — a null or malformed item here would
+   * otherwise propagate to _renderChangelogContent and throw on `.id`
+   * access, silently swallowing the entire render via the outer try/catch.
+   * Extracted as a standalone, side-effect-free predicate so it can be
+   * tested directly against the shipped file rather than a hand-copied
+   * mirror of this logic.
+   */
+  static _isValidChangelogItem(e) {
+    return Boolean(e) && typeof e === 'object' && typeof e.id === 'number';
+  }
+
+  /**
+   * True if an incoming changelog payload's _seq is stale relative to the
+   * last-applied one — e.g. a retained broker replay racing with a live
+   * update after reconnect. See docs/card-api.md's documented _seq
+   * contract. Extracted as a standalone predicate for the same testability
+   * reason as _isValidChangelogItem above.
+   */
+  static _isStaleChangelogSeq(seq, lastSeq) {
+    return typeof seq === 'number' && lastSeq !== null && seq <= lastSeq;
+  }
+
+  /**
+   * Build a sanitised changelog entry from a raw server entry, dropping
+   * malformed added/removed items. Returns null if the entry itself isn't
+   * an object, or has neither added nor removed items after filtering —
+   * callers should skip null results. Pure aside from reading
+   * this.formatDateTimeHA, so it's testable without a live DOM/MQTT stack.
+   */
+  _cleanChangelogEntry(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+
+    const cleanEntry = {
+      timestamp:     entry.timestamp || Date.now() / 1000,
+      iso_timestamp: entry.iso_timestamp || this.formatDateTimeHA(new Date((entry.timestamp || Date.now() / 1000) * 1000)),
+      added:         Array.isArray(entry.added)
+                       ? entry.added.filter(NibeEntityManager._isValidChangelogItem)
+                       : [],
+      removed:       Array.isArray(entry.removed)
+                       ? entry.removed.filter(NibeEntityManager._isValidChangelogItem)
+                       : [],
+      id:            entry.id || `change_${Date.now()}`,
+      unread:        Boolean(entry.unread),
+      // source: 'firmware' = dynamic appear/disappear
+      //         'ha_disabled' = user disabled via HA cog
+      source:        entry.source || 'firmware',
+      // triggered_by: {id, title} of the controlling point whose write
+      // caused the scan, or null for startup / periodic poll changes
+      triggered_by:  entry.triggered_by || null,
+    };
+
+    return (cleanEntry.added.length > 0 || cleanEntry.removed.length > 0) ? cleanEntry : null;
+  }
+
   async handleChangelogHistoryMessage(msg) {
     try {
       if (!msg.payload) {
@@ -1625,38 +1682,27 @@ class NibeEntityManager extends HTMLElement {
 
       const jsonStr = await this._decompressPayload(msg.payload);
       const data    = JSON.parse(jsonStr);
-      
+
+      // Skip a stale retained message that arrives after a fresher one —
+      // e.g. a broker replay on reconnect racing with a live update.
+      if (NibeEntityManager._isStaleChangelogSeq(data._seq, this._lastChangelogSeq)) {
+        return;
+      }
+
       if (data.history && Array.isArray(data.history)) {
         const cleanHistory = [];
-        
-        for (const entry of data.history) {
-          if (entry && typeof entry === 'object') {
-            const cleanEntry = {
-              timestamp:     entry.timestamp || Date.now() / 1000,
-              iso_timestamp: entry.iso_timestamp || this.formatDateTimeHA(new Date((entry.timestamp || Date.now() / 1000) * 1000)),
-              added:         Array.isArray(entry.added)
-                               ? entry.added.filter(e => e && typeof e === 'object' && typeof e.id === 'number')
-                               : [],
-              removed:       Array.isArray(entry.removed)
-                               ? entry.removed.filter(e => e && typeof e === 'object' && typeof e.id === 'number')
-                               : [],
-              id:            entry.id || `change_${Date.now()}`,
-              unread:        Boolean(entry.unread),
-              // source: 'firmware' = dynamic appear/disappear
-              //         'ha_disabled' = user disabled via HA cog
-              source:        entry.source || 'firmware',
-              // triggered_by: {id, title} of the controlling point whose write
-              // caused the scan, or null for startup / periodic poll changes
-              triggered_by:  entry.triggered_by || null,
-            };
 
-            if (cleanEntry.added.length > 0 || cleanEntry.removed.length > 0) {
-              cleanHistory.push(cleanEntry);
-            }
+        for (const entry of data.history) {
+          const cleanEntry = this._cleanChangelogEntry(entry);
+          if (cleanEntry) {
+            cleanHistory.push(cleanEntry);
           }
         }
 
         this.changelog = cleanHistory;
+        if (typeof data._seq === 'number') {
+          this._lastChangelogSeq = data._seq;
+        }
 
         if (typeof data.unread_count === 'number') {
           this.unreadChanges = data.unread_count;
@@ -1917,6 +1963,37 @@ class NibeEntityManager extends HTMLElement {
    *
    * @param {number[]} pointIds - Array of Nibe variableId values to enable.
    */
+  /**
+   * Build the toast (message, type) for a bulk enable/disable operation
+   * outcome. Pure and side-effect-free so it's testable directly against
+   * the shipped file without simulating _hass.callService/setTimeout —
+   * the three-way success/partial/total-failure branching (and singular vs.
+   * plural wording) is exactly the part that's easy to get subtly wrong.
+   *
+   * @param {string} verb - Past tense, e.g. 'Enabled' / 'Disabled'.
+   * @param {string} verbInf - Infinitive, e.g. 'enable' / 'disable'.
+   * @param {number} succeeded
+   * @param {number} total
+   */
+  static _formatBulkOutcomeToast(verb, verbInf, succeeded, total) {
+    if (succeeded === total) {
+      return {
+        message: `${verb} ${succeeded} ${succeeded === 1 ? 'entity' : 'entities'}`,
+        type: 'success',
+      };
+    } else if (succeeded > 0) {
+      return {
+        message: `${verb} ${succeeded} of ${total} — ${total - succeeded} failed`,
+        type: 'error',
+      };
+    } else {
+      return {
+        message: `Failed to ${verbInf} ${total} ${total === 1 ? 'entity' : 'entities'}`,
+        type: 'error',
+      };
+    }
+  }
+
   async enableEntities(pointIds) {
     if (!pointIds.length || !this._hass) return;
 
@@ -1950,14 +2027,10 @@ class NibeEntityManager extends HTMLElement {
     // rather than the stale optimistic values from the failed points.
     if (anyFailed) this.updateTable();
 
-    const total = pointIds.length;
-    if (succeeded === total) {
-      this.showToast(`Enabled ${succeeded} ${succeeded === 1 ? 'entity' : 'entities'}`, 'success');
-    } else if (succeeded > 0) {
-      this.showToast(`Enabled ${succeeded} of ${total} — ${total - succeeded} failed`, 'error');
-    } else {
-      this.showToast(`Failed to enable ${total} ${total === 1 ? 'entity' : 'entities'}`, 'error');
-    }
+    const { message, type } = NibeEntityManager._formatBulkOutcomeToast(
+      'Enabled', 'enable', succeeded, pointIds.length
+    );
+    this.showToast(message, type);
     this.clearSelection();
   }
 
@@ -1999,14 +2072,10 @@ class NibeEntityManager extends HTMLElement {
 
     if (anyFailed) this.updateTable();
 
-    const total = pointIds.length;
-    if (succeeded === total) {
-      this.showToast(`Disabled ${succeeded} ${succeeded === 1 ? 'entity' : 'entities'}`, 'success');
-    } else if (succeeded > 0) {
-      this.showToast(`Disabled ${succeeded} of ${total} — ${total - succeeded} failed`, 'error');
-    } else {
-      this.showToast(`Failed to disable ${total} ${total === 1 ? 'entity' : 'entities'}`, 'error');
-    }
+    const { message, type } = NibeEntityManager._formatBulkOutcomeToast(
+      'Disabled', 'disable', succeeded, pointIds.length
+    );
+    this.showToast(message, type);
     this.clearSelection();
   }
 
@@ -2207,7 +2276,7 @@ class NibeEntityManager extends HTMLElement {
     }
     
     tbody.innerHTML = pageEntities.map(entity => `
-      <tr data-id="${entity.id}">
+      <tr data-id="${entity.id}" tabindex="0" role="button" aria-label="View details for ${this._esc(entity.title)}">
         <td>
           <input type="checkbox" class="checkbox entity-checkbox" 
                 ${this.selectedIds.has(entity.id) ? 'checked' : ''}
@@ -2216,9 +2285,9 @@ class NibeEntityManager extends HTMLElement {
         <td style="font-family: monospace; font-weight: var(--ha-font-weight-bold, 600);">${entity.id}</td>
         <td>
           <div class="badge-group">
-            <span class="badge badge-${entity.type}"
-                  title="Entity type: ${TYPE_DISPLAY_NAMES[entity.type] || entity.type}">
-              ${TYPE_DISPLAY_NAMES[entity.type] || entity.type}
+            <span class="badge badge-${this._esc(entity.type)}"
+                  title="Entity type: ${this._esc(TYPE_DISPLAY_NAMES[entity.type] || entity.type)}">
+              ${this._esc(TYPE_DISPLAY_NAMES[entity.type] || entity.type)}
             </span>
             ${entity.writable
               ? '<span class="badge badge-writable" title="Writable: this entity sends commands directly to the controller">Writable</span>'
@@ -2289,7 +2358,7 @@ class NibeEntityManager extends HTMLElement {
     }
     
     container.innerHTML = pageEntities.map(entity => `
-      <div class="entity-card" data-id="${entity.id}">
+      <div class="entity-card" data-id="${entity.id}" tabindex="0" role="button" aria-label="View details for ${this._esc(entity.title)}">
         <!-- Row 1: Checkbox + ID + Title -->
         <div class="card-row">
           <div class="card-checkbox">
@@ -2304,7 +2373,7 @@ class NibeEntityManager extends HTMLElement {
         <!-- Row 2: Badges (Type + Status + Writable + Dynamic) -->
         <div class="card-row">
           <div class="card-badges">
-            <span class="badge badge-${entity.type}">${TYPE_DISPLAY_NAMES[entity.type] || entity.type.replace(/_/g, ' ')}</span>
+            <span class="badge badge-${this._esc(entity.type)}">${this._esc(TYPE_DISPLAY_NAMES[entity.type] || entity.type.replace(/_/g, ' '))}</span>
             <span class="badge badge-${entity.enabled ? 'enabled' : 'disabled'}">${entity.enabled ? 'Enabled' : 'Disabled'}</span>
             ${entity.writable ? '<span class="badge badge-writable">Writable</span>' : '<span class="badge" style="background:#607d8b;">Read-only</span>'}
             ${entity.isDynamic ? '<span class="badge" style="background:#9c27b0;">Dynamic</span>' : ''}
@@ -2387,6 +2456,16 @@ class NibeEntityManager extends HTMLElement {
           this.showEntityDetails(pointId);
         }
       });
+      // Keyboard equivalent of the row click above — row has
+      // tabindex="0" role="button" so it's keyboard-focusable.
+      row.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ')
+            && !e.target.matches('input, button') && !e.target.closest('button')) {
+          e.preventDefault();
+          const pointId = parseInt(row.dataset.id);
+          this.showEntityDetails(pointId);
+        }
+      });
     });
   }
 
@@ -2441,6 +2520,16 @@ class NibeEntityManager extends HTMLElement {
           this.showEntityDetails(pointId);
         }
       });
+      // Keyboard equivalent of the tap above — card has tabindex="0"
+      // role="button" so it's keyboard-focusable.
+      card.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ')
+            && !e.target.matches('input, button') && !e.target.closest('button')) {
+          e.preventDefault();
+          const pointId = parseInt(card.dataset.id);
+          this.showEntityDetails(pointId);
+        }
+      });
     });
   }
 
@@ -2471,8 +2560,26 @@ class NibeEntityManager extends HTMLElement {
   }
   
   /** Refresh pagination counters and enable/disable Prev/Next buttons. */
+  /**
+   * Clamp a page index into range for the current result count — a filter
+   * or MQTT-driven data change can shrink `total` out from under a
+   * currentPage that pointed at a later page, which would otherwise slice
+   * an empty page and show "No entities match filters" even though
+   * matching entities exist earlier. Extracted as a standalone, pure
+   * function for the same testability reason as _isValidChangelogItem.
+   */
+  static _clampPage(currentPage, total, pageSize) {
+    const totalPages = Math.ceil(total / pageSize);
+    if (totalPages === 0) return 0;
+    if (currentPage >= totalPages) return totalPages - 1;
+    return currentPage;
+  }
+
   updatePagination() {
     const total = this.filteredEntities.length;
+    this.currentPage = NibeEntityManager._clampPage(
+      this.currentPage, total, this.config.pageSize
+    );
     const totalPages = Math.ceil(total / this.config.pageSize);
     const start = Math.min(this.currentPage * this.config.pageSize + 1, total) || 0;
     const end = Math.min(start + this.config.pageSize - 1, total) || 0;
