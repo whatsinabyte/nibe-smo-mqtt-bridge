@@ -7,6 +7,7 @@ Shared fixtures are in conftest.py.
 """
 
 import json
+import signal
 import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
@@ -543,13 +544,15 @@ class TestManagementHandlers(unittest.TestCase):
         self.em        = _make_em()
         self.mqtt      = MagicMock()
         self.publisher = MagicMock()
-        self.executor  = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor      = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.test_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         ManagementCommandHandler(
-            self.mqtt, self.em, self.publisher, self.executor
+            self.mqtt, self.em, self.publisher, self.executor, self.test_executor
         ).register_all()
 
     def tearDown(self):
         self.executor.shutdown(wait=True)
+        self.test_executor.shutdown(wait=True)
 
     def _msg(self, payload: str):
         m = MagicMock()
@@ -570,14 +573,16 @@ class TestManagementHandlers(unittest.TestCase):
         handler = self._get_handler(topic_attr)
         handler(None, None, self._msg(payload))
         self.executor.shutdown(wait=True)
-        # Recreate executor so tearDown and subsequent _run calls work cleanly
+        self.test_executor.shutdown(wait=True)
+        # Recreate executors so tearDown and subsequent _run calls work cleanly
         import concurrent.futures
 
         from nibe_ha_integration import ManagementCommandHandler
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Re-register handlers against the new executor
+        self.executor      = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.test_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Re-register handlers against the new executors
         ManagementCommandHandler(
-            self.mqtt, self.em, self.publisher, self.executor
+            self.mqtt, self.em, self.publisher, self.executor, self.test_executor
         ).register_all()
 
     # ── aid mode handler ──────────────────────────────────────────────────────
@@ -756,9 +761,10 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_publishes_running_state_immediately(self):
         """Pressing the button must immediately publish 'running' before subprocess completes."""
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.Popen') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         from nibe_mqtt_publisher import MgmtTopic
         states = [p for t, p in self._run_tests_call_args()
@@ -767,9 +773,10 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_publishes_passed_on_success(self):
         """Exit code 0 → state topic must contain 'passed'."""
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.Popen') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         from nibe_mqtt_publisher import MgmtTopic
         states = [p for t, p in self._run_tests_call_args()
@@ -778,10 +785,11 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_publishes_failed_on_failure(self):
         """Non-zero exit code → state topic must contain 'failed'."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('nibe_ha_integration.notify_ha'):
             mock_run.return_value = MagicMock(
                 returncode=1, stdout='1 failed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1 failed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         from nibe_mqtt_publisher import MgmtTopic
         states = [p for t, p in self._run_tests_call_args()
@@ -790,30 +798,33 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_pass_does_not_send_notification(self):
         """On pass, no HA notification — result is on the sensor attributes tab."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('nibe_ha_integration.notify_ha') as mock_notify, \
              patch('nibe_ha_integration.dismiss_ha') as mock_dismiss:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         mock_notify.assert_not_called()
         mock_dismiss.assert_called_once()
 
     def test_run_tests_pass_dismisses_previous_failure_notification(self):
         """On pass, any previous failure notification must be dismissed."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('nibe_ha_integration.dismiss_ha') as mock_dismiss:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         mock_dismiss.assert_called_once()
 
     def test_run_tests_notification_title_shows_failed(self):
         """Notification title must include 'FAILED' on failure."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('nibe_ha_integration.notify_ha') as mock_notify:
             mock_run.return_value = MagicMock(
                 returncode=1, stdout='1 failed', stderr='')
+            mock_run.return_value.communicate.return_value = ('1 failed', '')
             self._run('RUN_TESTS_PRESS', '')
         _, kwargs = mock_notify.call_args
         self.assertIn('FAILED', kwargs.get('title', ''))
@@ -821,19 +832,36 @@ class TestManagementHandlers(unittest.TestCase):
     def test_run_tests_subprocess_timeout_handled_gracefully(self):
         """subprocess.TimeoutExpired must not propagate — state becomes 'timed_out'."""
         from nibe_mqtt_publisher import MgmtTopic
-        with patch('subprocess.run',
-                   side_effect=subprocess.TimeoutExpired('pytest', 3600)):
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),  # the 4-hour-limit wait
+            ('', ''),                                    # the post-kill() drain
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('os.getpgid', return_value=99999) as mock_getpgid, \
+             patch('os.killpg') as mock_killpg:
             self._run('RUN_TESTS_PRESS', '')
         states = [p for t, p in self._run_tests_call_args()
                   if t == MgmtTopic.RUN_TESTS_STATE]
         self.assertIn('timed_out', states)
+        # The whole process group is killed, not just the top-level PID —
+        # proc.kill() alone would leave orphaned pytest-xdist workers
+        # running, still holding the output pipes open.
+        mock_getpgid.assert_called_once_with(12345)
+        mock_killpg.assert_called_once_with(99999, signal.SIGKILL)
 
     def test_run_tests_timeout_notification_title(self):
         """TimeoutExpired must produce a '⏱ TIMED OUT' notification, not '❌ FAILED'."""
-        with patch('subprocess.run',
-                   side_effect=subprocess.TimeoutExpired('pytest', 3600)), \
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
              patch('nibe_ha_integration.notify_ha') as mock_notify, \
-             patch('builtins.open', MagicMock()):
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'):
             self._run('RUN_TESTS_PRESS', '')
         if mock_notify.called:
             kwargs = mock_notify.call_args.kwargs
@@ -844,7 +872,7 @@ class TestManagementHandlers(unittest.TestCase):
         """An unexpected exception launching the subprocess must set state='error',
         not 'failed' or 'timed_out'."""
         from nibe_mqtt_publisher import MgmtTopic
-        with patch('subprocess.run',
+        with patch('subprocess.Popen',
                    side_effect=OSError("no such file: python3")):
             self._run('RUN_TESTS_PRESS', '')
         states = [p for t, p in self._run_tests_call_args()
@@ -853,7 +881,7 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_launch_error_notification_title(self):
         """A launch error must produce a '⚠ LAUNCH ERROR' notification title."""
-        with patch('subprocess.run',
+        with patch('subprocess.Popen',
                    side_effect=OSError("no such file: python3")), \
              patch('nibe_ha_integration.notify_ha') as mock_notify, \
              patch('builtins.open', MagicMock()):
@@ -864,8 +892,9 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_uses_nightly_hypothesis_profile(self):
         """The subprocess must be launched with HYPOTHESIS_PROFILE=nightly."""
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.Popen') as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
         env = mock_run.call_args.kwargs.get('env', {})
         self.assertEqual(env.get('HYPOTHESIS_PROFILE'), 'nightly')
@@ -874,9 +903,10 @@ class TestManagementHandlers(unittest.TestCase):
         """pytest must be invoked with --html pointing to /homeassistant/www/ and
         Report is written to /homeassistant/www/nibe_test_report.html (assets in
         /homeassistant/www/assets/ — pytest-html 4.x multi-file output)."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', MagicMock()):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
         args = mock_run.call_args.args[0]
         html_args = [a for a in args if a.startswith('--html=')]
@@ -889,10 +919,11 @@ class TestManagementHandlers(unittest.TestCase):
         """If the HTML report is absent (e.g. pytest-html not installed in the
         Docker image), a clear WARNING must be emitted rather than silently
         swallowing the FileNotFoundError with a bare except."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', side_effect=FileNotFoundError), \
              patch('nibe_test_runner.log_commands') as mock_log:
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
         warning_msgs = [str(c) for c in mock_log.warning.call_args_list]
         self.assertTrue(
@@ -904,11 +935,12 @@ class TestManagementHandlers(unittest.TestCase):
     def test_run_tests_failure_notification_contains_report_link(self):
         """Failure notification must include a link to the HTML report so
         the user can open it directly from the HA notification bell."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', MagicMock()), \
              patch('nibe_ha_integration.notify_ha') as mock_notify:
             mock_run.return_value = MagicMock(
                 returncode=1, stdout='FAILED test_x', stderr='')
+            mock_run.return_value.communicate.return_value = ('FAILED test_x', '')
             self._run('RUN_TESTS_PRESS', '')
         self.assertTrue(mock_notify.called)
         message = mock_notify.call_args.kwargs.get('message', '')
@@ -919,9 +951,10 @@ class TestManagementHandlers(unittest.TestCase):
         import json as _json
 
         from nibe_mqtt_publisher import MgmtTopic
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.Popen') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
+            mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
             self._run('RUN_TESTS_PRESS', '')
         attrs_calls = [p for t, p in self._run_tests_call_args()
                        if t == MgmtTopic.RUN_TESTS_ATTRS]
@@ -935,9 +968,10 @@ class TestManagementHandlers(unittest.TestCase):
         """pytest must be invoked with --timeout=600 so that long-running
         nightly Hypothesis stateful tests (stateful_step_count=50) are not
         killed by pytest.ini's default timeout=300."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', MagicMock()):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
         args = mock_run.call_args.args[0]
         self.assertIn('--timeout=600', args)
@@ -945,14 +979,30 @@ class TestManagementHandlers(unittest.TestCase):
     def test_run_tests_subprocess_uses_xdist_auto(self):
         """pytest must be invoked with -n auto so xdist distributes tests
         across all available CPU cores (~4 on the ODROID-M1)."""
-        with patch('subprocess.run') as mock_run, \
+        with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', MagicMock()):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
         args = mock_run.call_args.args[0]
         self.assertIn('-n', args)
         n_idx = args.index('-n')
         self.assertEqual(args[n_idx + 1], 'auto')
+
+    def test_run_tests_subprocess_starts_new_session(self):
+        """The pytest subprocess must launch with start_new_session=True so
+        it becomes the leader of its own process group, separate from the
+        add-on's own group. Without this, abort_test_suite()'s
+        os.killpg(os.getpgid(proc.pid), ...) would target the wrong group
+        (or fail outright) — start_new_session is what makes killing the
+        whole pytest -n auto process tree (including xdist workers)
+        possible at all."""
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        self.assertTrue(mock_run.call_args.kwargs.get('start_new_session'))
 
     def test_run_tests_concurrent_trigger_ignored(self):
         """A second button press while a run is in flight must be silently
@@ -972,10 +1022,11 @@ class TestManagementHandlers(unittest.TestCase):
             handler = ManagementCommandHandler(em.mqtt, em, pub, exe)
             handler.register_all()
 
-            with patch('subprocess.run') as mock_run, \
+            with patch('subprocess.Popen') as mock_run, \
                  patch('builtins.open', MagicMock()):
                 mock_run.return_value = MagicMock(
                     returncode=0, stdout='2652 passed in 26m 0s', stderr='')
+                mock_run.return_value.communicate.return_value = ('2652 passed in 26m 0s', '')
 
                 # Simulate an in-flight run by pre-setting the flag
                 handler._test_running.set()
@@ -988,6 +1039,68 @@ class TestManagementHandlers(unittest.TestCase):
             mock_run.assert_not_called()
         finally:
             exe.shutdown(wait=False)
+
+    def test_run_tests_not_starved_by_saturated_mgmt_executor(self):
+        """run_test_suite must run on its own dedicated executor, not
+        mgmt_executor, so it can't be queued behind other blocking
+        management-command handlers.
+
+        Regression test: previously ManagementCommandHandler submitted
+        run_test_suite to the same fixed-size mgmt_executor used by every
+        other command handler. If both of mgmt_executor's workers were
+        already occupied by long-running handlers, the test-suite job would
+        sit queued indefinitely and never publish its 'running' MQTT state
+        — reproduced here by fully saturating a 2-worker mgmt_executor with
+        blocking handlers before triggering Run Test Suite on a *separate*
+        test_executor, and asserting the test run still starts immediately.
+        """
+        import concurrent.futures
+        import threading
+
+        from nibe_ha_integration import ManagementCommandHandler
+
+        em  = _make_em()
+        pub = MagicMock()
+        mgmt_exe = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        test_exe = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            handler = ManagementCommandHandler(em.mqtt, em, pub, mgmt_exe, test_exe)
+            handler.register_all()
+
+            # Saturate both mgmt_executor workers with blocking jobs that
+            # only release once the test below is done asserting.
+            release = threading.Event()
+            block_started = threading.Barrier(3, timeout=5)
+
+            def _block():
+                block_started.wait()
+                release.wait(timeout=5)
+
+            mgmt_exe.submit(_block)
+            mgmt_exe.submit(_block)
+
+            with patch('subprocess.Popen') as mock_run, \
+                 patch('builtins.open', MagicMock()):
+                mock_run.return_value = MagicMock(
+                    returncode=0, stdout='2652 passed in 26m 0s', stderr='')
+                mock_run.return_value.communicate.return_value = ('2652 passed in 26m 0s', '')
+
+                msg = MagicMock()
+                msg.payload = b''
+                handler._handle_run_tests(None, None, msg)
+
+                # Wait for the two blocking mgmt jobs to actually be running,
+                # proving mgmt_executor really is saturated at this point.
+                block_started.wait(timeout=5)
+
+                # The test run went to test_exe, not the saturated
+                # mgmt_exe, so it must complete promptly regardless.
+                test_exe.shutdown(wait=True, cancel_futures=False)
+                mock_run.assert_called_once()
+        finally:
+            release.set()
+            mgmt_exe.shutdown(wait=False)
+            test_exe.shutdown(wait=False)
 
 
 class TestRegistryWatcherEventHandling(unittest.TestCase):
@@ -2943,12 +3056,16 @@ class TestManagementRunTestsFailures(unittest.TestCase):
 
         self.publisher = MagicMock()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.test_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         # Register the management handlers; they will use self.em.mqtt (our mock)
-        ManagementCommandHandler(self.mqtt, self.em, self.publisher, self.executor).register_all()
+        ManagementCommandHandler(
+            self.mqtt, self.em, self.publisher, self.executor, self.test_executor
+        ).register_all()
 
     def tearDown(self):
         self.executor.shutdown(wait=True)
+        self.test_executor.shutdown(wait=True)
 
     def _get_handler(self):
         from nibe_mqtt_publisher import MgmtTopic
@@ -2965,19 +3082,27 @@ class TestManagementRunTestsFailures(unittest.TestCase):
 
     def test_subprocess_timeout(self):
         import subprocess
-        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired('pytest', 3600)):
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg') as mock_killpg:
             handler = self._get_handler()
             handler(None, None, self._msg(''))
-            self.executor.shutdown(wait=True)
+            self.test_executor.shutdown(wait=True)
             from nibe_mqtt_publisher import MgmtTopic
             states = [c.args[1] for c in self.mqtt.publish.call_args_list if c.args[0] == MgmtTopic.RUN_TESTS_STATE]
             self.assertIn('timed_out', states)
+            mock_killpg.assert_called_once_with(99999, signal.SIGKILL)
 
     def test_subprocess_generic_exception(self):
-        with patch('subprocess.run', side_effect=Exception('permission denied')):
+        with patch('subprocess.Popen', side_effect=Exception('permission denied')):
             handler = self._get_handler()
             handler(None, None, self._msg(''))
-            self.executor.shutdown(wait=True)
+            self.test_executor.shutdown(wait=True)
             from nibe_mqtt_publisher import MgmtTopic
             states = [c.args[1] for c in self.mqtt.publish.call_args_list if c.args[0] == MgmtTopic.RUN_TESTS_STATE]
             self.assertIn('error', states)
@@ -4054,13 +4179,15 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         self.mqtt      = MagicMock()
         self.em.mqtt   = self.mqtt
         self.publisher = MagicMock()
-        self.executor  = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor      = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.test_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         ManagementCommandHandler(
-            self.mqtt, self.em, self.publisher, self.executor
+            self.mqtt, self.em, self.publisher, self.executor, self.test_executor
         ).register_all()
 
     def tearDown(self):
         self.executor.shutdown(wait=True)
+        self.test_executor.shutdown(wait=True)
 
     def _get_handler(self):
         from nibe_mqtt_publisher import MgmtTopic
@@ -4076,23 +4203,35 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
 
     def _trigger_and_wait(self, returncode=0, stdout='',
                           open_side_effect=FileNotFoundError,
-                          patch_notify=True):
+                          patch_notify=True, report_exists=False):
         """Fire the handler, wait for completion, return all publish pairs.
 
         patch_notify=True (default) patches notify_ha and dismiss_ha to
         prevent live Supervisor calls during tests that don't need to inspect
         the notification content.  Pass patch_notify=False when the caller
         supplies its own patch.object(notify_ha) to capture the message.
+
+        report_exists=False (default) patches os.path.isfile so the summary
+        content doesn't depend on whether a report file happens to be sitting
+        at /homeassistant/www/nibe_test_report.html on whatever machine runs
+        this test — on a real deployment that path legitimately exists from
+        prior runs, which previously made report-dependent assertions here
+        pass or fail depending on environment rather than on this test's own
+        setup.
         """
         import concurrent.futures as _cf
         from contextlib import ExitStack
         proc = MagicMock(returncode=returncode, stdout=stdout, stderr='')
+        proc.communicate.return_value = (stdout, '')
         handler = self._get_handler()
         with ExitStack() as stack:
-            stack.enter_context(patch('subprocess.run', return_value=proc))
+            stack.enter_context(patch('subprocess.Popen', return_value=proc))
             if patch_notify:
                 stack.enter_context(patch('nibe_ha_integration.notify_ha'))
                 stack.enter_context(patch('nibe_ha_integration.dismiss_ha'))
+            stack.enter_context(patch('os.path.isfile', return_value=report_exists))
+            if report_exists:
+                stack.enter_context(patch('os.path.getsize', return_value=123456))
             # run_test_suite (and its HTML post-processing) lives in
             # nibe_test_runner.py, not nibe_ha_integration.py — patching the
             # wrong module's `open` silently no-ops, and the real
@@ -4105,9 +4244,9 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
                                       create=True))
             handler(None, None, self._msg())
             # Wait inside the patch context so the thread sees the mock
-            self.executor.shutdown(wait=True)
+            self.test_executor.shutdown(wait=True)
         # Recreate for tearDown
-        self.executor = _cf.ThreadPoolExecutor(max_workers=1)
+        self.test_executor = _cf.ThreadPoolExecutor(max_workers=1)
         return [(c.args[0], c.args[1])
                 for c in self.mqtt.publish.call_args_list]
 
@@ -4310,6 +4449,54 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         # Counts line preserved
         self.assertIn("2654 passed", summary)
 
+    def test_pass_summary_strips_report_line_regardless_of_dash_count(self):
+        """Regression test: pytest-html's report line doesn't always use the
+        exact '--- ' (3 dashes) prefix the noise filter originally matched
+        on — a real ODROID run produced a 4-dash line
+        ('---- Generated html report: ... ----') that leaked straight
+        through into the sensor summary because the old prefix check
+        required an exact match. The filter must strip this regardless of
+        how many dashes wrap it, and regardless of skipped-test 's' markers
+        in the progress-dot line (also previously not recognised as noise
+        and left in the summary alongside it)."""
+        output = (
+            "............................ssssssssssssssssssssssssssss................ [ 32%]\n"
+            "---- Generated html report: file:///homeassistant/www/nibe_test_report.html ----\n"
+            "3287 passed, 28 skipped, 19 subtests passed in 1641.49s (0:27:21)\n"
+        )
+        calls = self._trigger_and_wait(returncode=0, stdout=output, report_exists=True)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertNotIn("Generated html report", summary)
+        self.assertNotIn("ssssss", summary)
+        self.assertNotIn("[ 32%]", summary)
+        self.assertIn("3287 passed, 28 skipped", summary)
+
+    def test_pass_summary_includes_report_link_when_report_exists(self):
+        """On success, the summary must point the user at the HTML report
+        as an actual clickable Markdown link — [text](url) — not a bare
+        URL, with a note that it can be slow to load. Regression test: an
+        earlier version wrote 'Report: <url>' as plain text, which broke
+        clickability entirely (no markdown link syntax for the renderer to
+        turn into an anchor). Previously the only indication of the
+        report's location on success was the raw pytest-html stdout line,
+        which the noise filter was supposed to (and now does) strip out
+        entirely."""
+        calls = self._trigger_and_wait(
+            returncode=0, stdout="5 passed in 1.23s", report_exists=True
+        )
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        # _get_ha_base_url() is the real (uninjected) function here — with
+        # no SUPERVISOR_TOKEN set in the test environment it resolves to
+        # '' (and caches that at module level for the process lifetime),
+        # so the link is the bare relative path.
+        self.assertIn(
+            "[View full report](/local/nibe_test_report.html)",
+            summary,
+        )
+        self.assertIn("may take a moment to load", summary)
+
     # ── Elapsed time minutes formatting (line 959) ────────────────────────────
 
     def test_elapsed_over_60s_formats_as_minutes(self):
@@ -4432,7 +4619,8 @@ class TestRunTestSuiteOuterCrashRecovery(unittest.TestCase):
         notify_fn  = MagicMock()
         dismiss_fn = MagicMock(side_effect=RuntimeError('Supervisor API unreachable'))
         proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
-        with patch('subprocess.run', return_value=proc), \
+        proc.communicate.return_value = ('1 passed in 0.1s', '')
+        with patch('subprocess.Popen', return_value=proc), \
              self.assertLogs('nibe.commands', level='ERROR') as cm:
             run_test_suite(mqtt_client, notify_fn, dismiss_fn, lambda: 'http://ha', done_event)
         self.assertTrue(any('crashed unexpectedly' in msg for msg in cm.output))
@@ -4457,11 +4645,209 @@ class TestRunTestSuiteOuterCrashRecovery(unittest.TestCase):
         notify_fn  = MagicMock()
         dismiss_fn = MagicMock(side_effect=RuntimeError('Supervisor API unreachable'))
         proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
-        with patch('subprocess.run', return_value=proc), \
+        proc.communicate.return_value = ('1 passed in 0.1s', '')
+        with patch('subprocess.Popen', return_value=proc), \
              self.assertLogs('nibe.commands', level='ERROR') as cm:
             run_test_suite(mqtt_client, notify_fn, dismiss_fn, lambda: 'http://ha', done_event)  # must not raise
         self.assertTrue(any('Failed to publish crash state' in msg for msg in cm.output))
         self.assertFalse(done_event.is_set())
+
+
+class TestAbortTestSuite(unittest.TestCase):
+    """abort_test_suite() — lets the add-on's shutdown sequence kill an
+    in-flight pytest subprocess directly, rather than leaving Python's own
+    atexit hook for ThreadPoolExecutor to block process exit until that
+    subprocess finishes on its own (which can be 25-30+ minutes, far longer
+    than Docker's stop grace period — the container gets SIGKILLed before a
+    naturally-finishing wait would ever complete). Real regression coverage
+    for the fix, not just the surrounding wiring: this drives an actual
+    in-flight run_test_suite() call on a background thread, waits for it to
+    genuinely reach the blocked-in-communicate() state, then calls
+    abort_test_suite() and verifies the process *group* is killed (not just
+    the top-level PID — see abort_test_suite's docstring for why that
+    distinction matters with pytest-xdist) and the run thread unblocks and
+    finishes."""
+
+    def test_abort_kills_in_flight_subprocess_and_run_completes(self):
+        import threading
+        import time
+
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite, run_test_suite
+
+        # A real threading.Event drives the mock Popen's communicate(): the
+        # first call blocks (simulating the real subprocess still running)
+        # until the process group is killed, at which point a second call —
+        # matching run_test_suite's own kill()-then-drain sequence — returns
+        # output. This proves abort_test_suite() actually unblocks the run
+        # rather than the test just asserting the kill call was made in
+        # isolation.
+        killed = threading.Event()
+
+        def _communicate(timeout=None):
+            if not killed.is_set():
+                # Real subprocess.Popen.communicate() blocks until the
+                # process exits or the timeout elapses; here it blocks
+                # until the process group is killed, standing in for "the
+                # process is genuinely still running".
+                killed.wait(timeout=5)
+                if not killed.is_set():
+                    raise AssertionError(
+                        "communicate() was never unblocked by the kill — "
+                        "abort_test_suite() did not actually kill the process group"
+                    )
+            return ('aborted', '')
+
+        mock_proc = MagicMock(pid=12345, returncode=-9)
+        mock_proc.communicate.side_effect = _communicate
+        mock_proc.poll.return_value = None  # still running, from abort_test_suite's perspective
+
+        mqtt_client = MagicMock()
+        notify_fn = MagicMock()
+        dismiss_fn = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+
+        run_thread_exception = []
+
+        def _run():
+            try:
+                with patch('subprocess.Popen', return_value=mock_proc):
+                    run_test_suite(
+                        mqtt_client, notify_fn, dismiss_fn,
+                        lambda: 'http://ha.local', done_event,
+                    )
+            except Exception as exc:  # pragma: no cover — surfaced via assertion below
+                run_thread_exception.append(exc)
+
+        t = threading.Thread(target=_run)
+        t.start()
+        try:
+            # Wait for run_test_suite to actually reach the blocked
+            # communicate() call (i.e. nibe_test_runner._current_proc is
+            # set) before aborting — asserting this rather than sleeping a
+            # fixed guess keeps the test from being a race.
+            for _ in range(50):
+                if nibe_test_runner._current_proc is not None:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("run_test_suite never reached the in-flight state")
+
+            with patch('os.getpgid', return_value=99999) as mock_getpgid, \
+                 patch('os.killpg', side_effect=lambda *a: killed.set()) as mock_killpg:
+                abort_test_suite("test abort")
+                mock_getpgid.assert_called_once_with(12345)
+                mock_killpg.assert_called_once_with(99999, signal.SIGKILL)
+
+            t.join(timeout=5)
+            self.assertFalse(t.is_alive(), "run_test_suite did not unblock after abort")
+        finally:
+            killed.set()  # make sure the thread can't stay blocked even on failure
+            t.join(timeout=5)
+
+        self.assertEqual(run_thread_exception, [])
+        # abort_test_suite() must be a safe no-op once the run has finished.
+        self.assertIsNone(nibe_test_runner._current_proc)
+        abort_test_suite("second call after completion")
+
+        # The aborted run must be reported as 'aborted', not a misleading
+        # 'failed' (which the raw negative returncode -9 would otherwise
+        # classify it as) — and must not trigger a FAILED-looking HA
+        # notification, since no tests actually finished running.
+        from nibe_mqtt_publisher import MgmtTopic
+        states = [c.args[1] for c in mqtt_client.publish.call_args_list
+                  if c.args[0] == MgmtTopic.RUN_TESTS_STATE]
+        self.assertIn('aborted', states)
+        self.assertNotIn('failed', states)
+        notify_fn.assert_not_called()
+        dismiss_fn.assert_not_called()
+
+    def test_abort_reason_appears_in_published_summary(self):
+        """The aborted run's sensor summary must state plainly that it was
+        aborted and why — not attempt to parse the killed process's partial
+        stdout/stderr as if it were a real pass/fail result."""
+        import json as _json
+        import threading
+        import time
+
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite, run_test_suite
+
+        killed = threading.Event()
+
+        def _communicate(timeout=None):
+            if not killed.is_set():
+                killed.wait(timeout=5)
+            return ('garbage partial output', '')
+
+        mock_proc = MagicMock(pid=12345, returncode=-9)
+        mock_proc.communicate.side_effect = _communicate
+        mock_proc.poll.return_value = None
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+
+        def _run():
+            with patch('subprocess.Popen', return_value=mock_proc):
+                run_test_suite(
+                    mqtt_client, MagicMock(), MagicMock(),
+                    lambda: 'http://ha.local', done_event,
+                )
+
+        t = threading.Thread(target=_run)
+        t.start()
+        try:
+            for _ in range(50):
+                if nibe_test_runner._current_proc is not None:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("run_test_suite never reached the in-flight state")
+
+            with patch('os.getpgid', return_value=99999), \
+                 patch('os.killpg', side_effect=lambda *a: killed.set()):
+                abort_test_suite("add-on shutting down")
+
+            t.join(timeout=5)
+            self.assertFalse(t.is_alive())
+        finally:
+            killed.set()
+            t.join(timeout=5)
+
+        from nibe_mqtt_publisher import MgmtTopic
+        attrs_calls = [c.args[1] for c in mqtt_client.publish.call_args_list
+                       if c.args[0] == MgmtTopic.RUN_TESTS_ATTRS]
+        final = _json.loads(attrs_calls[-1])
+        self.assertEqual(final['status'], 'aborted')
+        self.assertIn('add-on shutting down', final['summary'])
+        self.assertNotIn('garbage partial output', final['summary'])
+
+    def test_abort_is_a_noop_when_no_run_is_in_flight(self):
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite
+        self.assertIsNone(nibe_test_runner._current_proc)
+        abort_test_suite("nothing running")  # must not raise
+
+    def test_abort_swallows_process_lookup_error_race(self):
+        """If the process exits on its own between abort_test_suite()'s
+        poll() check and the actual killpg() call, os.killpg() raises
+        ProcessLookupError (no such process/group) — that race must be
+        swallowed, not propagate and crash the shutdown sequence calling
+        this from generate_nibe_mqtt.py."""
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite
+
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None  # still running per poll()
+        nibe_test_runner._current_proc = mock_proc
+        try:
+            with patch('os.getpgid', return_value=99999), \
+                 patch('os.killpg', side_effect=ProcessLookupError):
+                abort_test_suite("race with natural exit")  # must not raise
+        finally:
+            nibe_test_runner._current_proc = None
 
 
 class TestRunTestSuiteMainPaths(unittest.TestCase):
@@ -4474,6 +4860,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
               subprocess_side_effect=None, notify_fn=None, dismiss_fn=None,
               get_base_url_fn=None):
         import threading
+        from contextlib import ExitStack
 
         from nibe_test_runner import run_test_suite
         mqtt_client = MagicMock()
@@ -4482,12 +4869,31 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         notify_fn = notify_fn if notify_fn is not None else MagicMock()
         dismiss_fn = dismiss_fn if dismiss_fn is not None else MagicMock()
         get_base_url_fn = get_base_url_fn or (lambda: 'http://ha.local:8123')
-        if subprocess_side_effect is not None:
-            patcher = patch('subprocess.run', side_effect=subprocess_side_effect)
-        else:
-            proc = MagicMock(returncode=proc_returncode, stdout=proc_stdout, stderr=proc_stderr)
-            patcher = patch('subprocess.run', return_value=proc)
-        with patcher:
+        with ExitStack() as stack:
+            if isinstance(subprocess_side_effect, subprocess.TimeoutExpired):
+                # A real subprocess.run(timeout=...)-style timeout is raised
+                # by .communicate(), not by Popen() construction itself —
+                # the process launches fine and only the *wait* times out.
+                # The Popen mock's constructor must succeed; only
+                # communicate() (and, after the kill, the follow-up drain
+                # call) needs to model that. The timeout path kills the
+                # whole process group via os.getpgid()/os.killpg() (not
+                # proc.kill() — see abort_test_suite's docstring for why),
+                # both of which must be patched here since proc.pid on a
+                # MagicMock isn't a real PID the OS calls could accept.
+                proc = MagicMock(pid=12345)
+                proc.communicate.side_effect = [subprocess_side_effect, ('', '')]
+                stack.enter_context(patch('subprocess.Popen', return_value=proc))
+                stack.enter_context(patch('os.getpgid', return_value=99999))
+                stack.enter_context(patch('os.killpg'))
+            elif subprocess_side_effect is not None:
+                stack.enter_context(
+                    patch('subprocess.Popen', side_effect=subprocess_side_effect)
+                )
+            else:
+                proc = MagicMock(returncode=proc_returncode, stdout=proc_stdout, stderr=proc_stderr)
+                proc.communicate.return_value = (proc_stdout, proc_stderr)
+                stack.enter_context(patch('subprocess.Popen', return_value=proc))
             run_test_suite(mqtt_client, notify_fn, dismiss_fn, get_base_url_fn, done_event)
         return mqtt_client, notify_fn, dismiss_fn, done_event
 
@@ -4572,6 +4978,45 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         self.assertEqual(attrs['status'], 'timed_out')
         self.assertEqual(attrs['exit_code'], -1)
 
+    def test_python_exe_falls_back_to_shutil_which_when_sys_executable_empty(self):
+        """Regression test: on some Alpine/musl container setups
+        sys.executable comes back as '' rather than the interpreter's real
+        path. The old fallback ('python3' passed straight to subprocess.run)
+        depended on the *subprocess's* PATH resolution succeeding, which
+        isn't guaranteed — a real run on the ODROID hit exactly this and
+        failed with "no such file: python3". The interpreter path must
+        instead be resolved via shutil.which() in this process first."""
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='', stderr='')
+        proc.communicate.return_value = ('', '')
+        with patch('sys.executable', ''), \
+             patch('shutil.which', return_value='/usr/bin/python3') as mock_which, \
+             patch('subprocess.Popen', return_value=proc) as mock_run:
+            run_test_suite(
+                mqtt_client, MagicMock(), MagicMock(),
+                lambda: 'http://ha.local', done_event,
+            )
+        mock_which.assert_any_call('python3')
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], '/usr/bin/python3')
+
+    def test_launch_error_message_includes_attempted_python_exe(self):
+        """A launch failure's notification body must name the interpreter
+        path that was actually attempted, so a "no such file" error is
+        diagnosable from the notification alone rather than requiring log
+        access to figure out what path was even tried."""
+        with patch('sys.executable', '/usr/bin/python3'):
+            mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+                subprocess_side_effect=FileNotFoundError("no such file: python3"),
+            )
+        kwargs = notify_fn.call_args.kwargs
+        self.assertIn('/usr/bin/python3', kwargs['message'])
+
     def test_launch_error_sets_error_status_and_notifies_with_exception_text(self):
         from nibe_mqtt_publisher import MgmtTopic
         mqtt_client, notify_fn, dismiss_fn, _ = self._run(
@@ -4626,9 +5071,11 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         )
         message = notify_fn.call_args.kwargs['message']
         self.assertLess(len(message), len(long_output))  # genuinely truncated
-        self.assertLess(len(message), 2200)               # roughly bounded, not runaway
+        self.assertLess(len(message), 2300)               # roughly bounded, not runaway
         self.assertTrue(message.rstrip().endswith(
-            '[View full report](http://ha.local:8123/local/nibe_test_report.html)'
+            '[View full report](http://ha.local:8123/local/nibe_test_report.html) '
+            '(right-click → "Open link in new tab" — left-click opens the HA '
+            'dashboard instead)'
         ))
 
     def test_done_event_cleared_on_success(self):
