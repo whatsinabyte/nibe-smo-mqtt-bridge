@@ -1,0 +1,147 @@
+configuration:
+  nibe_host:
+    name: Styringsenhetens IP-adresse
+    description: >-
+      IP-adresse eller vertsnavn for din Nibe S-series styringsenhet på
+      det lokale nettverket. Det anbefales sterkt å tildele en statisk
+      IP-adresse via ruteren din.
+  nibe_port:
+    name: API-port for styringsenheten
+    description: >-
+      HTTPS-port for styringsenhetens lokale REST-API. Standardverdien
+      8443 er riktig for alle S-series-produkter og bør normalt ikke
+      endres.
+  nibe_username:
+    name: API-brukernavn for styringsenheten
+    description: >-
+      Brukernavn angitt i styringsenhetens Service-meny (meny 7.5.15).
+      Må stemme nøyaktig overens med verdien konfigurert på
+      styringsenheten.
+  nibe_password:
+    name: API-passord for styringsenheten
+    description: >-
+      Passord angitt i styringsenhetens Service-meny (meny 7.5.15).
+      Skiller mellom store og små bokstaver.
+  mqtt_host:
+    name: MQTT-brokerens vertsnavn
+    description: >-
+      Vertsnavn eller IP-adresse for MQTT-brokeren din. Standardverdien
+      "core-mosquitto" fungerer med den offisielle Mosquitto-tillegget.
+      Bruk en IP-adresse eller vertsnavn for andre brokere.
+  mqtt_port:
+    name: MQTT-brokerens port
+    description: >-
+      TCP-port for MQTT-brokeren din. Standardverdien 1883 er den vanlige
+      ukrypterte MQTT-porten. Hvis du aktiverer "MQTT TLS" nedenfor, endre
+      denna til 8883 (den vanlige krypterte porten som brukes av
+      Mosquitto).
+  mqtt_username:
+    name: MQTT-brukernavn
+    description: >-
+      Brukernavn for autentisering mot MQTT-brokeren. La stå tomt hvis
+      brokeren din ikke krever autentisering.
+  mqtt_password:
+    name: MQTT-passord
+    description: >-
+      Passord for autentisering mot MQTT-brokeren. La stå tomt hvis
+      brokeren din ikke krever autentisering.
+  device_name:
+    name: Enhetsnavn
+    description: >-
+      Hvordan styringsenheten vises i Home Assistant. Standardverdien er
+      "Nibe SMO S40", men du kan endre dette til å matche din faktiske
+      maskinvare (f.eks. "Nibe S1155" eller "Nibe VVM S320").
+  poll_interval:
+    name: Avspørringsintervall
+    description: >-
+      Hvor ofte alle datapunkter hentes fra styringsenheten, i sekunder.
+      30 sekunder anbefales. Styringsenheten er en innebygd enhet —
+      REST-APIet er sekundært til hovedoppgaven med å styre varmepumpen
+      din. En omstart kreves etter at denne innstillingen er endret.
+  mode:
+    name: Entitetsmodus
+    description: >-
+      Hvilket sett med entiteter broen eksponerer: "essential" omfatter
+      kjernetemperaturer, varmtvannsstatus, energitotaler og
+      grunnleggende børverdier — et godt utgangspunkt for enhver
+      installasjon. "monitoring" legger til tur-/returledninger,
+      kompressorstatus og effektivitetsindikatorer. "advanced" legger til
+      hele kjølekretsen og finjusteringsregistre. "menus" eksponerer
+      hvert punkt som trengs for Nibe-menyenes dashbord og bygger dette
+      dashbordet. "all" eksponerer hvert oppdaget punkt; "none"
+      eksponerer ingenting før du aktiverer entiteter manuelt. Dette
+      brukes ved oppstart — å endre det krever en omstart av tillegget,
+      og å bytte til en annen modus deaktiverer entiteter som ikke er i
+      det nye valgte settet — entiteter du har aktivert manuelt via
+      Entity Manager-kortet blir også fjernet ved modusbytte, men
+      bevares ved omstart i samme modus. "essential" er det anbefalte
+      utgangspunktet.
+  log_level:
+    name: Loggnivå
+    description: >-
+      Detaljnivå for tilleggets logg. "info" anbefales for normal bruk.
+      Bruk "debug" for å feilsøke tilkoblings- eller entitetsproblemer —
+      dette gir en stor mengde utdata og bør settes tilbake til "info"
+      etterpå.
+  debug_mode:
+    name: Feilsøkingsmodus
+    description: >-
+      Aktiverer testsuite-knappen og resultatsensoren på
+      administrasjonsenheten. Nyttig for å kjøre den nattlige
+      testsuiten uten å sette loggnivået til debug. Når log_level er
+      "debug" vises testsuite-entitetene også uavhengig av denne
+      innstillingen.
+  api_failure_threshold:
+    name: Terskel for API-feil
+    description: >-
+      Antall påfølgende mislykkede avspørringer før et vedvarende
+      varsel vises i HA-varslingsklokken. Standardverdien 3 betyr tre
+      påfølgende feil (90 sekunder ved standardintervallet) før en
+      advarsel gis. Øk denne på et ustabilt nettverk for å unngå falske
+      positiver.
+  changelog_retention_days:
+    name: Oppbevaring av endringslogg (dager)
+    description: >-
+      Hvor mange dager oppføringer i Entity Manager-endringsloggen
+      beholdes før de fjernes. Oppføringer eldre enn dette fjernes ved
+      hver omstart av broen. Standardverdien 90 dager passer de fleste
+      installasjoner.
+  remove_frontend:
+    name: Fjern frontend ved avstenging
+    description: >-
+      Sett til true før du stopper tillegget for automatisk å fjerne
+      Nibe Bridge-dashbordet, Lovelace-ressursregistreringen, kortfilen
+      og alle bevarte MQTT-meldinger ved neste normale avstenging. Bruk
+      dette kun ved avinstallering. Normale omstarter påvirkes ikke. Se
+      dokumentasjonen for hele avinstalleringsprosedyren.
+  nibe_ca_cert:
+    name: Sti til CA-sertifikat for Nibe-styringsenheten
+    description: >-
+      Valgfritt. Absolutt sti til en PEM-formatert CA-sertifikatfil som
+      brukes til å verifisere styringsenhetens HTTPS-sertifikat. Når
+      dette er satt, aktiveres full TLS-kjedeverifisering og
+      vertsnavnkontroll for alle API-kall til styringsenheten. La stå
+      tomt for å akseptere styringsenhetens innebygde selvsignerte
+      sertifikat uten verifisering — dette er standard og akseptabelt på
+      et pålitelig hjemmenettverk, men betyr at et
+      man-in-the-middle-angrep på LAN-et ditt kan avlytte trafikk til
+      styringsenheten. Eksempel: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Aktiverer TLS-kryptering for all trafikk mellom broen og
+      MQTT-brokeren. Beskytter MQTT-påloggingsinformasjonen din og alle
+      entitetskommandoer mot å bli lest av andre enheter på det lokale
+      nettverket. Krever at brokeren din er konfigurert for TLS — endre
+      "MQTT broker port" til 8883 hvis du bruker Mosquitto-tillegget.
+      Deaktivert som standard.
+  mqtt_ca_cert:
+    name: Sti til CA-sertifikat for MQTT-brokeren
+    description: >-
+      Valgfritt. Brukes bare når "MQTT TLS" er aktivert. Absolutt sti
+      til en PEM-formatert CA-sertifikatfil som brukes til å verifisere
+      brokerens TLS-sertifikat. La stå tomt for å bruke systemets
+      CA-lager, som er riktig for brokere med et sertifikat signert av
+      en offentlig CA. Sett dette hvis brokeren din bruker et
+      selvsignert eller privat signert sertifikat.
+      Eksempel: /ssl/mqtt-ca.pem

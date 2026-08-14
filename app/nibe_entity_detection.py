@@ -46,7 +46,7 @@ UPLINK_POINTS = ESSENTIAL_POINTS | frozenset({
     1758, 1708, 121, 2695, 54, 4651, 4821, 1838,
     2471, 2472, 2688, 992, 835, 836, 837, 838, 840,
     841, 22268, 842, 843, 845, 3097, 3353, 2453,
-    14987, 2471, 2472, 2509, 2527, 1766, 4084, 3825, 6138, 6139, 2506,
+    14987, 2509, 2527, 1766, 4084, 3825, 6138, 6139, 2506,
 })
 
 ADVANCED_POINTS = UPLINK_POINTS | frozenset({8034, 1021, 6984, 3846, 3706, 4969, 4970})
@@ -530,7 +530,9 @@ def is_switch_candidate(metadata: dict) -> bool:
 
 def is_number_candidate(metadata: dict) -> bool:
     """Return True if the register has a physical unit, implying a numeric measurement."""
-    return bool(metadata.get('unit', '').strip())
+    # `or ''` also covers an explicit "unit": null from the API — .get()'s
+    # default only applies when the key is absent.
+    return bool((metadata.get('unit', '') or '').strip())
 
 
 
@@ -678,8 +680,10 @@ def _detect_holding_entity(point: dict, metadata: dict):
     # HA MQTT time/date entities require ISO strings; Nibe firmware
     # stores these as raw integers (seconds / packed date).  Map to
     # number so the values are usable in HA without format conversion.
-    if var_type == "time":   return "number", "config"  # noqa: E701
-    if var_type == "date":   return "number", "config"  # noqa: E701
+    if var_type == "time":
+        return "number", "config"
+    if var_type == "date":
+        return "number", "config"
     if var_type == "string":
         log_detection.debug(
             "Point %d has variableType='string' — text entities are not supported "
@@ -742,8 +746,10 @@ def _detect_input_entity(point: dict, metadata: dict):
     var_size    = metadata.get('variableSize', '')
 
     # Read-only time/date registers — expose as sensor (raw integer).
-    if var_type == "time":   return "sensor",      "diagnostic"  # noqa: E701
-    if var_type == "date":   return "sensor",      "diagnostic"  # noqa: E701
+    if var_type == "time":
+        return "sensor", "diagnostic"
+    if var_type == "date":
+        return "sensor", "diagnostic"
     if var_type == "string":
         log_detection.debug(
             "Point %d has variableType='string' (input register) — "

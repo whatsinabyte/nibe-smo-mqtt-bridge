@@ -24,6 +24,12 @@ nibe_test_report.html
 data/
 /data/
 
+# Local secrets and env vars — never commit these
+.env
+
+# Claude Code project config — kept local-only
+.claude/
+
 # macOS
 .DS_Store
 .smb*

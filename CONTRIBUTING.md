@@ -34,8 +34,8 @@ For running tests only — no Nibe controller or HA installation required.
 ```
 nibe_s_series/          ← add-on content (installed into HA)
   app/                  ← all Python source modules
-  tests/                ← test suite (10 files + conftest.py)
-  translations/         ← en.yaml, nl.yaml
+  tests/                ← test suite (19 files + conftest.py)
+  translations/         ← en.yaml, nl.yaml, da.yaml, de.yaml, no.yaml, pl.yaml, sv.yaml
   app/menu_structure.yaml ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
   config.yaml           ← add-on manifest
   Dockerfile
@@ -46,6 +46,7 @@ nibe_s_series/          ← add-on content (installed into HA)
   DOCS.md
   SECURITY.md
   CHANGELOG.md
+  LICENSE.md
   icon.png / logo.png
 docs/                   ← SVG diagrams and screenshots (GitHub display)
 repository.json         ← HA add-on store manifest
@@ -131,17 +132,20 @@ Each source module has a corresponding test file:
 | Source | Test file |
 |---|---|
 | `nibe_api.py` | `test_api.py` |
+| `nibe_caching.py` | `test_caching.py` |
+| `nibe_discovery_config.py` | `test_mqtt_publisher.py` |
 | `nibe_dynamic_map.py` | `test_dynamic_map.py` |
 | `nibe_entity_detection.py` | `test_entity_detection.py` |
-| `nibe_entity_manager.py` | `test_entity_manager.py` |
+| `nibe_entity_manager.py` | `test_entity_manager.py`, `test_entity_manager_snapshots.py`, `test_entity_manager_changelog.py`, `test_entity_manager_dynamic.py`, `test_entity_manager_polling.py`, `test_entity_manager_commands.py`, `test_entity_manager_lifecycle.py`, `test_entity_manager_state.py`, `test_entity_manager_discovery.py` |
 | `nibe_mqtt_publisher.py` | `test_mqtt_publisher.py` |
 | `nibe_ha_integration.py` | `test_ha_integration.py` |
 | `nibe_lovelace.py` | `test_lovelace.py` |
+| `nibe_test_runner.py` | `test_ha_integration.py` |
 | `generate_nibe_mqtt.py` | `test_generate.py` |
 | `nibe_utils.py` | `test_utils.py` |
 | Card JS logic | `test_card.py` |
 
-New tests go in the file for the module they test. The 10-file split is final — do not create new test files.
+`test_entity_manager.py` was split into 9 files as it grew unwieldy (~9,800 lines). The remaining `test_entity_manager.py` holds shared test utilities and base classes used by the other 8; the rest are grouped by subsystem (snapshots, changelog, dynamic points, polling, commands, lifecycle, state, discovery). New `EntityManager` tests go in whichever of the 9 files matches their subsystem — create a new file only if a subsystem genuinely doesn't fit any existing one, not as a default.
 
 ### Critical constraints
 
@@ -227,17 +231,21 @@ Mutation testing is used periodically to identify gaps in the test suite, not as
 
 | Phase | Target | Status |
 |---|---|---|
-| 1 | `nibe_mqtt_publisher.py` | Ceiling reached — ~77% kill rate |
-| 2 | `nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py` | Ceiling reached — ~68% kill rate |
-| 3 | `nibe_entity_manager.py` | Parked — estimated 50–80h runtime |
-| 4 | `generate_nibe_mqtt.py` | Parked — threading survivors unresolvable |
+| 1 | `nibe_mqtt_publisher.py`, `nibe_discovery_config.py` | Ceiling reached |
+| 2 | `nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py` | Ceiling reached |
+| 3 | `nibe_entity_manager.py` | Ceiling reached — full file, 4,439 mutants, run on a local Mac copy (not the ODROID) rather than the CI target |
+| 4 | `nibe_ha_integration.py`, `nibe_lovelace.py`, `nibe_caching.py`, `nibe_test_runner.py`, `nibe_utils.py`, `generate_nibe_mqtt.py` | Ceiling reached |
 
-**To run Phase 1 or 2** (from the `nibe_s_series/` directory):
+All four phases have now been run at least once and their survivors worked down to the structural ceiling (log format strings, genuine semantic equivalents). Re-running a phase after significant changes to its target modules is reasonable to catch newly-introduced gaps, but nothing is currently parked.
+
+**To run any phase** (from the `nibe_s_series/` directory):
 
 ```bash
 cd ..   # repo root
-./run-mutmut.sh 1   # or 2
+./run-mutmut.sh 1   # 1, 2, 3, or 4
 ```
+
+Phase 3 in particular is a multi-hour run — mutmut's own default worker count (one per CPU core) can exhaust memory on machines with limited RAM when each worker runs the full `test_entity_manager*` suite in parallel. Set `MUTMUT_MAX_CHILDREN` to cap concurrency if you hit this, e.g. `MUTMUT_MAX_CHILDREN=2 ./run-mutmut.sh 3`.
 
 **mutmut 3.x limitations to be aware of:**
 - `only_mutate` uses `fnmatch` against file paths only — function-level scoping (`::function_name*`) generates 0 mutants silently

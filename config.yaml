@@ -1,6 +1,12 @@
 name: "Nibe S-Series MQTT Bridge"
-version: "1.0.0"
+version: "1.0.1"
 slug: "nibe_s_series"
+# Prebuilt multi-arch images (built by .github/workflows/publish-image.yml)
+# are not yet published — while still under active local development,
+# Supervisor building from source on-device (via Dockerfile) gives a faster
+# local iteration loop than push-then-pull from a registry. Uncomment once
+# ready for real distribution, after running that workflow at least once.
+# image: "ghcr.io/whatsinabyte/{arch}-addon-nibe_s_series"
 description: "MQTT bridge for Nibe S-series heat pump controllers. Exposes all data points as native Home Assistant entities via MQTT auto-discovery."
 url: "https://github.com/whatsinabyte/nibe-smo-mqtt-bridge"
 stage: experimental

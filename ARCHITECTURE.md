@@ -39,6 +39,16 @@ The bridge runs five concurrent execution contexts:
 - The main thread and paho network thread share `EntityManager` state. Accesses that must be atomic use the locks already embedded in the data structures (`threading.Lock` on the point registry dict).
 - The registry watcher holds no reference to the paho client — all MQTT publishing from registry events goes through `EntityManager`, which holds the client reference.
 
+**Locks in use:**
+
+| Lock | Owner | Guards |
+|---|---|---|
+| `EntityManager._em_lock` | `nibe_entity_manager.py` | `last_states` writes from the poll loop and the write executor |
+| `EntityManager._post_write_lock` | `nibe_entity_manager.py` | `post_write_active` / `_post_write_controlling_point` / `_post_write_until`, read-modified across the poll loop and write executor |
+| `ValueCache` / `LRUCache` internal locks | `nibe_caching.py` | `_point_string_cache` / `_entity_type_cache`, mutated from both the poll thread and the write/management executors |
+| `HAEntityRegistryWatcher._registry_map_lock` | `nibe_ha_integration.py` | `_unique_id_map`, read by callbacks dispatched off the registry watcher's WebSocket thread while the watcher itself mutates it |
+| `_regen_timer_lock` (closure-local) | `nibe_lovelace.py`, `_on_enabled_state_change_factory` | the debounce `threading.Timer` reference, to prevent concurrent enable/disable events from orphaning a timer |
+
 ---
 
 ## 4. Module reference
@@ -105,11 +115,11 @@ The largest module (~3,250 lines) and the core of the bridge. Owns the full life
 
 **MQTT-first state:** retained discovery configs in the broker are the single source of truth for which entities are enabled. On restart, `scan_mqtt_discovery()` reads these back rather than keeping a separate state file. This means the bridge survives restarts without losing user customisations.
 
-**Value cache (`ValueCache`):** suppresses redundant MQTT state publishes via two guards:
+**Value cache (`ValueCache`, defined in `nibe_caching.py`):** suppresses redundant MQTT state publishes via two guards:
 - Change threshold: floating-point values within a small epsilon of the previous published value are not republished
 - Minimum interval: a value that has not changed is still republished after a configurable interval to keep HA's "last changed" timestamp meaningful
 
-**LRU cache:** entity type classifications and point string representations are cached in an `LRUCache(max_size=2000)` to avoid recomputing on every poll cycle.
+**LRU cache (`LRUCache`, defined in `nibe_caching.py`):** entity type classifications and point string representations are cached in an `LRUCache(max_size=2000)` to avoid recomputing on every poll cycle. Both caches were extracted out of this module into `nibe_caching.py` — see §4.4a.
 
 **Pending write guard:** when a write command is dispatched, the affected point is marked "pending". State publishes for that point are suppressed until the API confirms the write or the guard times out. This prevents the HA UI from flipping back to the old value while the write is in flight. `optimistic: false` is set on all writable discovery configs for the same reason.
 
@@ -125,19 +135,43 @@ The MQTT protocol between the bridge and the Entity Manager card is documented i
 
 ---
 
+### 4.4a `nibe_caching.py` — ValueCache, LRUCache
+
+Extracted from `nibe_entity_manager.py`. Two small, independent, generic cache classes with no knowledge of Nibe/HA/MQTT concepts.
+
+**`ValueCache`:** the change-threshold and minimum-republish-interval logic described in §4.4.
+
+**`LRUCache`:** a bounded-size, thread-safe least-recently-used cache. Each public method acquires an internal `threading.Lock` — required because `EntityManager` reads and writes it from both the poll thread and the write/management executor threads.
+
+**What this module does not do:** no Nibe/HA/MQTT-specific logic — both classes are generic and reusable.
+
+---
+
 ### 4.5 `nibe_mqtt_publisher.py` — MqttDiscoveryPublisher
 
 Single source of truth for all MQTT topic strings and discovery config payloads. Builds and publishes HA MQTT discovery configs for every entity type the bridge supports.
 
 **Topic ownership:** all fixed topic strings are defined as class attributes on `MgmtTopic` and `BrowserTopic` enums. No topic string is constructed outside this module.
 
-**Discovery config structure:** each entity type (sensor, binary_sensor, switch, select, number, button) has a dedicated builder that populates the mandatory and optional HA discovery fields. The builders use `optimistic: false` on all writable types to prevent HA from optimistically reflecting the command before the bridge confirms the write.
+**Discovery config structure:** each entity type (sensor, binary_sensor, switch, select, number, button) has a dedicated builder — now living in `nibe_discovery_config.py` (§4.5a) — that populates the mandatory and optional HA discovery fields. The builders use `optimistic: false` on all writable types to prevent HA from optimistically reflecting the command before the bridge confirms the write. This module calls those builders and owns publishing the results.
 
 **Debug-only entities:** `Flush Dynamic Map`, `Run Test Suite`, and `Test Suite Result` are only published when `debug_mode=True`. When `debug_mode=False`, empty retained payloads are sent to those discovery topics so HA removes the entities. A full HA restart is required for the entity registry to reflect the removal.
 
 **What this module does not do:** no HTTP, no entity lifecycle tracking, no threading.
 
 For the full topic list and JSON schemas for every topic this module publishes, see [`docs/card-api.md`](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/card-api.md).
+
+---
+
+### 4.5a `nibe_discovery_config.py` — pure discovery config builders
+
+Extracted from `nibe_mqtt_publisher.py`. Pure functions that build HA MQTT discovery config dicts — one builder per entity type (sensor, binary_sensor, switch, select, number, button).
+
+**Why extracted:** keeps config-building testable in isolation from MQTT I/O, and keeps `nibe_mqtt_publisher.py` focused on publishing.
+
+**Circular-import avoidance:** builders take topic strings as parameters rather than importing `EntityManager` or constructing topics themselves, since `MgmtTopic`/`BrowserTopic` (owned by `nibe_mqtt_publisher.py`) are the only source of topic strings project-wide.
+
+**What this module does not do:** no MQTT publishing, no I/O of any kind.
 
 ---
 
@@ -148,6 +182,8 @@ A causal table recording which writable switch/select points cause dynamic point
 **Why this exists:** some Nibe operating modes expose extra registers only while active (e.g. manual-mode setpoints appear when the heating curve is switched to manual). Without the map, the bridge can only detect these by comparing two consecutive bulk fetches — slow and unreliable. With the map, a write to a known controlling point immediately triggers a targeted probe of its known dynamic points via `fetch_point()` rather than waiting for the next bulk cycle.
 
 **Causal learning:** the map self-populates. On first observation of a write to a switch/select point, the bridge records the outcome (which dynamic points appeared or disappeared) as a `DynamicPointEntry`. Subsequent writes to the same point bypass the detection cycle entirely and apply the known outcome immediately.
+
+**`mark_absent_as_firmware_removed(bulk_point_ids)`:** the counterpart to `restore_from_bulk` — when a previously known dynamic point stops appearing in the bulk fetch response, it is marked as firmware-removed rather than left in a stale "active" state. Wired into `EntityManager.discover_points()`.
 
 **Persistence:** the map is serialised to JSON and published to a retained MQTT topic (`nibe/browser/dynamic_point_map`) so it survives restarts. The module has no I/O of its own — all persistence is delegated to `EntityManager._persist_dynamic_map()`.
 
@@ -163,11 +199,21 @@ Everything that talks to HA itself rather than to the Nibe device or the MQTT br
 
 **`_get_ha_base_url()`:** fetches `internal_url` / `external_url` from `GET http://supervisor/core/api/config`. Result is cached in a module-level global after first fetch. Returns `''` on failure so callers always get a string.
 
-**`HAEntityRegistryWatcher`:** a long-lived WebSocket subscriber to `ws://supervisor/core/websocket`. Subscribes to `entity_registry_updated` events and maintains a local cache of `unique_id → entity_id` mappings. This replaces the previously required companion HA automation. The watcher handles the known HA behaviour where MQTT entity create events omit `unique_id` from the event payload — on such events it triggers an asynchronous full registry refresh.
+**`HAEntityRegistryWatcher`:** a long-lived WebSocket subscriber to `ws://supervisor/core/websocket`. Subscribes to `entity_registry_updated` events and maintains a local cache of `unique_id → entity_id` mappings in `_unique_id_map`, guarded by `_registry_map_lock` (§3) since it is read from callbacks dispatched off the watcher's own WebSocket thread while the watcher mutates it. This replaces the previously required companion HA automation. The watcher handles the known HA behaviour where MQTT entity create events omit `unique_id` from the event payload — on such events it triggers an asynchronous full registry refresh. `_on_entity_enabled()` / `_on_entity_disabled()` take a lock-protected snapshot of the map before resolving a point, rather than reading the live (potentially concurrently-mutated) dict.
 
-**Management command handlers:** `ManagementCommandHandler` subscribes to management MQTT topics published by the card and HA buttons. Duplicate button presses while a test run is in flight are dropped silently via a `threading.Event` guard. Exit codes: `0` = passed, `-1` = timed out, `-2` = launch error, other = failed.
+**Management command handlers:** `ManagementCommandHandler` subscribes to management MQTT topics published by the card and HA buttons. Duplicate button presses while a test run is in flight are dropped silently via a `threading.Event` guard. Exit codes: `0` = passed, `-1` = timed out, `-2` = launch error, other = failed. The actual test-suite execution is delegated to `run_test_suite()` in `nibe_test_runner.py` (§4.7a).
 
 **What this module does not do:** no Nibe API calls, no discovery config publishing, no entity lifecycle management.
+
+---
+
+### 4.7a `nibe_test_runner.py` — run_test_suite
+
+Extracted from the `_handle_run_tests` closure in `nibe_ha_integration.py`. `run_test_suite(mqtt_client, notify_fn, dismiss_fn, get_base_url_fn, done_event)` runs the bridge's own pytest suite on demand (triggered by the "Run Test Suite" management button) and publishes the result.
+
+**Dependency injection:** takes `notify_fn` / `dismiss_fn` / `get_base_url_fn` as parameters rather than importing `notify_ha` / `dismiss_ha` / `_get_ha_base_url` directly, avoiding a circular import back into `nibe_ha_integration.py`.
+
+**What this module does not do:** no MQTT topic construction, no entity lifecycle management.
 
 ---
 
@@ -181,9 +227,11 @@ All interaction with the HA frontend. Creates and maintains two dashboards and t
 
 **Dashboard creation guard:** the check for whether the dashboard already exists requires a successful `lovelace/dashboards` list call. A failed list call is distinguished from "zero dashboards exist" — a failed call does not proceed to a creation attempt that would always fail.
 
-**Regen debounce:** menu dashboard regeneration is debounced — rapid enable/disable operations queue a single regen rather than triggering one per entity change. The debounce is wired into `EntityManager` via a callback registered by `schedule_menu_dashboard_regen()`.
+**Regen debounce:** menu dashboard regeneration is debounced — rapid enable/disable operations queue a single regen rather than triggering one per entity change. The debounce is wired into `EntityManager` via a callback registered by `schedule_menu_dashboard_regen()`. The pending `threading.Timer` reference is guarded by `_regen_timer_lock` (§3) so that a cancel-then-replace under concurrent enable/disable events can never orphan a timer (the previous timer firing after being "cancelled" by a racing thread).
 
-**Retry logic:** dashboard regen retries up to 3 times at 3-second intervals when active dynamic point entity IDs are not yet in the HA entity registry, handling the race between MQTT discovery processing and dashboard build.
+**Retry logic:** dashboard regen retries up to 3 times at 3-second intervals when active dynamic point entity IDs are not yet in the HA entity registry, handling the race between MQTT discovery processing and dashboard build. The registry-stability wait is a named helper, `_wait_for_registry_stable()`, extracted from `_setup_menu_dashboard`.
+
+**`_ws_call()` timeout:** each WebSocket request/response call is bounded by an overall deadline (`timeout` seconds from the call, not per-`recv()`). Earlier versions reset a fresh per-`recv()` timeout on every loop iteration, which meant a peer trickling unrelated messages could keep the call alive far past its nominal timeout; the deadline now shrinks with elapsed time and the call gives up once it passes.
 
 **Debug-only view:** an "Unplaced settings" tab is appended to the Nibe Menus dashboard only when `debug_mode=True`. It shows all firmware points not yet documented in `menu_structure.yaml`, grouped into writable/review, writable/series, and read-only sections.
 
@@ -251,13 +299,14 @@ Alarms use a separate fast poll (`_ALARM_POLL_INTERVAL = 10s`) independent of th
 
 ## 6. Test suite
 
-~2,690 tests across 10 files. Philosophy: correctness over coverage metrics. The suite exists to make refactoring safe, not to hit a percentage target.
+~3,313 tests (plus 19 Hypothesis subtests) across 19 files. Philosophy: correctness over coverage metrics. The suite exists to make refactoring safe, not to hit a percentage target.
 
 For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Structure:**
 - `conftest.py` — shared fixtures, Hypothesis strategies, profile registration
-- One test file per source module — see file layout in README
+- One test file per source module for most modules — see the ownership table in [CONTRIBUTING.md](CONTRIBUTING.md#test-file-ownership)
+- `test_entity_manager.py` plus 8 subsystem-split files (`test_entity_manager_snapshots.py`, `_changelog.py`, `_dynamic.py`, `_polling.py`, `_commands.py`, `_lifecycle.py`, `_state.py`, `_discovery.py`) cover `nibe_entity_manager.py`, which outgrew a single test file
 
 **Testing approaches used:**
 - `unittest.TestCase` + `MagicMock` for unit tests
@@ -282,13 +331,14 @@ All profiles use `database=None` — required to prevent `FlakyStrategyDefinitio
 - All test paths must patch `notify_ha` and `dismiss_ha` — live calls during test runs create persistent HA notifications.
 
 **Mutation testing status:**
-- Phase 1 (`nibe_mqtt_publisher.py`): ceiling reached (~77% kill rate, 1,978 mutants)
-- Phase 2 (`nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py`): ceiling reached (~68% kill rate, 1,196 mutants)
-- Phase 3 (`nibe_entity_manager.py`): parked — estimated 50–80 hours runtime on ODROID-M1
-- Phase 4 (`generate_nibe_mqtt.py`): parked — threading-heavy survivors unresolvable
-- Never mutmut'd: `nibe_ha_integration.py`, `nibe_lovelace.py`, `nibe_utils.py`
+- Phase 1 (`nibe_mqtt_publisher.py`, `nibe_discovery_config.py`): closed — survivors worked down to the structural ceiling in `test_mqtt_publisher.py` (708 tests)
+- Phase 2 (`nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py`): closed — 1,205 mutants run, 391 survivors reviewed and worked down to the ceiling across `test_entity_detection.py`, `test_dynamic_map.py`, `test_api.py` (691 tests)
+- Phase 3 (`nibe_entity_manager.py`): closed — run on a local Mac copy (not the ODROID), full file, 4,439 mutants, 2,535 killed on the first pass, 1,833 survivors reviewed across all 9 `test_entity_manager*.py` files, including `_fetch_bulk_data`/`_publish_dynamic_changes` (protected from *speculative source refactoring* per project instructions, but their *tests* were reviewed and strengthened like any other function)
+- Phase 4 (`nibe_ha_integration.py`, `nibe_lovelace.py`, `nibe_caching.py`, `nibe_test_runner.py`, `nibe_utils.py`, `generate_nibe_mqtt.py`): closed — covers the modules previously listed as "never mutmut'd"
 
-Survivors in Phases 1 and 2 are at the structural ceiling: log format string mutations inside multi-line calls (pragmas on the closing `)` do not suppress inner line mutations) and genuine semantic equivalents.
+All four phases are now closed to the structural ceiling. Note: `run-mutmut.sh` regenerates the `mutants/` sandbox from scratch on every invocation (including switching phases), so a phase's exact kill-rate/survivor numbers are not retained anywhere once a later run overwrites the sandbox. Record `mutmut export-cicd-stats` output somewhere durable immediately after a phase finishes if the exact figures need to survive past the session that produced them.
+
+Survivors across all phases are at the structural ceiling: log format string mutations inside multi-line calls (pragmas on the closing `)` do not suppress inner line mutations) and genuine semantic equivalents (e.g. codec-name case variants, dead-code fallback defaults, branches that converge on identical output).
 
 Pragma syntax: `# pragma: no mutate` (space required) on the **closing `)` line** of the statement.
 
@@ -303,7 +353,6 @@ These items were considered and deliberately not pursued. Recorded here to avoid
 | Speculative refactoring of `_fetch_bulk_data` (~297 lines) | Complexity is inherent to the algorithm; fully covered; no current bug |
 | Speculative refactoring of `_publish_dynamic_changes` (~215 lines) | Same rationale |
 | Moving EntityManager constructor params to `__init__` | `device_info` requires an API response — awkward at construction time; low benefit for single-developer project |
-| Mutation testing phases 3 and 4 | Runtime cost (50–80h) exceeds value; already at 100% line coverage |
 | Contract emulator / end-to-end testing | Requires hardware emulation of the Nibe REST API; high effort |
 | Spot price registers 26817–26840 | Modbus TCP write path; undocumented format |
 | Zone temperature setpoints 32342–32380 | Zones 2–40 report value 0; unclear if real hardware |

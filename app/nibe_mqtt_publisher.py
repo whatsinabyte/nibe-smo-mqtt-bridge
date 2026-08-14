@@ -34,19 +34,17 @@ import hashlib
 import json
 import logging
 import time
-from enum import Enum
+from enum import StrEnum
 
-from nibe_utils import fmt_ts as _fmt_ts
+import nibe_discovery_config as discovery_config
 from nibe_entity_detection import (
-    DEVICE_CLASS_OVERRIDES,
     UNIT_OVERRIDES,
     apply_divisor,
     clean_unit,
     create_entity_id,
-    get_entity_options,
     get_value_mapping,
-    map_device_class,
 )
+from nibe_utils import fmt_ts as _fmt_ts
 
 log_mqtt     = logging.getLogger("nibe.mqtt")
 log_entities = logging.getLogger("nibe.entities")
@@ -60,12 +58,12 @@ MQTT_PREFIX = "nibe/browser"
 # TOPIC ENUMS  — single source of truth for every fixed MQTT topic string
 # ============================================================================
 
-class MgmtTopic(str, Enum):
+class MgmtTopic(StrEnum):
     """All fixed management-entity MQTT topics.
 
-    Using ``str, Enum`` (StrEnum backport for Python < 3.11) means each member
-    IS a plain string and can be passed directly anywhere a ``str`` is expected —
-    no ``.value`` needed.  The enum prevents topic strings from drifting out of
+    Each member IS a plain string and can be passed directly anywhere a
+    ``str`` is expected — no ``.value`` needed.  The enum prevents topic
+    strings from drifting out of
     sync between ``publish_management_discovery()`` (where configs are published)
     and ``create_management_handlers()`` (where subscriptions are registered).
 
@@ -150,7 +148,7 @@ class MgmtTopic(str, Enum):
     RUN_TESTS_ATTRS   = "nibe/browser/test_suite/attrs"
 
 
-class BrowserTopic(str, Enum):
+class BrowserTopic(StrEnum):
     """All fixed ``nibe/browser/`` internal MQTT topics.
 
     These topics are used by the frontend card and internal bridge state;
@@ -228,13 +226,6 @@ def t_attributes(entity_type: str, entity_id: str) -> str:
 
 def t_press(entity_id: str) -> str:
     return f"{_HA_BASE}/button/{entity_id}/press"
-
-
-#: HA device classes that accumulate over time (total_increasing state class).
-_ACCUMULATING_CLASSES: frozenset[str] = frozenset({"energy", "gas", "water", "volume"})  # pragma: no mutate
-
-#: Point ID for the date sensor (days since 2010-01-01 → ISO date string).
-_DATE_SENSOR_POINT_ID = 2685
 
 
 def resolve_unit(
@@ -319,6 +310,13 @@ class MqttDiscoveryPublisher:
         # Used by publish_entity_discovery to skip redundant MQTT publishes
         # when the config has not changed since the last restart.
         self._config_hashes:      dict[int, str] = {}
+        # entity_type last published per point_id — t_config() embeds
+        # entity_type in the topic path, so if a point's entity_type is
+        # ever re-derived to something different (e.g. metadata changes
+        # its classification), the old topic must be explicitly cleared
+        # or its retained discovery config would linger in HA forever as
+        # a ghost/duplicate entity that nothing ever removes.
+        self._point_entity_types: dict[int, str] = {}
 
     # ------------------------------------------------------------------ #
     # Config hash management                                               #
@@ -334,6 +332,7 @@ class MqttDiscoveryPublisher:
         suppresses the republish and HA never learns the entity is back.
         """
         self._config_hashes.pop(point_id, None)
+        self._point_entity_types.pop(point_id, None)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -391,28 +390,38 @@ class MqttDiscoveryPublisher:
             config["entity_category"] = category
 
         if entity_type == "button":
-            self._build_button_config(config, entity_id)
+            discovery_config.build_button_config(config, t_press(entity_id))
         elif entity_type == "switch":
-            self._build_switch_config(config, entity_id)
+            discovery_config.build_switch_config(
+                config, t_state("switch", entity_id), t_command("switch", entity_id)
+            )
         elif entity_type == "number":
-            self._build_number_config(
-                config, entity_id, point_id, title, unit, metadata, bulk_data
+            discovery_config.build_number_config(
+                config, t_state("number", entity_id), t_command("number", entity_id),
+                point_id, title, unit, metadata, bulk_data, self._range_warnings_issued,
             )
         elif entity_type == "select":
-            self._build_select_config(config, entity_id, point_id, metadata, description)
+            discovery_config.build_select_config(
+                config, t_state("select", entity_id), t_command("select", entity_id),
+                point_id, metadata, description,
+            )
         elif entity_type == "time":
             config["state_topic"]   = t_state("time", entity_id)
             config["command_topic"] = t_command("time", entity_id)
+            config["optimistic"]    = False
             # Ensure no unit leaks in — time entities show HH:MM, not seconds
             config.pop("unit_of_measurement", None)
         elif entity_type == "text":
             config["state_topic"]   = t_state("text", entity_id)
             config["command_topic"] = t_command("text", entity_id)
+            config["optimistic"]    = False
             config["max"]           = 64   # matches Nibe string register size; also enforced server-side
         elif entity_type == "binary_sensor":
-            self._build_binary_sensor_config(config, entity_id, title)
+            discovery_config.build_binary_sensor_config(config, t_state("binary_sensor", entity_id), title)
         elif entity_type == "sensor":
-            self._build_sensor_config(config, entity_id, point_id, unit, title, metadata)
+            discovery_config.build_sensor_config(
+                config, t_state("sensor", entity_id), point_id, unit, title, metadata
+            )
         else:
             # Unknown entity type — fall back to sensor so the point is still
             # visible in HA rather than silently broken.
@@ -420,7 +429,9 @@ class MqttDiscoveryPublisher:
                 "Point %d: unhandled entity type %r — falling back to sensor",
                 point_id, entity_type,
             )  # pragma: no mutate
-            self._build_sensor_config(config, entity_id, point_id, unit, title, metadata)
+            discovery_config.build_sensor_config(
+                config, t_state("sensor", entity_id), point_id, unit, title, metadata
+            )
 
         self._publish_static_attributes(
             entity_type, entity_id, point_id, unit, is_writable, description, metadata, config
@@ -430,6 +441,21 @@ class MqttDiscoveryPublisher:
         publish_config = {k: v for k, v in config.items() if not k.startswith('_')}
         config_json    = json.dumps(publish_config, sort_keys=True)
         config_hash    = hashlib.md5(config_json.encode(), usedforsecurity=False).hexdigest()
+
+        prev_entity_type = self._point_entity_types.get(point_id)
+        if prev_entity_type is not None and prev_entity_type != entity_type:
+            # entity_type changed since the last publish — clear the old
+            # topic's retained discovery config so HA doesn't keep showing
+            # a ghost/duplicate entity that nothing else would ever remove.
+            old_topic = t_config(prev_entity_type, entity_id)
+            self.mqtt.publish(old_topic, "", retain=True)
+            log_mqtt.info(
+                "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
+                point_id, prev_entity_type, entity_type, old_topic,
+            )
+            # Force a fresh publish below even if the new config's hash
+            # happens to collide with whatever was last stored.
+            self._config_hashes.pop(point_id, None)
 
         if self._config_hashes.get(point_id) == config_hash:
             log_mqtt.debug("Discovery config unchanged for point %d — skipping publish", point_id)  # pragma: no mutate
@@ -446,6 +472,7 @@ class MqttDiscoveryPublisher:
                 )  # pragma: no mutate
                 return None
             self._config_hashes[point_id] = config_hash
+            self._point_entity_types[point_id] = entity_type
 
         return {
             'point_id':            point_id,
@@ -465,178 +492,6 @@ class MqttDiscoveryPublisher:
                 point_id, point, metadata.get('modbusRegisterType'),
             ),
         }
-
-    # ------------------------------------------------------------------ #
-    # Type-specific config builders (called only from publish_entity_discovery)
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _build_button_config(config: dict, entity_id: str) -> None:
-        config["command_topic"] = t_press(entity_id)
-
-    @staticmethod
-    def _build_switch_config(config: dict, entity_id: str) -> None:
-        config["state_topic"]   = t_state("switch", entity_id)
-        config["command_topic"] = t_command("switch", entity_id)
-        config["payload_on"]    = "1"
-        config["payload_off"]   = "0"
-        config["optimistic"]    = False
-
-    def _build_number_config(
-        self,
-        config: dict,
-        entity_id: str,
-        point_id: int,
-        title: str,
-        unit: str,
-        metadata: dict,
-        bulk_data: dict,
-    ) -> None:
-        config["state_topic"]   = t_state("number", entity_id)
-        config["command_topic"] = t_command("number", entity_id)
-        config["optimistic"]    = False
-
-        min_val     = metadata.get('minValue')
-        max_val     = metadata.get('maxValue')
-        divisor     = metadata.get('divisor', 1) or 1
-        cached      = bulk_data.get(point_id, {})
-        current_raw = cached.get('raw_value')
-
-        if min_val is not None and max_val is not None:
-            unit_str = f" {unit}" if unit else ""
-
-            if min_val == max_val:
-                # Degenerate range: firmware reports min==max for this register.
-                # This is detected fresh from API metadata on every entity publish
-                # (including after restart) so it cannot become stale even if a
-                # firmware update changes the range.  The flag bypasses write-side
-                # range enforcement, which is correct: we cannot know the valid
-                # range so we pass the value through and let the controller decide.
-                if point_id not in self._range_warnings_issued:
-                    log_entities.warning(
-                        "Point %d (%s): degenerate range %g\u2013%g (min==max) "
-                        "\u2014 write-side range checks bypassed.",
-                        point_id, title, min_val, max_val,
-                    )  # pragma: no mutate
-                    self._range_warnings_issued.add(point_id)
-                if current_raw is not None:
-                    anchor       = current_raw / divisor
-                    fallback_min = min(anchor, -100)
-                    fallback_max = max(anchor,  100)
-                else:
-                    fallback_min = -32768 / divisor
-                    fallback_max =  32767 / divisor
-                config["min"]              = fallback_min
-                config["max"]              = fallback_max
-                config["_degenerate_range"] = True
-            else:
-                config["min"] = min_val / divisor
-                config["max"] = max_val / divisor
-                if (current_raw is not None
-                        and point_id not in self._range_warnings_issued
-                        and (current_raw < min_val or current_raw > max_val)):
-                    log_entities.warning(
-                        "Point %d (%s): current value %g%s outside firmware range "
-                        "%g\u2013%g%s \u2014 writes restricted to firmware range.",
-                        point_id, title,
-                        current_raw / divisor, unit_str,
-                        min_val / divisor, max_val / divisor, unit_str,
-                    )  # pragma: no mutate
-                    self._range_warnings_issued.add(point_id)
-        if unit:
-            config["unit_of_measurement"] = unit
-        # step is the minimum increment HA allows in the number input widget.
-        # It must be expressed in display units (post-divisor), so step = 1/divisor.
-        # divisor=1  → step=1   (integer register: only whole numbers valid)
-        # divisor=10 → step=0.1 (one decimal place register)
-        # divisor=100→ step=0.01 (two decimal places)
-        # Using round() with 10 decimal places avoids float representation noise
-        # (e.g. 1/10 = 0.1000000000000000055… → round to 0.1).
-        config["step"] = round(1 / divisor, 10)
-        config["mode"] = "box"
-
-    @staticmethod
-    def _build_select_config(
-        config: dict,
-        entity_id: str,
-        point_id: int,
-        metadata: dict,
-        description: str,
-    ) -> None:
-        config["state_topic"]   = t_state("select", entity_id)
-        config["command_topic"] = t_command("select", entity_id)
-        config["optimistic"]    = False
-        options = get_entity_options(point_id, metadata, description)
-        if options:
-            config["options"] = options
-
-    @staticmethod
-    def _build_binary_sensor_config(
-        config: dict, entity_id: str, title: str
-    ) -> None:
-        config["state_topic"] = t_state("binary_sensor", entity_id)
-        config["payload_on"]  = "ON"
-        config["payload_off"] = "OFF"
-        device_class = map_device_class("binary_sensor", "", title)
-        if device_class:
-            config["device_class"] = device_class
-
-    @staticmethod
-    def _build_sensor_config(
-        config: dict,
-        entity_id: str,
-        point_id: int,
-        unit: str,
-        title: str,
-        metadata: dict,
-    ) -> None:
-        config["state_topic"] = t_state("sensor", entity_id)
-        # Special case: point 2685 is a date sensor (days since 2010-01-01
-        # converted to ISO date string). Set device_class and return early.
-        if point_id == _DATE_SENSOR_POINT_ID:
-            config["device_class"] = "date"
-            return
-        if unit:
-            config["unit_of_measurement"] = unit
-
-        device_class = DEVICE_CLASS_OVERRIDES.get(
-            point_id, map_device_class("sensor", unit, title)
-        )
-        is_instant = (
-            point_id not in DEVICE_CLASS_OVERRIDES
-            and unit == "kWh"
-            and metadata.get('divisor') == 100
-            and metadata.get('maxValue') == 0
-            # ⚠ Heuristic: maxValue==0 is used as a proxy for "instantaneous power
-            # reading" (e.g. compressor input power) rather than a lifetime energy
-            # accumulator.  This works for the known Nibe register set but may
-            # misclassify future firmware registers that genuinely have a zero max.
-            # If a kWh sensor is wrongly treated as instantaneous, add its point_id
-            # to DEVICE_CLASS_OVERRIDES in nibe_entity_detection.py to override.
-        )
-        has_numeric_value = bool(unit)
-
-        if device_class in _ACCUMULATING_CLASSES and not is_instant:
-            config["device_class"] = device_class
-            config["state_class"]  = "total_increasing"
-        elif device_class in _ACCUMULATING_CLASSES and is_instant:
-            config["state_class"] = "measurement"
-        elif device_class:
-            config["device_class"] = device_class
-            config["state_class"]  = "measurement"
-        elif has_numeric_value:
-            config["state_class"] = "measurement"
-
-        # suggested_display_precision must ONLY be set for genuinely numeric
-        # sensors. HA treats its mere presence as a declaration that the
-        # entity is numeric, regardless of the value — setting it on a
-        # string/enum status sensor (e.g. "Running", "Opening", "0.0.61")
-        # causes HA to reject every state update with a ValueError, since
-        # the state is text but the sensor now claims to be numeric.
-        if has_numeric_value:
-            decimal = metadata.get('decimal', 0)
-            if decimal is not None:
-                config["suggested_display_precision"] = int(decimal)
 
     def _publish_static_attributes(
         self,
@@ -1051,6 +906,13 @@ class MqttDiscoveryPublisher:
         for _topic in _LEGACY_PRESET_TOPICS:
             self.mqtt.publish(_topic, "", retain=True)
 
+        # KNOWN_DYNAMIC (nibe/browser/known_dynamic_points) was replaced by
+        # DynamicPointMap (BrowserTopic.DYNAMIC_MAP) — clear any retained
+        # message left over from a pre-DynamicPointMap install. The enum
+        # member itself is kept (not moved into _LEGACY_PRESET_TOPICS) since
+        # it documents what topic is being retired, not a removed family.
+        self.mqtt.publish(BrowserTopic.KNOWN_DYNAMIC, "", retain=True)
+
         _pub(MgmtTopic.MODE_CONFIG, {
             "name": "Entity Mode", "unique_id": "nibe_active_mode",
             "state_topic":   MgmtTopic.MODE_STATE,
@@ -1177,6 +1039,13 @@ class MqttDiscoveryPublisher:
                 "device": mgmt_device, "icon": "mdi:test-tube",
                 "entity_category": "diagnostic",
             })
+        else:
+            # Clear any retained debug-entity configs left over from a
+            # previous debug-mode run — otherwise HA keeps showing them as
+            # ghost entities pointing at debug actions that are unavailable.
+            self.mqtt.publish(MgmtTopic.FLUSH_MAP_CONFIG, "", retain=True)
+            self.mqtt.publish(MgmtTopic.RUN_TESTS_CONFIG, "", retain=True)
+            self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", "", retain=True)
 
         # Initial sensor states
         self.mqtt.publish(MgmtTopic.UPTIME_STATE,      "0",    retain=True)

@@ -68,9 +68,12 @@ Security considerations specific to this app:
   WebSocket API (via `SUPERVISOR_TOKEN`) for three purposes: sending and
   dismissing persistent notifications, subscribing to entity registry events
   for real-time enable/disable synchronisation, and provisioning the companion
-  Lovelace dashboard on first start. These operations use the token provided
-  automatically by the HA supervisor to all apps and do not require any
-  additional user-granted permissions.
+  Lovelace dashboard. The entity registry subscription holds a long-lived
+  WebSocket connection for the lifetime of the process, and the dashboard is
+  rebuilt repeatedly — on every entity enable/disable and mode change, not
+  just once at startup. These operations use the token provided automatically
+  by the HA supervisor to all apps and do not require any additional
+  user-granted permissions.
 - **Write commands** — writable entities send values directly to the controller
   with no additional confirmation step. Anyone with access to your HA instance
   can write to any enabled writable entity. Restrict access to your HA instance

@@ -4,7 +4,7 @@ nibe_lovelace.py
 Lovelace UI provisioning for the Nibe S-Series MQTT Bridge.
 
 Handles all interaction with the Home Assistant frontend:
-  - Copying the Lovelace card JS file to /config/www/
+  - Copying the Lovelace card JS file to /homeassistant/www/
   - Registering the card as a Lovelace resource via WebSocket
   - Creating and updating the Nibe Bridge and Nibe Menus dashboards
   - Debounced menu dashboard regeneration on entity enable/disable changes
@@ -25,16 +25,50 @@ import re
 import shutil
 import threading
 import time
-import yaml
 
+import yaml
 from nibe_entity_detection import clean_string, clean_unit
 
 log_startup = logging.getLogger("nibe.startup")
 
+# menu_structure.yaml is static for the lifetime of the process — it only
+# changes on an add-on update, which requires a restart — so parsing it
+# (~3,700 lines via PyYAML) once per path and reusing the result avoids
+# repeating that parse on every dashboard regen. Regen fires on every entity
+# enable/disable (not just dynamic point changes, see publish_enabled_state()
+# in nibe_entity_manager.py), so on an active session this was real repeated
+# work. Keyed by path rather than a single slot so callers that intentionally
+# pass a different or nonexistent path (tests, mainly) don't see stale data.
+_menu_structure_cache: dict[str, list] = {}
+_menu_structure_cache_lock = threading.Lock()
+
+
+def _reset_menu_structure_cache() -> None:
+    """Clear the cached parsed menu_structure.yaml. Test-only hook."""
+    with _menu_structure_cache_lock:
+        _menu_structure_cache.clear()
+
+
+def _load_menu_structure_yaml(yaml_path: str) -> list:
+    """Load and parse menu_structure.yaml, caching the result per path.
+
+    Raises on a missing/corrupt file exactly like a bare
+    ``yaml.safe_load(open(...))`` would — callers keep their existing
+    try/except handling. A failed load is never cached, so a transient
+    error doesn't poison later calls with the same path.
+    """
+    with _menu_structure_cache_lock:
+        if yaml_path not in _menu_structure_cache:
+            with open(yaml_path, encoding="utf-8") as f:
+                menu_data = yaml.safe_load(f)
+            _menu_structure_cache[yaml_path] = menu_data.get("menus", [])
+        return _menu_structure_cache[yaml_path]
+
+
 def _copy_card_file() -> bool:
     """Copy the Lovelace card JS file to the HA www directory."""
     src     = "/app/nibe-entity-manager-card.js"
-    dst_dir = "/config/www"
+    dst_dir = "/homeassistant/www"
     dst     = os.path.join(dst_dir, "nibe-entity-manager-card.js")
     try:
         os.makedirs(dst_dir, exist_ok=True)
@@ -146,8 +180,13 @@ def _build_dynamic_injection(
                 title = point.get('display_title') or point.get('title') or f'Point {dyn_pid}'
                 meta  = point.get('metadata', {})
                 div   = meta.get('divisor', 1) or 1
-                mn    = meta.get('minValue', 0) / div
-                mx    = meta.get('maxValue', 0) / div
+                # `or 0` (not just a .get default) also covers the API
+                # sending an explicit "minValue"/"maxValue": null — .get()'s
+                # default only applies when the key is absent, so a
+                # present-but-null value would otherwise reach the division
+                # below as None and raise TypeError.
+                mn    = (meta.get('minValue', 0) or 0) / div
+                mx    = (meta.get('maxValue', 0) or 0) / div
                 unit  = clean_unit(meta.get('unit'))
                 rng   = f'{mn:g} – {mx:g}{" " + unit if unit else ""}'
                 dflt  = (point_defaults or {}).get(dyn_pid, '')
@@ -364,8 +403,10 @@ def _build_unplaced_view(
         reg  = meta.get('modbusRegisterType', '')
         if reg not in ('MODBUS_HOLDING_REGISTER', 'MODBUS_INPUT_REGISTER'):
             continue
-        mn   = meta.get('minValue', 0)
-        mx   = meta.get('maxValue', 0)
+        # `or 0` also covers an explicit "minValue"/"maxValue": null from
+        # the API — .get()'s default only applies when the key is absent.
+        mn   = meta.get('minValue', 0) or 0
+        mx   = meta.get('maxValue', 0) or 0
         if mn == mx:
             continue  # degenerate range
         title = point_data.get('display_title') or point_data.get('title', f'Point {point_id}')
@@ -377,7 +418,7 @@ def _build_unplaced_view(
 
         if meta.get('isWritable') and reg == 'MODBUS_HOLDING_REGISTER':
             # Check if it's part of a repetitive series
-            is_grouped = any(re.search(pat, title, re.I) for pat in _GROUP_PATTERNS)
+            is_grouped = any(re.search(pat, title, re.IGNORECASE) for pat in _GROUP_PATTERNS)
             if is_grouped:
                 unplaced_grouped.append(entry)
             else:
@@ -453,7 +494,7 @@ def _build_menu_dashboard_config(
     debug_mode:        bool = False,
     bulk_data:         dict[int, dict] | None = None,
     menu_yaml_points:  set[int] | None = None,
-) -> dict:
+) -> dict | None:
     """Build the full Lovelace dashboard config for the menu views.
 
     Each top-level menu becomes a separate view (tab) containing a
@@ -557,6 +598,92 @@ def _should_attempt_dashboard_create(dashboards_response: dict, slug: str) -> bo
     return existing is None
 
 
+def _wait_for_registry_stable(
+    registry_watcher,
+    available_menu_points: set,
+    active_dynamic: set,
+) -> None:
+    """Poll until the HA entity registry resolves entity IDs for both:
+
+    1. All available menu points (needed on every startup — without this
+       the _unique_id_map is empty and all entities show as "not enabled")
+    2. All active dynamic points (needed for injection after a controlling
+       point is flipped — these arrive via registry create events)
+
+    Polls until BOTH sets are stable, up to a 60s limit. Dynamic points get
+    a shorter inner timeout (8s once menu points are stable) so a single
+    disconnected accessory doesn't block indefinitely.
+    """
+    _step        = 0.5
+    _limit       = 60.0
+    _waited      = 0.0
+    _prev_count  = -1
+    _stable_for  = 0.0
+    _stable_need = 3.0
+    # On a fresh start HA creates entities in batches, causing the count to
+    # pause between waves — the stability check fires during a gap and exits
+    # prematurely with only a fraction of entities resolved.  Require at least
+    # 70% of expected menu points before accepting a stable count as "done".
+    # This threshold tolerates genuinely absent conditional points (e.g. 3671,
+    # 5033 absent when a room sensor is installed) and a modest HA indexing lag
+    # without waiting the full 60s limit. 80% was too high in practice — on a
+    # typical 280-point menu install only ~205 (~73%) resolve within the wait
+    # window on a fresh mode-change restart.
+    _completeness_threshold = 0.70
+
+    while _waited < _limit:
+        time.sleep(_step)
+        _waited += _step
+
+        menu_resolved = sum(
+            1 for p in available_menu_points
+            if registry_watcher.entity_id_for(p)
+        )
+        dyn_resolved = sum(
+            1 for p in active_dynamic
+            if registry_watcher.entity_id_for(p)
+        )
+        current_count = menu_resolved + dyn_resolved
+
+        if current_count == _prev_count:
+            _stable_for += _step
+            # Don't accept stability if we're well below the expected count —
+            # on a fresh start HA creates entities in waves and the count may
+            # pause between waves, producing a false stable window.
+            menu_complete = (
+                menu_resolved >= len(available_menu_points) * _completeness_threshold
+            )
+            if _stable_for >= _stable_need and menu_resolved > 0 and menu_complete:
+                # All dynamic points resolved — ideal exit
+                if dyn_resolved == len(active_dynamic):
+                    log_startup.debug(
+                        "Registry stable: %d/%d menu + %d/%d dynamic after %.1fs",
+                        menu_resolved, len(available_menu_points),
+                        dyn_resolved, len(active_dynamic), _waited,
+                    )
+                    return
+                # Menu stable but dynamic still missing — wait a bit more
+                # but don't hold up the retry mechanism indefinitely
+                if _stable_for >= 8.0:
+                    log_startup.debug(
+                        "Registry stable at %d/%d menu, %d/%d dynamic after %.1fs — proceeding",
+                        menu_resolved, len(available_menu_points),
+                        dyn_resolved, len(active_dynamic), _waited,
+                    )
+                    return
+        else:
+            _stable_for = 0.0
+            _prev_count = current_count
+    else:
+        log_startup.warning(
+            "Registry wait timed out — %d/%d menu + %d/%d dynamic resolved",
+            sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p)),
+            len(available_menu_points),
+            sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p)),
+            len(active_dynamic),
+        )
+
+
 def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False) -> bool:
     """Build and save the Nibe Menus Lovelace dashboard config.
 
@@ -589,9 +716,7 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
         return False
 
     try:
-        with open(menu_path, "r", encoding="utf-8") as f:
-            menu_data = yaml.safe_load(f)
-        menu_structure = menu_data.get("menus", [])
+        menu_structure = _load_menu_structure_yaml(menu_path)
     except Exception as e:
         log_startup.warning("Could not load menu_structure.yaml: %s", e)
         return False
@@ -614,84 +739,10 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
         if pid in entity_manager.all_points_by_id
     }
 
-    # Wait for the registry watcher to resolve entity IDs for both:
-    # 1. All available menu points (needed on every startup — without this
-    #    the _unique_id_map is empty and all entities show as "not enabled")
-    # 2. All active dynamic points (needed for injection after a controlling
-    #    point is flipped — these arrive via registry create events)
-    # We poll until BOTH sets are stable. Dynamic points are checked
-    # separately with a shorter inner timeout so we don't block indefinitely
-    # if an accessory is disconnected.
-    _step        = 0.5
-    _limit       = 60.0
-    _waited      = 0.0
-    _prev_count  = -1
-    _stable_for  = 0.0
-    _stable_need = 3.0
-    # On a fresh start HA creates entities in batches, causing the count to
-    # pause between waves — the stability check fires during a gap and exits
-    # prematurely with only a fraction of entities resolved.  Require at least
-    # 70% of expected menu points before accepting a stable count as "done".
-    # This threshold tolerates genuinely absent conditional points (e.g. 3671,
-    # 5033 absent when a room sensor is installed) and a modest HA indexing lag
-    # without waiting the full 60s limit. 80% was too high in practice — on a
-    # typical 280-point menu install only ~205 (~73%) resolve within the wait
-    # window on a fresh mode-change restart.
-    _completeness_threshold = 0.70
-
+    # Wait for the registry watcher to resolve entity IDs for both available
+    # menu points and active dynamic points before building the dashboard.
     active_dynamic = entity_manager.active_dynamic_points
-
-    while _waited < _limit:
-        time.sleep(_step)
-        _waited += _step
-
-        menu_resolved = sum(
-            1 for p in available_menu_points
-            if registry_watcher.entity_id_for(p)
-        )
-        dyn_resolved = sum(
-            1 for p in active_dynamic
-            if registry_watcher.entity_id_for(p)
-        )
-        current_count = menu_resolved + dyn_resolved
-
-        if current_count == _prev_count:
-            _stable_for += _step
-            # Don't accept stability if we're well below the expected count —
-            # on a fresh start HA creates entities in waves and the count may
-            # pause between waves, producing a false stable window.
-            menu_complete = (
-                menu_resolved >= len(available_menu_points) * _completeness_threshold
-            )
-            if _stable_for >= _stable_need and menu_resolved > 0 and menu_complete:
-                # All dynamic points resolved — ideal exit
-                if dyn_resolved == len(active_dynamic):
-                    log_startup.debug(
-                        "Registry stable: %d/%d menu + %d/%d dynamic after %.1fs",
-                        menu_resolved, len(available_menu_points),
-                        dyn_resolved, len(active_dynamic), _waited,
-                    )
-                    break
-                # Menu stable but dynamic still missing — wait a bit more
-                # but don't hold up the retry mechanism indefinitely
-                if _stable_for >= 8.0:
-                    log_startup.debug(
-                        "Registry stable at %d/%d menu, %d/%d dynamic after %.1fs — proceeding",
-                        menu_resolved, len(available_menu_points),
-                        dyn_resolved, len(active_dynamic), _waited,
-                    )
-                    break
-        else:
-            _stable_for = 0.0
-            _prev_count = current_count
-    else:
-        log_startup.warning(
-            "Registry wait timed out — %d/%d menu + %d/%d dynamic resolved",
-            sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p)),
-            len(available_menu_points),
-            sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p)),
-            len(active_dynamic),
-        )
+    _wait_for_registry_stable(registry_watcher, available_menu_points, active_dynamic)
 
     # Build dashboard config
     known_dynamic      = entity_manager.dynamic_point_map.all_known_dynamic_point_ids()
@@ -1120,6 +1171,15 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
     Returns an empty dict on timeout or error, including if the connection
     has already failed (e.g. BrokenPipeError on send) — callers should treat
     an empty dict as "this call did not succeed" regardless of cause.
+
+    ``timeout`` is an overall budget for the whole call, not a per-recv
+    budget: the socket timeout is recomputed from the remaining time before
+    every recv(), so a stream of interleaved irrelevant messages (each
+    arriving just under its own recv timeout) can't extend the total wait
+    past ``timeout`` seconds — a single ``ws.settimeout(timeout)`` before
+    the loop would let each recv() get its own fresh `timeout`-second
+    window, regardless of how much wall-clock time earlier iterations
+    already used.
     """
     try:
         ws.send(json.dumps({**payload, "id": msg_id}))
@@ -1127,9 +1187,12 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
         log_startup.debug("_ws_call: send failed (id=%s): %s", msg_id, e)
         return {}
     deadline = time.time() + timeout
-    ws.settimeout(timeout)
     try:
-        while time.time() < deadline:
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            ws.settimeout(remaining)
             raw = ws.recv()
             if not raw:
                 break
@@ -1145,7 +1208,7 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
 
 def _teardown_lovelace() -> None:
     """Remove the Nibe Bridge dashboard, its Lovelace resource registration,
-    and the card file from /config/www/ on clean shutdown when the
+    and the card file from /homeassistant/www/ on clean shutdown when the
     remove_frontend option is set to true (surfaced as NIBE_REMOVE_FRONTEND=1
     by run.sh).
 
@@ -1164,8 +1227,8 @@ def _teardown_lovelace() -> None:
 
     supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
 
-    # ── Remove card file from /config/www/ ───────────────────────────────────
-    card_dst = "/config/www/nibe-entity-manager-card.js"
+    # ── Remove card file from /homeassistant/www/ ────────────────────────────
+    card_dst = "/homeassistant/www/nibe-entity-manager-card.js"
     try:
         if os.path.exists(card_dst):
             os.remove(card_dst)
@@ -1431,8 +1494,19 @@ def _on_enabled_state_change_factory(
     This eliminates the double dashboard build on fresh starts where the
     initial menu auto-enable fires _on_enabled_state_change while the
     Lovelace setup thread is still running.
+
+    publish_enabled_state() (which invokes this handler) is called from many
+    places across the write executor, management executor, watcher thread,
+    and poll thread — so this handler can genuinely be entered concurrently.
+    _regen_timer_lock protects the cancel-and-reschedule sequence below;
+    without it, two concurrent callers can each create their own Timer and
+    overwrite _regen_timer[0], orphaning one of the two Timers (never
+    cancelled) and defeating the debounce — the same failure mode
+    _schedule_refresh_registry's lock in nibe_ha_integration.py exists to
+    prevent.
     """
     _regen_timer = [None]  # mutable cell holding the pending Timer
+    _regen_timer_lock = threading.Lock()
 
     def _on_enabled_state_change():
         if lovelace_thread is not None and lovelace_thread.is_alive():
@@ -1441,18 +1515,20 @@ def _on_enabled_state_change_factory(
             )
             return
         log_startup.debug("Menu dashboard regen scheduled (2s debounce)")
-        if _regen_timer[0] is not None:
-            _regen_timer[0].cancel()
 
         def _fire(attempt: int = 1):
-            _regen_timer[0] = None
+            with _regen_timer_lock:
+                _regen_timer[0] = None
             _regen_menu_dashboard(registry_watcher, debug_mode, attempt=attempt)
 
-        t = threading.Timer(2.0, _fire)
-        t.daemon = True
-        t.name = "nibe_menu_regen"
-        _regen_timer[0] = t
-        t.start()
+        with _regen_timer_lock:
+            if _regen_timer[0] is not None:
+                _regen_timer[0].cancel()
+            t = threading.Timer(2.0, _fire)
+            t.daemon = True
+            t.name = "nibe_menu_regen"
+            _regen_timer[0] = t
+            t.start()
 
     return _on_enabled_state_change
 
@@ -1479,7 +1555,7 @@ def _wire_menu_dashboard_regen(
 
 
 def copy_card_file() -> bool:
-    """Copy the Lovelace card JS file to /config/www/. Called on startup."""
+    """Copy the Lovelace card JS file to /homeassistant/www/. Called on startup."""
     return _copy_card_file()
 
 
@@ -1497,9 +1573,7 @@ def build_menu_points(yaml_path: str) -> frozenset[int]:
     so a missing YAML degrades gracefully rather than crashing startup.
     """
     try:
-        with open(yaml_path, encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-        points = _collect_menu_points(data.get('menus', []))
+        points = _collect_menu_points(_load_menu_structure_yaml(yaml_path))
         log_startup.debug("Built MENU_POINTS from YAML: %d unique point_ids", len(points))
         return frozenset(points)
     except Exception as e:

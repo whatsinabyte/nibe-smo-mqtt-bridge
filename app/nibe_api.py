@@ -27,13 +27,12 @@ NibeApiClient(base_url, auth, ssl_context)
 """
 
 import json
+import logging
 import random
 import ssl
 import time
 import urllib.error
 import urllib.request
-import logging
-
 
 log_api      = logging.getLogger("nibe.api")
 log_commands = logging.getLogger("nibe.commands")
@@ -145,7 +144,7 @@ class NibeApiClient:
             log_api.debug("Retry delay: %.2fs", delay)  # pragma: no mutate
             time.sleep(delay)
 
-        return None  # unreachable; satisfies type checkers
+        return None  # pragma: no cover — unreachable; satisfies type checkers
 
 
     # ------------------------------------------------------------------ #
@@ -191,7 +190,11 @@ class NibeApiClient:
         response = self.request(f"{self.base_url}/notifications")
         if response is None:
             return None
-        return response.get('alarms', [])
+        # `or []` also covers the device sending an explicit "alarms": null
+        # — .get()'s default only applies when the key is absent, and the
+        # sole caller (update_alarm_state) only guards the None-response
+        # case above, not a present-but-null alarms list.
+        return response.get('alarms', []) or []
 
     # ------------------------------------------------------------------ #
     # Write methods                                                        #
@@ -212,7 +215,9 @@ class NibeApiClient:
 
         Returns True on success, False on any failure.
         """
-        metadata = entity_info.get('metadata', {})
+        # `or {}` also covers entity_info['metadata'] being explicitly None
+        # rather than absent — .get()'s default only applies to a missing key.
+        metadata = entity_info.get('metadata', {}) or {}
 
         if not entity_info.get('is_writable', False):
             log_commands.warning("Point %d is not writable", point_id)  # pragma: no mutate

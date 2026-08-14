@@ -435,7 +435,7 @@ menus:
 
           '
       - label: Heating offset, climate system 1
-        range: -10 – 10
+        range: -10 – +10
         point_id: 3671
         tip: 'First adjustment step for comfort issues: change by 1, wait 24 hours, reassess. Open all thermostats fully except
           rooms where a cooler temperature is wanted. If comfort issues persist across all outdoor temperatures, the offset

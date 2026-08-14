@@ -62,7 +62,7 @@ Each entry in `settings` represents one firmware data point.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `label` | ✅ | string | Human-readable name for this setting, as it appears in the controller's display menu. Used as the section divider label in the dashboard. |
-| `point_id` | ✅ | integer | The firmware `variableId` for this data point. Must exist in the firmware's bulk fetch response. Invalid point IDs silently produce a "not enabled" placeholder in the dashboard. |
+| `point_id` | ✅ | integer or null | The firmware `variableId` for this data point. Must exist in the firmware's bulk fetch response. Invalid point IDs silently produce a "not enabled" placeholder in the dashboard. `null` is valid for a small number of controller-display-only settings that have no corresponding firmware register (currently 8) — these render as a label/range/annotations row with no entity attached. |
 | `range` | ✅ | string | The valid value range, unit, and type — e.g. `5 – 30 °C`, `0 – 100 %`, `off/on`, `°C (read-only)`. Displayed in the section divider alongside the label. Free-form string — there is no machine parsing of this field. |
 | `tip` | — | string | Green callout. Actionable guidance specific to this setting. |
 | `note` | — | string | Blue callout. Context, caveats, cross-references specific to this setting. |

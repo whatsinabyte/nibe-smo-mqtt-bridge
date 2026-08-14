@@ -10,13 +10,12 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from hypothesis import assume, given
-from hypothesis import strategies as st
-
 from conftest import (
     _make_em,
     _nibe_point_id,
 )
+from hypothesis import assume, given, strategies as st
+
 
 class TestDynamicPointEntrySerialiseProperties(unittest.TestCase):
     """Hypothesis properties for DynamicPointEntry serialisation roundtrip."""
@@ -34,14 +33,14 @@ class TestDynamicPointEntrySerialiseProperties(unittest.TestCase):
     @given(_entry_strategy)
     def test_to_dict_never_raises(self, kwargs):
         from nibe_dynamic_map import DynamicPointEntry
-        entry = DynamicPointEntry(**{k: v for k, v in kwargs.items()})
+        entry = DynamicPointEntry(**dict(kwargs.items()))
         entry.to_dict()
 
     @given(_entry_strategy)
     def test_from_dict_roundtrip(self, kwargs):
         """to_dict → from_dict recovers all fields exactly."""
         from nibe_dynamic_map import DynamicPointEntry
-        entry = DynamicPointEntry(**{k: v for k, v in kwargs.items()})
+        entry = DynamicPointEntry(**dict(kwargs.items()))
         d = entry.to_dict()
         recovered = DynamicPointEntry.from_dict(d)
         self.assertEqual(recovered.point_id, entry.point_id)
@@ -56,8 +55,9 @@ class TestDynamicPointEntrySerialiseProperties(unittest.TestCase):
     def test_to_dict_produces_json_serialisable_output(self, kwargs):
         """to_dict output must be JSON-serialisable."""
         import json as _json
+
         from nibe_dynamic_map import DynamicPointEntry
-        entry = DynamicPointEntry(**{k: v for k, v in kwargs.items()})
+        entry = DynamicPointEntry(**dict(kwargs.items()))
         _json.dumps(entry.to_dict())  # must not raise
 
 
@@ -92,7 +92,7 @@ class TestDynamicPointMapSerialiseProperties(unittest.TestCase):
 
     def test_serialise_then_deserialise_roundtrip(self):
         """serialise → deserialise into a fresh map recovers all entries."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m1 = DynamicPointMap()
         m1._table[100] = DynamicPointEntry(
             point_id=100, title='Test Switch', entity_type='switch',
@@ -122,7 +122,7 @@ class TestDynamicPointMapSerialiseProperties(unittest.TestCase):
     ))
     def test_serialise_roundtrip_for_arbitrary_maps(self, entries):
         """For any valid map, serialise → deserialise recovers same entry count."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m1 = DynamicPointMap()
         for e in entries:
             m1._table[e['point_id']] = DynamicPointEntry(**e)
@@ -142,7 +142,7 @@ class TestMarkFirmwareRemovedProperties(unittest.TestCase):
     and restore_from_bulk."""
 
     def _map_with(self, point_ids):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         for pid in point_ids:
             m._table[pid] = DynamicPointEntry(
@@ -198,6 +198,50 @@ class TestMarkFirmwareRemovedProperties(unittest.TestCase):
         m = self._map_with(pids)
         m.restore_from_bulk(pids)  # must not raise
 
+    @given(st.integers(min_value=1, max_value=9999))
+    def test_mark_absent_marks_point_not_in_bulk(self, pid):
+        """mark_absent_as_firmware_removed must flag a point missing from
+        the given bulk_point_ids set."""
+        m = self._map_with([pid])
+        newly_marked = m.mark_absent_as_firmware_removed(set())
+        self.assertTrue(m._table[pid].firmware_removed)
+        self.assertIn(pid, newly_marked)
+
+    @given(st.integers(min_value=1, max_value=9999))
+    def test_mark_absent_leaves_present_point_alone(self, pid):
+        """A point still present in bulk_point_ids must not be marked."""
+        m = self._map_with([pid])
+        newly_marked = m.mark_absent_as_firmware_removed({pid})
+        self.assertFalse(m._table[pid].firmware_removed)
+        self.assertNotIn(pid, newly_marked)
+
+    @given(st.integers(min_value=1, max_value=4999),
+           st.integers(min_value=5000, max_value=9999))
+    def test_mark_absent_only_affects_missing_points(self, pid_in, pid_out):
+        """Only the point absent from bulk_point_ids gets marked; the
+        present one is left untouched."""
+        m = self._map_with([pid_in, pid_out])
+        m.mark_absent_as_firmware_removed({pid_in})
+        self.assertFalse(m._table[pid_in].firmware_removed)
+        self.assertTrue(m._table[pid_out].firmware_removed)
+
+    @given(st.integers(min_value=1, max_value=9999))
+    def test_mark_absent_is_idempotent(self, pid):
+        """Calling twice with the same absent point must not raise and the
+        result (and returned newly_marked set) reflects only the first call."""
+        m = self._map_with([pid])
+        first  = m.mark_absent_as_firmware_removed(set())
+        second = m.mark_absent_as_firmware_removed(set())
+        self.assertIn(pid, first)
+        self.assertNotIn(pid, second)  # already marked — not "newly" marked again
+        self.assertTrue(m._table[pid].firmware_removed)
+
+    @given(st.sets(st.integers(min_value=1, max_value=9999), max_size=10))
+    def test_mark_absent_never_raises(self, pids):
+        """mark_absent_as_firmware_removed must never raise for any input."""
+        m = self._map_with(pids)
+        m.mark_absent_as_firmware_removed(set())  # must not raise
+
 
 # ---------------------------------------------------------------------------
 # DynamicPointMap.flush properties (nibe_dynamic_map.py)
@@ -230,7 +274,7 @@ class TestDynamicPointMapActivePointsProperties(unittest.TestCase):
         self.assertEqual(result, set())
 
     def test_controlling_entry_with_known_value_returns_dynamic_points(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[100] = DynamicPointEntry(
             point_id=100, title='Switch', entity_type='switch',
@@ -241,7 +285,7 @@ class TestDynamicPointMapActivePointsProperties(unittest.TestCase):
         self.assertEqual(result, {22001, 22002})
 
     def test_non_controlling_entry_contributes_nothing(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[200] = DynamicPointEntry(
             point_id=200, title='Switch', entity_type='switch',
@@ -257,7 +301,7 @@ class TestDynamicPointMapActivePointsProperties(unittest.TestCase):
         max_size=10,
     ))
     def test_result_is_always_a_set_of_ints(self, current_values):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[1] = DynamicPointEntry(
             point_id=1, title='T', entity_type='switch',
@@ -354,7 +398,7 @@ class TestPopulateFromBulkProperties(unittest.TestCase):
     def _make_points(self, specs):
         """Build all_points_by_id dict from list of (pid, entity_type) pairs."""
         result = {}
-        for pid, etype, meta in specs:
+        for pid, _etype, meta in specs:
             result[pid] = {
                 'variableId': pid,
                 'display_title': f'Point {pid}',
@@ -424,7 +468,7 @@ class TestPopulateFromBulkProperties(unittest.TestCase):
     @given(st.lists(_spec, max_size=10, unique_by=lambda s: s[0]))
     def test_existing_entries_not_overwritten(self, specs):
         """Entries already in the table must not be replaced."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         points = self._make_points(specs)
         types  = self._make_types(specs)
@@ -464,13 +508,13 @@ class TestDynamicPointEntry(unittest.TestCase):
         self.cls = DynamicPointEntry
 
     def _switch_entry(self, **kwargs):
-        defaults = dict(
-            point_id=1001, title='Pool heating', entity_type='switch',
-            processed_values={0, 1}, unprocessed_values=set(),
-            is_controlling=True,
-            dynamic_points_by_value={0: [], 1: [22001, 22002]},
-            firmware_removed=False,
-        )
+        defaults = {
+            'point_id': 1001, 'title': 'Pool heating', 'entity_type': 'switch',
+            'processed_values': {0, 1}, 'unprocessed_values': set(),
+            'is_controlling': True,
+            'dynamic_points_by_value': {0: [], 1: [22001, 22002]},
+            'firmware_removed': False,
+        }
         defaults.update(kwargs)
         return self.cls(**defaults)
 
@@ -542,7 +586,7 @@ class TestDynamicPointEntry(unittest.TestCase):
     def test_record_outcome_non_controlling_confirmed_after_all_values_empty(self):
         """record_outcome: when all processed values produce no dynamic points
         and unprocessed is empty, is_controlling is set to False (lines 367-372)."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         dm = DynamicPointMap()
         dm._table[5000] = DynamicPointEntry(
             point_id=5000, title='Economy mode', entity_type='switch',
@@ -561,7 +605,7 @@ class TestDynamicPointMap(unittest.TestCase):
     """Unit tests for DynamicPointMap table operations."""
 
     def setUp(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         self.Map   = DynamicPointMap
         self.Entry = DynamicPointEntry
 
@@ -823,8 +867,9 @@ class TestDynamicPointMap(unittest.TestCase):
 
     def test_record_outcome_unknown_point_logs_warning(self):
         m = self.Map()
-        # Should not raise
-        m.record_outcome(99999, 1, [12345])
+        with self.assertLogs('nibe.dynamic_map', level='WARNING') as cm:
+            m.record_outcome(99999, 1, [12345])
+        self.assertIn('99999', cm.output[0])
 
     # ── serialisation ─────────────────────────────────────────────────
 
@@ -868,8 +913,8 @@ class TestDynamicPointMap(unittest.TestCase):
         self.assertIn(1001, m)
 
     def test_to_file_and_from_file_roundtrip(self):
-        import tempfile
         import os
+        import tempfile
         m = self._map_with_entries()
         with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
             path = f.name
@@ -958,7 +1003,7 @@ class TestWriteCases(unittest.TestCase):
         pid = 2001
         self._seed_map_entry(pid, is_controlling=False)
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, '1', 'test01')
-        self.assertFalse(self.em._post_write_active,
+        self.assertFalse(self.em.post_write_active,
                          "Non-controlling switch must not activate scan window")
 
     def test_caseA2_controlling_opens_scan_window(self):
@@ -969,16 +1014,30 @@ class TestWriteCases(unittest.TestCase):
         pid = 1001
         self._seed_map_entry(pid, is_controlling=True, dynamic_pids=[22001])
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, '1', 'test02')
-        self.assertTrue(self.em._post_write_active,
+        self.assertTrue(self.em.post_write_active,
                         "Case A2 must open scan window")
         self.assertEqual(self.em._post_write_controlling_point, pid)
+
+    def test_caseA2_controlling_scan_window_sets_correct_expiry(self):
+        """_open_post_write_scan must set _post_write_until to now + duration,
+        not leave it unset/None or use a subtraction (which would make the
+        window expire immediately)."""
+        pid = 1001
+        self._seed_map_entry(pid, is_controlling=True, dynamic_pids=[22001])
+        fixed_now = 1_700_000_000.0
+        with patch('nibe_entity_manager.time.time', return_value=fixed_now):
+            self.em._handle_command_worker(self._make_switch_entity(pid), 1, '1', 'test02b')
+        self.assertEqual(
+            self.em._post_write_until,
+            fixed_now + self.em._post_write_duration,
+        )
 
     def test_caseA2_controlling_off_value_opens_scan_window(self):
         """Case A2: writing the off-value of a controlling switch also opens scan window."""
         pid = 1001
         self._seed_map_entry(pid, is_controlling=True, dynamic_pids=[22001])
         self.em._handle_command_worker(self._make_switch_entity(pid), 0, '0', 'test03')
-        self.assertTrue(self.em._post_write_active)
+        self.assertTrue(self.em.post_write_active)
         self.assertEqual(self.em._post_write_controlling_point, pid)
 
     def test_caseA3_unprocessed_always_runs_detection(self):
@@ -991,13 +1050,13 @@ class TestWriteCases(unittest.TestCase):
         self.em._run_learning_detection = lambda pid, val, _cid: detection_called.append((pid, val))
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, '1', 'test04')
         self.assertEqual(detection_called, [(pid, 1)])
-        self.assertTrue(self.em._post_write_active,
+        self.assertTrue(self.em.post_write_active,
                         "Learning detection must also activate scan window")
 
     def test_caseB_not_in_map_activates_scan(self):
         """Case B: point not in map → scan window activated as fallback."""
         self.em._handle_command_worker(self._make_switch_entity(9999), 1, '1', 'test06')
-        self.assertTrue(self.em._post_write_active)
+        self.assertTrue(self.em.post_write_active)
 
     def test_write_failure_does_not_activate_scan(self):
         """On write failure no scan window is activated."""
@@ -1005,7 +1064,7 @@ class TestWriteCases(unittest.TestCase):
         self._seed_map_entry(pid, is_controlling=False)
         self.em._api.write_point.return_value = False
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, '1', 'test07')
-        self.assertFalse(self.em._post_write_active)
+        self.assertFalse(self.em.post_write_active)
 
 
 # ===========================================================================
@@ -1089,13 +1148,14 @@ class TestPostWriteControllingPoint(unittest.TestCase):
             'entity_type': 'switch',
             'metadata': {'minValue': 0, 'maxValue': 1},
         }
-        em._post_write_controlling_point = controlling
         em.bulk_data = {controlling: {'raw_value': 1, 'is_ok': True}}
         em.initial_discovery_complete = True
         with patch.object(em, 'publish_enabled_state'), \
              patch.object(em, '_persist_active_dynamic'), \
              patch.object(em, '_persist_dynamic_map'):
-            em._publish_dynamic_changes([(dynamic_pid, {})], set())
+            em._publish_dynamic_changes(
+                [(dynamic_pid, {})], set(), controlling_point_id=controlling,
+            )
         self.assertIn(controlling, em.dynamic_point_map._table)
 
     def test_existing_dynamic_map_entry_used_without_recreation(self):
@@ -1105,7 +1165,6 @@ class TestPostWriteControllingPoint(unittest.TestCase):
         em = _make_em()
         controlling = 5501
         dynamic_pid = 23000
-        em._post_write_controlling_point = controlling
         em.bulk_data = {controlling: {'raw_value': 1, 'is_ok': True}}
         em.initial_discovery_complete = True
         em.dynamic_point_map._table[controlling] = DynamicPointEntry(
@@ -1115,7 +1174,9 @@ class TestPostWriteControllingPoint(unittest.TestCase):
         with patch.object(em, 'publish_enabled_state'), \
              patch.object(em, '_persist_active_dynamic'), \
              patch.object(em, '_persist_dynamic_map'):
-            em._publish_dynamic_changes([(dynamic_pid, {})], set())
+            em._publish_dynamic_changes(
+                [(dynamic_pid, {})], set(), controlling_point_id=controlling,
+            )
         self.assertIn(controlling, em.dynamic_point_map._table)
 
     def test_write_with_no_state_topic_skips_optimistic_publish(self):
@@ -1248,7 +1309,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 1, '1', 'cmd1')
         mock_learn.assert_not_called()
-        self.assertFalse(em._post_write_active)
+        self.assertFalse(em.post_write_active)
 
     def test_case_a2_fully_processed_controlling_opens_scan_window(self):
         """Fully processed AND controlling -> scan window opened.
@@ -1260,7 +1321,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 1, '1', 'cmd1')
         mock_learn.assert_not_called()
-        self.assertTrue(em._post_write_active)
+        self.assertTrue(em.post_write_active)
         self.assertEqual(em._post_write_controlling_point, 5102)
 
     def test_case_a2_excluded_when_firmware_removed(self):
@@ -1274,7 +1335,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 1, '1', 'cmd1')
         mock_learn.assert_not_called()
-        self.assertTrue(em._post_write_active)  # fell through to A3
+        self.assertTrue(em.post_write_active)  # fell through to A3
 
     def test_case_a3_unprocessed_value_always_runs_detection(self):
         """Learning is always active — an unprocessed value always starts
@@ -1288,7 +1349,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 2, '2', 'cmd1')
         mock_learn.assert_called_once_with(5102, 2, 'cmd1')
-        self.assertTrue(em._post_write_active)
+        self.assertTrue(em.post_write_active)
 
     def test_case_b_point_not_in_dynamic_map_falls_back_to_scan(self):
         """Point genuinely absent from dynamic_point_map -> fallback scan
@@ -1298,7 +1359,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 1, '1', 'cmd1')
         mock_learn.assert_not_called()
-        self.assertTrue(em._post_write_active)
+        self.assertTrue(em.post_write_active)
         self.assertEqual(em._post_write_controlling_point, 5102)
 
     def test_non_switch_select_entity_type_skips_dynamic_logic_entirely(self):
@@ -1312,7 +1373,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
                 self._entity_info(point_id=100, entity_type='number'), 50, '50', 'cmd1',
             )
         mock_learn.assert_not_called()
-        self.assertFalse(em._post_write_active)
+        self.assertFalse(em.post_write_active)
 
     def test_write_failure_does_not_touch_dynamic_logic(self):
         """A failed write must skip all dynamic-point branching entirely —
@@ -1324,7 +1385,7 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         with patch.object(em, '_run_learning_detection') as mock_learn:
             em._handle_command_worker(self._entity_info(), 1, '1', 'cmd1')
         mock_learn.assert_not_called()
-        self.assertFalse(em._post_write_active)
+        self.assertFalse(em.post_write_active)
 
     def test_successful_switch_write_publishes_optimistic_state(self):
         em = _make_em()
@@ -1371,7 +1432,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
 
     def test_post_write_scan_routes_new_point_as_dynamic(self):
         em = self._ready_em()
-        em._post_write_active = True
+        em.post_write_active = True
         em._api.fetch_bulk_points.return_value = self._response(300)
         with patch.object(em, '_publish_dynamic_changes') as mock_pub_dyn:
             em._fetch_bulk_data(detect_changes=True)
@@ -1388,7 +1449,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
         checks dynamic_points_by_value's values, not the controlling entry's
         own point_id, so the fixture's controlling entry uses a different id."""
         em = self._ready_em()
-        em._post_write_active = False
+        em.post_write_active = False
         em.dynamic_point_map._table[5102] = self._fake_dynamic_entry(
             controlling_id=5102, dynamic_dependent_id=301,
         )
@@ -1401,7 +1462,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
 
     def test_genuinely_unknown_point_outside_scan_window_indexed_as_static(self):
         em = self._ready_em()
-        em._post_write_active = False
+        em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._response(302, title='Firmware update point')
         with patch.object(em, '_publish_dynamic_changes') as mock_pub_dyn, \
              patch.object(em, '_index_point') as mock_index:
@@ -1429,7 +1490,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
         path) must skip the new-point routing entirely, regardless of
         scan window or dynamic-map state."""
         em = self._ready_em()
-        em._post_write_active = True
+        em.post_write_active = True
         em._api.fetch_bulk_points.return_value = self._response(304)
         with patch.object(em, '_publish_dynamic_changes') as mock_pub_dyn:
             em._fetch_bulk_data(detect_changes=False)
@@ -1499,7 +1560,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         with patch.object(em, '_publish_dynamic_changes') as mock_pub:
             em._fetch_bulk_data(detect_changes=True)
         mock_pub.assert_called_once()
-        _, disappeared_arg = mock_pub.call_args.args
+        _, disappeared_arg, *_rest = mock_pub.call_args.args
         self.assertEqual(disappeared_arg, {50827})
 
     def test_known_dynamic_but_not_currently_active_not_reported(self):
@@ -1538,13 +1599,13 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         actually dynamic — must be reported as disappeared even though it
         was never in dynamic_point_map at all."""
         em = self._ready_em()
-        em._post_write_active = True
+        em.post_write_active = True
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])  # 601 vanished
         with patch.object(em, '_publish_dynamic_changes') as mock_pub:
             em._fetch_bulk_data(detect_changes=True)
         mock_pub.assert_called_once()
-        _, disappeared_arg = mock_pub.call_args.args
+        _, disappeared_arg, *_rest = mock_pub.call_args.args
         self.assertIn(601, disappeared_arg)
 
     def test_post_write_scan_removes_vanished_point_from_baseline(self):
@@ -1552,7 +1613,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         this way must be permanently removed from baseline_point_ids, not
         just reported once and left in place."""
         em = self._ready_em()
-        em._post_write_active = True
+        em.post_write_active = True
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])
         with patch.object(em, '_publish_dynamic_changes'):
@@ -1565,7 +1626,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         must not be processed by both mechanisms redundantly — the
         newly_absent calculation explicitly excludes known_dynamic_ids."""
         em = self._ready_em()
-        em._post_write_active = True
+        em.post_write_active = True
         em.dynamic_point_map._table[700] = self._dynamic_entry(700, [701])
         em.baseline_point_ids = {701}  # also a known dynamic dependent
         em.active_dynamic_points = {701}
@@ -1574,7 +1635,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
             em._fetch_bulk_data(detect_changes=True)
         # 701 should be detected exactly once via the known-dynamic path,
         # not duplicated via the baseline path.
-        _, disappeared_arg = mock_pub.call_args.args
+        _, disappeared_arg, *_rest = mock_pub.call_args.args
         self.assertEqual(disappeared_arg, {701})
 
     def test_no_post_write_scan_baseline_disappearance_not_detected(self):
@@ -1582,7 +1643,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         NOT treated as a dynamic disappearance via this mechanism — only
         the known-dynamic-points path applies when no scan is active."""
         em = self._ready_em()
-        em._post_write_active = False
+        em.post_write_active = False
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])
         with patch.object(em, '_publish_dynamic_changes') as mock_pub:
@@ -1631,7 +1692,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
 class TestDynamicPointMapRemainingPaths(unittest.TestCase):
 
     def _make_map(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         dm = DynamicPointMap()
         entry = DynamicPointEntry(
             point_id=100, title='Test Switch', entity_type='switch',
@@ -1700,7 +1761,7 @@ class TestDynamicPointMapExpectedActive(unittest.TestCase):
     """Extended tests for expected_active_dynamic_points."""
 
     def test_multiple_controlling_entries(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         dm = DynamicPointMap()
         dm._table[100] = DynamicPointEntry(
             point_id=100, title='Sw1', entity_type='switch',
@@ -1717,7 +1778,7 @@ class TestDynamicPointMapExpectedActive(unittest.TestCase):
         self.assertEqual(expected, {1001, 1002, 2001})
 
     def test_overlapping_dynamic_points_from_different_controllers(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         dm = DynamicPointMap()
         dm._table[100] = DynamicPointEntry(
             point_id=100, title='Sw1', entity_type='switch',
@@ -1807,7 +1868,7 @@ class TestPendingWriteAbsentFromBulk(unittest.TestCase):
         bulk_raw must not be treated as a confirmation of the write."""
         em, pid, entity_info = self._setup()
         del em.bulk_data[pid]
-        em._post_write_active = False
+        em.post_write_active = False
         em._update_entity_state(entity_info)
         self.assertIn(pid, em.pending_writes,
                       "Pending entry must be retained when point absent from bulk_data")
@@ -1834,7 +1895,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
         from nibe_dynamic_map import DynamicPointEntry
         em = _make_em()
         em.initial_discovery_complete = True
-        em._post_write_active = False
+        em.post_write_active = False
         for pid in known_dynamic:
             entry = DynamicPointEntry(
                 point_id=pid, title=f'Dyn {pid}', entity_type='switch',
@@ -1868,11 +1929,11 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
             em._fetch_bulk_data(detect_changes=True)
         if expected:
             self.assertTrue(mock_pub.called)
-            _, actual = mock_pub.call_args.args
+            _, actual, *_rest = mock_pub.call_args.args
             self.assertEqual(actual, expected)
         else:
             if mock_pub.called:
-                _, actual = mock_pub.call_args.args
+                _, actual, *_rest = mock_pub.call_args.args
                 self.assertEqual(actual, set())
 
     @given(_PID_SET, _PID_SET, _PID_SET)
@@ -1881,7 +1942,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
         """Post-write: baseline − current_ids − known_dynamic ⊆ disappeared."""
         assume(current_ids)
         em = self._make_em_with_dynamic_map(known_dynamic, frozenset())
-        em._post_write_active = True
+        em.post_write_active = True
         em._post_write_until  = 1e18
         em.baseline_point_ids = set(baseline)
         for pid in current_ids:
@@ -1894,14 +1955,14 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
             em._fetch_bulk_data(detect_changes=True)
         if expected_newly_absent:
             self.assertTrue(mock_pub.called)
-            _, actual = mock_pub.call_args.args
+            _, actual, *_rest = mock_pub.call_args.args
             self.assertTrue(expected_newly_absent <= actual)
 
     @given(_PID_SET, _PID_SET)
     def test_non_dynamic_points_never_in_disappeared(self, all_pids, current_ids):
         """With no known-dynamic points and no post-write, disappeared must be empty."""
         em = self._make_em_with_dynamic_map(frozenset(), frozenset())
-        em._post_write_active = False
+        em.post_write_active = False
         for pid in all_pids:
             em.bulk_data[pid] = {'raw_value': 0, 'is_ok': True,
                                  'metadata': {}, 'title': '', 'string_value': ''}
@@ -1909,7 +1970,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
         with patch.object(em, '_publish_dynamic_changes') as mock_pub:
             em._fetch_bulk_data(detect_changes=True)
         if mock_pub.called:
-            _, actual = mock_pub.call_args.args
+            _, actual, *_rest = mock_pub.call_args.args
             self.assertEqual(actual, set())
 
 
@@ -1931,10 +1992,10 @@ class TestRecordOutcomeIsControllingGuard(unittest.TestCase):
 
     def _entry(self, **kwargs):
         from nibe_dynamic_map import DynamicPointEntry
-        defaults = dict(
-            point_id=100, title='Switch', entity_type='switch',
-            unprocessed_values={0, 1},
-        )
+        defaults = {
+            'point_id': 100, 'title': 'Switch', 'entity_type': 'switch',
+            'unprocessed_values': {0, 1},
+        }
         defaults.update(kwargs)
         return DynamicPointEntry(**defaults)
 
@@ -2001,7 +2062,7 @@ class TestFlushRangeCalculation(unittest.TestCase):
     """
 
     def _make_map(self, point_id, min_val=None, max_val=None):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[point_id] = DynamicPointEntry(
             point_id=point_id, title='T', entity_type='select',
@@ -2045,7 +2106,7 @@ class TestExpectedActiveContinueNotBreak(unittest.TestCase):
     """
 
     def _make_map_with_entries(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         # Entry 1: non-controlling — must be skipped, not stop iteration
         m._table[100] = DynamicPointEntry(
@@ -2083,7 +2144,7 @@ class TestRecordOutcomeLenZeroCheck(unittest.TestCase):
     """record_outcome: len(pts) == 0 not == 1 or != 0."""
 
     def _dmap(self, min_val=0, max_val=1):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[200] = DynamicPointEntry(
             point_id=200, title='T', entity_type='switch',
@@ -2182,7 +2243,7 @@ class TestExpectedActiveDynamicPointsValueLookup(unittest.TestCase):
     """
 
     def _make_map(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         # Controlling switch: value=1 → [300]; value=0 → []
         m._table[100] = DynamicPointEntry(
@@ -2214,7 +2275,7 @@ class TestExpectedActiveDynamicPointsValueLookup(unittest.TestCase):
 
     def test_firmware_removed_entry_skipped(self):
         """firmware_removed=True → entry skipped even if is_controlling=True."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[100] = DynamicPointEntry(
             point_id=100, title='T', entity_type='switch',
@@ -2298,8 +2359,9 @@ class TestToFileTmpPattern(unittest.TestCase):
 
     def test_to_file_returns_true_on_success(self):
         """Successful write → returns True."""
-        import tempfile
         import os
+        import tempfile
+
         from nibe_dynamic_map import DynamicPointMap
         m = DynamicPointMap()
         with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
@@ -2313,10 +2375,11 @@ class TestToFileTmpPattern(unittest.TestCase):
 
     def test_to_file_content_is_valid_json(self):
         """File written by to_file must contain valid JSON."""
-        import tempfile
         import json
         import os
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        import tempfile
+
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[100] = DynamicPointEntry(
             point_id=100, title='T', entity_type='switch',
@@ -2343,8 +2406,9 @@ class TestToFileTmpPattern(unittest.TestCase):
 
     def test_to_file_tmp_file_cleaned_up_on_success(self):
         """The .tmp file must not remain after a successful write."""
-        import tempfile
         import os
+        import tempfile
+
         from nibe_dynamic_map import DynamicPointMap
         m = DynamicPointMap()
         with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
@@ -2366,7 +2430,7 @@ class TestDynamicPointMapGet(unittest.TestCase):
     """
 
     def _map_with_entry(self):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[100] = DynamicPointEntry(
             point_id=100, title='T', entity_type='switch')
@@ -2400,7 +2464,7 @@ class TestRestoreFromBulkClearsFlag(unittest.TestCase):
     """
 
     def _map_with_removed(self, point_id=100):
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[point_id] = DynamicPointEntry(
             point_id=point_id, title='T', entity_type='switch',
@@ -2422,7 +2486,7 @@ class TestRestoreFromBulkClearsFlag(unittest.TestCase):
 
     def test_non_removed_point_unaffected(self):
         """Point with firmware_removed=False not in bulk → stays False."""
-        from nibe_dynamic_map import DynamicPointMap, DynamicPointEntry
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
         m = DynamicPointMap()
         m._table[100] = DynamicPointEntry(
             point_id=100, title='T', entity_type='switch',
@@ -2430,3 +2494,311 @@ class TestRestoreFromBulkClearsFlag(unittest.TestCase):
         )
         m.restore_from_bulk(set())   # not in bulk
         self.assertFalse(m._table[100].firmware_removed)
+
+    def test_flag_cleared_to_false_not_none(self):
+        """entry.firmware_removed must become False (not None) on restore.
+
+        assertFalse alone can't distinguish False from None; a mutant that
+        sets firmware_removed = None instead of False would still pass a
+        plain assertFalse check.
+        """
+        m = self._map_with_removed(100)
+        m.restore_from_bulk({100})
+        self.assertIs(m._table[100].firmware_removed, False)
+
+
+# ===========================================================================
+# Phase 2 rerun — remaining genuine survivors (full-rigor pass)
+# ===========================================================================
+
+
+class TestExpectedActiveDynamicPointsSecondContinue(unittest.TestCase):
+    """expected_active_dynamic_points: the second 'continue' (current_value is
+    None) must not stop iteration over the rest of the table (would become
+    'break' under mutation).
+    """
+
+    def test_entry_missing_current_value_does_not_block_later_entries(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        # Entry 100 is controlling but has no value in current_values —
+        # must be skipped via 'continue', not stop the whole loop.
+        m._table[100] = DynamicPointEntry(
+            point_id=100, title='T1', entity_type='switch',
+            is_controlling=True,
+            processed_values={0, 1}, unprocessed_values=set(),
+            dynamic_points_by_value={1: [999]},
+        )
+        # Entry 200 comes after 100 in iteration order and has a value present.
+        m._table[200] = DynamicPointEntry(
+            point_id=200, title='T2', entity_type='switch',
+            is_controlling=True,
+            processed_values={0, 1}, unprocessed_values=set(),
+            dynamic_points_by_value={1: [300]},
+        )
+        # current_values has no entry for 100, only for 200.
+        result = m.expected_active_dynamic_points({200: 1})
+        self.assertIn(300, result,
+                       "Entry with missing current value must not stop "
+                       "iteration over subsequent entries (continue, not break)")
+        self.assertNotIn(999, result)
+
+
+class TestPopulateFromBulkSecondContinue(unittest.TestCase):
+    """populate_from_bulk: the 'point_id in self._table' continue must skip
+    only the already-present point, not stop processing of later points.
+    """
+
+    def test_already_present_point_does_not_block_later_points(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[100] = DynamicPointEntry(
+            point_id=100, title='Existing', entity_type='switch',
+            processed_values={0, 1}, unprocessed_values=set(),
+        )
+        points = {
+            100: {'display_title': 'Existing', 'metadata': {'minValue': 0, 'maxValue': 1}},
+            200: {'display_title': 'New', 'metadata': {'minValue': 0, 'maxValue': 1}},
+        }
+        types = {100: 'switch', 200: 'switch'}
+        added = m.populate_from_bulk(points, types)
+        self.assertEqual(added, 1)
+        self.assertIn(200, m._table)
+        # Existing entry must be untouched (still fully processed)
+        self.assertEqual(m._table[100].unprocessed_values, set())
+
+
+class TestPopulateFromBulkMetadataDefault(unittest.TestCase):
+    """populate_from_bulk: point.get('metadata', {}) default must be {}, not
+    None — a None default would crash on the following meta.get(...) calls
+    when 'metadata' is absent from the point dict.
+    """
+
+    def test_missing_metadata_key_does_not_crash_and_defaults_range(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        points = {300: {'display_title': 'NoMeta'}}  # no 'metadata' key at all
+        types = {300: 'switch'}
+        added = m.populate_from_bulk(points, types)  # must not raise
+        self.assertEqual(added, 1)
+        entry = m.get(300)
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+
+
+class TestPopulateFromBulkMinMaxDefaults(unittest.TestCase):
+    """populate_from_bulk: minValue default 0, maxValue default 1 — both
+    must be used (not None, not a different fallback number) when the
+    respective metadata key is absent.
+    """
+
+    def test_missing_min_value_defaults_to_zero(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        # maxValue present, minValue absent entirely
+        points = {400: {'display_title': 'X', 'metadata': {'maxValue': 3}}}
+        types = {400: 'select'}
+        added = m.populate_from_bulk(points, types)  # must not raise
+        self.assertEqual(added, 1)
+        entry = m.get(400)
+        self.assertEqual(entry.unprocessed_values, {0, 1, 2, 3})
+
+    def test_missing_max_value_defaults_to_one(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        # minValue present, maxValue absent entirely
+        points = {500: {'display_title': 'Y', 'metadata': {'minValue': 0}}}
+        types = {500: 'switch'}
+        added = m.populate_from_bulk(points, types)  # must not raise
+        self.assertEqual(added, 1)
+        entry = m.get(500)
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+
+
+class TestPopulateFromBulkPointIdAssignment(unittest.TestCase):
+    """populate_from_bulk: entry.point_id must be the actual dict key used
+    during iteration, not None."""
+
+    def test_entry_point_id_matches_source_key(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        points = {777: {'display_title': 'Z', 'metadata': {'minValue': 0, 'maxValue': 1}}}
+        types = {777: 'switch'}
+        m.populate_from_bulk(points, types)
+        entry = m.get(777)
+        self.assertEqual(entry.point_id, 777)
+
+
+class TestPopulateFromBulkTitleLookup(unittest.TestCase):
+    """populate_from_bulk: title = point.get('display_title', f'Point {id}').
+
+    Covers both the key used ('display_title', not None/wrong-case/wrong-key)
+    and the fallback used (f'Point {id}', not None) when the key is present
+    vs. absent.
+    """
+
+    def test_present_display_title_is_used_verbatim(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        points = {600: {
+            'display_title': 'My Custom Title',
+            'metadata': {'minValue': 0, 'maxValue': 1},
+        }}
+        types = {600: 'switch'}
+        m.populate_from_bulk(points, types)
+        self.assertEqual(m.get(600).title, 'My Custom Title')
+
+    def test_absent_display_title_falls_back_to_point_id_string(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        points = {601: {'metadata': {'minValue': 0, 'maxValue': 1}}}  # no display_title
+        types = {601: 'switch'}
+        m.populate_from_bulk(points, types)
+        self.assertEqual(m.get(601).title, 'Point 601')
+
+
+class TestPopulateFromBulkFirmwareRemovedIsFalse(unittest.TestCase):
+    """populate_from_bulk: firmware_removed must be set explicitly to False
+    (not None) for freshly created entries."""
+
+    def test_new_entry_firmware_removed_is_false_not_none(self):
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        points = {700: {'display_title': 'A', 'metadata': {'minValue': 0, 'maxValue': 1}}}
+        types = {700: 'switch'}
+        m.populate_from_bulk(points, types)
+        self.assertIs(m.get(700).firmware_removed, False)
+
+
+class TestRecordOutcomeAllEmptyControllingDetermination(unittest.TestCase):
+    """record_outcome: once a >2-value (select) entry becomes fully processed
+    with every recorded value producing zero dynamic points, is_controlling
+    must become False (not stay None). Exercises three collaborating checks:
+    'is_controlling is None', the all_empty computation, and 'len(pts) == 0'
+    inside it.
+    """
+
+    def test_select_fully_processed_with_no_dynamic_points_becomes_false(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[900] = DynamicPointEntry(
+            point_id=900, title='Sel', entity_type='select',
+            processed_values=set(), unprocessed_values={0, 1, 2},
+        )
+        m.record_outcome(900, 0, [])
+        # Not fully processed yet — must remain undetermined.
+        self.assertIsNone(m.get(900).is_controlling)
+        m.record_outcome(900, 1, [])
+        self.assertIsNone(m.get(900).is_controlling)
+        m.record_outcome(900, 2, [])
+        # Now fully processed, every value produced zero dynamic points.
+        self.assertIs(m.get(900).is_controlling, False)
+
+
+class TestRecordOutcomeTwoValueInverseFinalDetermination(unittest.TestCase):
+    """record_outcome: for a 2-value (switch) entry, after the inverse-value
+    auto-inference runs, is_controlling must be finalised to False (not left
+    None) when the observed value produced no dynamic points.
+    """
+
+    def test_switch_single_call_with_no_points_sets_controlling_false(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[901] = DynamicPointEntry(
+            point_id=901, title='Sw', entity_type='switch',
+            processed_values=set(), unprocessed_values={0, 1},
+        )
+        m.record_outcome(901, 0, [])
+        entry = m.get(901)
+        # Inverse value (1) auto-inferred, entry now fully processed.
+        self.assertEqual(entry.unprocessed_values, set())
+        self.assertIs(entry.is_controlling, False)
+
+
+class TestFlushMetadataDefault(unittest.TestCase):
+    """flush: all_points_by_id.get(point_id, {}).get('metadata', {}) — both
+    defaults must be {} (not None), otherwise flush crashes on entries
+    whose point_id is absent from all_points_by_id, or whose point dict
+    lacks a 'metadata' key.
+    """
+
+    def test_point_absent_from_bulk_data_does_not_crash(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[100] = DynamicPointEntry(
+            point_id=100, title='T', entity_type='switch',
+            processed_values={0, 1}, unprocessed_values=set(),
+            is_controlling=True, dynamic_points_by_value={1: [200]},
+        )
+        # 100 not present in all_points_by_id at all.
+        m.flush({}, {})  # must not raise
+        entry = m.get(100)
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+        self.assertIsNone(entry.is_controlling)
+
+    def test_point_present_but_missing_metadata_key_does_not_crash(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[101] = DynamicPointEntry(
+            point_id=101, title='T', entity_type='switch',
+            processed_values={0, 1}, unprocessed_values=set(),
+            is_controlling=True, dynamic_points_by_value={1: [200]},
+        )
+        all_points = {101: {'display_title': 'T'}}  # no 'metadata' key
+        m.flush(all_points, {101: 'switch'})  # must not raise
+        entry = m.get(101)
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+
+
+class TestFlushMaxValDefault(unittest.TestCase):
+    """flush: meta.get('maxValue', 1) — default must be 1, not None/2, when
+    maxValue is absent from metadata."""
+
+    def test_missing_max_value_defaults_to_one(self):
+        from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
+        m = DynamicPointMap()
+        m._table[102] = DynamicPointEntry(
+            point_id=102, title='T', entity_type='switch',
+            processed_values={0, 1}, unprocessed_values=set(),
+        )
+        all_points = {102: {'metadata': {'minValue': 0}}}  # no maxValue
+        m.flush(all_points, {102: 'switch'})  # must not raise
+        entry = m.get(102)
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+
+
+class TestToFileTmpSuffixExact(unittest.TestCase):
+    """to_file: the temp file written to disk before the atomic rename must
+    be named exactly path + '.tmp'.
+
+    A prior test only checked that path + '.tmp' no longer exists *after*
+    the call — trivially true even if the mutant used a different suffix
+    entirely (since that file was never created). This test instead
+    captures the actual argument passed to os.replace during the call.
+    """
+
+    def test_replace_source_argument_is_dot_tmp_suffixed(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from nibe_dynamic_map import DynamicPointMap
+        m = DynamicPointMap()
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+            path = f.name
+        real_replace = os.replace
+        captured = {}
+
+        def spy_replace(src, dst):
+            captured['src'] = src
+            captured['dst'] = dst
+            return real_replace(src, dst)
+
+        try:
+            with patch('nibe_dynamic_map.os.replace', side_effect=spy_replace):
+                result = m.to_file(path)
+            self.assertTrue(result)
+            self.assertEqual(captured['src'], path + '.tmp')
+            self.assertEqual(captured['dst'], path)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
