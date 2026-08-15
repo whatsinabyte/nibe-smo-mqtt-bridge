@@ -11,6 +11,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.3] — 2026-08-15
+
+### Fixed
+- MQTT auto-discovery via the Supervisor Services API silently overrode an
+  explicitly configured `mqtt_host` (e.g. a user's own external broker IP)
+  whenever the official Mosquitto add-on was installed and registered —
+  the startup log would show `core-mosquitto:1883` instead of the
+  configured broker, with the connection then failing because that
+  internal hostname isn't resolvable outside HA's own Docker network.
+  Auto-discovery now only runs when `mqtt_host` is still at its default
+  value; any other value means the user made an explicit choice and is no
+  longer silently overridden.
+- `resubscribe_all()` (running on paho's MQTT network thread after a
+  broker reconnect) reassigned `value_cache` and `last_bulk_fetch` with no
+  lock, racing against the poll loop thread's own reads/writes of the same
+  two attributes. Both races were bounded and self-healing in practice,
+  but relied on CPython implementation details rather than being correct
+  by construction — both are now reassigned under `_em_lock`.
+- The "Flush Dynamic Map" debug button mutated `dynamic_point_map` and
+  persisted it to disk without holding `_em_lock`, while the poll thread
+  and the write-executor thread both correctly serialize the same table
+  via that lock — a genuine data-structure race, not just a stale read: a
+  flush landing mid-mutation on either of those threads could corrupt
+  `dynamic_point_map._table`. Now serialized the same way as the other two
+  mutators, with a regression test proving real mutual exclusion.
+- A logger-level leak in three `_build_logging` tests (`tests/test_generate.py`)
+  left `logging.getLogger('nibe')` at `DEBUG`/`INFO` for the rest of the
+  test session depending on execution order, which under one unlucky
+  `pytest-randomly` seed turned a mocked-time deadline check in
+  `_run_learning_detection` into a genuine CPU-bound infinite loop —
+  the actual cause of an intermittent CI timeout. Each test now restores
+  the logger's level in its `finally` block.
+- The pytest subprocess behind the "Run Test Suite" debug button now
+  launches with `start_new_session=True`, and a new `abort_test_suite()`
+  kills its whole process group (not just the top-level PID) as the first
+  step of the add-on's shutdown sequence — killing only the top-level
+  process left `pytest -n auto`'s xdist workers running as orphans, still
+  holding the output pipes open, so shutdown would hang waiting for pipe
+  EOF that never came. An aborted run is now reported as a distinct
+  `aborted` status with no HA notification, instead of misreporting the
+  kill's exit code as a real test failure.
+- `run_test_suite` now resolves the pytest interpreter via `shutil.which()`
+  when `sys.executable` comes back empty (observed on the ODROID's
+  Alpine/musl container), and runs on its own dedicated executor instead
+  of sharing the 2-worker `mgmt_executor` pool, so a long test run can no
+  longer be queued behind (or itself block) unrelated management commands.
+- Fixed the success-path test-result summary: the raw pytest-html report
+  line wasn't reliably stripped, skipped-test progress dots weren't
+  recognised as noise, and the replacement report link was plain text
+  instead of a real Markdown link, which silently broke its clickability.
+
+### Added
+- Dependabot config (`pip` + `github-actions`, grouped weekly updates) and
+  a CI workflow that runs the full test suite on every push/PR to `main`.
+
+[1.0.3]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.3
+
+---
+
 ## [1.0.2] — 2026-08-14
 
 ### Fixed
