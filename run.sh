@@ -22,7 +22,17 @@ REMOVE_FRONTEND=$(jq -r '.remove_frontend // false' /data/options.json 2>/dev/nu
 # exposes its connection details via the services API. This lets users skip
 # manual MQTT configuration entirely. Falls back to options.json values if
 # the service is unavailable or returns an error.
-if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+#
+# config.yaml's mqtt_host default is the literal string "core-mosquitto" —
+# options.json therefore ALWAYS has a non-empty mqtt_host, so "is it set"
+# can't distinguish "user left the default" from "user explicitly typed
+# their own broker host/IP". Only auto-discover when mqtt_host is still at
+# that default value; a user who changed it to anything else (their own
+# broker's hostname or IP) must not have that explicit choice silently
+# overridden by whatever the Supervisor Services API happens to report.
+MQTT_HOST_OPT=$(jq -r '.mqtt_host // "core-mosquitto"' /data/options.json 2>/dev/null || echo "core-mosquitto")
+
+if [ "${MQTT_HOST_OPT}" = "core-mosquitto" ] && [ -n "${SUPERVISOR_TOKEN:-}" ]; then
     MQTT_SVC=$(curl -sf \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
         http://supervisor/services/mqtt 2>/dev/null || echo "")
