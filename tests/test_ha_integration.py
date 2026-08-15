@@ -750,6 +750,56 @@ class TestManagementHandlers(unittest.TestCase):
             self.em.all_points_by_id, {200: ''},
         )
 
+    def test_flush_dynamic_map_serializes_against_em_lock(self):
+        """dynamic_point_map._table is also mutated (under _em_lock) by
+        _run_learning_detection (write executor thread) and
+        _publish_dynamic_changes (poll thread) — the flush handler runs on
+        mgmt_executor's thread and must serialize against those the same
+        way, or a flush landing mid-mutation on either of those threads
+        corrupts the table. Regression test proving real mutual exclusion:
+        holds em._em_lock on the main thread and confirms the flush handler
+        genuinely blocks on it via a separate executor thread, rather than
+        sailing through — not just that the final state looks right.
+
+        _handle_flush_dynamic_map itself only submits the real work (_do,
+        an inner closure) to self.executor and returns immediately — so the
+        future for calling the handler directly would report done() the
+        instant it finishes queuing, regardless of whether the queued _do()
+        has even started. Capturing the real submit()'s return value gets
+        the *inner* future for _do itself, which is the one that actually
+        acquires _em_lock and is what this test needs to observe.
+        """
+        import time as _time
+
+        original_submit = self.executor.submit
+        captured_futures = []
+        def _capturing_submit(fn, *a, **kw):
+            fut = original_submit(fn, *a, **kw)
+            captured_futures.append(fut)
+            return fut
+
+        with patch.object(self.em.dynamic_point_map, 'flush'), \
+             patch.object(self.em, '_persist_dynamic_map'):
+            handler = self._get_handler('FLUSH_MAP_PRESS')
+            with patch.object(self.executor, 'submit', side_effect=_capturing_submit):
+                with self.em._em_lock:
+                    handler(None, None, self._msg(''))
+                    inner_future = captured_futures[0]
+                    # Give the queued _do() ample opportunity to run if it
+                    # were NOT actually blocked on _em_lock — everything it
+                    # touches besides the lock is mocked, so a real race
+                    # would complete almost instantly.
+                    _time.sleep(0.3)
+                    self.assertFalse(
+                        inner_future.done(),
+                        "Flush Dynamic Map's queued work completed while "
+                        "_em_lock was held by another thread — the "
+                        "flush/persist calls are not actually serialized "
+                        "by the lock",
+                    )
+                # Lock released — the queued work must now complete promptly.
+                inner_future.result(timeout=5)
+
     # ── run test suite handler ────────────────────────────────────────────────
 
     def _run_tests_call_args(self):

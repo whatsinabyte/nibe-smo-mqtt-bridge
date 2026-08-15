@@ -999,8 +999,17 @@ class EntityManager:
         """
         current_time = time.time()
 
-        if force:
-            self.last_bulk_fetch = 0
+        # last_bulk_fetch is also reassigned (to 0) by resubscribe_all() on
+        # paho's MQTT network thread after a broker reconnect — _em_lock
+        # serializes that write against this method's own read/write of the
+        # same attribute rather than leaving them as an unsynchronized race.
+        # Only the quick read/compare/write is under the lock; the slow
+        # _fetch_bulk_data() call below runs outside it so a reconnect isn't
+        # blocked for the duration of an in-flight API fetch.
+        with self._em_lock:
+            if force:
+                self.last_bulk_fetch = 0
+            last_bulk_fetch = self.last_bulk_fetch
 
         # Use faster polling during the post-write scan window so dynamic
         # point changes surface quickly after a switch write.
@@ -1018,7 +1027,7 @@ class EntityManager:
             else self.bulk_interval
         )
 
-        if (current_time - self.last_bulk_fetch) >= effective_interval:
+        if (current_time - last_bulk_fetch) >= effective_interval:
             failures_before = self.api_consecutive_failures
             known_count   = len(self.dynamic_point_map.all_known_dynamic_point_ids())
             should_detect = bool(known_count) or _post_write_now_active
@@ -1026,7 +1035,8 @@ class EntityManager:
             lock_was_busy = (result is False
                              and self.api_consecutive_failures == failures_before)
             if not lock_was_busy:
-                self.last_bulk_fetch = current_time
+                with self._em_lock:
+                    self.last_bulk_fetch = current_time
 
         if not self.active_entities_by_id:
             return
@@ -2354,9 +2364,16 @@ class EntityManager:
         The value cache is cleared on reconnect so that all entity states are
         republished immediately rather than waiting for a value change — HA
         loses all retained state when the broker restarts.
+
+        value_cache and last_bulk_fetch are reassigned under _em_lock — this
+        runs on paho's own MQTT network thread (via on_connect), concurrently
+        with the poll loop thread reading/writing the same two attributes in
+        update_all_states(). Without the lock the two threads race on plain,
+        unsynchronized attribute writes.
         """
-        self.value_cache = ValueCache()
-        self.last_bulk_fetch = 0
+        with self._em_lock:
+            self.value_cache = ValueCache()
+            self.last_bulk_fetch = 0
         entity_count = 0
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())

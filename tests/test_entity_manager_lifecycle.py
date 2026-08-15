@@ -1918,6 +1918,50 @@ class TestResubscribeAll(unittest.TestCase):
         em._on_active_dynamic_message = MagicMock()
         return em
 
+    def test_reassigns_value_cache_and_last_bulk_fetch_under_em_lock(self):
+        """resubscribe_all() runs on paho's own MQTT network thread (via
+        on_connect after a broker reconnect), concurrently with the poll
+        loop thread reading/writing the same two attributes in
+        update_all_states(). Regression test for a real race: reassigning
+        value_cache/last_bulk_fetch used to be two plain, unsynchronized
+        attribute writes. Proves actual mutual exclusion — not just that
+        the final values happen to look right — by holding _em_lock on the
+        main thread and confirming resubscribe_all() genuinely blocks on
+        it from a background thread, rather than sailing through."""
+        import threading
+        import time as _time
+
+        em = self._make_em_with_resubscribe()
+        started = threading.Event()
+        finished = threading.Event()
+
+        def _run():
+            started.set()
+            em.resubscribe_all()
+            finished.set()
+
+        with em._em_lock:
+            t = threading.Thread(target=_run)
+            t.start()
+            self.assertTrue(started.wait(timeout=5), "background thread never started")
+            # Give resubscribe_all() ample opportunity to run if it were
+            # NOT actually blocked on _em_lock — a real race here would
+            # complete almost instantly since everything else it touches
+            # (self.mqtt, callbacks) is mocked.
+            _time.sleep(0.3)
+            self.assertFalse(
+                finished.is_set(),
+                "resubscribe_all() completed while _em_lock was held by "
+                "another thread — the value_cache/last_bulk_fetch "
+                "reassignment is not actually serialized by the lock",
+            )
+
+        # Lock released — resubscribe_all() must now complete promptly.
+        self.assertTrue(finished.wait(timeout=5),
+                        "resubscribe_all() never completed after _em_lock was released")
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+
     def test_resubscribes_entity_command_topics(self):
         em = self._make_em_with_resubscribe()
         entity_info = {
