@@ -17,7 +17,8 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 class TestHaIntegrationConstantsProperties(unittest.TestCase):
@@ -104,7 +105,7 @@ class TestPubStateProperties(unittest.TestCase):
 
     @given(st.text(min_size=1, max_size=100), st.text(max_size=200))
     def test_never_raises_on_success(self, topic, payload):
-        pub, mqtt = self._pub()
+        pub, _mqtt = self._pub()
         pub._pub_state(topic, payload)  # must not raise
 
     @given(st.text(min_size=1, max_size=100), st.text(max_size=200))
@@ -141,20 +142,20 @@ class TestSubProperties(unittest.TestCase):
 
     @given(st.text(min_size=1, max_size=100))
     def test_calls_mqtt_subscribe(self, topic):
-        h, mqtt, em = self._handler()
+        h, mqtt, _em = self._handler()
         h._sub(topic, MagicMock())
         mqtt.subscribe.assert_called_once_with(topic, qos=1)
 
     @given(st.text(min_size=1, max_size=100))
     def test_calls_message_callback_add(self, topic):
-        h, mqtt, em = self._handler()
+        h, mqtt, _em = self._handler()
         handler = MagicMock()
         h._sub(topic, handler)
         mqtt.message_callback_add.assert_called_once_with(topic, handler)
 
     @given(st.text(min_size=1, max_size=100))
     def test_calls_register_mgmt_subscription(self, topic):
-        h, mqtt, em = self._handler()
+        h, _mqtt, em = self._handler()
         handler = MagicMock()
         h._sub(topic, handler)
         em.register_mgmt_subscription.assert_called_once_with(topic, handler, 1)
@@ -169,7 +170,7 @@ class TestSubProperties(unittest.TestCase):
 
     @given(st.text(min_size=1, max_size=100))
     def test_never_raises(self, topic):
-        h, mqtt, em = self._handler()
+        h, _mqtt, _em = self._handler()
         h._sub(topic, MagicMock())  # must not raise
 
 
@@ -2133,7 +2134,7 @@ class TestHandleEventDeadCodeFix(unittest.TestCase):
     def test_entity_disabled_via_ha_now_fires(self):
         """HA disabling an entity (disabled_by changes from None to 'user')
         must call _on_entity_disabled — previously this never fired."""
-        w, em = self._watcher()
+        w, _em = self._watcher()
         event = {
             'data': {
                 'action': 'update',
@@ -2148,7 +2149,7 @@ class TestHandleEventDeadCodeFix(unittest.TestCase):
     def test_entity_enabled_via_ha_now_fires(self):
         """HA re-enabling an entity (disabled_by changes from 'user' to None)
         must call _on_entity_enabled — previously this never fired."""
-        w, em = self._watcher()
+        w, _em = self._watcher()
         event = {
             'data': {
                 'action': 'update',
@@ -2164,7 +2165,7 @@ class TestHandleEventDeadCodeFix(unittest.TestCase):
         """An update event without a disabled_by change (e.g. rename) must
         still update the unique_id_map cache — confirming the cache-update
         logic wasn't lost in the refactor."""
-        w, em = self._watcher()
+        w, _em = self._watcher()
         event = {
             'data': {
                 'action': 'update',
@@ -2178,7 +2179,7 @@ class TestHandleEventDeadCodeFix(unittest.TestCase):
 
     def test_update_without_disabled_by_does_not_call_enable_disable(self):
         """Sanity: a rename/name-change update must not trigger enable/disable."""
-        w, em = self._watcher()
+        w, _em = self._watcher()
         event = {
             'data': {
                 'action': 'update',
@@ -2236,7 +2237,7 @@ class TestOnEntityDisabledRefactor(unittest.TestCase):
     def test_static_point_disabled_no_notification(self):
         """Disabling a static point must call disable_entity and NOT send
         a notification — an intentional disable needs no explanation."""
-        w, em, pub = self._watcher()
+        w, em, _pub = self._watcher()
         em.all_points_by_id = {5110: {'is_dynamic': False}}
         with patch('nibe_ha_integration.notify_ha') as mock_notify:
             w._on_entity_disabled('switch.nibe_5110')
@@ -2280,7 +2281,7 @@ class TestOnEntityDisabledRefactor(unittest.TestCase):
         """build_disable_notification must receive the real point_id,
         ha_entity_id, and action='disabled' — never checked beyond the
         mock's canned return value."""
-        w, em, pub = self._watcher()
+        w, em, _pub = self._watcher()
         em.all_points_by_id = {5110: {'is_dynamic': False}}
         with patch('nibe_ha_integration.notify_ha'):
             w._on_entity_disabled('switch.nibe_5110')
@@ -2292,7 +2293,7 @@ class TestOnEntityDisabledRefactor(unittest.TestCase):
         """The dynamic-point path's notify_ha call must use the real
         title/message from build_disable_notification's return value, and
         the real notification_id — not None or a mismatched value."""
-        w, em, pub = self._watcher()
+        w, em, _pub = self._watcher()
         em.all_points_by_id = {5110: {'is_dynamic': True}}
         em.bulk_data = {}
         em.build_disable_notification.return_value = (
@@ -2542,53 +2543,65 @@ class TestNotifyHa(unittest.TestCase):
 
     def test_no_token_does_not_call_urlopen(self):
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {}, clear=True):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(None, 'title', 'msg', 'test_id')
-                mock_open.assert_not_called()
+        with (
+            patch.dict('os.environ', {}, clear=True),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 'title', 'msg', 'test_id')
+            mock_open.assert_not_called()
 
     def test_with_token_calls_urlopen(self):
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'fake_token'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(None, 'Test Title', 'Test message', 'nibe_test')
-                mock_open.assert_called_once()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'fake_token'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 'Test Title', 'Test message', 'nibe_test')
+            mock_open.assert_called_once()
 
     def test_request_contains_notification_id(self):
         import json as _json
 
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'fake_token'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(None, 'Title', 'Msg', 'nibe_test_id')
-                req = mock_open.call_args[0][0]
-                payload = _json.loads(req.data)
-                self.assertEqual(payload['notification_id'], 'nibe_test_id')
-                self.assertEqual(payload['title'], 'Title')
-                self.assertEqual(payload['message'], 'Msg')
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'fake_token'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 'Title', 'Msg', 'nibe_test_id')
+            req = mock_open.call_args[0][0]
+            payload = _json.loads(req.data)
+            self.assertEqual(payload['notification_id'], 'nibe_test_id')
+            self.assertEqual(payload['title'], 'Title')
+            self.assertEqual(payload['message'], 'Msg')
 
     def test_request_uses_post_method(self):
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(None, 't', 'm', 'id')
-                req = mock_open.call_args[0][0]
-                self.assertEqual(req.method, 'POST')
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 't', 'm', 'id')
+            req = mock_open.call_args[0][0]
+            self.assertEqual(req.method, 'POST')
 
     def test_request_has_auth_header(self):
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'mytoken'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(None, 't', 'm', 'id')
-                req = mock_open.call_args[0][0]
-                self.assertIn('Bearer mytoken', req.get_header('Authorization'))
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'mytoken'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 't', 'm', 'id')
+            req = mock_open.call_args[0][0]
+            self.assertIn('Bearer mytoken', req.get_header('Authorization'))
 
     def test_urlopen_failure_does_not_raise(self):
         """Network errors must be swallowed — not raise to the caller."""
         from nibe_ha_integration import notify_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen', side_effect=Exception('timeout')):
-                notify_ha(None, 't', 'm', 'id')  # must not raise
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen', side_effect=Exception('timeout')),
+        ):
+            notify_ha(None, 't', 'm', 'id')  # must not raise
 
     def test_mqtt_client_argument_not_used(self):
         """mqtt_client is accepted for API compatibility but not used.
@@ -2599,9 +2612,11 @@ class TestNotifyHa(unittest.TestCase):
         """
         from nibe_ha_integration import notify_ha
         sentinel = object()
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                notify_ha(sentinel, 't', 'm', 'id')
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(sentinel, 't', 'm', 'id')
         mock_open.assert_called_once()
 
 
@@ -2611,42 +2626,52 @@ class TestDismissHa(unittest.TestCase):
 
     def test_no_token_does_not_call_urlopen(self):
         from nibe_ha_integration import dismiss_ha
-        with patch.dict('os.environ', {}, clear=True):
-            with patch('urllib.request.urlopen') as mock_open:
-                dismiss_ha(None, 'test_id')
-                mock_open.assert_not_called()
+        with (
+            patch.dict('os.environ', {}, clear=True),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'test_id')
+            mock_open.assert_not_called()
 
     def test_with_token_calls_urlopen(self):
         from nibe_ha_integration import dismiss_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                dismiss_ha(None, 'nibe_test')
-                mock_open.assert_called_once()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'nibe_test')
+            mock_open.assert_called_once()
 
     def test_request_contains_notification_id(self):
         import json as _json
 
         from nibe_ha_integration import dismiss_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                dismiss_ha(None, 'nibe_dismiss_id')
-                req = mock_open.call_args[0][0]
-                payload = _json.loads(req.data)
-                self.assertEqual(payload['notification_id'], 'nibe_dismiss_id')
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'nibe_dismiss_id')
+            req = mock_open.call_args[0][0]
+            payload = _json.loads(req.data)
+            self.assertEqual(payload['notification_id'], 'nibe_dismiss_id')
 
     def test_urlopen_failure_does_not_raise(self):
         from nibe_ha_integration import dismiss_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen', side_effect=Exception('refused')):
-                dismiss_ha(None, 'id')  # must not raise
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen', side_effect=Exception('refused')),
+        ):
+            dismiss_ha(None, 'id')  # must not raise
 
     def test_dismiss_url_is_dismiss_endpoint(self):
         from nibe_ha_integration import dismiss_ha
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('urllib.request.urlopen') as mock_open:
-                dismiss_ha(None, 'id')
-                req = mock_open.call_args[0][0]
-                self.assertIn('dismiss', req.full_url)
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'id')
+            req = mock_open.call_args[0][0]
+            self.assertIn('dismiss', req.full_url)
 
 
 # ===========================================================================
@@ -2694,10 +2719,12 @@ class TestDoRefreshRegistry(unittest.TestCase):
 
     def test_no_token_returns_immediately(self):
         w = self._make_watcher()
-        with patch.dict('os.environ', {}, clear=True):
-            with patch('websocket.create_connection') as mock_conn:
-                w.refresh_registry()
-                mock_conn.assert_not_called()
+        with (
+            patch.dict('os.environ', {}, clear=True),
+            patch('websocket.create_connection') as mock_conn,
+        ):
+            w.refresh_registry()
+            mock_conn.assert_not_called()
 
     def test_nibe_entries_added_to_map(self):
         w = self._make_watcher()
@@ -2708,9 +2735,11 @@ class TestDoRefreshRegistry(unittest.TestCase):
              'platform': 'mqtt'},
         ]
         ws = self._mock_ws(entries)
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         self.assertEqual(w._unique_id_map.get('nibe_1234'), 'sensor.nibe_1234')
         self.assertEqual(w._unique_id_map.get('nibe_5678'), 'switch.nibe_5678')
 
@@ -2723,9 +2752,11 @@ class TestDoRefreshRegistry(unittest.TestCase):
              'platform': 'other'},
         ]
         ws = self._mock_ws(entries)
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         self.assertIn('nibe_100', w._unique_id_map)
         self.assertNotIn('other_integration', w._unique_id_map)
 
@@ -2733,25 +2764,30 @@ class TestDoRefreshRegistry(unittest.TestCase):
         """_refresh_timer must be set to None after the fetch completes."""
         w = self._make_watcher()
         ws = self._mock_ws([])
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         self.assertIsNone(w._refresh_timer)
 
     def test_websocket_exception_does_not_raise(self):
         """Network errors must be swallowed — registry fetch is best-effort."""
         w = self._make_watcher()
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection',
-                       side_effect=Exception('connection refused')):
-                w.refresh_registry()  # must not raise
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', side_effect=Exception('connection refused')),
+        ):
+            w.refresh_registry()  # must not raise
 
     def test_empty_result_does_not_crash(self):
         w = self._make_watcher()
         ws = self._mock_ws([])
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         self.assertEqual(w._unique_id_map, {})
 
     def test_missing_result_key_with_success_true_does_not_crash(self):
@@ -2766,17 +2802,21 @@ class TestDoRefreshRegistry(unittest.TestCase):
             _json.dumps({'type': 'auth_ok'}),
             _json.dumps({'id': 1, 'type': 'result', 'success': True}),  # no 'result'
         ]
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()  # must not raise
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()  # must not raise
         self.assertEqual(w._unique_id_map, {})
 
     def test_create_connection_called_with_correct_url_and_timeout(self):
         w = self._make_watcher()
         ws = self._mock_ws([])
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws) as mock_conn:
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws) as mock_conn,
+        ):
+            w.refresh_registry()
         mock_conn.assert_called_once_with(
             "ws://supervisor/core/websocket", timeout=10,
         )
@@ -2784,9 +2824,11 @@ class TestDoRefreshRegistry(unittest.TestCase):
     def test_ws_send_uses_correct_registry_list_payload(self):
         w = self._make_watcher()
         ws = self._mock_ws([])
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         sent = json.loads(ws.send.call_args.args[0])
         self.assertEqual(sent, {"id": 1, "type": "config/entity_registry/list"})
 
@@ -3513,9 +3555,11 @@ class TestConnectAndSubscribe(unittest.TestCase):
     def test_wrong_greeting_type_closes_and_raises(self):
         w = self._make_watcher()
         ws_mod, ws = self._make_ws_mod([{"type": "auth_ok"}])  # wrong greeting
-        with patch.dict('sys.modules', {'websocket': ws_mod}):
-            with self.assertRaises(RuntimeError):
-                w._connect_and_subscribe("tok")
+        with (
+            patch.dict('sys.modules', {'websocket': ws_mod}),
+            self.assertRaises(RuntimeError),
+        ):
+            w._connect_and_subscribe("tok")
         ws.close.assert_called_once()
 
     def test_auth_failure_closes_and_raises(self):
@@ -3524,9 +3568,11 @@ class TestConnectAndSubscribe(unittest.TestCase):
             {"type": "auth_required"},
             {"type": "auth_invalid"},          # auth failed
         ])
-        with patch.dict('sys.modules', {'websocket': ws_mod}):
-            with self.assertRaises(RuntimeError):
-                w._connect_and_subscribe("tok")
+        with (
+            patch.dict('sys.modules', {'websocket': ws_mod}),
+            self.assertRaises(RuntimeError),
+        ):
+            w._connect_and_subscribe("tok")
         ws.close.assert_called_once()
 
     def test_subscription_failure_closes_and_raises(self):
@@ -3536,9 +3582,11 @@ class TestConnectAndSubscribe(unittest.TestCase):
             {"type": "auth_ok"},
             {"id": 1, "type": "result", "success": False},   # sub failed
         ])
-        with patch.dict('sys.modules', {'websocket': ws_mod}):
-            with self.assertRaises(RuntimeError):
-                w._connect_and_subscribe("tok")
+        with (
+            patch.dict('sys.modules', {'websocket': ws_mod}),
+            self.assertRaises(RuntimeError),
+        ):
+            w._connect_and_subscribe("tok")
         ws.close.assert_called_once()
 
     def test_connects_authenticates_and_subscribes_with_real_arguments(self):
@@ -4176,7 +4224,7 @@ class TestRefreshRegistryAuthHandshake(unittest.TestCase):
         """Full happy-path: correct handshake, successful registry fetch,
         unique_id_map populated."""
         w = self._make_watcher()
-        ws_mod, ws = self._make_ws([
+        ws_mod, _ws = self._make_ws([
             {"type": "auth_required"},
             {"type": "auth_ok"},
             {"id": 1, "type": "result", "success": True, "result": [
@@ -4767,7 +4815,7 @@ class TestAbortTestSuite(unittest.TestCase):
                         mqtt_client, notify_fn, dismiss_fn,
                         lambda: 'http://ha.local', done_event,
                     )
-            except Exception as exc:  # pragma: no cover — surfaced via assertion below
+            except Exception as exc:  # noqa: BLE001 — surfaced via assertion below, not swallowed  # pragma: no cover
                 run_thread_exception.append(exc)
 
         t = threading.Thread(target=_run)
@@ -4948,8 +4996,9 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         return mqtt_client, notify_fn, dismiss_fn, done_event
 
     def _attrs(self, mqtt_client):
-        from nibe_mqtt_publisher import MgmtTopic
         import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
         # There are two ATTRS publishes: the initial 'running' one and the
         # final result one — the final one has a 'status' other than
         # 'running' inside its JSON payload; find that one specifically.
@@ -5009,8 +5058,9 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
 
     def test_timeout_sets_timed_out_status_and_notifies(self):
         import subprocess as _sp
+
         from nibe_mqtt_publisher import MgmtTopic
-        mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+        mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
             subprocess_side_effect=_sp.TimeoutExpired(cmd='pytest', timeout=14400),
         )
         states = [c.args[1] for c in mqtt_client.publish.call_args_list
@@ -5061,7 +5111,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         diagnosable from the notification alone rather than requiring log
         access to figure out what path was even tried."""
         with patch('sys.executable', '/usr/bin/python3'):
-            mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+            _mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
                 subprocess_side_effect=FileNotFoundError("no such file: python3"),
             )
         kwargs = notify_fn.call_args.kwargs
@@ -5069,7 +5119,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
 
     def test_launch_error_sets_error_status_and_notifies_with_exception_text(self):
         from nibe_mqtt_publisher import MgmtTopic
-        mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+        mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
             subprocess_side_effect=OSError('pytest executable not found'),
         )
         states = [c.args[1] for c in mqtt_client.publish.call_args_list
@@ -5089,7 +5139,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
     def test_notification_link_uses_real_base_url(self):
         """The 'View full report' link must use the real get_base_url_fn()
         result, not a hardcoded/placeholder host."""
-        mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+        _mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
             proc_returncode=1, proc_stdout='1 failed, 0 passed in 1.0s',
             get_base_url_fn=lambda: 'http://distinctive-host:9999',
         )
@@ -5115,7 +5165,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
             + '\n======================================================================\n'
             '40 failed in 2.00s'
         )
-        mqtt_client, notify_fn, dismiss_fn, _ = self._run(
+        _mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
             proc_returncode=1, proc_stdout=long_output,
             get_base_url_fn=lambda: 'http://ha.local:8123',
         )
@@ -5137,9 +5187,8 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         self.assertFalse(done_event.is_set())
 
     def test_elapsed_under_60s_formatted_with_decimal_seconds(self):
-        import time as _time
         times = iter([1000.0, 1005.5])
-        mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        _mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
         with patch('time.monotonic', side_effect=lambda: next(times)):
             mqtt_client2, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
         attrs = self._attrs(mqtt_client2)
@@ -5147,7 +5196,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
 
     def test_elapsed_over_60s_formatted_as_minutes_and_seconds(self):
         times = iter([1000.0, 1195.0])  # 195s elapsed = 3m 15s
-        mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        _mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
         with patch('time.monotonic', side_effect=lambda: next(times)):
             mqtt_client2, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
         attrs = self._attrs(mqtt_client2)
@@ -5486,9 +5535,11 @@ class TestRefreshRegistrySuccessFalse(unittest.TestCase):
             json.dumps({'id': 1, 'type': 'result',
                         'success': False, 'error': {'code': 'unknown'}}),
         ]
-        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}):
-            with patch('websocket.create_connection', return_value=ws):
-                w.refresh_registry()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+        ):
+            w.refresh_registry()
         # Map must not be populated from the failed response
         self.assertNotIn('nibe_100', w._unique_id_map)
         # The pre-existing entry is preserved (not cleared)

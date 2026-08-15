@@ -391,7 +391,7 @@ def reverse_divisor(display_value: float, divisor: int) -> int:
     the full rationale.
     """
     effective = divisor if divisor and divisor != 0 else 1
-    return int(round(display_value * effective))
+    return round(display_value * effective)
 
 
 def create_entity_id(point_id: int) -> str:

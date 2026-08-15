@@ -293,7 +293,7 @@ def run_test_suite(
                 'Check requirements-test.txt and rebuild the add-on.',
                 report_path,
             )
-        except Exception as _e:
+        except Exception as _e:  # noqa: BLE001 — best-effort cosmetic post-processing; must not fail the test run
             log_commands.warning(
                 'Could not post-process HTML report at %s: %s',
                 report_path,

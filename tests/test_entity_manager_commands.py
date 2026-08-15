@@ -12,7 +12,8 @@ from unittest.mock import MagicMock, patch
 from conftest import (
     _make_em,
 )
-from hypothesis import example, given, strategies as st
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 
 class TestMqttCommandPayloadFuzzing(unittest.TestCase):
@@ -87,7 +88,7 @@ class TestMqttCommandPayloadFuzzing(unittest.TestCase):
         """After any command, pending_writes must remain structurally sound."""
         em, entity_info = self._em_with_entity()
         em._handle_command(entity_info, self._message(payload_bytes))
-        for _pid, entry in em.pending_writes.items():
+        for entry in em.pending_writes.values():
             self.assertIn('value', entry)
             self.assertIn('time', entry)
 

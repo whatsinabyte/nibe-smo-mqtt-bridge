@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Nibe SMO S40 → Home Assistant MQTT bridge.
 
@@ -306,7 +305,7 @@ def load_config(cli_args=None) -> BridgeConfig:
             cfg.mqtt_password   = _yaml_val('mqtt_password')  or cfg.mqtt_password
             cfg.nibe_basic_auth = _yaml_val('nibe_basic_auth') or cfg.nibe_basic_auth
             break
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             deferred_warnings.append(f"Could not read secrets file {path}: {e}")
 
     # ── 2. HA add-on options.json ──────────────────────────────────────────
@@ -339,7 +338,7 @@ def load_config(cli_args=None) -> BridgeConfig:
                 cfg.mqtt_tls = True
             if opts.get('mqtt_ca_cert'):
                 cfg.mqtt_ca_cert = str(opts['mqtt_ca_cert'])
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         deferred_warnings.append(f"Could not read /data/options.json: {e}")
 
     # ── 3. Environment variables — non-credential settings only ───────────
@@ -423,7 +422,7 @@ def _build_logging(level: str = "info") -> None:
 
     class _Formatter(logging.Formatter):
         def format(self, record):
-            ct = datetime.datetime.fromtimestamp(record.created)
+            ct = datetime.datetime.fromtimestamp(record.created).astimezone()
             ts = ct.strftime("%H:%M:%S") + f".{ct.microsecond // 1000:03d}"
             return f"{ts} [{record.levelname:<8}] {record.name}: {record.getMessage()}"
 
@@ -555,7 +554,7 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
             result.wait_for_publish(timeout=2.0)
             cleared += 1
             log_startup.debug("Cleared retained topic: %s", topic)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_startup.warning("Could not confirm clear for %s: %s", topic, e)
 
     log_startup.info("MQTT cleanup complete — cleared %d/%d retained topics",
@@ -808,7 +807,7 @@ def _load_menu_structure(app_dir: str, log_if_mode: bool = True) -> tuple[dict, 
             log_startup.debug("Built point→menu map: %d entries", len(point_to_menu))
             log_startup.debug("MODES['menus'] populated: %d points", len(menu_points))
         return point_to_menu, menu_points
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         log_startup.warning(
             "Could not build point→menu map / MODES['menus']: %s", e
         )
@@ -960,7 +959,7 @@ def _build_infrastructure(
         mqtt_client.publish(MGMT_AVAIL_TOPIC, "online", retain=True)
         log_mqtt.info("Availability topic pre-cleared to 'online'")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         log_mqtt.error(
             "Cannot connect to MQTT broker at %s:%d — %s. "
             "Check that the broker is running and that 'mqtt_host' and 'mqtt_port' "
@@ -1226,7 +1225,7 @@ def _poll_loop(
                             memory_stats.get('last_states_size', 0),
                             memory_stats.get('point_string_cache_size', 0),
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                         log_startup.error("Memory logging error: %s", e)
                     last_memory_log = current_time
 
@@ -1241,10 +1240,9 @@ def _poll_loop(
         except Exception as e:
             _loop_consecutive_errors += 1
             backoff = min(5 * _loop_consecutive_errors, 60)
-            log_startup.error(
-                "Unexpected error in main loop (occurrence %d, backing off %ds): %s",
-                _loop_consecutive_errors, backoff, e,
-                exc_info=True,
+            log_startup.exception(
+                "Unexpected error in main loop (occurrence %d, backing off %ds)",
+                _loop_consecutive_errors, backoff,
             )
             if _loop_consecutive_errors >= 5:
                 try:
@@ -1260,7 +1258,7 @@ def _poll_loop(
                             "error":              str(e),
                         },
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged
                     pass
             time.sleep(backoff)
 
@@ -1333,7 +1331,7 @@ def _shutdown(
     for pub in pending_publishes:
         try:
             pub.wait_for_publish(timeout=2.0)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_mqtt.warning("Offline publish did not confirm: %s", e)
 
     if os.environ.get('NIBE_REMOVE_FRONTEND') == '1':
@@ -1393,7 +1391,7 @@ def main():  # pragma: no cover
         try:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged
             pass
 
     atexit.register(_atexit_cleanup)

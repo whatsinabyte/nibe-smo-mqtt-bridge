@@ -8,6 +8,7 @@ Shared fixtures are in conftest.py.
 
 import json
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -15,7 +16,8 @@ from conftest import (
     _nibe_point_id,
     _safe_entity_id,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 # menu_structure.yaml cache reset — see conftest.py's global autouse
 # _reset_menu_structure_cache fixture. It applies to every test file
@@ -207,7 +209,7 @@ class TestBuildDynamicInjectionProperties(unittest.TestCase):
         rw = MagicMock()
         rw.entity_id_for.return_value = 'sensor.test'
         result = _build_dynamic_injection(m, dynamic_pids, rw, {})
-        for k in result.keys():
+        for k in result:
             self.assertIsInstance(k, int)
 
     @given(st.integers(min_value=1, max_value=500),
@@ -399,7 +401,7 @@ class TestBuildPointToMenuProperties(unittest.TestCase):
     def test_keys_are_ints(self, menus):
         from nibe_lovelace import _build_point_to_menu
         result = _build_point_to_menu(menus)
-        for k in result.keys():
+        for k in result:
             self.assertIsInstance(k, int)
 
     @given(_menu_list)
@@ -584,7 +586,7 @@ class TestMetadataDictTypeCrossModuleProperties(unittest.TestCase):
 class TestBuildSelectConfigProperties(unittest.TestCase):
     """Hypothesis properties for _build_select_config."""
 
-    _meta = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
+    _meta: ClassVar[dict] = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
 
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
@@ -735,7 +737,7 @@ class TestMenuFunctionConsistencyProperties(unittest.TestCase):
     def test_collect_menu_points_superset_of_build_point_to_menu_keys(self, menus):
         """Every key in _build_point_to_menu is in _collect_menu_points."""
         from nibe_lovelace import _build_point_to_menu, _collect_menu_points
-        for pid in _build_point_to_menu(menus).keys():
+        for pid in _build_point_to_menu(menus):
             self.assertIn(pid, _collect_menu_points(menus))
 
     def test_both_functions_agree_on_empty_input(self):
@@ -1266,10 +1268,9 @@ class TestBuildMenuPoints(unittest.TestCase):
 
         import nibe_lovelace as nl
         import yaml
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-        yaml.dump({'menus': [{'id': '1', 'settings': [{'point_id': 42}], 'submenus': []}]},
-                  tmp)
-        tmp.close()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+            yaml.dump({'menus': [{'id': '1', 'settings': [{'point_id': 42}], 'submenus': []}]},
+                      tmp)
         try:
             result = nl.build_menu_points(tmp.name)
             self.assertIsInstance(result, frozenset)
@@ -1289,9 +1290,8 @@ class TestBuildMenuPoints(unittest.TestCase):
 
         import nibe_lovelace as nl
         import yaml
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-        yaml.dump({'menus': []}, tmp)
-        tmp.close()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+            yaml.dump({'menus': []}, tmp)
         try:
             result = nl.build_menu_points(tmp.name)
             self.assertEqual(result, frozenset())
@@ -1732,7 +1732,7 @@ class TestBuildDynamicInjection(unittest.TestCase):
         dpm = {100: self._entry(100, {1: [200]})}
         watcher = self._registry_watcher({200: 'sensor.foo'})
         result = nl._build_dynamic_injection(dpm, {200}, watcher, {})
-        eid, title, rng, dflt = result[100][0]
+        _eid, title, rng, _dflt = result[100][0]
         self.assertEqual(title, 'Point 200')
         self.assertEqual(rng, '0 – 0')
 
@@ -3423,7 +3423,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             if payload.get('type') == 'lovelace/dashboards/list':
                 return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
             return {'success': True}
-        calls, flag_file, _ = self._run(False, ws_resp)
+        calls, _flag_file, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
         self.assertNotIn('lovelace/dashboards/create', types)
 
@@ -4113,7 +4113,6 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
         `ws` object returned by _open_ha_websocket, not None or some other
         placeholder — otherwise a real WebSocket send would fail immediately
         with an AttributeError in production, invisible to a mocked test."""
-        import nibe_lovelace as nl
         seen_ws_args = []
         def fake(ws, _mid, payload, _timeout=10):
             seen_ws_args.append(ws)
@@ -4128,7 +4127,7 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
         self.assertTrue(all(ws is not None for ws in seen_ws_args))
         # All calls must use the SAME ws instance (the one opened once for
         # this teardown run), not a fresh/different object per call.
-        self.assertEqual(len(set(id(ws) for ws in seen_ws_args)), 1)
+        self.assertEqual(len({id(ws) for ws in seen_ws_args}), 1)
 
     def test_dashboard_delete_success_logs_removed_with_id(self):
         """A successful dashboard delete (resp['success'] is True) must log
@@ -4285,7 +4284,7 @@ class TestSetupMenuDashboardLovelace(unittest.TestCase):
             if t == 'lovelace/config/save':
                 return {'success': True}
             return {'success': True}
-        result, calls = self._run(ws_resp)
+        _result, calls = self._run(ws_resp)
         types = [c.get('type') for c in calls]
         self.assertNotIn('lovelace/dashboards/create', types)
         self.assertIn('lovelace/config/save', types)
@@ -4636,9 +4635,8 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
              patch('nibe_lovelace._build_menu_dashboard_config',
                    return_value={'views': [{'title': 'Menu', 'cards': []}]}), \
              patch('nibe_lovelace._setup_menu_dashboard_lovelace',
-                   side_effect=RuntimeError("boom")):
-            with self.assertRaises(RuntimeError):
-                nl._setup_menu_dashboard(open_ws_fn, rw, debug_mode=False)
+                   side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
+            nl._setup_menu_dashboard(open_ws_fn, rw, debug_mode=False)
 
         ws.close.assert_called()
 
@@ -4889,7 +4887,6 @@ class TestWaitForRegistryStableDirect(unittest.TestCase):
 
         def entity_id_for(pid):
             state["n"] += 1
-            return None  # never resolves
 
         rw.entity_id_for = entity_id_for
 

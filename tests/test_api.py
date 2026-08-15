@@ -14,7 +14,8 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import example, given, strategies as st
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 
 class TestRetryDelay(unittest.TestCase):
@@ -244,17 +245,19 @@ class TestRequestRetry(unittest.TestCase):
 
     def test_http_401_raises_no_retry(self):
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     def test_http_403_raises_no_retry(self):
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(403)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(403)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     def test_auth_error_does_not_sleep(self):
         """Auth errors must not sleep — they are permanent failures."""
@@ -272,10 +275,11 @@ class TestRequestRetry(unittest.TestCase):
 
     def test_http_404_raises_no_retry(self):
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(404)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(404)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     # ── HTTP 500 — retries once with jitter sleep, then returns None ──────────
 
@@ -628,11 +632,12 @@ class TestNibeApiClientMethods(unittest.TestCase):
         auth errors and fetch_point's except block re-raises anything not 404
         (line 176). Callers like post-write failure revert need to see it."""
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)), \
-             patch('nibe_api.time.sleep'):
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                self.client.fetch_point(1000)
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            patch('nibe_api.time.sleep'),
+            self.assertRaises(urllib.error.HTTPError) as ctx,
+        ):
+            self.client.fetch_point(1000)
         self.assertEqual(ctx.exception.code, 401)
 
     # ── fetch_notifications ──────────────────────────────────────────────────
@@ -874,18 +879,22 @@ class TestNibeApiRequestProperties(unittest.TestCase):
         import urllib.error
         client = self._client()
         err = urllib.error.HTTPError('url', code, 'Auth', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
-            with self.assertRaises(urllib.error.HTTPError):
-                client.request('https://host/api/v1/devices/test/points')
+        with (
+            patch('urllib.request.urlopen', side_effect=err),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            client.request('https://host/api/v1/devices/test/points')
 
     def test_404_always_raises(self):
         """HTTP 404 must always raise HTTPError (dynamic point inactive)."""
         import urllib.error
         client = self._client()
         err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
-            with self.assertRaises(urllib.error.HTTPError):
-                client.request('https://host/api/v1/devices/test/points/99999')
+        with (
+            patch('urllib.request.urlopen', side_effect=err),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            client.request('https://host/api/v1/devices/test/points/99999')
 
     @given(st.integers(min_value=500, max_value=599))
     def test_server_error_returns_none(self, code):
@@ -1011,9 +1020,11 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
         import urllib.error
         client = self._client()
         err = urllib.error.HTTPError('url', code, 'Auth', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
-            with self.assertRaises(urllib.error.HTTPError):
-                client.fetch_point(100)
+        with (
+            patch('urllib.request.urlopen', side_effect=err),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            client.fetch_point(100)
 
     def test_success_returns_dict(self):
         """Successful response returns the parsed JSON dict."""
@@ -1820,9 +1831,11 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
     def test_401_raises_immediately_no_retry(self):
         """HTTP 401 must raise HTTPError — not retry, not return None."""
         import urllib.error
-        with patch('urllib.request.urlopen', side_effect=self._http_error(401)) as mock_open:
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(401)) as mock_open,
+            self.assertRaises(urllib.error.HTTPError) as ctx,
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
         self.assertEqual(ctx.exception.code, 401)
         self.assertEqual(mock_open.call_count, 1, "401 must not retry")
 
@@ -1833,18 +1846,22 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
         403 with 404 would make 403 fall through to the retry path.
         """
         import urllib.error
-        with patch('urllib.request.urlopen', side_effect=self._http_error(403)) as mock_open:
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(403)) as mock_open,
+            self.assertRaises(urllib.error.HTTPError) as ctx,
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
         self.assertEqual(ctx.exception.code, 403)
         self.assertEqual(mock_open.call_count, 1, "403 must not retry")
 
     def test_404_raises_not_retried_not_none(self):
         """HTTP 404 must raise HTTPError — not be swallowed and returned as None."""
         import urllib.error
-        with patch('urllib.request.urlopen', side_effect=self._http_error(404)) as mock_open:
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(404)) as mock_open,
+            self.assertRaises(urllib.error.HTTPError) as ctx,
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
         self.assertEqual(ctx.exception.code, 404)
         self.assertEqual(mock_open.call_count, 1, "404 must not retry")
 
@@ -1861,10 +1878,10 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
         but this confirms the (401, 403) membership does not accidentally absorb 404."""
         import urllib.error
         for code in (401, 403, 404):
-            with self.subTest(code=code):
-                with patch('urllib.request.urlopen', side_effect=self._http_error(code)):
-                    with self.assertRaises(urllib.error.HTTPError):
-                        self.client.request('https://192.0.2.1:8443/test')
+            with self.subTest(code=code), \
+                 patch('urllib.request.urlopen', side_effect=self._http_error(code)), \
+                 self.assertRaises(urllib.error.HTTPError):
+                self.client.request('https://192.0.2.1:8443/test')
 
 
 class TestWritePointResponseKeyParsing(unittest.TestCase):
@@ -2037,9 +2054,11 @@ class TestFetchPointNotFoundHandling(unittest.TestCase):
         import urllib.error
         for code in (401, 403):
             with self.subTest(code=code):
-                with patch('urllib.request.urlopen', side_effect=self._http_error(code)):
-                    with self.assertRaises(urllib.error.HTTPError) as ctx:
-                        self.client.fetch_point(99)
+                with (
+                    patch('urllib.request.urlopen', side_effect=self._http_error(code)),
+                    self.assertRaises(urllib.error.HTTPError) as ctx,
+                ):
+                    self.client.fetch_point(99)
                 self.assertEqual(ctx.exception.code, code)
 
     def test_success_returns_dict(self):
@@ -2303,9 +2322,11 @@ class TestWritePointFullObjectMissingValueKey(unittest.TestCase):
         'Unexpected error' handler — proving dv defaults to {} not None."""
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"42": {}}).encode()
-        with patch('urllib.request.urlopen', return_value=mock_resp):
-            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
-                self.client.write_point(42, 1, self._entity())
+        with (
+            patch('urllib.request.urlopen', return_value=mock_resp),
+            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+        ):
+            self.client.write_point(42, 1, self._entity())
         joined = '\n'.join(ctx.output)
         self.assertIn('isOk=False', joined)
         self.assertNotIn('Unexpected error', joined)
@@ -2343,10 +2364,12 @@ class TestWritePointErrorStringExactBranch(unittest.TestCase):
     def test_no_such_param_logs_register_does_not_exist(self):
         """'error: no such param' must log the specific 'does not exist' message,
         not the generic 'unexpected API response' fallback."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._mock_response(100, 'error: no such param')):
-            with self.assertLogs('nibe.commands', level='ERROR') as ctx:
-                self.client.write_point(100, 50, self._entity())
+        with (
+            patch('urllib.request.urlopen',
+                  return_value=self._mock_response(100, 'error: no such param')),
+            self.assertLogs('nibe.commands', level='ERROR') as ctx,
+        ):
+            self.client.write_point(100, 50, self._entity())
         joined = '\n'.join(ctx.output)
         self.assertIn('does not exist in this firmware version', joined)
         self.assertNotIn('unexpected API response', joined)
@@ -2354,10 +2377,12 @@ class TestWritePointErrorStringExactBranch(unittest.TestCase):
     def test_read_only_value_logs_register_is_read_only(self):
         """'error: read only value' must log the specific 'read-only' message,
         not the generic 'unexpected API response' fallback."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._mock_response(100, 'error: read only value')):
-            with self.assertLogs('nibe.commands', level='ERROR') as ctx:
-                self.client.write_point(100, 50, self._entity())
+        with (
+            patch('urllib.request.urlopen',
+                  return_value=self._mock_response(100, 'error: read only value')),
+            self.assertLogs('nibe.commands', level='ERROR') as ctx,
+        ):
+            self.client.write_point(100, 50, self._entity())
         joined = '\n'.join(ctx.output)
         self.assertIn('register is read-only', joined)
         self.assertNotIn('unexpected API response', joined)
@@ -2395,10 +2420,11 @@ class TestWritePointHttpErrorBodyDefault(unittest.TestCase):
     def test_unreadable_body_falls_back_to_empty_string_in_500_log(self):
         """HTTP 500 with unreadable body: log must show body as '' (empty),
         not 'None' or the mutant's 'XXXX' placeholder."""
-        with patch('urllib.request.urlopen',
-                   side_effect=self._unreadable_http_error(500)):
-            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
-                result = self.client.write_point(100, 50, self._entity())
+        with (
+            patch('urllib.request.urlopen', side_effect=self._unreadable_http_error(500)),
+            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+        ):
+            result = self.client.write_point(100, 50, self._entity())
         self.assertIs(result, False)
         # Find the final "Write HTTP 500 for point 100: <body>" record.
         final = [line for line in ctx.output if 'Write HTTP 500 for point 100' in line]
@@ -2423,6 +2449,7 @@ class TestRequestHeaders(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -2480,6 +2507,7 @@ class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -2489,9 +2517,11 @@ class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
     def test_unexpected_error_log_record_carries_exc_info(self):
         """A non-network, non-HTTPError exception from urlopen must produce
         a log record with exc_info populated (a real (type, value, tb) tuple)."""
-        with patch('urllib.request.urlopen', side_effect=ValueError("boom")):
-            with self.assertLogs('nibe.api', level='ERROR') as ctx:
-                result = self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=ValueError("boom")),
+            self.assertLogs('nibe.api', level='ERROR') as ctx,
+        ):
+            result = self.client.request('https://192.0.2.1:8443/test')
         self.assertIsNone(result)
         matching = [r for r in ctx.records if 'Unexpected error' in r.getMessage()]
         self.assertTrue(matching, f"expected an 'Unexpected error' record, got: {ctx.output}")
@@ -2574,10 +2604,11 @@ class TestWriteDeviceModeHttpErrorBodyDefault(unittest.TestCase):
         return err
 
     def test_unreadable_body_falls_back_to_empty_string_in_500_log(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._unreadable_http_error(500)):
-            with self.assertLogs('nibe.commands', level='DEBUG') as ctx:
-                result = self.client.write_device_mode('smartmode', 'away')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._unreadable_http_error(500)),
+            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+        ):
+            result = self.client.write_device_mode('smartmode', 'away')
         self.assertIs(result, False)
         final = [line for line in ctx.output if 'Device mode smartmode failed: HTTP 500' in line]
         self.assertTrue(final, f"expected a 'Device mode smartmode failed' log line, got: {ctx.output}")
@@ -2640,6 +2671,7 @@ class TestNibeApiClientInit(unittest.TestCase):
 
     def test_init_stores_base_url_auth_and_ssl_context(self):
         import ssl
+
         from nibe_api import NibeApiClient
         ctx = ssl.create_default_context()
         client = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0',

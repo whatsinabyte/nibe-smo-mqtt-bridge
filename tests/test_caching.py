@@ -14,9 +14,11 @@ cache classes themselves.
 """
 
 import unittest
+from typing import ClassVar
 
 from conftest import _nibe_point_id
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
     initialize,
@@ -508,7 +510,7 @@ class LRUCacheMachine(RuleBasedStateMachine):
     """
 
     CAPACITY = 10
-    KEYS = list(range(20))  # more keys than capacity to force eviction
+    KEYS: ClassVar[list] = list(range(20))  # more keys than capacity to force eviction
 
     @initialize()
     def setup(self):
@@ -629,7 +631,7 @@ class ValueCacheMachine(RuleBasedStateMachine):
          always returns False immediately after a True
     """
 
-    PIDS    = [100, 200, 300]
+    PIDS: ClassVar[list] = [100, 200, 300]
     THRESH  = 5
 
     @initialize()

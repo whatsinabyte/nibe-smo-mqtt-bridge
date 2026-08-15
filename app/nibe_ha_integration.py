@@ -111,7 +111,7 @@ def _get_ha_base_url() -> str:
         _ha_base_url = url.rstrip('/')
         log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)
         return _ha_base_url
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         log_mqtt.warning("Could not fetch HA base URL: %s", e)
         _ha_base_url_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
         return ''
@@ -150,7 +150,7 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
     try:
         urllib.request.urlopen(req, timeout=10)
         log_mqtt.warning("HA notification sent: [%s] %s", notification_id, title)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         log_mqtt.error("Failed to send HA notification: %s", e)
 
 
@@ -177,7 +177,7 @@ def dismiss_ha(mqtt_client, notification_id: str) -> None:
     try:
         urllib.request.urlopen(req, timeout=10)
         log_mqtt.debug("HA notification dismissed: [%s]", notification_id)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         log_mqtt.error("Failed to dismiss HA notification: %s", e)
 
 
@@ -292,7 +292,7 @@ class HAEntityRegistryWatcher:
                             self._unique_id_map[uid] = eid
                             count += 1
                 log_registry.debug("Registry refresh: updated %d nibe entries", count)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_registry.debug("Registry refresh failed: %s", e)
 
     _REFRESH_DEBOUNCE_S = 5.0
@@ -343,7 +343,7 @@ class HAEntityRegistryWatcher:
             if self._current_ws:
                 try:
                     self._current_ws.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
                     pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
@@ -471,7 +471,8 @@ class HAEntityRegistryWatcher:
                         break
                     try:
                         msg = json.loads(raw)
-                    except Exception:
+                    except Exception as e:  # noqa: BLE001 — malformed frame; skip and keep the connection alive
+                        log_registry.debug("Registry watcher: discarding malformed frame: %s", e)
                         continue
 
                     if msg.get("type") == "pong":
@@ -491,7 +492,7 @@ class HAEntityRegistryWatcher:
                 )
                 return
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 if self._stop_event.is_set():
                     break
                 consec_failures += 1
@@ -516,7 +517,7 @@ class HAEntityRegistryWatcher:
                 if ws:
                     try:
                         ws.close()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
                         pass
 
         log_registry.debug("Registry watcher thread exiting")
@@ -545,7 +546,7 @@ class HAEntityRegistryWatcher:
                     "Registry fetch: discarding interleaved message type=%s id=%s",
                     msg.get("type"), msg.get("id"),
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_registry.warning("Could not fetch entity registry (timeout or error): %s", e)
             return {}
         finally:

@@ -9,7 +9,8 @@ Shared fixtures are in conftest.py.
 import unittest
 from unittest.mock import patch
 
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 class TestFmtTsProperties(unittest.TestCase):

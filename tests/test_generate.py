@@ -19,7 +19,8 @@ from conftest import (
     _nibe_point_id,
 )
 from freezegun import freeze_time
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 # menu_structure.yaml cache reset — see conftest.py's global autouse
 # _reset_menu_structure_cache fixture. It applies to every test file
@@ -652,9 +653,11 @@ class TestParseArgumentsModes(unittest.TestCase):
 
     def test_invalid_log_level_rejected(self):
         from generate_nibe_mqtt import parse_arguments
-        with patch('sys.argv', ['bridge', '--log-level', 'nonexistent']):
-            with self.assertRaises(SystemExit):
-                parse_arguments()
+        with (
+            patch('sys.argv', ['bridge', '--log-level', 'nonexistent']),
+            self.assertRaises(SystemExit),
+        ):
+            parse_arguments()
 
     def test_short_flag_l_sets_log_level(self):
         from generate_nibe_mqtt import parse_arguments
@@ -677,9 +680,11 @@ class TestParseArgumentsModes(unittest.TestCase):
 
     def test_invalid_mode_rejected(self):
         from generate_nibe_mqtt import parse_arguments
-        with patch('sys.argv', ['bridge', '--mode', 'nonexistent']):
-            with self.assertRaises(SystemExit):
-                parse_arguments()
+        with (
+            patch('sys.argv', ['bridge', '--mode', 'nonexistent']),
+            self.assertRaises(SystemExit),
+        ):
+            parse_arguments()
 
     def test_modes_match_detection_module(self):
         """The argparse choices must be a superset of MODES keys so no
@@ -732,7 +737,7 @@ class TestOnEnabledStateChangeLovelaceThreadGuard(unittest.TestCase):
             if mock_timer.called:
                 # Simulate timer firing immediately
                 call_args = mock_timer.call_args
-                delay, fn = call_args[0]
+                _delay, fn = call_args[0]
                 fn()
 
         return len(regen_calls)
@@ -768,7 +773,7 @@ class TestOnEnabledStateChangeLovelaceThreadGuard(unittest.TestCase):
             handler()
             if mock_timer.called:
                 call_args = mock_timer.call_args
-                delay, fn = call_args[0]
+                _delay, fn = call_args[0]
                 fn()
 
         self.assertEqual(len(regen_calls), 1)
@@ -1504,7 +1509,7 @@ class TestExecuteStartupAction(unittest.TestCase):
         return mock_apply, mock_restore, mock_record
 
     def test_apply_calls_apply_mode(self):
-        mock_apply, mock_restore, _ = self._run_with_mocks(
+        mock_apply, _mock_restore, _ = self._run_with_mocks(
             'apply', applied_mode=None, initial_mode='monitoring'
         )
         mock_apply.assert_called_once_with('monitoring')
@@ -1757,7 +1762,7 @@ class TestLoadMenuStructure(unittest.TestCase):
 
     def test_menu_points_subset_of_real_points(self):
         """All points in MODES['menus'] must be real Nibe point IDs."""
-        point_to_menu, menu_points = self.fn(_APP_DIR)
+        _point_to_menu, menu_points = self.fn(_APP_DIR)
         # menu_points contains only integers
         for pid in menu_points:
             self.assertIsInstance(pid, int)
@@ -2032,9 +2037,11 @@ class TestLoadBridgeVersionAllPathsFail(unittest.TestCase):
 
     def test_raises_runtime_error_when_no_candidate_path_exists(self):
         import generate_nibe_mqtt as gn
-        with patch('builtins.open', side_effect=FileNotFoundError):
-            with self.assertRaises(RuntimeError) as ctx:
-                gn._load_bridge_version()
+        with (
+            patch('builtins.open', side_effect=FileNotFoundError),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            gn._load_bridge_version()
         self.assertIn('config.yaml', str(ctx.exception))
 
     def test_fresh_call_resolves_real_candidate_path_and_matches_config_yaml(self):
@@ -2048,9 +2055,8 @@ class TestLoadBridgeVersionAllPathsFail(unittest.TestCase):
         fail to find the second candidate (the only one that resolves on
         a dev machine — the first and third are container-only paths) and
         fall through to RuntimeError instead of returning a real version."""
-        import yaml
-
         import generate_nibe_mqtt as gn
+        import yaml
         result = gn._load_bridge_version()
         config_path = os.path.join(_REPO_DIR, 'config.yaml')
         with open(config_path, encoding='utf-8') as f:
@@ -2463,13 +2469,14 @@ class TestBuildInfrastructure(unittest.TestCase):
         """HTTP 401/403 from the Nibe API must call sys.exit(1)."""
         from generate_nibe_mqtt import _ApiAuthError, _build_infrastructure
         cfg = self._cfg()
-        with patch('generate_nibe_mqtt._fetch_api_response',
-                   side_effect=_ApiAuthError(401)), \
-             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
-             patch('generate_nibe_mqtt.NibeApiClient'), \
-             patch('generate_nibe_mqtt.copy_card_file'):
-            with self.assertRaises(SystemExit) as ctx:
-                _build_infrastructure(cfg)
+        with (
+            patch('generate_nibe_mqtt._fetch_api_response', side_effect=_ApiAuthError(401)),
+            patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()),
+            patch('generate_nibe_mqtt.NibeApiClient'),
+            patch('generate_nibe_mqtt.copy_card_file'),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            _build_infrastructure(cfg)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_exits_on_mqtt_connection_error(self):
@@ -2478,13 +2485,15 @@ class TestBuildInfrastructure(unittest.TestCase):
         cfg = self._cfg()
         mock_mqtt = MagicMock()
         mock_mqtt.connect.side_effect = OSError("connection refused")
-        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
-             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
-             patch('generate_nibe_mqtt.NibeApiClient'), \
-             patch('generate_nibe_mqtt.copy_card_file'), \
-             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mqtt):
-            with self.assertRaises(SystemExit) as ctx:
-                _build_infrastructure(cfg)
+        with (
+            patch('generate_nibe_mqtt._fetch_api_response', return_value={}),
+            patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()),
+            patch('generate_nibe_mqtt.NibeApiClient'),
+            patch('generate_nibe_mqtt.copy_card_file'),
+            patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mqtt),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            _build_infrastructure(cfg)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_exits_on_mqtt_auth_failure(self):
@@ -2512,15 +2521,17 @@ class TestBuildInfrastructure(unittest.TestCase):
                 ev.set()
             return ev
 
-        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
-             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
-             patch('generate_nibe_mqtt.NibeApiClient'), \
-             patch('generate_nibe_mqtt.copy_card_file'), \
-             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
-             patch('generate_nibe_mqtt.time.sleep'), \
-             patch('generate_nibe_mqtt.threading.Event', side_effect=_fake_Event):
-            with self.assertRaises(SystemExit) as ctx:
-                _build_infrastructure(cfg)
+        with (
+            patch('generate_nibe_mqtt._fetch_api_response', return_value={}),
+            patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()),
+            patch('generate_nibe_mqtt.NibeApiClient'),
+            patch('generate_nibe_mqtt.copy_card_file'),
+            patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc),
+            patch('generate_nibe_mqtt.time.sleep'),
+            patch('generate_nibe_mqtt.threading.Event', side_effect=_fake_Event),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            _build_infrastructure(cfg)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_returns_tuple_on_success(self):
@@ -2539,7 +2550,7 @@ class TestBuildInfrastructure(unittest.TestCase):
              patch('generate_nibe_mqtt.time.sleep'):
             result = _build_infrastructure(cfg)
 
-        api_client, mqtt_client, response, device_id, shutting_down, set_em = result
+        _api_client, mqtt_client, response, device_id, shutting_down, set_em = result
         self.assertIs(mqtt_client, mock_mc)
         self.assertEqual(response, mock_response)
         self.assertIn('abc123', device_id)   # serial normalised to lowercase
@@ -2863,7 +2874,7 @@ class TestShutdown(unittest.TestCase):
     def test_unregisters_atexit(self):
         """atexit_cleanup_fn must be unregistered to prevent double-disconnect."""
         em = _make_em()
-        _, _, _, _, _, atexit_fn = self._run_shutdown(em)
+        _, _, _, _, _, _atexit_fn = self._run_shutdown(em)
         # atexit.unregister was called with the function
         # (can't easily assert atexit.unregister directly; check loop_stop called)
         em2 = _make_em()
@@ -2984,13 +2995,15 @@ class TestPollLoop(unittest.TestCase):
         em.bulk_interval = 30
         em._post_write_interval = 5
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
     def test_calls_update_all_states_each_cycle(self):
         """update_all_states() must be called once per elapsed-interval cycle."""
@@ -3033,13 +3046,15 @@ class TestPollLoop(unittest.TestCase):
         em.bulk_interval = 30
         em._post_write_interval = 5
 
-        with patch('generate_nibe_mqtt.time.time', return_value=99999.0), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=KeyboardInterrupt), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', return_value=99999.0),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=KeyboardInterrupt),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
     def test_exception_in_cycle_does_not_exit_loop(self):
         """A single exception in a poll cycle must be caught and the loop continued."""
@@ -3071,13 +3086,15 @@ class TestPollLoop(unittest.TestCase):
             _t[0] += 60.0
             return _t[0]
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         # Loop ran more than 1 cycle: crash on cycle 1 did not kill the loop
         self.assertGreater(call_count[0], 1)
@@ -3108,13 +3125,15 @@ class TestPollLoop(unittest.TestCase):
             _t[0] += 60.0
             return _t[0]
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         self.assertGreater(len(backoff_sleeps), 1,
                            "Expected multiple backoff sleeps from consecutive errors")
@@ -3147,13 +3166,15 @@ class TestPollLoop(unittest.TestCase):
             _t[0] += 60.0
             return _t[0]
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         if backoff_sleeps:
             self.assertLessEqual(max(backoff_sleeps), 60,
@@ -3183,13 +3204,15 @@ class TestPollLoop(unittest.TestCase):
             _t[0] += 60.0
             return _t[0]
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         pub.publish_bridge_alert.assert_called()
         call_kwargs = pub.publish_bridge_alert.call_args.kwargs
@@ -3220,13 +3243,15 @@ class TestPollLoop(unittest.TestCase):
             if tick[0] >= 2:
                 raise KeyboardInterrupt
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         em.complete_deferred_discovery.assert_called_with('essential')
         # update_all_states must NOT be called when deferred_ran=True
@@ -3256,14 +3281,16 @@ class TestPollLoop(unittest.TestCase):
             if tick[0] >= 2:
                 raise KeyboardInterrupt
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'), \
-             patch('generate_nibe_mqtt.log_startup') as mock_log:
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         # Must have logged the error, not propagated it
         error_calls = [c for c in mock_log.error.call_args_list
@@ -3814,13 +3841,15 @@ class TestPollLoopAlertPublishException(unittest.TestCase):
             _t[0] += 60.0
             return _t[0]
 
-        with patch('generate_nibe_mqtt.time.time', side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         # Loop survived despite publish_bridge_alert raising
         self.assertGreaterEqual(crash_count[0], 5)
@@ -3915,7 +3944,7 @@ class TestBuildInfrastructureOnConnectEmptyEm(unittest.TestCase):
              patch('generate_nibe_mqtt.copy_card_file'), \
              patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
              patch('generate_nibe_mqtt.time.sleep'):
-            _, _, _, _, _, set_em = _build_infrastructure(cfg)
+            _, _, _, _, _, _set_em = _build_infrastructure(cfg)
 
         # Fire on_connect WITHOUT calling set_em first — _em is still []
         on_connect = mock_mc.on_connect
@@ -3978,13 +4007,15 @@ class TestPollLoopFreezeTime(unittest.TestCase):
             if tick[0] >= 2:
                 raise KeyboardInterrupt
 
-        with patch('generate_nibe_mqtt.time.time',  side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep',  side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         em.get_memory_usage.assert_called()
 
@@ -4015,13 +4046,15 @@ class TestPollLoopFreezeTime(unittest.TestCase):
             if tick[0] >= 20:
                 raise KeyboardInterrupt
 
-        with patch('generate_nibe_mqtt.time.time',  side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep',  side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         # At least 3 distinct backoff values observed
         self.assertGreaterEqual(len(backoff_sleeps), 3)
@@ -4069,13 +4102,15 @@ class TestPollLoopFreezeTime(unittest.TestCase):
             if tick[0] >= 10:
                 raise KeyboardInterrupt
 
-        with patch('generate_nibe_mqtt.time.time',  side_effect=_fake_time), \
-             patch('generate_nibe_mqtt.time.sleep',  side_effect=_fake_sleep), \
-             patch('generate_nibe_mqtt.update_stats_and_health'), \
-             patch('generate_nibe_mqtt.update_device_modes'), \
-             patch('generate_nibe_mqtt.update_alarm_state'):
-            with self.assertRaises(KeyboardInterrupt):
-                _poll_loop(em, pub, 'essential')
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
 
         # After reset, the second crash should produce backoff=5 (count=1),
         # not a higher value that would indicate count was NOT reset.

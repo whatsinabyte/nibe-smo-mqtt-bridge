@@ -480,7 +480,7 @@ class DynamicPointMap:
                     entry = DynamicPointEntry.from_dict(entry_dict)
                     self._table[entry.point_id] = entry
                     loaded += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — one malformed entry must not abort the rest of the table
                     log.warning(
                         "DynamicPointMap: could not deserialise entry %s: %s", pid_str, e
                     )  # pragma: no mutate

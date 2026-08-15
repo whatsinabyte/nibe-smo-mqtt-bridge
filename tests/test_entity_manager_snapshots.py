@@ -12,7 +12,8 @@ from unittest.mock import mock_open, patch
 from conftest import (
     _make_em,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 _data_strategy = st.dictionaries(
     st.text(max_size=20),
@@ -182,7 +183,7 @@ class TestSaveSnapshot(unittest.TestCase):
 
     def test_save_creates_snapshot_with_correct_fields(self):
         em = self._em_with_enabled([1, 2, 3])
-        ok, msg = em.save_snapshot('Test', path=self._path)
+        ok, _msg = em.save_snapshot('Test', path=self._path)
         self.assertTrue(ok)
         snaps = em._load_snapshots(path=self._path)
         self.assertEqual(len(snaps), 1)
@@ -353,7 +354,7 @@ class TestRestoreSnapshot(unittest.TestCase):
             enabled_pids=[1, 2, 3],  # 3 currently enabled
         )
         self._seed_snapshot(em, 'Snap', [2, 4])  # saved: 2 and 4
-        ok, msg = em.restore_snapshot('Snap', mode='flush', path=self._path)
+        ok, _msg = em.restore_snapshot('Snap', mode='flush', path=self._path)
         self.assertTrue(ok)
         # 2 stays, 4 added, 1 and 3 removed
         self.assertIn(2, em.mqtt_enabled_points)
@@ -578,7 +579,7 @@ class TestDeleteSnapshot(unittest.TestCase):
         em.mqtt_enabled_points.add(1)
         em.save_snapshot('ToDelete', path=self._path)
         em.save_snapshot('Keep', path=self._path)
-        ok, msg = em.delete_snapshot('ToDelete', path=self._path)
+        ok, _msg = em.delete_snapshot('ToDelete', path=self._path)
         self.assertTrue(ok)
         snaps = em._load_snapshots(path=self._path)
         names = [s['name'] for s in snaps]
