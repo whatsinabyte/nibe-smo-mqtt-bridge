@@ -61,7 +61,8 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from datetime import date as _date, timedelta as _timedelta
+from datetime import date as _date
+from datetime import timedelta as _timedelta
 from typing import Any
 
 from nibe_caching import LRUCache, ValueCache
@@ -1471,24 +1472,23 @@ class EntityManager:
                                     self._pub.publish_point_metadata(point_obj)
                                 self._pub.publish_point_list(self.all_points_by_id)
 
-                    if not detect_changes:
-                        if not self.dynamic_point_map.is_known_dynamic(point_id):
-                            entity_type, category = self._get_cached_entity_type({
-                                'variableId': point_id,
-                                'metadata':   metadata,
-                                'title':      title,
-                                'description': description,
-                            })
-                            self._index_point({
-                                'variableId':     point_id,
-                                'display_title':  title,
-                                'description':    description,
-                                'metadata':       metadata,
-                                'entity_type':    entity_type,
-                                'entity_category': category,
-                                'is_writable':    metadata.get('isWritable', False),
-                                'is_dynamic':     False,
-                            })
+                    if not detect_changes and not self.dynamic_point_map.is_known_dynamic(point_id):
+                        entity_type, category = self._get_cached_entity_type({
+                            'variableId': point_id,
+                            'metadata':   metadata,
+                            'title':      title,
+                            'description': description,
+                        })
+                        self._index_point({
+                            'variableId':     point_id,
+                            'display_title':  title,
+                            'description':    description,
+                            'metadata':       metadata,
+                            'entity_type':    entity_type,
+                            'entity_category': category,
+                            'is_writable':    metadata.get('isWritable', False),
+                            'is_dynamic':     False,
+                        })
 
                 except (ValueError, KeyError) as e:
                     log_discovery.warning("Error processing point %s: %s", point_id_str, e)
@@ -1550,26 +1550,29 @@ class EntityManager:
             elapsed = time.time() - start_time
             self.last_fetch_duration = elapsed
 
-            if self.api_consecutive_failures >= self.api_failure_threshold:
-                if self._api_notification_active and self.mqtt:
-                    self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
-                    self._api_notification_active = False
-                    # Publish a structured resolution alert so automations know
-                    # the API outage has cleared — mirrors the "api_unreachable"
-                    # alert published in _handle_api_failure.
-                    if self._pub:
-                        self._pub.publish_bridge_alert(
-                            alert_type = "api_restored",
-                            severity   = "info",
-                            message    = (
-                                f"Nibe API contact restored after "
-                                f"{self.api_consecutive_failures} failed polls."
-                            ),
-                            context    = {
-                                "previous_failure_count": self.api_consecutive_failures,
-                                "api_url":                self._api.base_url,
-                            },
-                        )
+            if (
+                self.api_consecutive_failures >= self.api_failure_threshold
+                and self._api_notification_active
+                and self.mqtt
+            ):
+                self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
+                self._api_notification_active = False
+                # Publish a structured resolution alert so automations know
+                # the API outage has cleared — mirrors the "api_unreachable"
+                # alert published in _handle_api_failure.
+                if self._pub:
+                    self._pub.publish_bridge_alert(
+                        alert_type = "api_restored",
+                        severity   = "info",
+                        message    = (
+                            f"Nibe API contact restored after "
+                            f"{self.api_consecutive_failures} failed polls."
+                        ),
+                        context    = {
+                            "previous_failure_count": self.api_consecutive_failures,
+                            "api_url":                self._api.base_url,
+                        },
+                    )
 
             if self._discovery_notification_active and self.mqtt:
                 self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
@@ -1594,10 +1597,10 @@ class EntityManager:
                 )
             self._handle_api_failure()
             return False
-        except Exception as e:
-            log_discovery.error(
+        except Exception:
+            log_discovery.exception(
                 "Unhandled exception during bulk fetch — this is a bug, "
-                "please report it: %s", e, exc_info=True,
+                "please report it"
             )
             self._handle_api_failure()
             return False
@@ -1873,8 +1876,8 @@ class EntityManager:
                 )
         except (ValueError, TypeError, AttributeError) as e:
             log_discovery.debug("Could not send dashboard update notification: %s", e)
-        except Exception as e:
-            log_discovery.error("Unexpected error sending dashboard notification: %s", e, exc_info=True)
+        except Exception:
+            log_discovery.exception("Unexpected error sending dashboard notification")
 
     # ------------------------------------------------------------------ #
     # Write commands                                                       #
@@ -2445,7 +2448,7 @@ class EntityManager:
             self._last_published_enabled = current
             try:
                 self._on_enabled_state_change()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_entities.debug("on_enabled_state_change callback error: %s", e)
         else:
             self._last_published_enabled = current
@@ -2721,7 +2724,7 @@ class EntityManager:
                         log_history.info("Loaded %d historical changes from MQTT", len(self.change_history))
                         if unread > 0:
                             log_history.info("%d unread changes", unread)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_history.warning(
                     "Could not load changelog history from MQTT retained message "
                     "(the message may be from an older bridge version): %s", e,
@@ -2747,7 +2750,7 @@ class EntityManager:
                         safe_count = min(unread_count, len(self.change_history))
                         for entry in list(self.change_history)[-safe_count:]:
                             entry['unread'] = True
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_history.warning(
                     "Could not restore changelog unread state from MQTT: %s", e,
                 )
@@ -2848,7 +2851,7 @@ class EntityManager:
             if message.payload:
                 try:
                     result[0] = message.payload.decode('utf-8').strip() or None
-                except Exception:
+                except Exception:  # noqa: BLE001 — best-effort; safe fallback value, nothing actionable to log
                     result[0] = None
             received.set()
 
@@ -3026,7 +3029,7 @@ class EntityManager:
                 log_discovery.info(
                     "Restored DynamicPointMap from MQTT: %d entries", count
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_discovery.warning(
                     "Could not restore DynamicPointMap from MQTT — "
                     "will try file fallback or start fresh: %s", e
@@ -3047,7 +3050,7 @@ class EntityManager:
                     "Restored %d active dynamic point(s) from MQTT: %s",
                     len(loaded), sorted(loaded),
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_discovery.warning(
                     "Could not restore active_dynamic_points from MQTT: %s", e
                 )
@@ -3099,7 +3102,7 @@ class EntityManager:
 
         try:
             stats['actual_object_size_mb'] = round(sys.getsizeof(self) / (1024 * 1024), 2)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort; safe fallback value, nothing actionable to log
             stats['actual_object_size_mb'] = None
 
         return stats

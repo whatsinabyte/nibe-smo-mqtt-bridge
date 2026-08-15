@@ -62,9 +62,12 @@ class ValueCache:
                 self._last_publish[point_id] = current_time
                 return True
 
-            if point_id in self._last_publish:
-                if current_time - self._last_publish[point_id] < min_interval and not force:
-                    return False
+            if (
+                point_id in self._last_publish
+                and current_time - self._last_publish[point_id] < min_interval
+                and not force
+            ):
+                return False
 
             old_value = self._cache[point_id]
             if abs(raw_value - old_value) >= threshold:

@@ -9,6 +9,7 @@ Shared fixtures are in conftest.py.
 import json
 import unittest
 import urllib.error
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -19,7 +20,8 @@ from conftest import (
     _nibe_title_chars,
     _unicode_text,
 )
-from hypothesis import assume, example, given, strategies as st
+from hypothesis import assume, example, given
+from hypothesis import strategies as st
 
 
 class TestApplyDivisor(unittest.TestCase):
@@ -450,7 +452,7 @@ class TestParseDescriptionMappingProperties(unittest.TestCase):
         from nibe_entity_detection import parse_description_mapping
         result = parse_description_mapping(description)
         if result is not None:
-            for k in result.keys():
+            for k in result:
                 self.assertIsInstance(k, int)
 
     @given(st.text())
@@ -468,7 +470,7 @@ class TestParseDescriptionMappingProperties(unittest.TestCase):
 class TestIsSwitchAndNumberCandidateProperties(unittest.TestCase):
     """Hypothesis properties for is_switch_candidate and is_number_candidate."""
 
-    _holding_u8_binary = {
+    _holding_u8_binary: ClassVar[dict] = {
         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
         'unit': '', 'variableSize': 'u8',
         'minValue': 0, 'maxValue': 1, 'divisor': 1,
@@ -632,7 +634,7 @@ class TestGetValueMappingProperties(unittest.TestCase):
         from nibe_entity_detection import get_value_mapping
         result = get_value_mapping(point_id, {'description': description})
         if result is not None:
-            for k in result.keys():
+            for k in result:
                 self.assertIsInstance(k, int)
 
     @given(_nibe_point_id,
@@ -653,7 +655,7 @@ class TestGetValueMappingProperties(unittest.TestCase):
 class TestGetEntityOptionsProperties(unittest.TestCase):
     """Hypothesis properties for get_entity_options."""
 
-    _meta = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
+    _meta: ClassVar[dict] = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_never_raises(self, point_id, description):
@@ -1660,7 +1662,7 @@ class TestDetectEntityTypeWarningLogging(unittest.TestCase):
         that auto-detect would call 'sensor', but is overridden to 'switch'."""
         point = self._point(32824, 'Power limitation activation', 'MODBUS_NO_REGISTER')
         with patch.object(self.ned.log_detection, 'debug') as mock_warn:
-            entity_type, category = self.ned.detect_entity_type(point)
+            entity_type, _category = self.ned.detect_entity_type(point)
         self.assertEqual(entity_type, 'switch')
         mock_warn.assert_called()
         args = mock_warn.call_args.args
@@ -1676,7 +1678,7 @@ class TestDetectEntityTypeWarningLogging(unittest.TestCase):
         point = self._point(5110, 'Prevent condensation climate system 1',
                              'MODBUS_HOLDING_REGISTER', min_val=0, max_val=1)
         with patch.object(self.ned.log_detection, 'debug') as mock_warn:
-            entity_type, category = self.ned.detect_entity_type(point)
+            entity_type, _category = self.ned.detect_entity_type(point)
         self.assertEqual(entity_type, 'switch')
         args = mock_warn.call_args.args
         self.assertEqual(args[3], 'number')
@@ -1747,7 +1749,7 @@ class TestDetectTypeWithoutOverride(unittest.TestCase):
             'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
             'minValue': 0, 'maxValue': 1, 'isWritable': True, 'divisor': 1, 'unit': '',
         }}
-        entity_type, category = _detect_type_without_override(
+        entity_type, _category = _detect_type_without_override(
             point, point['metadata'], 'MODBUS_HOLDING_REGISTER')
         self.assertEqual(entity_type, 'number')
 
@@ -1757,7 +1759,7 @@ class TestDetectTypeWithoutOverride(unittest.TestCase):
             'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
             'minValue': 0, 'maxValue': 1000, 'isWritable': False, 'divisor': 10, 'unit': '°C',
         }}
-        entity_type, category = _detect_type_without_override(
+        entity_type, _category = _detect_type_without_override(
             point, point['metadata'], 'MODBUS_INPUT_REGISTER')
         self.assertEqual(entity_type, 'sensor')
 
@@ -1806,22 +1808,25 @@ class TestNibeApiHttpErrorPaths(unittest.TestCase):
     # ── request() ────────────────────────────────────────────────────────────
 
     def test_request_raises_on_401(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     def test_request_raises_on_403(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(403)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(403)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     def test_request_raises_on_404(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(404)):
-            with self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(404)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
 
     def test_request_retries_on_500_then_returns_none(self):
         """Non-auth HTTP errors trigger one retry then return None."""
@@ -2544,7 +2549,7 @@ class TestEntityDetectionRemainingPaths(unittest.TestCase):
                 'unit': '',
             },
         }
-        entity_type, category = detect_entity_type(point)
+        entity_type, _category = detect_entity_type(point)
         self.assertEqual(entity_type, 'sensor')
 
     def test_map_device_class_keyword_match_with_no_unit_returns_none(self):
@@ -2847,7 +2852,7 @@ class TestDetectInputEntityLogicGaps(unittest.TestCase):
         """var_size='f4' alone (or condition) should trigger float detection."""
         from nibe_entity_detection import _detect_input_entity
         point = self._point(var_type='integer', var_size='f4')
-        entity_type, category = _detect_input_entity(point, point['metadata'])
+        entity_type, _category = _detect_input_entity(point, point['metadata'])
         # Float registers are sensors (not binary_sensor or switch)
         self.assertEqual(entity_type, 'sensor')
 
@@ -3011,7 +3016,7 @@ class TestIsSwitchCandidateDefaults(unittest.TestCase):
     as hard requirements; minValue/divisor/unit use defaults.
     """
 
-    BASE = {
+    BASE: ClassVar[dict] = {
         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
         'variableSize': 'u8',
         'maxValue': 1,

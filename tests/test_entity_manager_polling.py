@@ -392,9 +392,11 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(950)
-        with patch.object(em, '_get_cached_entity_type', return_value=('select', 'config')):
-            with patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop:
-                em._fetch_bulk_data(detect_changes=True)
+        with (
+            patch.object(em, '_get_cached_entity_type', return_value=('select', 'config')),
+            patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop,
+        ):
+            em._fetch_bulk_data(detect_changes=True)
         mock_pop.assert_called_once()
 
     def test_populate_from_bulk_called_with_correct_point_id_and_entity_type(self):
@@ -402,9 +404,11 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(951)
-        with patch.object(em, '_get_cached_entity_type', return_value=('switch', 'config')):
-            with patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop:
-                em._fetch_bulk_data(detect_changes=True)
+        with (
+            patch.object(em, '_get_cached_entity_type', return_value=('switch', 'config')),
+            patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop,
+        ):
+            em._fetch_bulk_data(detect_changes=True)
         mock_pop.assert_called_once()
         args = mock_pop.call_args[0]
         points_arg, types_arg = args[0], args[1]
@@ -1023,9 +1027,11 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em = _make_em()
         em.bulk_interval = 30
         em.last_bulk_fetch = 12345.0  # stale value, must be overwritten by force
-        with patch('time.time', return_value=30.0):
-            with patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch:
-                em.update_all_states(force=True)
+        with (
+            patch('time.time', return_value=30.0),
+            patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch,
+        ):
+            em.update_all_states(force=True)
         mock_fetch.assert_called_once()
 
     def test_post_write_window_boundary_exact_equality_not_yet_expired(self):
@@ -1114,9 +1120,11 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         blocking last_bulk_fetch from advancing even on real success."""
         em = _make_em()
         em.last_bulk_fetch = 0.0
-        with patch('time.time', return_value=999.0):
-            with patch.object(em, '_fetch_bulk_data', return_value=True):
-                em.update_all_states()
+        with (
+            patch('time.time', return_value=999.0),
+            patch.object(em, '_fetch_bulk_data', return_value=True),
+        ):
+            em.update_all_states()
         self.assertEqual(em.last_bulk_fetch, 999.0)
 
     def test_last_bulk_fetch_set_to_current_time_value_not_placeholder(self):
@@ -1126,9 +1134,11 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         it's stored verbatim."""
         em = _make_em()
         em.last_bulk_fetch = 0.0
-        with patch('time.time', return_value=54321.5):
-            with patch.object(em, '_fetch_bulk_data', return_value=True):
-                em.update_all_states()
+        with (
+            patch('time.time', return_value=54321.5),
+            patch.object(em, '_fetch_bulk_data', return_value=True),
+        ):
+            em.update_all_states()
         self.assertEqual(em.last_bulk_fetch, 54321.5)
 
 

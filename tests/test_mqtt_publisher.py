@@ -8,6 +8,7 @@ Shared fixtures are in conftest.py.
 
 import json
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -17,7 +18,8 @@ from conftest import (
     _safe_entity_id,
     _unicode_text,
 )
-from hypothesis import example, given, strategies as st
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 # Topic builder functions — imported at module level so mutmut can replace the
 # module cleanly between test runs without triggering import-lock timeouts.
@@ -179,8 +181,8 @@ class TestResolveUnitProperties(unittest.TestCase):
     def test_idempotent(self, point_id, raw_unit):
         """resolve_unit applied twice gives the same result."""
         from nibe_mqtt_publisher import resolve_unit
-        unit1, override1 = resolve_unit(point_id, raw_unit)
-        unit2, override2 = resolve_unit(point_id, unit1)
+        unit1, _override1 = resolve_unit(point_id, raw_unit)
+        unit2, _override2 = resolve_unit(point_id, unit1)
         self.assertEqual(unit1, unit2)
 
 
@@ -193,7 +195,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
     """Hypothesis properties that verify invariants spanning multiple functions."""
 
     # Strategy: a metadata dict shaped like a canonical switch
-    _switch_meta = {
+    _switch_meta: ClassVar[dict] = {
         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
         'variableSize': 'u8', 'variableType': 'integer',
         'minValue': 0, 'maxValue': 1,
@@ -234,7 +236,13 @@ class TestCrossFunctionProperties(unittest.TestCase):
     def test_create_entity_id_in_all_topic_functions(self, pid):
         """create_entity_id(pid) fed into any t_* function always contains str(pid)."""
         from nibe_entity_detection import create_entity_id
-        from nibe_mqtt_publisher import t_attributes, t_available, t_command, t_config, t_state
+        from nibe_mqtt_publisher import (
+            t_attributes,
+            t_available,
+            t_command,
+            t_config,
+            t_state,
+        )
         entity_id = create_entity_id(pid)
         for fn in (t_config, t_state, t_command, t_available, t_attributes):
             topic = fn('sensor', entity_id)
@@ -286,7 +294,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
         from nibe_entity_detection import apply_divisor
         from nibe_mqtt_publisher import resolve_unit
         value_str = apply_divisor(raw, divisor)
-        unit, _ = resolve_unit(99999, 'kWh')
+        _unit, _ = resolve_unit(99999, 'kWh')
         # The value string must still be parseable as a float after unit resolution
         float(value_str)  # must not raise
 
@@ -1187,7 +1195,7 @@ class TestPublishStaticAttributesProperties(unittest.TestCase):
            st.sampled_from(['sensor', 'switch', 'number', 'select', 'binary_sensor']))
     def test_non_button_sets_json_attributes_topic(self, entity_id, entity_type):
         """Non-button entities must always set json_attributes_topic in config."""
-        pub, mqtt = self._pub()
+        pub, _mqtt = self._pub()
         config = {}
         pub._publish_static_attributes(
             entity_type, entity_id, 100, '', False, '', self._meta(), config)
@@ -1197,7 +1205,7 @@ class TestPublishStaticAttributesProperties(unittest.TestCase):
            st.sampled_from(['sensor', 'switch', 'number', 'select']))
     def test_attributes_topic_consistent_with_t_attributes(self, entity_id, entity_type):
         from nibe_mqtt_publisher import t_attributes
-        pub, mqtt = self._pub()
+        pub, _mqtt = self._pub()
         config = {}
         pub._publish_static_attributes(
             entity_type, entity_id, 100, '', False, '', self._meta(), config)
@@ -2152,7 +2160,7 @@ class TestPublishAllMetadataProperties(unittest.TestCase):
         points = [self._point(pid) for pid in pids]
         pub.publish_all_metadata(points)
         payload = self._get_payload(mqtt)
-        for key in payload['metadata'].keys():
+        for key in payload['metadata']:
             self.assertIsInstance(key, str)
 
     @given(st.sets(st.integers(min_value=1, max_value=9999), min_size=1, max_size=10))
@@ -3430,7 +3438,7 @@ class TestPublishPointMetadataConsolidation(unittest.TestCase):
         pub = self._publisher()
         point = self._point(4562, unit='%')
         pub.publish_point_metadata(point)
-        topic, payload = pub.mqtt.publish.call_args.args
+        _topic, payload = pub.mqtt.publish.call_args.args
         published = json.loads(payload)
         self.assertEqual(published['unit'], '')
         self.assertTrue(published['unit_overridden'])
@@ -7859,7 +7867,7 @@ class TestPublishEntityDiscoveryLogicGaps(unittest.TestCase):
 
     def test_point_without_metadata_key_does_not_crash(self):
         """metadata = point.get('metadata', {}) — missing key → empty dict, not None."""
-        pub, mqtt = self._pub()
+        pub, _mqtt = self._pub()
         point = self._base_point(100)
         del point['metadata']
         # Must not raise AttributeError: 'NoneType' has no attribute 'get'
@@ -8250,7 +8258,7 @@ class TestPublishEntityDiscoveryRetainAndHash(unittest.TestCase):
         """invalidate_config_hash must also forget the tracked entity_type,
         so a point that disappears and reappears under the same entity_type
         doesn't spuriously trigger the old-topic-clear logic against itself."""
-        pub, mqtt = self._pub()
+        pub, _mqtt = self._pub()
         point = self._point(100)
         pub.publish_entity_discovery(point, {})
         pub.invalidate_config_hash(100)

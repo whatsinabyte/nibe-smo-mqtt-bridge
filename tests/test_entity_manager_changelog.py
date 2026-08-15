@@ -14,7 +14,8 @@ from unittest.mock import MagicMock
 from conftest import (
     _make_em,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 class TestPruneChangelog(unittest.TestCase):
@@ -614,7 +615,7 @@ class TestChangelogConsistency(unittest.TestCase):
         }
         self.em._update_changelog_history(change_event)
         self.assertEqual(len(self.em.change_history), 1)
-        entry = list(self.em.change_history)[0]
+        entry = next(iter(self.em.change_history))
         for required_key in ('timestamp', 'iso_timestamp', 'added', 'removed'):
             self.assertIn(required_key, entry,
                           f"Entry missing required key: {required_key}")
@@ -1127,7 +1128,7 @@ class TestOnHistoryMessageMissingHistoryKey(unittest.TestCase):
         ))
         # change_history must be untouched — 'history' key absent
         self.assertEqual(len(em.change_history), 1)
-        self.assertEqual(list(em.change_history)[0]['id'], 1)
+        self.assertEqual(next(iter(em.change_history))['id'], 1)
 
     def test_history_not_a_list_does_not_touch_change_history(self):
         from nibe_entity_manager import EntityManager

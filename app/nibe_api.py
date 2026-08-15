@@ -132,10 +132,10 @@ class NibeApiClient:
                 if last_attempt:
                     return None
 
-            except Exception as e:
-                log_api.error(
-                    "Unexpected error in request to %s: %s — this is likely a bug",
-                    url, e, exc_info=True,
+            except Exception:
+                log_api.exception(
+                    "Unexpected error in request to %s — this is likely a bug",
+                    url,
                 )  # pragma: no mutate
                 return None
 
@@ -301,7 +301,7 @@ class NibeApiClient:
             body = ""
             try:
                 body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
-            except Exception as body_err:
+            except Exception as body_err:  # noqa: BLE001 — best-effort read of HTTP error body for logging only
                 log_commands.debug(
                     "Could not read HTTP %d error body for point %d: %s",
                     e.code, point_id, body_err,
@@ -318,8 +318,8 @@ class NibeApiClient:
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
             log_commands.error("Network error writing point %d: %s", point_id, e)  # pragma: no mutate
             return False
-        except Exception as e:
-            log_commands.error("Unexpected error writing point %d: %s", point_id, e, exc_info=True)  # pragma: no mutate
+        except Exception:
+            log_commands.exception("Unexpected error writing point %d", point_id)  # pragma: no mutate
             return False
 
     def reset_notifications(self) -> bool:
@@ -351,8 +351,8 @@ class NibeApiClient:
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
             log_commands.error("Network error resetting notifications: %s", e)  # pragma: no mutate
             return False
-        except Exception as e:
-            log_commands.error("Unexpected error resetting notifications: %s", e, exc_info=True)  # pragma: no mutate
+        except Exception:
+            log_commands.exception("Unexpected error resetting notifications")  # pragma: no mutate
             return False
 
     def write_device_mode(self, mode_type: str, value: str) -> bool:
@@ -386,7 +386,7 @@ class NibeApiClient:
             body = ""
             try:
                 body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
-            except Exception as body_err:
+            except Exception as body_err:  # noqa: BLE001 — best-effort read of HTTP error body for logging only
                 log_commands.debug(
                     "Could not read HTTP %d error body for device mode %s: %s",
                     e.code, mode_type, body_err,
@@ -403,6 +403,6 @@ class NibeApiClient:
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
             log_commands.error("Network error setting device mode %s: %s", mode_type, e)  # pragma: no mutate
             return False
-        except Exception as e:
-            log_commands.error("Unexpected error setting device mode %s: %s", mode_type, e, exc_info=True)  # pragma: no mutate
+        except Exception:
+            log_commands.exception("Unexpected error setting device mode %s", mode_type)  # pragma: no mutate
             return False

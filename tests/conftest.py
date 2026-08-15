@@ -30,7 +30,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 try:
-    from hypothesis import HealthCheck, settings, strategies as st
+    from hypothesis import HealthCheck, settings
+    from hypothesis import strategies as st
 
     # HealthCheck.too_slow: common in property-based tests with complex strategies.
     # HealthCheck.differing_executors: fires when pytest is invoked in-process
@@ -136,7 +137,7 @@ try:
         known_pids = list({
             pid
             for reg in VALUE_MAPPINGS.values()
-            for pid in reg.keys()
+            for pid in reg
         } | set(ENTITY_TYPE_OVERRIDES.keys()))
         return st.one_of(
             st.integers(min_value=0, max_value=65535),
@@ -228,9 +229,8 @@ if os.path.isdir(os.path.join(_APP_DIR, '..', 'app')):
     _APP_DIR = os.path.normpath(os.path.join(_APP_DIR, '..', 'app'))
 
 # Candidate: /mnt/project/ (dev container — production code lives there)
-if not os.path.exists(os.path.join(_APP_DIR, 'menu_structure.yaml')):
-    if os.path.isdir('/mnt/project'):
-        _APP_DIR = '/mnt/project'
+if not os.path.exists(os.path.join(_APP_DIR, 'menu_structure.yaml')) and os.path.isdir('/mnt/project'):
+    _APP_DIR = '/mnt/project'
 
 # Resolve menu_structure.yaml — lives in app/ relative to repo root.
 _MENU_YAML = os.path.join(_APP_DIR, 'menu_structure.yaml')

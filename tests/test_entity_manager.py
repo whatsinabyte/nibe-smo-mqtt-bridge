@@ -16,7 +16,8 @@ from conftest import (
     _nibe_point_id,
     _point_entry,
 )
-from hypothesis import example, given, strategies as st
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 
 class TestCompressDecompressProperties(unittest.TestCase):
@@ -89,8 +90,8 @@ class TestCompressDecompressProperties(unittest.TestCase):
         with two keys makes the space-vs-no-space difference land in the
         decompressed JSON text itself, independently checkable without
         reading anything back from the compress call under test."""
-        import gzip as _gzip
         import base64 as _base64
+        import gzip as _gzip
 
         from nibe_entity_manager import _GZIP_SENTINEL, _compress_payload
         result = _compress_payload({'a': 1, 'b': 2})
@@ -118,8 +119,8 @@ class TestCompressDecompressProperties(unittest.TestCase):
         single bad byte becomes U+FFFD rather than raising UnicodeDecodeError.
         Constructed directly at the byte level since _compress_payload never
         itself produces invalid UTF-8 (base64 output is always ASCII)."""
-        from nibe_entity_manager import _GZIP_SENTINEL
         import nibe_entity_manager as _nem
+        from nibe_entity_manager import _GZIP_SENTINEL
 
         # 0xFF is not valid UTF-8 anywhere. With errors='replace', the decode
         # step itself never raises — it substitutes U+FFFD and execution
@@ -138,7 +139,7 @@ class TestCompressDecompressProperties(unittest.TestCase):
                 "decode() raised UnicodeDecodeError — errors='replace' should have "
                 "substituted U+FFFD instead of raising at the decode step"
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any non-UnicodeDecodeError failure downstream is expected
 
 
@@ -164,7 +165,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         from nibe_entity_manager import _decompress_payload
         try:
             _decompress_payload(data)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any exception is acceptable — crash is not
 
     @given(st.binary(max_size=1000))
@@ -178,7 +179,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         try:
             raw  = _decompress_payload(data)
             result = _json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001 — deliberate fuzz test, any non-crash outcome is acceptable
             result = None
         # Result is always None or a parsed object — never an exception propagating
         self.assertIn(type(result), (dict, list, type(None)))
@@ -189,7 +190,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         from nibe_entity_manager import _decompress_payload
         try:
             _decompress_payload(text)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any exception is acceptable — crash is not
 
     @given(st.binary(max_size=100))
@@ -200,7 +201,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         payload = _GZIP_SENTINEL.encode() + suffix
         try:
             _decompress_payload(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # graceful failure expected
 
     @example(data=b'')
@@ -209,7 +210,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         from nibe_entity_manager import _decompress_payload
         try:
             _decompress_payload(data)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass
 
 
@@ -456,7 +457,7 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
     def test_keys_are_ints_from_input(self, all_points_by_id):
         from nibe_lovelace import _build_point_defaults
         result = _build_point_defaults(all_points_by_id)
-        for k in result.keys():
+        for k in result:
             self.assertIsInstance(k, int)
             self.assertIn(k, all_points_by_id)
 
@@ -480,7 +481,7 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
         """Non-writable points must never appear in the result."""
         from nibe_lovelace import _build_point_defaults
         result = _build_point_defaults(all_points_by_id)
-        for pid in result.keys():
+        for pid in result:
             meta = all_points_by_id[pid]['metadata']
             self.assertTrue(meta['isWritable'])
 
@@ -493,7 +494,7 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
         """Non-HOLDING register points must never appear in the result."""
         from nibe_lovelace import _build_point_defaults
         result = _build_point_defaults(all_points_by_id)
-        for pid in result.keys():
+        for pid in result:
             meta = all_points_by_id[pid]['metadata']
             self.assertEqual(meta['modbusRegisterType'], 'MODBUS_HOLDING_REGISTER')
 
@@ -506,7 +507,7 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
         """Points with min==max (degenerate range) must never appear."""
         from nibe_lovelace import _build_point_defaults
         result = _build_point_defaults(all_points_by_id)
-        for pid in result.keys():
+        for pid in result:
             meta = all_points_by_id[pid]['metadata']
             self.assertNotEqual(meta['minValue'], meta['maxValue'])
 

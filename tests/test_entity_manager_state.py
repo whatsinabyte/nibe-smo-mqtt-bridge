@@ -6,12 +6,14 @@ for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
     _make_em,
 )
-from hypothesis import assume, example, given, strategies as st
+from hypothesis import assume, example, given
+from hypothesis import strategies as st
 
 
 class TestValueCacheDeduplication(unittest.TestCase):
@@ -495,7 +497,7 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
     sentinel check, binary_sensor dispatch, or divisor path.
     """
 
-    _ENTITY_TYPES = ['sensor', 'switch', 'binary_sensor', 'number', 'select', 'time']
+    _ENTITY_TYPES: ClassVar[list] = ['sensor', 'switch', 'binary_sensor', 'number', 'select', 'time']
 
     def _entity_info(self, point_id=100, entity_type='sensor'):
         return {
@@ -1057,9 +1059,11 @@ class TestUpdateEntityStateValueMappingAlreadyCached(unittest.TestCase):
             },
             'title': 'Language',
         }
-        with self._active_entity(em, entity_info):
-            with patch('nibe_entity_manager.get_value_mapping') as mock_gvm:
-                em._update_entity_state(entity_info)
+        with (
+            self._active_entity(em, entity_info),
+            patch('nibe_entity_manager.get_value_mapping') as mock_gvm,
+        ):
+            em._update_entity_state(entity_info)
         # The cached mapping must be used; get_value_mapping must NOT be called
         mock_gvm.assert_not_called()
         state_calls = [c for c in em.mqtt.publish.call_args_list
@@ -1088,9 +1092,11 @@ class TestUpdateEntityStateValueMappingAlreadyCached(unittest.TestCase):
             },
             'title': 'Sensor with mapping',
         }
-        with self._active_entity(em, entity_info):
-            with patch('nibe_entity_manager.get_value_mapping') as mock_gvm:
-                em._update_entity_state(entity_info)
+        with (
+            self._active_entity(em, entity_info),
+            patch('nibe_entity_manager.get_value_mapping') as mock_gvm,
+        ):
+            em._update_entity_state(entity_info)
         mock_gvm.assert_not_called()
         state_calls = [c for c in em.mqtt.publish.call_args_list
                        if c.args[0] == 'nibe/state/9998']

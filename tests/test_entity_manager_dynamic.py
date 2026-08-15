@@ -8,12 +8,14 @@ for file-size/maintainability. Shared fixtures are in conftest.py.
 import itertools
 import json
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
     _make_em,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
     initialize,
@@ -388,8 +390,8 @@ class DynamicPointMapMachine(RuleBasedStateMachine):
       6. is_known_dynamic(pid) ↔ pid in all_known_dynamic_point_ids()
     """
 
-    CONTROL_PIDS = [10, 20, 30]     # switch/select controlling points
-    DYNAMIC_PIDS = [1000, 1001, 1002, 1003, 1004]  # points that appear/disappear
+    CONTROL_PIDS: ClassVar[list] = [10, 20, 30]     # switch/select controlling points
+    DYNAMIC_PIDS: ClassVar[list] = [1000, 1001, 1002, 1003, 1004]  # points that appear/disappear
     SELECT_PID   = 40   # 3-value select — record_outcome's rule below is
                          # restricted to 2-value switches, so a dedicated
                          # entry is needed to reach the "no inverse

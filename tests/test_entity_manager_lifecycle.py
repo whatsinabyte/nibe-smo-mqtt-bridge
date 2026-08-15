@@ -13,7 +13,8 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
     initialize,
@@ -1124,7 +1125,7 @@ class TestBuildDisableNotification(unittest.TestCase):
 
     def test_reenabled_action_returns_reenabled_message(self):
         em = _make_em()
-        title, message, notif_id = em.build_disable_notification(
+        title, message, _notif_id = em.build_disable_notification(
             3920, 'switch.permit_heating', 're-enabled',
         )
         self.assertIn('re-enabled', title.lower())
@@ -1133,7 +1134,7 @@ class TestBuildDisableNotification(unittest.TestCase):
     def test_disabled_static_point_returns_standard_message(self):
         em = _make_em()
         em.all_points_by_id[3920] = {'display_title': 'Permit heating', 'is_dynamic': False}
-        title, message, notif_id = em.build_disable_notification(
+        title, message, _notif_id = em.build_disable_notification(
             3920, 'switch.permit_heating', 'disabled',
         )
         self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')
@@ -1146,7 +1147,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         'use the Entity Manager card' guidance, which doesn't apply to them."""
         em = _make_em()
         em.all_points_by_id[50827] = {'display_title': 'Humidity', 'is_dynamic': True}
-        title, message, notif_id = em.build_disable_notification(
+        title, message, _notif_id = em.build_disable_notification(
             50827, 'sensor.humidity', 'disabled',
         )
         self.assertEqual(title, 'Nibe Bridge: Dynamic entity disabled in HA')
@@ -1163,7 +1164,7 @@ class TestBuildDisableNotification(unittest.TestCase):
             point_id=3920, title='Additional heating enable', entity_type='switch',
             dynamic_points_by_value={1: [50827]},
         )
-        title, message, notif_id = em.build_disable_notification(
+        _title, message, _notif_id = em.build_disable_notification(
             50827, 'sensor.humidity', 'disabled',
         )
         self.assertIn('Additional heating enable', message)
@@ -1173,7 +1174,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         """The point isn't in all_points_by_id (stale data) — must not
         crash, falls back to a bare '#id' display."""
         em = _make_em()
-        title, message, notif_id = em.build_disable_notification(
+        _title, message, _notif_id = em.build_disable_notification(
             9999, 'switch.unknown', 'disabled',
         )
         self.assertIn('#9999', message)
@@ -1182,7 +1183,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         """point_id itself is None (couldn't be resolved at all) — falls
         back to showing the raw HA entity_id instead of '#None'."""
         em = _make_em()
-        title, message, notif_id = em.build_disable_notification(
+        _title, message, _notif_id = em.build_disable_notification(
             None, 'switch.mystery_entity', 'disabled',
         )
         self.assertIn('switch.mystery_entity', message)
@@ -1195,7 +1196,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         checks the entity_id appears in the message but not which message
         VARIANT is used; this pins that specifically."""
         em = _make_em()
-        title, message, notif_id = em.build_disable_notification(
+        title, message, _notif_id = em.build_disable_notification(
             None, 'switch.mystery_entity', 'disabled',
         )
         self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')
@@ -1235,7 +1236,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         showing a blank title."""
         em = _make_em()
         em.all_points_by_id[100] = {'is_dynamic': False}  # no display_title
-        title, message, notif_id = em.build_disable_notification(
+        _title, message, _notif_id = em.build_disable_notification(
             100, 'switch.foo', 'disabled',
         )
         self.assertIn('Point 100', message)
@@ -1248,7 +1249,7 @@ class TestBuildDisableNotification(unittest.TestCase):
         explicitly) is required to actually exercise the default value."""
         em = _make_em()
         em.all_points_by_id[100] = {'display_title': 'No Dynamic Key'}  # key absent
-        title, message, notif_id = em.build_disable_notification(
+        title, message, _notif_id = em.build_disable_notification(
             100, 'switch.foo', 'disabled',
         )
         self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')

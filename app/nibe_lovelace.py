@@ -75,7 +75,7 @@ def _copy_card_file() -> bool:
         shutil.copy2(src, dst)
         log_startup.info("Card file copied to %s", dst)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Could not copy card file to %s: %s", dst, e)
         return False
 
@@ -674,14 +674,13 @@ def _wait_for_registry_stable(
         else:
             _stable_for = 0.0
             _prev_count = current_count
-    else:
-        log_startup.warning(
-            "Registry wait timed out — %d/%d menu + %d/%d dynamic resolved",
-            sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p)),
-            len(available_menu_points),
-            sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p)),
-            len(active_dynamic),
-        )
+    log_startup.warning(
+        "Registry wait timed out — %d/%d menu + %d/%d dynamic resolved",
+        sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p)),
+        len(available_menu_points),
+        sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p)),
+        len(active_dynamic),
+    )
 
 
 def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False) -> bool:
@@ -717,7 +716,7 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
 
     try:
         menu_structure = _load_menu_structure_yaml(menu_path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Could not load menu_structure.yaml: %s", e)
         return False
 
@@ -786,7 +785,7 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     finally:
         try:
             ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
             pass
 
 
@@ -886,7 +885,7 @@ def _open_ha_websocket():
     except ImportError:
         log_startup.warning("websocket-client not installed — WebSocket unavailable")
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Could not connect to HA WebSocket: %s", e)
         return None
 
@@ -909,11 +908,11 @@ def _open_ha_websocket():
             ws.close()
             return None
         return ws, _next_id
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("HA WebSocket auth error: %s", e)
         try:
             ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
             pass
         return None
 
@@ -996,12 +995,12 @@ def _setup_lovelace(version: str, device_name: str, registry_watcher=None,
         if registry_watcher is not None and mode == "menus":
             _regen_menu_dashboard(registry_watcher, debug_mode, attempt=1)
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Lovelace setup failed: %s", e)
     finally:
         try:
             ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
             pass
 
 
@@ -1183,7 +1182,7 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
     """
     try:
         ws.send(json.dumps({**payload, "id": msg_id}))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.debug("_ws_call: send failed (id=%s): %s", msg_id, e)
         return {}
     deadline = time.time() + timeout
@@ -1199,8 +1198,8 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
             msg = json.loads(raw)
             if msg.get("id") == msg_id and msg.get("type") == "result":
                 return msg
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+        log_startup.debug("_ws_call: recv failed (id=%s): %s", msg_id, e)
     finally:
         ws.settimeout(None)
     return {}
@@ -1235,7 +1234,7 @@ def _teardown_lovelace() -> None:
             log_startup.info("Removed card file: %s", card_dst)
         else:
             log_startup.debug("Card file not found at %s — already removed", card_dst)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Could not remove card file %s: %s", card_dst, e)
 
     if not supervisor_token:
@@ -1274,7 +1273,7 @@ def _teardown_lovelace() -> None:
                     log_startup.warning("Could not remove dashboard: %s", resp)
             else:
                 log_startup.debug("Nibe Bridge dashboard not found — already removed")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
             log_startup.warning("Dashboard removal failed: %s", e)
 
         # ── Remove Lovelace resource registration ─────────────────────────────
@@ -1296,13 +1295,13 @@ def _teardown_lovelace() -> None:
                     log_startup.warning("Could not remove Lovelace resource: %s", resp)
             else:
                 log_startup.debug("Lovelace resource not found — already removed")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
             log_startup.warning("Resource removal failed: %s", e)
 
     finally:
         try:
             ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
             pass
 
     # Remove the provisioned flag so the dashboard is recreated if the
@@ -1369,13 +1368,13 @@ def _remove_menu_dashboard() -> None:
                               "will retry on next startup")
         else:
             log_startup.debug("Nibe Menus dashboard not found — nothing to remove")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Menu dashboard teardown failed: %s", e)
         list_succeeded = False
     finally:
         try:
             ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
             pass
 
     # Remove the flag only when we know the list call succeeded — if the call
@@ -1456,7 +1455,7 @@ def _regen_menu_dashboard(
         needs_retry = setup_dashboard_fn(
             open_ws_fn, registry_watcher, debug_mode=debug_mode,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning(
             "Menu dashboard regen attempt %d failed unexpectedly: %s",
             attempt, e,
@@ -1576,7 +1575,7 @@ def build_menu_points(yaml_path: str) -> frozenset[int]:
         points = _collect_menu_points(_load_menu_structure_yaml(yaml_path))
         log_startup.debug("Built MENU_POINTS from YAML: %d unique point_ids", len(points))
         return frozenset(points)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Could not build MENU_POINTS from %s: %s", yaml_path, e)
         return frozenset()
 

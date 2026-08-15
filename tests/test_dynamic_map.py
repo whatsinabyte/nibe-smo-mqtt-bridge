@@ -14,7 +14,8 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import assume, given, strategies as st
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 
 class TestDynamicPointEntrySerialiseProperties(unittest.TestCase):

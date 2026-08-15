@@ -12,7 +12,8 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 class TestDecideStartupActionProperties(unittest.TestCase):
