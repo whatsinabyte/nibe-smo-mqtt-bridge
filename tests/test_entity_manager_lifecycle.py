@@ -1472,6 +1472,36 @@ class TestAppliedModePersistence(unittest.TestCase):
             f.write('   ')
         self.assertIsNone(em._read_applied_mode_from_file(self._tmp_path))
 
+    def test_persist_then_read_round_trip_through_a_real_file(self):
+        """_persist_applied_mode() and _read_applied_mode_from_file() are
+        each unit-tested above, but every existing test verifies the write
+        side via a raw open()/read() and the read side via a raw
+        open()/write() — never chains the two real functions through the
+        same real file, which is exactly the seam a restart depends on:
+        this process's _persist_applied_mode() call writing something the
+        NEXT process's _read_applied_mode_from_file() call can actually
+        read back correctly. Uses two separate EntityManager instances to
+        simulate that restart, not just two calls on the same one."""
+        writer_em = _make_em()
+        writer_em._persist_applied_mode('advanced', path=self._tmp_path)
+
+        reader_em = _make_em()
+        self.assertEqual(
+            reader_em._read_applied_mode_from_file(self._tmp_path), 'advanced',
+        )
+
+    def test_persist_then_read_round_trip_survives_repeated_writes(self):
+        """A second real persist to the same file must fully replace the
+        first — not append or leave stale trailing content that could
+        corrupt the strip()ped read (e.g. 'essentialadvanced' or
+        'advanced\\nessential' if the file weren't truncated on rewrite)."""
+        em = _make_em()
+        em._persist_applied_mode('essential', path=self._tmp_path)
+        em._persist_applied_mode('advanced', path=self._tmp_path)
+        self.assertEqual(
+            em._read_applied_mode_from_file(self._tmp_path), 'advanced',
+        )
+
     def test_record_applied_mode_persists_without_touching_enabled_set(self):
         """record_applied_mode is the migration-boundary helper — it must
         record the baseline without enabling or disabling anything."""

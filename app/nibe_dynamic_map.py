@@ -490,8 +490,17 @@ class DynamicPointMap:
             log.warning("DynamicPointMap.deserialise: JSON parse error: %s", e)  # pragma: no mutate
             return 0
 
-    def to_file(self, path: str = _FILE_FALLBACK) -> bool:
-        """Write the table to a JSON file.  Returns True on success."""
+    def to_file(self, path: str | None = None) -> bool:
+        """Write the table to a JSON file.  Returns True on success.
+
+        path defaults to None (resolved to the module-level _FILE_FALLBACK
+        at call time, not bound at function-definition time) so that
+        patching the module constant — e.g. in tests — actually takes
+        effect; a plain default argument would freeze the original value
+        forever. Same pattern as EntityManager._persist_applied_mode.
+        """
+        if path is None:
+            path = _FILE_FALLBACK
         try:
             tmp = path + '.tmp'
             with open(tmp, 'w', encoding='utf-8') as f:  # pragma: no mutate
@@ -503,8 +512,14 @@ class DynamicPointMap:
             log.warning("DynamicPointMap: could not write to %s: %s", path, e)  # pragma: no mutate
             return False
 
-    def from_file(self, path: str = _FILE_FALLBACK) -> int:
-        """Load the table from a JSON file.  Returns number of entries loaded."""
+    def from_file(self, path: str | None = None) -> int:
+        """Load the table from a JSON file.  Returns number of entries loaded.
+
+        See to_file for why path resolves dynamically instead of using a
+        plain default argument.
+        """
+        if path is None:
+            path = _FILE_FALLBACK
         try:
             with open(path, encoding='utf-8') as f:  # pragma: no mutate
                 data = f.read()

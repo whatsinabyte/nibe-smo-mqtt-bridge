@@ -640,8 +640,7 @@ class HAEntityRegistryWatcher:
             ha_entity_id, point_id,
         )
 
-        safe_id  = ha_entity_id.replace('.', '_').replace('-', '_')[:60]
-        notif_id = f'nibe_ha_disable_{safe_id}'
+        notif_id = self._em.ha_disable_notif_id(ha_entity_id)
         dismiss_ha(self._em.mqtt, notif_id)
 
         if point_id not in self._em.mqtt_enabled_points:

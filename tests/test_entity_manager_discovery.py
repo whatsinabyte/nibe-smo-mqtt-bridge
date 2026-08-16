@@ -5,6 +5,7 @@ Startup discovery and MQTT restore tests for nibe_entity_manager.py — split ou
 for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -852,6 +853,130 @@ class TestRestoreFromMqtt(unittest.TestCase):
         self.assertEqual(count2, 1)
 
 
+class TestConfigDedupSurvivesRestart(unittest.TestCase):
+    """publish_entity_discovery()'s config-hash dedup cache
+    (MqttDiscoveryPublisher._config_hashes) lives only in memory, and the
+    publisher instance is reconstructed fresh on every process restart —
+    so without scan_mqtt_discovery() seeding it from the retained configs
+    it finds (via seed_config_hash_from_retained), restore_from_mqtt()
+    would unconditionally republish every point's discovery config on
+    every restart, contradicting restore_from_mqtt()'s own docstring
+    claim of skipping configs that haven't changed. This was a real bug:
+    found by reading the code (the cache is per-instance and the
+    publisher is rebuilt every restart), not by a failing test — no test
+    previously chained a real writer and a real restart-simulated reader
+    together to check it.
+
+    These tests chain three REAL functions with nothing hand-substituted
+    in between: publish_entity_discovery() (the original writer),
+    scan_mqtt_discovery() (seeds the cache from the writer's real retained
+    bytes), and restore_from_mqtt() (reader, using the seeded cache) — on
+    a fresh EntityManager AND a fresh MqttDiscoveryPublisher, simulating
+    an actual restart."""
+
+    def _point(self, pid=100, title='Outdoor Temp'):
+        return {
+            'variableId': pid, 'display_title': title, 'title': title,
+            'entity_type': 'sensor', 'entity_category': 'diagnostic',
+            'is_writable': False, 'is_dynamic': False, 'description': '',
+            'metadata': {
+                'isWritable': False, 'divisor': 10, 'decimal': 1,
+                'unit': '°C', 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'variableType': 'integer', 'variableSize': 's16',
+                'minValue': -300, 'maxValue': 300,
+                'intDefaultValue': 0, 'stringDefaultValue': '',
+                'change': 1, 'shortUnit': '°C', 'modbusRegisterID': pid,
+            },
+        }
+
+    def _real_publisher(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=mqtt,
+            device_info={'identifiers': ['nibe_test'], 'name': 'Test'},
+            device_id='nibe_test',
+            device_name='Test Device',
+        )
+        return pub, mqtt
+
+    def _retained_bytes_from_publish_call(self, mqtt_mock):
+        """The real retained bytes a broker would redeliver are whatever
+        was actually published, re-encoded as MQTT payloads always are —
+        publish_entity_discovery() publishes a str, but the broker stores
+        and redelivers bytes, so this must match how publish_entity_
+        discovery() itself computes its hash (over the same str.encode())."""
+        payload = mqtt_mock.publish.call_args.args[1]
+        return payload.encode('utf-8') if isinstance(payload, str) else payload
+
+    def _restart_and_restore(self, retained_payload, live_point):
+        """Fresh EntityManager + fresh real MqttDiscoveryPublisher — a
+        restart. Delivers retained_payload as the only retained discovery
+        config via a real scan_mqtt_discovery() call, then calls the real
+        restore_from_mqtt() using live_point as current firmware data.
+        Returns the fresh publisher's own real mqtt_client mock."""
+        em = _make_em()
+        real_pub, real_pub_mqtt = self._real_publisher()
+        em._pub = real_pub
+
+        callbacks = {}
+
+        def fake_callback_add(topic, cb):
+            callbacks[topic] = cb
+
+        def fake_em_publish(topic, payload, retain=False):
+            if 'scan_sentinel' in topic:
+                msg = MagicMock()
+                msg.topic = f"homeassistant/sensor/nibe_{live_point['variableId']}/config"
+                msg.payload = retained_payload
+                cb = callbacks.get('homeassistant/+/+/config')
+                if cb:
+                    cb(None, None, msg)
+                cb = callbacks.get(topic)
+                if cb:
+                    cb(None, None, MagicMock())
+
+        em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
+        em.mqtt.publish = MagicMock(side_effect=fake_em_publish)
+
+        em.scan_mqtt_discovery()
+        em.all_points_by_id[live_point['variableId']] = live_point
+        real_pub_mqtt.publish.reset_mock()
+        em.restore_from_mqtt()
+        return real_pub_mqtt
+
+    def test_unchanged_config_is_not_republished_across_simulated_restart(self):
+        point = self._point()
+        writer_pub, writer_mqtt = self._real_publisher()
+        writer_pub.publish_entity_discovery(point, bulk_data={})
+        config_topic     = writer_mqtt.publish.call_args.args[0]
+        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt)
+
+        real_pub_mqtt = self._restart_and_restore(retained_payload, point)
+        config_calls = [c for c in real_pub_mqtt.publish.call_args_list
+                        if c.args[0] == config_topic]
+        self.assertEqual(config_calls, [],
+            "unchanged discovery config was republished across a simulated "
+            "restart — the hash-dedup cache was not seeded correctly")
+
+    def test_changed_config_is_still_republished_across_simulated_restart(self):
+        """The fix must not accidentally suppress a genuine change — only
+        a byte-identical config may be skipped."""
+        point = self._point()
+        writer_pub, writer_mqtt = self._real_publisher()
+        writer_pub.publish_entity_discovery(point, bulk_data={})
+        config_topic     = writer_mqtt.publish.call_args.args[0]
+        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt)
+
+        changed_point = self._point(title='Changed Title')
+
+        real_pub_mqtt = self._restart_and_restore(retained_payload, changed_point)
+        config_calls = [c for c in real_pub_mqtt.publish.call_args_list
+                        if c.args[0] == config_topic]
+        self.assertEqual(len(config_calls), 1)
+
+
 class TestHandleApiFailure(unittest.TestCase):
     """_handle_api_failure increments consecutive failures and sends an HA
     notification + MQTT alert when the threshold is reached."""
@@ -1194,3 +1319,124 @@ class TestScanMqttPartialWarning(unittest.TestCase):
             len(sentinel_warnings), 0,
             "No Sentinel-timeout warning should appear when sentinel arrives on time",
         )
+
+
+class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
+    """Raw Nibe API response -> _fetch_bulk_data() classification ->
+    publish_entity_discovery() -> final MQTT discovery payload, chained
+    through all three real functions with nothing hand-substituted in
+    between. Each layer is individually well-tested elsewhere (nibe_api.py's
+    response shape, _fetch_bulk_data's classification, publish_entity_
+    discovery's config-building) — this checks that a value entered in one
+    raw API field (title, unit, min/max, writability) actually survives the
+    full trip to what HA would receive, not just that each layer behaves
+    correctly in isolation against already-processed test fixtures."""
+
+    def _real_publisher(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=mqtt,
+            device_info={'identifiers': ['nibe_test'], 'name': 'Test'},
+            device_id='nibe_test',
+            device_name='Test Device',
+        )
+        return pub, mqtt
+
+    def _raw_api_response(self, point_id, title, unit, min_value, max_value,
+                           divisor=10, is_writable=False,
+                           modbus_type='MODBUS_INPUT_REGISTER'):
+        """Shaped exactly like a real /points bulk response entry — the
+        same field names _fetch_bulk_data() actually reads (value.
+        integerValue/stringValue/isOk, metadata.*), not a pre-classified
+        test fixture. Only MODBUS_HOLDING_REGISTER points can ever be
+        classified as writable (number/switch/select) — MODBUS_INPUT_
+        REGISTER is always read-only regardless of isWritable, per
+        _detect_input_entity()/_detect_holding_entity()."""
+        return {
+            str(point_id): {
+                'title': title,
+                'description': '',
+                'value': {'integerValue': 255, 'stringValue': '', 'isOk': True},
+                'metadata': {
+                    'modbusRegisterType': modbus_type,
+                    'variableType':  'integer',
+                    'variableSize':  's16',
+                    'minValue':      min_value,
+                    'maxValue':      max_value,
+                    'divisor':       divisor,
+                    'decimal':       1,
+                    'unit':          unit,
+                    'shortUnit':     unit,
+                    'isWritable':    is_writable,
+                    'intDefaultValue': 0,
+                    'stringDefaultValue': '',
+                    'change':        1,
+                    'modbusRegisterID': point_id,
+                },
+            }
+        }
+
+    def test_raw_title_and_unit_survive_to_the_final_discovery_payload(self):
+        point_id = 88001
+        em = _make_em()
+        em._pub, real_mqtt = self._real_publisher()
+        em._api.fetch_bulk_points.return_value = self._raw_api_response(
+            point_id, title='  BT1 Outdoor  Temperature  ', unit='°C',
+            min_value=-400, max_value=400,
+        )
+
+        ok = em._fetch_bulk_data(detect_changes=False)
+        self.assertTrue(ok)
+
+        point = em.all_points_by_id.get(point_id)
+        self.assertIsNotNone(point, "raw API point never made it into all_points_by_id")
+        self.assertEqual(point['entity_type'], 'sensor')
+
+        entity_info = em._pub.publish_entity_discovery(point, em.bulk_data)
+        self.assertIsNotNone(entity_info)
+
+        config_call = next(c for c in real_mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        published_config = json.loads(config_call.args[1])
+
+        # clean_string() collapses the raw title's doubled/leading/trailing
+        # whitespace — this is the real classification pipeline's own
+        # cleaning, not something the test pre-processes.
+        self.assertEqual(published_config['name'], 'BT1 Outdoor Temperature')
+        self.assertEqual(published_config['unit_of_measurement'], '°C')
+        self.assertEqual(published_config['unique_id'], f'nibe_{point_id}')
+        self.assertTrue(config_call.args[0].startswith('homeassistant/sensor/'))
+
+    def test_writable_raw_point_becomes_a_number_entity_end_to_end(self):
+        """isWritable=True in the raw API metadata must survive
+        classification all the way to a genuinely-writable HA entity type
+        (number, not sensor) with a real command_topic in the final config —
+        not just an is_writable flag on the intermediate point dict."""
+        point_id = 88002
+        em = _make_em()
+        em._pub, real_mqtt = self._real_publisher()
+        em._api.fetch_bulk_points.return_value = self._raw_api_response(
+            point_id, title='Room Setpoint', unit='°C',
+            min_value=50, max_value=300, divisor=10, is_writable=True,
+            modbus_type='MODBUS_HOLDING_REGISTER',
+        )
+
+        em._fetch_bulk_data(detect_changes=False)
+        point = em.all_points_by_id.get(point_id)
+        self.assertEqual(point['entity_type'], 'number')
+        self.assertTrue(point['is_writable'])
+
+        em._pub.publish_entity_discovery(point, em.bulk_data)
+        config_call = next(c for c in real_mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        published_config = json.loads(config_call.args[1])
+
+        self.assertTrue(config_call.args[0].startswith('homeassistant/number/'))
+        self.assertIn('command_topic', published_config)
+        self.assertIsNotNone(published_config['command_topic'])
+        # Raw minValue=50/maxValue=300 with divisor=10 must reach the final
+        # config scaled, not as the raw un-divided integers.
+        self.assertEqual(published_config['min'], 5.0)
+        self.assertEqual(published_config['max'], 30.0)

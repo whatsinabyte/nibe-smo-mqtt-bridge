@@ -1574,6 +1574,31 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
         mock_notify.assert_called_once()
         self.assertIn('re-enabled', mock_notify.call_args.kwargs['title'].lower())
 
+    def test_reenable_dismisses_the_exact_id_the_real_disable_notification_used(self):
+        """build_disable_notification() (called when the entity is
+        disabled) and _on_entity_enabled() (called when it's later
+        re-enabled) used to compute the notification_id via two separately
+        duplicated inline string constructions — byte-identical by luck,
+        with nothing enforcing that agreement. Both now delegate to the
+        same EntityManager.ha_disable_notif_id() helper; this proves the
+        agreement by chaining the two real call sites together, rather
+        than asserting each one against a hand-typed literal that could
+        drift out of sync with the other independently."""
+        em = self._em_with_point(100)
+        w = self._make_watcher(em)
+
+        _title, _message, created_notif_id = em.build_disable_notification(
+            100, 'switch.nibe_100', action='disabled',
+        )
+
+        with patch.object(em, 'enable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             patch('nibe_ha_integration.dismiss_ha') as mock_dismiss, \
+             patch('nibe_ha_integration.notify_ha'):
+            w._on_entity_enabled('switch.nibe_100')
+
+        mock_dismiss.assert_called_once_with(em.mqtt, created_notif_id)
+
 
 # ===========================================================================
 # 55. update_alarm_state — alarm polling and HA notification
@@ -1875,6 +1900,43 @@ class TestUpdateAlarmState(unittest.TestCase):
         with patch('nibe_ha_integration.notify_ha') as mock_notify:
             update_alarm_state(em, MagicMock())
         self.assertIn('Reset Alarms', mock_notify.call_args.kwargs['message'])
+
+    def test_raw_api_alarm_reaches_the_real_final_mqtt_payload(self):
+        """Raw /notifications API response -> real update_alarm_state() ->
+        real MqttDiscoveryPublisher.publish_alarm_state() -> final MQTT
+        payload. Every other test in this class passes a MagicMock as the
+        publisher, so publish_alarm_state()'s real implementation never
+        actually ran chained from a real raw API alarm dict before this."""
+        from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._api.fetch_notifications.return_value = [
+            self._alarm(alarm_id=99, header='Compressor overload',
+                        severity='Critical', equip_name='Compressor 1'),
+        ]
+        real_mqtt = MagicMock()
+        real_mqtt.publish.return_value = MagicMock(rc=0)
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=real_mqtt, device_info={'identifiers': ['t']},
+            device_id='test', device_name='Test Device',
+        )
+
+        update_alarm_state(em, pub)
+
+        state_calls = [c for c in real_mqtt.publish.call_args_list
+                       if c.args[0] == MgmtTopic.ALARM_STATE]
+        self.assertTrue(state_calls, "no publish reached the real ALARM_STATE topic")
+        self.assertEqual(state_calls[-1].args[1], '1')
+
+        attrs_calls = [c for c in real_mqtt.publish.call_args_list
+                       if c.args[0] == MgmtTopic.ALARM_ATTRS]
+        self.assertTrue(attrs_calls, "no publish reached the real ALARM_ATTRS topic")
+        payload = json.loads(attrs_calls[-1].args[1])
+        self.assertEqual(len(payload['alarms']), 1)
+        self.assertEqual(payload['alarms'][0]['alarmId'], 99)
+        self.assertEqual(payload['alarms'][0]['header'], 'Compressor overload')
+        self.assertEqual(payload['alarms'][0]['severity'], 'Critical')
+        self.assertEqual(payload['alarms'][0]['equipName'], 'Compressor 1')
 
 
 # ===========================================================================

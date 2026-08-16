@@ -562,6 +562,90 @@ class TestRestoreSnapshot(unittest.TestCase):
         )
 
 
+class TestSaveThenRestoreSnapshotRealRoundtrip(unittest.TestCase):
+    """save_snapshot() and restore_snapshot() are each thoroughly tested
+    above against real files — but save_snapshot()'s tests only verify the
+    written content via the lower-level _load_snapshots(), and
+    restore_snapshot()'s tests seed their file by hand-writing JSON
+    directly (_seed_snapshot), bypassing save_snapshot() entirely. Neither
+    real function has ever been chained into the other. This is exactly
+    the seam a real restart depends on: does the file save_snapshot()
+    actually produces restore correctly via restore_snapshot() on a fresh
+    EntityManager instance (a different process, after a real restart)."""
+
+    def setUp(self):
+        self._path = '/tmp/test_snapshots_save_then_restore.json'
+        import os
+        try:
+            os.remove(self._path)
+        except FileNotFoundError:
+            pass
+        self._mode_patcher = patch(
+            'nibe_entity_manager.EntityManager._read_applied_mode_from_file',
+            return_value='essential',
+        )
+        self._mode_patcher.start()
+
+    def tearDown(self):
+        self._mode_patcher.stop()
+
+    def test_points_saved_by_one_instance_are_restored_by_a_fresh_one(self):
+        saver = _make_em()
+        for pid in (10, 20, 30):
+            saver.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+            saver.mqtt_enabled_points.add(pid)
+        ok, _msg = saver.save_snapshot('RealRoundtrip', path=self._path)
+        self.assertTrue(ok)
+
+        restorer = _make_em()
+        for pid in (10, 20, 30):
+            restorer.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+        ok, msg = restorer.restore_snapshot('RealRoundtrip', mode='flush', path=self._path)
+        self.assertTrue(ok, msg)
+        self.assertEqual(restorer.mqtt_enabled_points, {10, 20, 30})
+
+    def test_replaced_snapshot_restores_the_replacement_not_the_original(self):
+        """save_snapshot() called twice with the same name (real
+        replace-by-name path) must leave restore_snapshot() seeing only
+        the second, replacement set of points — not a merge of both real
+        writes and not the original."""
+        saver = _make_em()
+        for pid in (1, 2):
+            saver.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+            saver.mqtt_enabled_points.add(pid)
+        saver.save_snapshot('Dup', path=self._path)
+
+        saver.mqtt_enabled_points = {3, 4}
+        saver.all_points_by_id[3] = {'variableId': 3, 'title': 'P3'}
+        saver.all_points_by_id[4] = {'variableId': 4, 'title': 'P4'}
+        saver.save_snapshot('Dup', path=self._path)
+
+        restorer = _make_em()
+        for pid in (1, 2, 3, 4):
+            restorer.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+        restorer.restore_snapshot('Dup', mode='flush', path=self._path)
+        self.assertEqual(restorer.mqtt_enabled_points, {3, 4})
+
+    def test_point_missing_from_restorers_firmware_is_skipped_not_crashed(self):
+        """A point saved by one instance that the restoring instance's
+        firmware snapshot doesn't have (all_points_by_id) — e.g. it
+        disappeared after a firmware update between save and restore —
+        must be silently skipped, not restored and not crash."""
+        saver = _make_em()
+        for pid in (100, 200):
+            saver.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+            saver.mqtt_enabled_points.add(pid)
+        saver.save_snapshot('PartialFirmware', path=self._path)
+
+        restorer = _make_em()
+        restorer.all_points_by_id[100] = {'variableId': 100, 'title': 'P100'}
+        # 200 deliberately absent from restorer's firmware
+        ok, msg = restorer.restore_snapshot('PartialFirmware', mode='flush', path=self._path)
+        self.assertTrue(ok, msg)
+        self.assertEqual(restorer.mqtt_enabled_points, {100})
+        self.assertIn('1 skipped', msg)
+
+
 class TestDeleteSnapshot(unittest.TestCase):
     """delete_snapshot: removal, not-found, MQTT publish."""
 

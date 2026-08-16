@@ -934,6 +934,39 @@ class TestDynamicPointMap(unittest.TestCase):
         count = m.from_file('/tmp/does_not_exist_nibe_test_xyz.json')
         self.assertEqual(count, 0)
 
+    def test_default_path_resolves_dynamically_not_frozen_at_def_time(self):
+        """to_file()/from_file() called with NO path argument must use
+        _FILE_FALLBACK's value at CALL time, not whatever it was when the
+        class was defined — a plain `path: str = _FILE_FALLBACK` default
+        argument would freeze the original value forever and silently make
+        patching the module constant in a test (or, in principle, at
+        runtime) a no-op. Mirrors EntityManager._persist_applied_mode's
+        own documented rationale for the same pattern."""
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        import nibe_dynamic_map as ndm
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False).name
+        try:
+            os.unlink(tmp)  # to_file must create it fresh
+            m = self._map_with_entries()
+            with patch.object(ndm, '_FILE_FALLBACK', tmp):
+                ok = m.to_file()  # no path arg
+                self.assertTrue(ok)
+                self.assertTrue(os.path.exists(tmp),
+                    "to_file() with no path arg did not use the patched "
+                    "_FILE_FALLBACK — its default is frozen at def-time")
+
+                m2 = self.Map()
+                count = m2.from_file()  # no path arg
+                self.assertEqual(count, 2)
+                self.assertEqual(m2[1001].title, 'Pool heating')
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
     def test_to_file_oserror_returns_false(self):
         """OSError on write (e.g. read-only filesystem) returns False without raising."""
         m = self._map_with_entries()

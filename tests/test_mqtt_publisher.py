@@ -2659,6 +2659,64 @@ class TestInvalidateConfigHashProperties(unittest.TestCase):
         self.assertEqual(pub._config_hashes.get(pid2), 'hash2')
 
 
+class TestSeedConfigHashFromRetained(unittest.TestCase):
+    """seed_config_hash_from_retained: pre-seeds the dedup cache from a
+    retained config's own bytes, so restore_from_mqtt() can genuinely skip
+    unchanged configs across a restart (see nibe_entity_manager's
+    scan_mqtt_discovery, which calls this for every retained config found)."""
+
+    def _pub(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        return MqttDiscoveryPublisher(
+            mqtt_client=mqtt, device_info={'identifiers': ['t']},
+            device_id='test', device_name='Test',
+        ), mqtt
+
+    def test_seeded_hash_matches_a_real_unchanged_publish(self):
+        """The whole point of this method: after publishing a config once,
+        seeding from that exact publish's own bytes (as a retained message
+        would be redelivered) and then publishing the identical config
+        again on a *different* (simulated-restart) publisher instance must
+        skip the second publish."""
+        pub1, mqtt1 = self._pub()
+        point = {
+            'variableId': 42, 'display_title': 'Test Point', 'title': 'Test Point',
+            'entity_type': 'sensor', 'entity_category': 'diagnostic',
+            'is_writable': False, 'description': '',
+            'metadata': {'divisor': 1, 'unit': '°C'},
+        }
+        pub1.publish_entity_discovery(point, bulk_data={})
+        config_call        = next(c for c in mqtt1.publish.call_args_list
+                                   if c.args[0].endswith('/config'))
+        config_topic       = config_call.args[0]
+        published_payload  = config_call.args[1]
+        retained_bytes     = published_payload.encode('utf-8')
+
+        pub2, mqtt2 = self._pub()
+        pub2.seed_config_hash_from_retained(42, retained_bytes)
+        mqtt2.publish.reset_mock()
+        pub2.publish_entity_discovery(point, bulk_data={})
+        # The config topic itself must be skipped (dedup hit); other topics
+        # this call also touches (e.g. attributes) are unrelated to the
+        # dedup cache and are expected to still publish unconditionally.
+        config_calls = [c for c in mqtt2.publish.call_args_list if c.args[0] == config_topic]
+        self.assertEqual(config_calls, [])
+
+    def test_seeding_a_different_point_id_does_not_affect_others(self):
+        pub, _mqtt = self._pub()
+        pub.seed_config_hash_from_retained(1, b'payload-for-1')
+        pub.seed_config_hash_from_retained(2, b'payload-for-2')
+        self.assertNotEqual(pub._config_hashes[1], pub._config_hashes[2])
+
+    def test_seeding_is_deterministic_for_the_same_bytes(self):
+        pub, _mqtt = self._pub()
+        pub.seed_config_hash_from_retained(1, b'same-payload')
+        first = pub._config_hashes[1]
+        pub.seed_config_hash_from_retained(1, b'same-payload')
+        self.assertEqual(pub._config_hashes[1], first)
+
 
 class TestBuildButtonConfigProperties(unittest.TestCase):
     """Hypothesis properties for _build_button_config."""

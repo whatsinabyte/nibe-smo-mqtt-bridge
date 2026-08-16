@@ -302,8 +302,15 @@ class EntityManager:
         # DynamicPointMap replaces the former flat known_dynamic_points set.
         # It records, for every writable switch/select, which values cause
         # dynamic points to appear/disappear in the firmware's bulk fetch.
-        # Loaded from MQTT (primary) or /data/dynamic_point_map.json (fallback)
-        # at startup; persisted write-through on every change.
+        # Loaded from the retained DYNAMIC_MAP MQTT topic at startup (see
+        # _setup_dynamic_map_loading), with /data/dynamic_point_map.json as
+        # a filesystem fallback (see discover_points(), which calls
+        # dynamic_point_map.from_file() when nothing was restored from MQTT).
+        # Persisted write-through to both stores on every change — MQTT via
+        # _setup_dynamic_map_loading's publish path, the file via
+        # _persist_dynamic_map()/DynamicPointMap.to_file(). Actual I/O is
+        # delegated to this class (EntityManager), not performed inside
+        # DynamicPointMap itself — see that module's own docstring.
         self.dynamic_point_map: DynamicPointMap = DynamicPointMap()
 
         # Reverse lookup: point_id → (menu_id, menu_title) built from
@@ -661,7 +668,18 @@ class EntityManager:
                     if unique_id.startswith('nibe_'):
                         id_str = unique_id[5:]
                         if id_str.isdigit():
-                            discovered_points.add(int(id_str))
+                            point_id = int(id_str)
+                            discovered_points.add(point_id)
+                            # Pre-seed the publisher's dedup cache with this
+                            # retained config's own hash, so restore_from_mqtt()
+                            # (called right after this scan) can genuinely skip
+                            # republishing configs that haven't changed — the
+                            # cache would otherwise always be empty on restart,
+                            # since the publisher instance is newly constructed
+                            # every process start. See seed_config_hash_from_retained.
+                            self._pub.seed_config_hash_from_retained(
+                                point_id, message.payload
+                            )
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
                     log_discovery.warning("Could not parse config from %s: %s", topic, e)
 
@@ -2500,6 +2518,25 @@ class EntityManager:
 
         return None
 
+    def ha_disable_notif_id(self, ha_entity_id: str) -> str:
+        """Return the notification_id used for HA-side disable/re-enable
+        notifications for a given entity.
+
+        Shared by build_disable_notification() (called when the entity is
+        disabled, to create the notification) and
+        HAEntityRegistryWatcher._on_entity_enabled() in nibe_ha_integration.py
+        (called when the entity is later re-enabled, to dismiss it) — these
+        two call sites MUST compute the exact same string for the same
+        ha_entity_id, or a disable notification created by one path can
+        never be dismissed by the other, leaving a stale notification in
+        HA forever after the user re-enables the entity. This used to be
+        duplicated inline in both places (byte-identical, but with nothing
+        enforcing that agreement); extracted here so there is only one
+        place this logic can drift.
+        """
+        safe_id = ha_entity_id.replace('.', '_').replace('-', '_')[:60]
+        return f'nibe_ha_disable_{safe_id}'
+
     def build_disable_notification(
         self,
         point_id: int | None,
@@ -2517,8 +2554,7 @@ class EntityManager:
         else:
             display = ha_entity_id
 
-        safe_id  = ha_entity_id.replace('.', '_').replace('-', '_')[:60]
-        notif_id = f'nibe_ha_disable_{safe_id}'
+        notif_id = self.ha_disable_notif_id(ha_entity_id)
 
         if action == 're-enabled':
             return (
@@ -2581,8 +2617,7 @@ class EntityManager:
         with self._em_lock:
             for entry in self.change_history:
                 entry['unread'] = False
-            self._history_seq       += 1
-            self._last_published_seq = self._history_seq
+            self._history_seq += 1
             history_payload = {
                 'history':       list(self.change_history),
                 'total_entries': len(self.change_history),
@@ -2598,6 +2633,17 @@ class EntityManager:
             json.dumps({'unread_count': 0, 'last_change': time.time()}),
             retain=True,
         )
+        # Update _last_published_seq only after the publish calls, matching
+        # _update_changelog_history's ordering — see that function's comment
+        # for the full rationale. Setting it before publish (as this used to)
+        # meant a reconnect racing this publish (resubscribe_all() replays
+        # these same callbacks after a broker reconnect, not just a full
+        # process restart) could redeliver the still-old retained message
+        # with a _seq that no longer matched the already-bumped
+        # _last_published_seq — the guard would then wrongly treat that
+        # stale message as "new" and let it clobber the just-cleared
+        # unread state with the old unread flags.
+        self._last_published_seq = self._history_seq
 
     def _prune_changelog_if_due(self) -> bool:
         """Prune changelog entries older than changelog_retention_days.

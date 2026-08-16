@@ -334,6 +334,24 @@ class MqttDiscoveryPublisher:
         self._config_hashes.pop(point_id, None)
         self._point_entity_types.pop(point_id, None)
 
+    def seed_config_hash_from_retained(self, point_id: int, payload: bytes) -> None:
+        """Pre-seed the dedup cache from a retained discovery config found
+        on the broker at startup (see EntityManager.scan_mqtt_discovery).
+
+        This publisher instance is reconstructed fresh on every process
+        restart, so _config_hashes always starts empty — without this,
+        restore_from_mqtt()'s claim of skipping unchanged configs on
+        restart would never actually happen, and every point's discovery
+        config would be unconditionally republished on every restart
+        regardless of whether it changed. *payload* must be the exact
+        retained MQTT payload bytes, since that is what was actually
+        published last time (and therefore hashes identically to what a
+        fresh, unchanged publish_entity_discovery() call would produce).
+        """
+        self._config_hashes[point_id] = hashlib.md5(
+            payload, usedforsecurity=False
+        ).hexdigest()
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
