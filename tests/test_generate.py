@@ -485,6 +485,18 @@ class TestLoadConfig(unittest.TestCase):
         )
         self.assertEqual(cfg.api_host, '10.0.0.99')
 
+    def test_env_overrides_options_json_for_mqtt_broker(self):
+        """NIBE_MQTT_BROKER (set by run.sh from Supervisor-discovered service
+        info) must win over an explicit mqtt_host entered in options.json.
+        This is the exact field/scenario of a real production bug where
+        auto-discovery silently overrode a user's explicit mqtt_host setting
+        — regression guard, not just precedence documentation."""
+        cfg = self._load(
+            options={'mqtt_host': 'user-entered-broker.local'},
+            env={'NIBE_MQTT_BROKER': 'discovered-broker.local'},
+        )
+        self.assertEqual(cfg.mqtt_broker, 'discovered-broker.local')
+
     def test_env_svc_username_sets_mqtt_username(self):
         """NIBE_MQTT_SVC_USERNAME from Supervisor Services API sets mqtt_username."""
         cfg = self._load(env={'NIBE_MQTT_SVC_USERNAME': 'addons'})
@@ -523,6 +535,68 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(options={'mode': 'essential'}, cli_args=cli)
         self.assertEqual(cfg.mode, 'all')
 
+    # ── real parse_arguments() output, not a hand-built mock ───────────────
+    #
+    # The tests above use a MagicMock with the untested field explicitly set
+    # to None to isolate what they check. A real parse_arguments() call can
+    # never actually produce None for BOTH fields at once the way these mocks
+    # do — this class of test previously hid a real bug: parse_arguments()'s
+    # own argparse defaults ('info'/'essential') made args.log_level/args.mode
+    # truthy even when the user passed no CLI flags at all, so load_config()'s
+    # `if cli_args.log_level` check always fired and silently discarded
+    # options.json / NIBE_LOG_LEVEL / NIBE_MODE. Fixed by making the argparse
+    # defaults None; these tests use the real function end-to-end to lock
+    # in the fix and guard against it regressing.
+
+    def test_real_cli_args_no_flags_lets_env_log_level_through(self):
+        """With parse_arguments() invoked with zero CLI flags (the normal
+        case — run.sh always passes -l explicitly, but direct/dev invocation
+        may not), NIBE_LOG_LEVEL must reach cfg.log_level, not be silently
+        discarded by an always-truthy CLI default."""
+        from generate_nibe_mqtt import parse_arguments
+        with patch('sys.argv', ['bridge']):
+            real_args = parse_arguments()
+        cfg = self._load(env={'NIBE_LOG_LEVEL': 'debug'}, cli_args=real_args)
+        self.assertEqual(cfg.log_level, 'debug')
+
+    def test_real_cli_args_no_flags_lets_env_mode_through(self):
+        """Same as above, for NIBE_MODE."""
+        from generate_nibe_mqtt import parse_arguments
+        with patch('sys.argv', ['bridge']):
+            real_args = parse_arguments()
+        cfg = self._load(env={'NIBE_MODE': 'monitoring'}, cli_args=real_args)
+        self.assertEqual(cfg.mode, 'monitoring')
+
+    def test_real_cli_args_no_flags_lets_options_json_log_level_through(self):
+        from generate_nibe_mqtt import parse_arguments
+        with patch('sys.argv', ['bridge']):
+            real_args = parse_arguments()
+        cfg = self._load(options={'log_level': 'warning'}, cli_args=real_args)
+        self.assertEqual(cfg.log_level, 'warning')
+
+    def test_real_cli_args_explicit_flag_still_overrides_options_json(self):
+        """When the CLI flag genuinely IS passed, it must still win — the
+        fix must not have broken real CLI precedence."""
+        from generate_nibe_mqtt import parse_arguments
+        with patch('sys.argv', ['bridge', '--log-level', 'error', '--mode', 'all']):
+            real_args = parse_arguments()
+        cfg = self._load(
+            options={'log_level': 'warning', 'mode': 'essential'}, cli_args=real_args,
+        )
+        self.assertEqual(cfg.log_level, 'error')
+        self.assertEqual(cfg.mode, 'all')
+
+    def test_real_cli_args_no_flags_no_env_no_options_falls_back_to_dataclass_default(self):
+        """With nothing set anywhere, cfg.log_level/mode must still resolve
+        to BridgeConfig's own defaults ('info'/'essential') — confirming the
+        fallback moved to the right place rather than disappearing."""
+        from generate_nibe_mqtt import parse_arguments
+        with patch('sys.argv', ['bridge']):
+            real_args = parse_arguments()
+        cfg = self._load(cli_args=real_args)
+        self.assertEqual(cfg.log_level, 'info')
+        self.assertEqual(cfg.mode, 'essential')
+
     # ── derived values ────────────────────────────────────────────────────────
 
     def test_api_base_url_built_from_host_and_port(self):
@@ -545,6 +619,19 @@ class TestLoadConfig(unittest.TestCase):
     def test_nibe_basic_auth_without_prefix_gets_basic_prepended(self):
         cfg = self._load(secrets='nibe_basic_auth: dXNlcjpwYXNz\n')
         self.assertTrue(cfg.nibe_auth.startswith('Basic '))
+
+    def test_nibe_basic_auth_wins_over_username_password_when_both_present(self):
+        """When both a pre-encoded nibe_basic_auth (secrets.yaml-only) and
+        nibe_username/nibe_password (options.json) are present, the
+        if/elif in load_config() must prefer nibe_basic_auth — this was
+        never directly exercised; every other test sets only one or the
+        other, which can't tell an `if/elif` apart from an `if/if` that
+        happened to only ever see one branch's inputs."""
+        cfg = self._load(
+            options={'nibe_username': 'optuser', 'nibe_password': 'optpass'},
+            secrets='nibe_basic_auth: Basic cHJlZW5jb2RlZA==\n',
+        )
+        self.assertEqual(cfg.nibe_auth, 'Basic cHJlZW5jb2RlZA==')
 
     def test_repr_redacts_passwords(self):
         cfg = self._load(options={
@@ -632,17 +719,28 @@ class TestParseArgumentsModes(unittest.TestCase):
             args = parse_arguments()
         self.assertEqual(args.mode, 'menus')
 
-    def test_mode_defaults_to_essential_when_omitted(self):
+    def test_mode_is_none_when_omitted(self):
+        """args.mode must be None, not a truthy default, when -m/--mode is
+        not passed. load_config()/_resolve_initial_mode() use
+        `if args.mode` truthiness checks to decide whether the CLI
+        explicitly overrides options.json/NIBE_MODE — a truthy argparse
+        default here would make that check always fire, silently discarding
+        options.json and the env var whenever the caller doesn't use
+        run.sh's own options.json-to-CLI passthrough. The eventual runtime
+        default ('essential') comes from BridgeConfig's own dataclass
+        field, not from argparse."""
         from generate_nibe_mqtt import parse_arguments
         with patch('sys.argv', ['bridge']):
             args = parse_arguments()
-        self.assertEqual(args.mode, 'essential')
+        self.assertIsNone(args.mode)
 
-    def test_log_level_defaults_to_info_when_omitted(self):
+    def test_log_level_is_none_when_omitted(self):
+        """args.log_level must be None, not a truthy default, when -l is
+        not passed — same rationale as test_mode_is_none_when_omitted."""
         from generate_nibe_mqtt import parse_arguments
         with patch('sys.argv', ['bridge']):
             args = parse_arguments()
-        self.assertEqual(args.log_level, 'info')
+        self.assertIsNone(args.log_level)
 
     def test_all_log_levels_accepted(self):
         from generate_nibe_mqtt import parse_arguments
@@ -2733,6 +2831,220 @@ class TestBuildInfrastructure(unittest.TestCase):
         mock_log.warning.assert_called_once()
 
 
+# ===========================================================================
+# Full-pipeline propagation: load_config() -> _build_infrastructure()
+#
+# load_config() (source-precedence merging) and _build_infrastructure()
+# (wiring cfg into the real client calls) are each thoroughly unit-tested
+# elsewhere in this file, but every _build_infrastructure test builds its
+# BridgeConfig by hand via a _cfg(**overrides) helper — none of them start
+# from raw options.json/env input and let load_config() do the merging.
+# That seam (does a value that survived load_config's precedence logic
+# *also* survive the trip into the actual mqtt_client.connect() call) is
+# exactly where a real production bug lived (MQTT auto-discovery silently
+# overriding an explicit mqtt_host setting). These tests chain the two
+# functions together with nothing hand-substituted in between.
+# ===========================================================================
+
+
+class TestConfigPropagatesToInfrastructure(unittest.TestCase):
+    """load_config() output, unmodified, must reach the real client calls
+    inside _build_infrastructure() — the full options.json/env -> wire path."""
+
+    def setUp(self):
+        self._env_patcher = patch.dict('os.environ', {}, clear=True)
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+
+    def _load(self, options=None, env=None):
+        """Call the real load_config() with mocked filesystem/environment —
+        same technique as TestLoadConfig._load, duplicated here rather than
+        shared so this class stays a self-contained, readable specification
+        of the full pipeline rather than depending on another test class."""
+        import generate_nibe_mqtt as gn
+
+        def fake_exists(path):
+            if path == '/data/options.json':
+                return options is not None
+            return False
+
+        import io
+
+        def fake_open(path, *a, **kw):
+            if path == '/data/options.json':
+                return io.StringIO(json.dumps(options))
+            raise FileNotFoundError(path)
+
+        with patch('os.path.exists', side_effect=fake_exists), \
+             patch('builtins.open', side_effect=fake_open), \
+             patch.dict('os.environ', env or {}):
+            return gn.load_config()
+
+    def _build(self, cfg):
+        """Run the real _build_infrastructure() against cfg, with only the
+        external-facing clients themselves mocked (network/API/MQTT) —
+        everything else (cfg field resolution, arg wiring) is real code."""
+        from generate_nibe_mqtt import _build_infrastructure
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            _build_infrastructure(cfg)
+        return mock_mc
+
+    def _build_full(self, cfg):
+        """Like _build(), but also exposes the NibeApiClient and
+        _build_ssl_context mocks so tests can assert on their call
+        arguments — used to verify api_host/port/nibe_auth/nibe_ca_cert
+        actually reach the real client constructor calls, not just that
+        cfg carries the right values."""
+        from generate_nibe_mqtt import _build_infrastructure
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        mock_ssl_ctx = MagicMock()
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=mock_ssl_ctx) as mock_build_ssl, \
+             patch('generate_nibe_mqtt.NibeApiClient') as MockApiClient, \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            _build_infrastructure(cfg)
+        return mock_mc, MockApiClient, mock_build_ssl, mock_ssl_ctx
+
+    _BASE_OPTIONS = {
+        'nibe_username': 'nibeuser',
+        'nibe_password': 'nibepass',
+    }
+
+    def test_options_json_api_host_port_reach_nibe_api_client(self):
+        """nibe_host/nibe_port from options.json must reach the real
+        api_base_url derivation AND the actual NibeApiClient() constructor
+        call — not just be present somewhere on cfg."""
+        cfg = self._load(options={
+            **self._BASE_OPTIONS,
+            'mqtt_host': 'broker.local',
+            'nibe_host': '10.20.30.40',
+            'nibe_port': 9443,
+        })
+        self.assertEqual(cfg.api_base_url, 'https://10.20.30.40:9443/api/v1/devices/0')
+        _, MockApiClient, _, mock_ssl_ctx = self._build_full(cfg)
+        MockApiClient.assert_called_once_with(
+            'https://10.20.30.40:9443/api/v1/devices/0', cfg.nibe_auth, mock_ssl_ctx,
+        )
+
+    def test_options_json_nibe_credentials_reach_nibe_api_client_auth(self):
+        """nibe_username/nibe_password from options.json must be encoded
+        into nibe_auth AND reach the real NibeApiClient() constructor call."""
+        import base64
+        cfg = self._load(options={
+            'mqtt_host': 'broker.local',
+            'nibe_username': 'realnibeuser',
+            'nibe_password': 'realnibepass',
+        })
+        expected_auth = 'Basic ' + base64.b64encode(b'realnibeuser:realnibepass').decode()
+        self.assertEqual(cfg.nibe_auth, expected_auth)
+        _, MockApiClient, _, _ = self._build_full(cfg)
+        self.assertEqual(MockApiClient.call_args.args[1], expected_auth)
+
+    def test_options_json_nibe_ca_cert_reaches_build_ssl_context_call(self):
+        """nibe_ca_cert from options.json must reach the real
+        _build_ssl_context() call as its argument — _build_ssl_context's own
+        internals (verification on/off) are already unit-tested separately;
+        this only checks the value survives the trip from options.json."""
+        cfg = self._load(options={
+            **self._BASE_OPTIONS,
+            'mqtt_host': 'broker.local',
+            'nibe_ca_cert': '/config/nibe-ca.pem',
+        })
+        self.assertEqual(cfg.nibe_ca_cert, '/config/nibe-ca.pem')
+        _, _, mock_build_ssl, _ = self._build_full(cfg)
+        mock_build_ssl.assert_called_once_with('/config/nibe-ca.pem')
+
+    def test_options_json_mqtt_tls_and_ca_cert_reach_real_tls_set_call(self):
+        """mqtt_tls + mqtt_ca_cert from options.json must reach the REAL
+        (unmocked) _configure_mqtt_tls(), which must call the mock mqtt
+        client's tls_set() with the real CA path — this is the actual
+        function, not a mock, so it also proves _configure_mqtt_tls's own
+        os.path.exists(ca_cert) check accepts a real filesystem path."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.pem') as ca_file:
+            cfg = self._load(options={
+                **self._BASE_OPTIONS,
+                'mqtt_host': 'broker.local',
+                'mqtt_tls': True,
+                'mqtt_ca_cert': ca_file.name,
+            })
+            self.assertTrue(cfg.mqtt_tls)
+            self.assertEqual(cfg.mqtt_ca_cert, ca_file.name)
+            mock_mc = self._build(cfg)
+        mock_mc.tls_set.assert_called_once_with(ca_certs=ca_file.name)
+
+    def test_options_json_mqtt_host_reaches_connect_call(self):
+        """An explicit mqtt_host in options.json, with no env override
+        present, must be the value mqtt_client.connect() actually receives."""
+        cfg = self._load(options={**self._BASE_OPTIONS, 'mqtt_host': 'user-entered-broker.local'})
+        mock_mc = self._build(cfg)
+        mock_mc.connect.assert_called_once_with(
+            'user-entered-broker.local', cfg.mqtt_port, keepalive=unittest.mock.ANY,
+        )
+
+    def test_env_discovered_broker_overrides_options_json_through_to_connect_call(self):
+        """The exact scenario of the real production bug: NIBE_MQTT_BROKER
+        (Supervisor-discovered) must be what mqtt_client.connect() receives,
+        overriding an explicit options.json mqtt_host — verified through the
+        real merge in load_config() AND the real wiring in
+        _build_infrastructure(), not asserted against either function alone."""
+        cfg = self._load(
+            options={**self._BASE_OPTIONS, 'mqtt_host': 'user-entered-broker.local'},
+            env={'NIBE_MQTT_BROKER': 'discovered-broker.local'},
+        )
+        mock_mc = self._build(cfg)
+        mock_mc.connect.assert_called_once_with(
+            'discovered-broker.local', cfg.mqtt_port, keepalive=unittest.mock.ANY,
+        )
+
+    def test_options_json_mqtt_port_reaches_connect_call(self):
+        cfg = self._load(options={**self._BASE_OPTIONS, 'mqtt_host': 'broker.local', 'mqtt_port': 8883})
+        mock_mc = self._build(cfg)
+        self.assertEqual(mock_mc.connect.call_args.args[1], 8883)
+
+    def test_options_json_mqtt_credentials_reach_username_pw_set(self):
+        """mqtt_username/password entered in options.json must reach the
+        real username_pw_set() call, not just the resolved BridgeConfig."""
+        cfg = self._load(options={
+            **self._BASE_OPTIONS,
+            'mqtt_host': 'broker.local',
+            'mqtt_username': 'mqttuser',
+            'mqtt_password': 'mqttpass',
+        })
+        mock_mc = self._build(cfg)
+        mock_mc.username_pw_set.assert_called_once_with('mqttuser', 'mqttpass')
+
+    def test_env_svc_credentials_override_options_json_through_to_username_pw_set(self):
+        """Supervisor-discovered MQTT credentials (NIBE_MQTT_SVC_*) must win
+        over manually entered options.json credentials all the way through
+        to the real username_pw_set() call."""
+        cfg = self._load(
+            options={
+                **self._BASE_OPTIONS,
+                'mqtt_host': 'broker.local',
+                'mqtt_username': 'manual_user',
+                'mqtt_password': 'manual_pass',
+            },
+            env={
+                'NIBE_MQTT_SVC_USERNAME': 'svc_user',
+                'NIBE_MQTT_SVC_PASSWORD': 'svc_pass',
+            },
+        )
+        mock_mc = self._build(cfg)
+        mock_mc.username_pw_set.assert_called_once_with('svc_user', 'svc_pass')
+
 
 class TestShutdown(unittest.TestCase):
     """_shutdown: executor drain, offline publishes, MQTT disconnect."""
@@ -3518,6 +3830,107 @@ class TestRunStartupSequence(unittest.TestCase):
 # TestUpdateEntityStateNoValueMappings additions
 # ---------------------------------------------------------------------------
 
+
+
+# ===========================================================================
+# Full-pipeline propagation: load_config() -> _build_infrastructure()
+#                             -> _run_startup_sequence()
+#
+# _build_infrastructure()'s wiring and _run_startup_sequence()'s wiring are
+# each fully tested elsewhere (including against real load_config() output
+# for the _build_infrastructure half). This closes the last seam: does a
+# single value entered in options.json survive the ENTIRE startup chain,
+# hopping through both functions in the real order main() calls them in.
+# ===========================================================================
+
+
+class TestConfigPropagatesThroughFullStartupChain(unittest.TestCase):
+
+    def _load(self, options=None):
+        import generate_nibe_mqtt as gn
+
+        def fake_exists(path):
+            return path == '/data/options.json' if path == '/data/options.json' else False
+
+        import io
+
+        def fake_open(path, *a, **kw):
+            if path == '/data/options.json':
+                return io.StringIO(json.dumps(options))
+            raise FileNotFoundError(path)
+
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('os.path.exists', side_effect=fake_exists), \
+             patch('builtins.open', side_effect=fake_open):
+            return gn.load_config()
+
+    def test_options_json_values_survive_build_infrastructure_and_startup_sequence(self):
+        """poll_interval, api_failure_threshold, changelog_retention_days,
+        and device_name — all entered in options.json — must reach the
+        real EntityManager/MqttDiscoveryPublisher construction after
+        passing through BOTH _build_infrastructure() and
+        _run_startup_sequence() in the real order main() calls them."""
+        from generate_nibe_mqtt import _build_infrastructure, _run_startup_sequence
+
+        cfg = self._load(options={
+            'nibe_username': 'nibeuser', 'nibe_password': 'nibepass',
+            'mqtt_host': 'broker.local',
+            'device_name': 'Propagation Test Device',
+            'poll_interval': 120,
+            'api_failure_threshold': 7,
+            'changelog_retention_days': 45,
+        })
+        self.assertEqual(cfg.poll_interval, 120)
+        self.assertEqual(cfg.api_failure_threshold, 7)
+        self.assertEqual(cfg.changelog_retention_days, 45)
+        self.assertEqual(cfg.device_name, 'Propagation Test Device')
+
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            api_client, mqtt_client, response, device_id, _, set_em = \
+                _build_infrastructure(cfg)
+
+        with patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())), \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler'), \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=set()), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action'), \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'):
+
+            em_instance = MockEM.return_value
+            em_instance.discover_points.return_value = True
+            em_instance.mqtt_enabled_points = set()
+            em_instance.all_points          = []
+            em_instance.active_entities     = []
+            em_instance.bulk_interval       = 120
+
+            _run_startup_sequence(
+                cfg, api_client, mqtt_client, response, device_id,
+                'essential', 'info', set_em,
+            )
+
+        self.assertEqual(em_instance.bulk_interval, 120)
+        self.assertEqual(em_instance.api_failure_threshold, 7)
+        self.assertEqual(em_instance.changelog_retention_days, 45)
+        pub_kwargs = MockPub.call_args.kwargs
+        self.assertEqual(pub_kwargs['device_name'], 'Propagation Test Device')
 
 
 # ===========================================================================

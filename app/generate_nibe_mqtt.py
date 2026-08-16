@@ -446,13 +446,26 @@ _SHUTDOWN_TIMEOUT    = 35   # seconds to wait for executors on clean shutdown
 # ============================================================================
 
 def parse_arguments():
+    """Parse CLI arguments for log level and mode.
+
+    Both flags default to None, not their eventual runtime default
+    ('info'/'essential') — load_config() and _resolve_initial_mode() use
+    ``if cli_args.log_level`` / ``if args.mode`` truthiness checks to decide
+    whether the CLI explicitly overrides options.json/env-var settings.
+    A truthy argparse default would make that check always true even when
+    the caller never passed -l/-m, silently discarding NIBE_LOG_LEVEL/
+    NIBE_MODE env vars and making run.sh's own options.json passthrough the
+    only way those settings could ever take effect. BridgeConfig's own
+    dataclass defaults already supply 'info'/'essential' as the final
+    fallback, so nothing is lost by leaving the CLI defaults empty here.
+    """
     parser = argparse.ArgumentParser(description='Nibe S-Series MQTT Bridge')
     parser.add_argument('-l', '--log-level',
                         choices=['debug', 'info', 'warning', 'error'],
-                        default='info', dest='log_level')
+                        default=None, dest='log_level')
     parser.add_argument('-m', '--mode',
                         choices=['essential', 'monitoring', 'advanced', 'menus', 'all', 'none'],
-                        default='essential')
+                        default=None)
     return parser.parse_args()
 
 

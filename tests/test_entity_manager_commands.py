@@ -5,6 +5,7 @@ MQTT write-command handling tests for nibe_entity_manager.py — split out of te
 for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
+import json
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -1510,3 +1511,98 @@ class TestWritePointLastStatesRepublishOnUnderflow(unittest.TestCase):
                  if c.args[0] == 'nibe/state/200']
         self.assertTrue(calls)
         self.assertEqual(calls[-1].args[1], '10')
+
+
+class TestCardCommandToRealApiWriteFullChain(unittest.TestCase):
+    """A user-entered value in the browser card arrives as a raw MQTT
+    command payload string. _handle_command() (payload decode/dispatch),
+    _parse_command_payload() (divisor reversal / value conversion), and
+    NibeApiClient.write_point() (PATCH request construction) are each
+    thoroughly tested elsewhere — but always in isolation: every existing
+    _handle_command/_handle_command_worker test mocks em._api entirely
+    (write_point.return_value = True/False), and every write_point test
+    builds its value/entity_info by hand rather than deriving it from a
+    real parsed MQTT payload. This chains all three real functions —
+    nothing hand-substituted in between except the actual network call
+    (urllib.request.urlopen) — starting from a raw payload string exactly
+    as a real card write would send it."""
+
+    def _run_synchronously(self, em):
+        """_handle_command() submits the actual write to a background
+        ThreadPoolExecutor — replace submit with an immediate synchronous
+        call so the test is deterministic without needing to join a future."""
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)
+
+    def _entity_info(self, point_id, divisor, min_value, max_value):
+        return {
+            'point_id':     point_id,
+            'entity_type':  'number',
+            'is_writable':  True,
+            'is_degenerate_range': False,
+            'state_topic':  f'homeassistant/number/nibe_{point_id}/state',
+            'metadata': {
+                'divisor':  divisor,
+                'minValue': min_value,
+                'maxValue': max_value,
+            },
+        }
+
+    def _message(self, payload_str):
+        msg = MagicMock()
+        msg.payload = payload_str.encode('utf-8')
+        msg.topic = 'homeassistant/number/nibe_50123/set'
+        return msg
+
+    def test_card_entered_value_reaches_the_real_patch_request_body(self):
+        """A user typing '23.5' (a display-value, post-divisor number) into
+        the card's number entity must reach the API as the raw pre-divisor
+        integer 235 (divisor=10) — the whole point of reverse_divisor()."""
+        from nibe_api import NibeApiClient
+        point_id = 50123
+        em = _make_em()
+        em._api = NibeApiClient(
+            base_url='https://192.0.2.1:8443', auth='Basic dXNlcjpwYXNz',
+            ssl_context=MagicMock(),
+        )
+        self._run_synchronously(em)
+
+        entity_info = self._entity_info(point_id, divisor=10, min_value=-300, max_value=800)
+
+        captured = []
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({str(point_id): 'modified'}).encode()
+
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_resp
+
+        with patch('urllib.request.urlopen', side_effect=capture):
+            em._handle_command(entity_info, self._message('23.5'))
+
+        self.assertTrue(captured, "the real write_point() never reached urlopen")
+        body = json.loads(captured[0].data.decode())
+        self.assertEqual(body, [{
+            'type': 'datavalue', 'variableId': point_id,
+            'integerValue': 235, 'stringValue': None,
+        }])
+
+    def test_card_entered_value_outside_range_never_reaches_the_network(self):
+        """A user-entered value outside the real point's min/max must be
+        rejected by write_point()'s real range check and never reach
+        urlopen at all — confirmed with the real divisor-reversed value,
+        not a value the test picked to already be out of range post-hoc."""
+        from nibe_api import NibeApiClient
+        point_id = 50124
+        em = _make_em()
+        em._api = NibeApiClient(
+            base_url='https://192.0.2.1:8443', auth='Basic dXNlcjpwYXNz',
+            ssl_context=MagicMock(),
+        )
+        self._run_synchronously(em)
+
+        # divisor=10, so '999' -> raw 9990, well above maxValue=800.
+        entity_info = self._entity_info(point_id, divisor=10, min_value=-300, max_value=800)
+
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            em._handle_command(entity_info, self._message('999'))
+        mock_urlopen.assert_not_called()

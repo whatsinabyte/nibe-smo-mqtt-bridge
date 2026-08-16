@@ -1550,3 +1550,101 @@ class TestFetchBulkDataNoDetectChangesReindexing(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._resp(701)
         em._fetch_bulk_data(detect_changes=False)
         self.assertNotIn(701, em.all_points_by_id)
+
+
+class TestRawApiValueToFinalStatePayload(unittest.TestCase):
+    """Raw Nibe API bulk response -> update_all_states() -> real
+    _fetch_bulk_data() -> real _update_entity_state() -> real
+    _process_and_publish_state() -> final MQTT state topic payload.
+    This is the "read" counterpart of the discovery-config full-chain
+    check in test_entity_manager_discovery.py's
+    TestRawApiResponseToFinalDiscoveryPayload — that one chained a raw
+    API response through classification into a discovery CONFIG; this
+    chains a raw API response through the same _fetch_bulk_data() into the
+    actual current VALUE published as an entity's state. Every existing
+    _fetch_bulk_data test in this file mocks _update_entity_state out
+    entirely, so no existing test lets a real raw API value reach a real
+    final state payload."""
+
+    def _raw_api_response(self, point_id, raw_int_value, divisor):
+        return {
+            str(point_id): {
+                'title': 'Outdoor Temperature', 'description': '',
+                'value': {'integerValue': raw_int_value, 'stringValue': '', 'isOk': True},
+                'metadata': {
+                    'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                    'variableType':  'integer',
+                    'variableSize':  's16',
+                    'minValue':      -400,
+                    'maxValue':      400,
+                    'divisor':       divisor,
+                    'decimal':       1,
+                    'unit':          '°C',
+                    'shortUnit':     '°C',
+                    'isWritable':    False,
+                    'intDefaultValue': 0,
+                    'stringDefaultValue': '',
+                    'change':        1,
+                    'modbusRegisterID': point_id,
+                },
+            }
+        }
+
+    def test_raw_integer_value_reaches_the_final_state_payload_divisor_scaled(self):
+        point_id = 77001
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = self._raw_api_response(
+            point_id, raw_int_value=225, divisor=10,
+        )
+        # An already-discovered, already-active entity, as it would be
+        # after a real discover_points() call — update_all_states() only
+        # updates entities already in active_entities_by_id, it does not
+        # discover new ones.
+        em.active_entities_by_id[point_id] = {
+            'point_id':           point_id,
+            'entity_type':        'sensor',
+            'entity_category':    'diagnostic',
+            'state_topic':        f'homeassistant/sensor/nibe_{point_id}/state',
+            'availability_topic': f'homeassistant/sensor/nibe_{point_id}/available',
+            'point_data':         {},
+            'value_mapping':      None,
+        }
+
+        em.update_all_states()
+
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/state']
+        self.assertTrue(state_calls, "no state publish reached the real topic")
+        # 225 / divisor 10 = 22.5, computed independently here as a literal
+        # (not read back from apply_divisor's own return value) — the real
+        # apply_divisor() runs inside the chain under test; its own
+        # correctness is separately verified by its round-trip property tests.
+        self.assertEqual(state_calls[-1].args[1], '22.5')
+
+    def test_raw_isOk_false_publishes_offline_not_a_state_value(self):
+        """isOk=False in the raw API value must reach the real offline
+        availability publish, not a state value derived from garbage data."""
+        point_id = 77002
+        em = _make_em()
+        response = self._raw_api_response(point_id, raw_int_value=0, divisor=10)
+        response[str(point_id)]['value']['isOk'] = False
+        em._api.fetch_bulk_points.return_value = response
+        em.active_entities_by_id[point_id] = {
+            'point_id':           point_id,
+            'entity_type':        'sensor',
+            'entity_category':    'diagnostic',
+            'state_topic':        f'homeassistant/sensor/nibe_{point_id}/state',
+            'availability_topic': f'homeassistant/sensor/nibe_{point_id}/available',
+            'point_data':         {},
+            'value_mapping':      None,
+        }
+
+        em.update_all_states()
+
+        avail_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/available']
+        self.assertTrue(avail_calls)
+        self.assertEqual(avail_calls[-1].args[1], 'offline')
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/state']
+        self.assertEqual(state_calls, [])

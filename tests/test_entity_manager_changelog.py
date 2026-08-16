@@ -814,6 +814,36 @@ class TestMarkChangelogRead(unittest.TestCase):
         payload = json.loads(_decompress_payload(history_calls[0].args[1]))
         self.assertIn('last_updated', payload)
 
+    def test_last_published_seq_updated_after_publish(self):
+        """_last_published_seq must be set after the MQTT publish calls,
+        not before — mirrors _update_changelog_history's own crash-safety
+        test. Setting it before publish (a real bug, since fixed) meant a
+        broker reconnect racing this publish (resubscribe_all() replays
+        the same retained-topic callbacks on reconnect, not just on a full
+        process restart) could redeliver the still-old retained message
+        with a _seq that no longer matched the already-bumped
+        _last_published_seq — the seq guard would then wrongly treat that
+        stale message as fresh and let it clobber the just-cleared unread
+        state with the old unread flags."""
+        em = _make_em()
+        self._seed_history(em, 3)
+
+        publish_call_count = [0]
+        seq_at_first_publish = [None]
+        original_seq = em._last_published_seq
+
+        def capture_publish(topic, payload, retain=False):
+            publish_call_count[0] += 1
+            if publish_call_count[0] == 1:
+                seq_at_first_publish[0] = em._last_published_seq
+
+        em.mqtt.publish.side_effect = capture_publish
+        em.mark_changelog_read()
+
+        self.assertEqual(seq_at_first_publish[0], original_seq,
+            "_last_published_seq must not be set before the publish calls")
+        self.assertGreater(em._last_published_seq, original_seq)
+
 
 class TestPruneChangelogIfDue(unittest.TestCase):
     """_prune_changelog_if_due removes entries older than retention_days,
@@ -1601,3 +1631,85 @@ class TestSetupHistoryLoadingMqttWiring(unittest.TestCase):
                           em._on_history_message)
         self.assertEqual(callback_pairs.get(BrowserTopic.CHANGELOG_UNREAD),
                           em._on_unread_message)
+
+
+class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
+    """_update_changelog_history() (writer) and _setup_history_loading()'s
+    on_history_message (reader) are each thoroughly tested above — but
+    always against hand-built payloads matching what the writer *would*
+    produce, never a payload the real writer actually produced. This
+    chains the two real functions together on a fresh EntityManager
+    instance (a genuine restart simulation, not two calls on the same
+    instance), with nothing hand-substituted in between."""
+
+    def test_real_history_entry_survives_a_fresh_instance_restart(self):
+        writer = _make_em()
+        change_event = {
+            'added':        [{'id': 12345, 'title': 'New Point', 'type': 'sensor'}],
+            'removed':      [],
+            'source':       'firmware',
+            'triggered_by': None,
+        }
+        writer._update_changelog_history(change_event)
+        # Find the CHANGELOG_HISTORY publish call by its actual decompressed
+        # content rather than matching on the topic name (BrowserTopic is an
+        # enum, not a plain string, so string-matching it here would be
+        # brittle) — the same technique both new tests in this class use.
+        retained_payload = None
+        for c in writer.mqtt.publish.call_args_list:
+            try:
+                from nibe_entity_manager import _decompress_payload
+                decoded = json.loads(_decompress_payload(c.args[1]))
+                if 'history' in decoded:
+                    retained_payload = c.args[1]
+                    break
+            except Exception:
+                continue
+        self.assertIsNotNone(retained_payload, "writer never published a decodable history payload")
+
+        reader = _make_em()
+        from nibe_entity_manager import EntityManager
+        EntityManager._setup_history_loading(reader)
+        msg = MagicMock()
+        msg.payload = retained_payload
+        reader._on_history_message(None, None, msg)
+
+        self.assertEqual(len(reader.change_history), 1)
+        restored_entry = reader.change_history[0]
+        self.assertEqual(restored_entry['added'], [{'id': 12345, 'title': 'New Point', 'type': 'sensor'}])
+        self.assertEqual(restored_entry['source'], 'firmware')
+        self.assertTrue(restored_entry['unread'])
+
+    def test_mark_read_by_writer_is_reflected_after_fresh_instance_restart(self):
+        """The unread=False state set by a real mark_changelog_read() call
+        must survive into a fresh instance's real on_history_message —
+        not just the raw entries, but their unread flags too."""
+        writer = _make_em()
+        writer._update_changelog_history({
+            'added': [{'id': 1, 'title': 'P1', 'type': 'sensor'}],
+            'removed': [], 'source': 'firmware', 'triggered_by': None,
+        })
+        writer.mqtt.publish.reset_mock()
+        writer.mark_changelog_read()
+
+        from nibe_entity_manager import _decompress_payload
+        retained_payload = None
+        for c in writer.mqtt.publish.call_args_list:
+            try:
+                decoded = json.loads(_decompress_payload(c.args[1]))
+                if 'history' in decoded:
+                    retained_payload = c.args[1]
+                    break
+            except Exception:
+                continue
+        self.assertIsNotNone(retained_payload)
+
+        reader = _make_em()
+        from nibe_entity_manager import EntityManager
+        EntityManager._setup_history_loading(reader)
+        msg = MagicMock()
+        msg.payload = retained_payload
+        reader._on_history_message(None, None, msg)
+
+        self.assertEqual(len(reader.change_history), 1)
+        self.assertFalse(reader.change_history[0]['unread'])

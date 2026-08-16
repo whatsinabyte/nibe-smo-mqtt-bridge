@@ -2053,3 +2053,54 @@ class TestPersistDynamicMap(unittest.TestCase):
                  if c.args[0] == BrowserTopic.DYNAMIC_MAP]
         decompressed = json_module.loads(_decompress_payload(calls[0].args[1]))
         self.assertIn('1001', json_module.dumps(decompressed))
+
+
+class TestDynamicMapFileFallbackSurvivesSimulatedRestart(unittest.TestCase):
+    """_persist_dynamic_map() (writer, real file write via
+    DynamicPointMap.to_file()) and discover_points()'s file-fallback
+    branch (reader, real DynamicPointMap.from_file() call, used when
+    nothing was restored from MQTT) had never been chained together with
+    a real file on a fresh EntityManager instance — every existing test
+    mocked DynamicPointMap.to_file() out entirely specifically because the
+    production path (/data/dynamic_point_map.json) can't safely be
+    exercised in a unit test. Now that to_file()/from_file() resolve their
+    default path dynamically (see test_dynamic_map.py's
+    test_default_path_resolves_dynamically_not_frozen_at_def_time), the
+    module constant can be safely redirected to a temp file for the
+    duration of a test, making this real round trip possible for the
+    first time."""
+
+    def test_entries_written_by_one_instance_are_loaded_by_a_fresh_ones_discover_points(self):
+        import os
+        import tempfile
+
+        import nibe_dynamic_map as ndm
+        from nibe_dynamic_map import DynamicPointEntry
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False).name
+        try:
+            os.unlink(tmp)
+            with patch.object(ndm, '_FILE_FALLBACK', tmp):
+                writer = _make_em()
+                writer.dynamic_point_map._table[2001] = DynamicPointEntry(
+                    point_id=2001, title='Silent Mode', entity_type='switch',
+                )
+                writer._persist_dynamic_map()
+                self.assertTrue(os.path.exists(tmp),
+                    "_persist_dynamic_map() did not actually write the real file")
+
+                reader = _make_em()
+                self.assertEqual(len(reader.dynamic_point_map), 0)
+                with patch.object(reader, '_fetch_bulk_data', return_value=True), \
+                     patch.object(reader._pub, 'publish_all_metadata'), \
+                     patch.object(reader._pub, 'publish_point_list'), \
+                     patch.object(reader, '_reconcile_dynamic_points'):
+                    reader.discover_points()
+
+                self.assertIn(2001, reader.dynamic_point_map)
+                self.assertEqual(reader.dynamic_point_map[2001].title, 'Silent Mode')
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            if os.path.exists(tmp + '.tmp'):
+                os.unlink(tmp + '.tmp')
