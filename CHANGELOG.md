@@ -11,6 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] — 2026-08-16
+
+### Fixed
+- MQTT discovery configs for every enabled entity were being republished
+  unconditionally on every restart, regardless of whether anything
+  actually changed — the dedup cache that's supposed to prevent this
+  lives only in memory on the MQTT publisher, and that publisher is
+  rebuilt fresh every restart. The retained-config scan performed at
+  startup now seeds the cache from what it actually finds on the broker,
+  so a restart with no real changes now republishes little to nothing
+  instead of every entity's config.
+- `NIBE_LOG_LEVEL`/`NIBE_MODE` environment variables (documented for
+  development/Docker use) were silently ignored whenever the bridge was
+  invoked through its normal CLI argument parser, because the parser's
+  own defaults made the CLI arguments always look "explicitly set,"
+  which unconditionally overrides lower-priority sources. Only affected
+  invocations that bypass `run.sh`'s own options.json-to-CLI passthrough
+  (e.g. running the container directly); the packaged add-on's normal
+  startup path was unaffected.
+- A changelog "mark all read" action updated its internal bookkeeping
+  before, rather than after, its MQTT publish calls — unlike the
+  equivalent history-update path, which does this in the opposite order
+  deliberately for crash-safety. A broker reconnect racing the publish
+  could let a stale retained changelog message override the
+  just-cleared unread state.
+- A file-persistence path in the dynamic-point-map fallback used a
+  default argument that was bound once at startup rather than resolved
+  per call — invisible in normal operation, but inconsistent with how
+  the same problem was already solved elsewhere in this codebase.
+
+### Changed
+- Deduplicated an HA-side notification identifier that was independently
+  computed in two separate places — no behavior change, removes a latent
+  risk of the two copies drifting out of sync in the future.
+
+---
+
 ## [1.0.3] — 2026-08-15
 
 ### Fixed
