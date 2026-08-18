@@ -7,6 +7,11 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
   capability dac_override,
   capability setuid,
   capability setgid,
+  # ICMP raw sockets for the "Test API Connection" debug button's ping
+  # check (nibe_connectivity_check.py) — without this, ping fails with
+  # EPERM even though /bin/ping itself is already covered by the rix
+  # rule below.
+  capability net_raw,
 
   # Signal handling — allow clean shutdown from Supervisor
   signal (send,receive) set=(kill,term,int,hup,cont),
@@ -42,6 +47,14 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
   # Tmp — Python needs this for tempfiles (gzip roundtrip, etc.)
   /tmp/**                rwk,
 
+  # Root directory itself — needed for the nightly test-runner subprocess,
+  # which sets cwd='/' (nibe_test_runner.py's addon_dir resolves to '/'
+  # since /pytest.ini lives at the container root). Setting a subprocess's
+  # working directory to a path requires read/search permission on that
+  # exact path, not just its contents — every other rule below only covers
+  # subpaths (/app/**, /tests/**, etc.), never bare '/' itself.
+  /                       r,
+
   # Application code — read and execute only
   /app/**                r,
   /app/*.py              r,
@@ -67,9 +80,12 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
   # a future mount configuration ever does provide it.
   /config/secrets.yaml   r,
 
-  # Network — outbound TCP only (controller + MQTT broker)
+  # Network — outbound TCP/UDP (controller + MQTT broker), plus raw ICMP
+  # sockets for the connectivity check's ping (see capability net_raw above).
   network tcp,
   network udp,
+  network inet raw,
+  network inet6 raw,
 
   # Unix sockets — needed by Python's ssl/socket implementation
   unix (create,connect,send,receive) type=stream,

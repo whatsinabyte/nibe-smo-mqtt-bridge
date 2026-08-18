@@ -7,6 +7,7 @@ Shared fixtures are in conftest.py.
 """
 
 import json
+import re
 import signal
 import subprocess
 import unittest
@@ -812,7 +813,8 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_publishes_running_state_immediately(self):
         """Pressing the button must immediately publish 'running' before subprocess completes."""
-        with patch('subprocess.Popen') as mock_run:
+        with patch('subprocess.Popen') as mock_run, \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
             mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
@@ -824,7 +826,8 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_publishes_passed_on_success(self):
         """Exit code 0 → state topic must contain 'passed'."""
-        with patch('subprocess.Popen') as mock_run:
+        with patch('subprocess.Popen') as mock_run, \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
             mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
@@ -943,7 +946,8 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_run_tests_uses_nightly_hypothesis_profile(self):
         """The subprocess must be launched with HYPOTHESIS_PROFILE=nightly."""
-        with patch('subprocess.Popen') as mock_run:
+        with patch('subprocess.Popen') as mock_run, \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
@@ -955,7 +959,8 @@ class TestManagementHandlers(unittest.TestCase):
         Report is written to /homeassistant/www/nibe_test_report.html (assets in
         /homeassistant/www/assets/ — pytest-html 4.x multi-file output)."""
         with patch('subprocess.Popen') as mock_run, \
-             patch('builtins.open', MagicMock()):
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
@@ -972,6 +977,7 @@ class TestManagementHandlers(unittest.TestCase):
         swallowing the FileNotFoundError with a bare except."""
         with patch('subprocess.Popen') as mock_run, \
              patch('builtins.open', side_effect=FileNotFoundError), \
+             patch('nibe_ha_integration.dismiss_ha'), \
              patch('nibe_test_runner.log_commands') as mock_log:
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
@@ -1002,7 +1008,8 @@ class TestManagementHandlers(unittest.TestCase):
         import json as _json
 
         from nibe_mqtt_publisher import MgmtTopic
-        with patch('subprocess.Popen') as mock_run:
+        with patch('subprocess.Popen') as mock_run, \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(
                 returncode=0, stdout='1543 passed in 15.0s', stderr='')
             mock_run.return_value.communicate.return_value = ('1543 passed in 15.0s', '')
@@ -1020,7 +1027,8 @@ class TestManagementHandlers(unittest.TestCase):
         nightly Hypothesis stateful tests (stateful_step_count=50) are not
         killed by pytest.ini's default timeout=300."""
         with patch('subprocess.Popen') as mock_run, \
-             patch('builtins.open', MagicMock()):
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
@@ -1031,7 +1039,8 @@ class TestManagementHandlers(unittest.TestCase):
         """pytest must be invoked with -n auto so xdist distributes tests
         across all available CPU cores (~4 on the ODROID-M1)."""
         with patch('subprocess.Popen') as mock_run, \
-             patch('builtins.open', MagicMock()):
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
@@ -1049,7 +1058,8 @@ class TestManagementHandlers(unittest.TestCase):
         whole pytest -n auto process tree (including xdist workers)
         possible at all."""
         with patch('subprocess.Popen') as mock_run, \
-             patch('builtins.open', MagicMock()):
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
             mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
             mock_run.return_value.communicate.return_value = ('', '')
             self._run('RUN_TESTS_PRESS', '')
@@ -1131,7 +1141,8 @@ class TestManagementHandlers(unittest.TestCase):
             mgmt_exe.submit(_block)
 
             with patch('subprocess.Popen') as mock_run, \
-                 patch('builtins.open', MagicMock()):
+                 patch('builtins.open', MagicMock()), \
+                 patch('nibe_ha_integration.dismiss_ha'):
                 mock_run.return_value = MagicMock(
                     returncode=0, stdout='2652 passed in 26m 0s', stderr='')
                 mock_run.return_value.communicate.return_value = ('2652 passed in 26m 0s', '')
@@ -1152,6 +1163,149 @@ class TestManagementHandlers(unittest.TestCase):
             release.set()
             mgmt_exe.shutdown(wait=False)
             test_exe.shutdown(wait=False)
+
+
+class TestHandleTestConnection(unittest.TestCase):
+    """Tests for ManagementCommandHandler._handle_test_connection — the
+    "Test API Connection" debug button that runs the independent ping+curl
+    diagnostic (nibe_connectivity_check.py).
+
+    notify_ha/dismiss_ha are patched in every test that reaches them —
+    ManagementCommandHandler wires the *real* functions in (same as
+    _handle_run_tests), and this project has already shipped one real bug
+    where an unmocked notify_ha/dismiss_ha in a test fired a genuine HA
+    notification in production (the nightly-test-suite incident) — do not
+    repeat that here.
+    """
+
+    def _make_handler(self, ca_cert_path=None):
+        import concurrent.futures
+
+        from nibe_ha_integration import ManagementCommandHandler
+        em = _make_em()
+        em._api.base_url = 'https://192.0.2.1:8443/api/v1/devices/0'
+        em._api.auth = 'Basic dGVzdA=='
+        mqtt = MagicMock()
+        publisher = MagicMock()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        handler = ManagementCommandHandler(
+            mqtt, em, publisher, executor, ca_cert_path=ca_cert_path,
+        )
+        handler.register_all()
+        return handler, em, mqtt, executor
+
+    def _get_handler_callback(self, mqtt):
+        from nibe_mqtt_publisher import MgmtTopic
+        for call in mqtt.message_callback_add.call_args_list:
+            if call.args[0] == MgmtTopic.TEST_CONNECTION_PRESS:
+                return call.args[1]
+        raise KeyError("No handler registered for TEST_CONNECTION_PRESS")
+
+    def _trigger(self, handler, mqtt, executor):
+        callback = self._get_handler_callback(mqtt)
+        msg = MagicMock()
+        msg.payload = b''
+        callback(None, None, msg)
+        executor.shutdown(wait=True)
+
+    def test_publishes_running_state_immediately(self):
+        from nibe_mqtt_publisher import MgmtTopic
+        handler, em, mqtt, executor = self._make_handler()
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'p'},
+                                 'curl': {'ok': True, 'summary': 'c'}}), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            self._trigger(handler, mqtt, executor)
+        states = [c.args[1] for c in em.mqtt.publish.call_args_list
+                  if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
+        self.assertIn('running', states)
+
+    def test_publishes_reachable_state_on_success(self):
+        from nibe_mqtt_publisher import MgmtTopic
+        handler, em, mqtt, executor = self._make_handler()
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'p'},
+                                 'curl': {'ok': True, 'summary': 'c'}}), \
+             patch('nibe_ha_integration.dismiss_ha') as mock_dismiss:
+            self._trigger(handler, mqtt, executor)
+        states = [c.args[1] for c in em.mqtt.publish.call_args_list
+                  if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
+        self.assertIn('reachable', states)
+        mock_dismiss.assert_called_once_with(em.mqtt, 'nibe_connectivity_check')
+
+    def test_publishes_unreachable_state_and_notifies_on_failure(self):
+        from nibe_mqtt_publisher import MgmtTopic
+        handler, em, mqtt, executor = self._make_handler()
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': False, 'summary': 'Unreachable — network problem.',
+                                 'ping': {'ok': False, 'summary': 'no ping reply'},
+                                 'curl': {'ok': False, 'summary': 'connection refused'}}), \
+             patch('nibe_ha_integration.notify_ha') as mock_notify:
+            self._trigger(handler, mqtt, executor)
+        states = [c.args[1] for c in em.mqtt.publish.call_args_list
+                  if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
+        self.assertIn('unreachable', states)
+        mock_notify.assert_called_once()
+        self.assertEqual(mock_notify.call_args.kwargs['notification_id'], 'nibe_connectivity_check')
+        self.assertIn('Unreachable', mock_notify.call_args.kwargs['message'])
+
+    def test_attrs_include_ping_and_curl_sub_results(self):
+        import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
+        handler, em, mqtt, executor = self._make_handler()
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'ping detail'},
+                                 'curl': {'ok': True, 'summary': 'curl detail'}}), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            self._trigger(handler, mqtt, executor)
+        attrs_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == MgmtTopic.TEST_CONNECTION_ATTRS]
+        self.assertTrue(attrs_calls)
+        payload = _json.loads(attrs_calls[-1].args[1])
+        self.assertEqual(payload['ping']['summary'], 'ping detail')
+        self.assertEqual(payload['curl']['summary'], 'curl detail')
+
+    def test_uses_real_host_parsed_from_base_url(self):
+        handler, em, mqtt, executor = self._make_handler()
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'p'},
+                                 'curl': {'ok': True, 'summary': 'c'}}) as mock_check, \
+             patch('nibe_ha_integration.dismiss_ha'):
+            self._trigger(handler, mqtt, executor)
+        mock_check.assert_called_once_with(
+            '192.0.2.1', em._api.base_url, None, em._api.auth,
+        )
+
+    def test_uses_configured_ca_cert_path(self):
+        """The handler must forward the ca_cert_path it was constructed
+        with — not always None — or a user with verified TLS configured
+        would get a check that silently ignores their CA cert."""
+        handler, em, mqtt, executor = self._make_handler(ca_cert_path='/ssl/nibe-ca.pem')
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'p'},
+                                 'curl': {'ok': True, 'summary': 'c'}}) as mock_check, \
+             patch('nibe_ha_integration.dismiss_ha'):
+            self._trigger(handler, mqtt, executor)
+        mock_check.assert_called_once_with(
+            '192.0.2.1', em._api.base_url, '/ssl/nibe-ca.pem', em._api.auth,
+        )
+
+    def test_uses_real_auth_header(self):
+        handler, em, mqtt, executor = self._make_handler()
+        em._api.auth = 'Basic c3BlY2lhbA=='
+        with patch('nibe_ha_integration.run_connectivity_check',
+                   return_value={'ok': True, 'summary': 'x',
+                                 'ping': {'ok': True, 'summary': 'p'},
+                                 'curl': {'ok': True, 'summary': 'c'}}) as mock_check, \
+             patch('nibe_ha_integration.dismiss_ha'):
+            self._trigger(handler, mqtt, executor)
+        self.assertEqual(mock_check.call_args.args[3], 'Basic c3BlY2lhbA==')
 
 
 class TestRegistryWatcherEventHandling(unittest.TestCase):
@@ -1906,7 +2060,20 @@ class TestUpdateAlarmState(unittest.TestCase):
         real MqttDiscoveryPublisher.publish_alarm_state() -> final MQTT
         payload. Every other test in this class passes a MagicMock as the
         publisher, so publish_alarm_state()'s real implementation never
-        actually ran chained from a real raw API alarm dict before this."""
+        actually ran chained from a real raw API alarm dict before this.
+
+        notify_ha must still be patched here like every sibling test in this
+        class: update_alarm_state() calls the real notify_ha() whenever
+        alarm_count > 0, and notify_ha() doesn't go through the mocked MQTT
+        client at all — it makes a real urllib HTTP POST straight to the
+        Supervisor API, gated only by SUPERVISOR_TOKEN being present in the
+        environment. The nightly test-runner subprocess inherits the whole
+        parent add-on process's environment (including a real
+        SUPERVISOR_TOKEN), so leaving this unmocked previously sent a
+        genuine HA persistent notification with this fabricated alarm data
+        on every nightly run — root-caused from a real recurring
+        "Compressor overload" notification a user saw with no matching
+        alarm on the physical controller."""
         from nibe_mqtt_publisher import MgmtTopic, MqttDiscoveryPublisher
         update_alarm_state = self._import()
         em = _make_em()
@@ -1921,7 +2088,8 @@ class TestUpdateAlarmState(unittest.TestCase):
             device_id='test', device_name='Test Device',
         )
 
-        update_alarm_state(em, pub)
+        with patch('nibe_ha_integration.notify_ha'):
+            update_alarm_state(em, pub)
 
         state_calls = [c for c in real_mqtt.publish.call_args_list
                        if c.args[0] == MgmtTopic.ALARM_STATE]
@@ -4651,11 +4819,13 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         # no SUPERVISOR_TOKEN set in the test environment it resolves to
         # '' (and caches that at module level for the process lifetime),
         # so the link is the bare relative path.
-        self.assertIn(
-            "[View full report](/local/nibe_test_report.html)",
-            summary,
-        )
+        # The link carries a cache-busting ?v=<timestamp> query param, so
+        # match the surrounding text and verify the param's shape separately
+        # rather than asserting an exact, timestamp-dependent literal.
+        self.assertIn("[View full report](/local/nibe_test_report.html?v=", summary)
         self.assertIn("may take a moment to load", summary)
+        match = re.search(r'/local/nibe_test_report\.html\?v=(\d+)\)', summary)
+        self.assertIsNotNone(match, "report link must have a numeric ?v= cache-buster")
 
     # ── Elapsed time minutes formatting (line 959) ────────────────────────────
 
@@ -5206,7 +5376,7 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
             get_base_url_fn=lambda: 'http://distinctive-host:9999',
         )
         message = notify_fn.call_args.kwargs['message']
-        self.assertIn('http://distinctive-host:9999/local/nibe_test_report.html', message)
+        self.assertIn('http://distinctive-host:9999/local/nibe_test_report.html?v=', message)
 
     def test_long_failure_message_is_truncated_to_max_notif_length(self):
         """A notification body longer than _MAX_NOTIF (2048 chars) must be
@@ -5234,11 +5404,14 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         message = notify_fn.call_args.kwargs['message']
         self.assertLess(len(message), len(long_output))  # genuinely truncated
         self.assertLess(len(message), 2300)               # roughly bounded, not runaway
-        self.assertTrue(message.rstrip().endswith(
-            '[View full report](http://ha.local:8123/local/nibe_test_report.html) '
-            '(right-click → "Open link in new tab" — left-click opens the HA '
-            'dashboard instead)'
-        ))
+        # The link carries a cache-busting ?v=<timestamp> query param, so
+        # match the surrounding text via regex rather than an exact literal.
+        self.assertRegex(
+            message.rstrip(),
+            re.escape('[View full report](http://ha.local:8123/local/nibe_test_report.html?v=')
+            + r'\d+' + re.escape(') (right-click → "Open link in new tab" — left-click opens the HA '
+            'dashboard instead)'),
+        )
 
     def test_done_event_cleared_on_success(self):
         _, _, _, done_event = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')

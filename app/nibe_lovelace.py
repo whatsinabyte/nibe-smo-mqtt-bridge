@@ -75,7 +75,7 @@ def _copy_card_file() -> bool:
         shutil.copy2(src, dst)
         log_startup.info("Card file copied to %s", dst)
         return True
-    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+    except OSError as e:
         log_startup.warning("Could not copy card file to %s: %s", dst, e)
         return False
 
@@ -716,7 +716,11 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
 
     try:
         menu_structure = _load_menu_structure_yaml(menu_path)
-    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+    except (OSError, ValueError, yaml.YAMLError, AttributeError) as e:
+        # OSError: file missing/unreadable. ValueError: e.g. an embedded
+        # null byte in the path, which open() rejects before it can even
+        # raise OSError. yaml.YAMLError: malformed YAML. AttributeError:
+        # top-level YAML document isn't a mapping.
         log_startup.warning("Could not load menu_structure.yaml: %s", e)
         return False
 
@@ -744,21 +748,30 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     _wait_for_registry_stable(registry_watcher, available_menu_points, active_dynamic)
 
     # Build dashboard config
+    # all_points_by_id and bulk_data are mutated unlocked by _fetch_bulk_data
+    # on the poll thread (see the _em_lock caveat in EntityManager.__init__),
+    # so snapshot them here rather than iterating the live dicts on this
+    # provisioning thread — dict() is a single atomic C-level copy under the
+    # GIL, avoiding "dictionary changed size during iteration" / torn reads.
+    with entity_manager._em_lock:
+        all_points_snapshot = dict(entity_manager.all_points_by_id)
+        bulk_data_snapshot  = dict(entity_manager.bulk_data)
+
     known_dynamic      = entity_manager.dynamic_point_map.all_known_dynamic_point_ids()
     absent_dynamic     = known_dynamic - entity_manager.active_dynamic_points
-    point_defaults     = _build_point_defaults(entity_manager.all_points_by_id)
+    point_defaults     = _build_point_defaults(all_points_snapshot)
     dynamic_injection  = _build_dynamic_injection(
         entity_manager.dynamic_point_map,
         entity_manager.active_dynamic_points,
         registry_watcher,
-        entity_manager.all_points_by_id,
+        all_points_snapshot,
         point_defaults,
     )
     dashboard_config = _build_menu_dashboard_config(
         menu_structure, registry_watcher, known_dynamic, absent_dynamic,
         point_defaults, dynamic_injection,
         debug_mode       = debug_mode,
-        bulk_data        = entity_manager.bulk_data,
+        bulk_data        = bulk_data_snapshot,
         menu_yaml_points = all_menu_points,
     )
     if not dashboard_config or not dashboard_config.get("views"):
@@ -1205,11 +1218,10 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
     return {}
 
 
-def _teardown_lovelace() -> None:
+def _teardown_lovelace(remove_frontend: bool) -> None:
     """Remove the Nibe Bridge dashboard, its Lovelace resource registration,
     and the card file from /homeassistant/www/ on clean shutdown when the
-    remove_frontend option is set to true (surfaced as NIBE_REMOVE_FRONTEND=1
-    by run.sh).
+    remove_frontend option is set to true.
 
     This is intentionally opt-in rather than running on every restart:
     - Normal restarts and add-on updates must NOT touch the dashboard.
@@ -1219,10 +1231,10 @@ def _teardown_lovelace() -> None:
     warnings so a broken WebSocket connection does not prevent the card
     file from being removed (or vice versa).
     """
-    if os.environ.get('NIBE_REMOVE_FRONTEND') != '1':
+    if not remove_frontend:
         return
 
-    log_startup.info("NIBE_REMOVE_FRONTEND=1 — removing Lovelace dashboard and resources")
+    log_startup.info("remove_frontend=true — removing Lovelace dashboard and resources")
 
     supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
 
@@ -1234,7 +1246,7 @@ def _teardown_lovelace() -> None:
             log_startup.info("Removed card file: %s", card_dst)
         else:
             log_startup.debug("Card file not found at %s — already removed", card_dst)
-    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+    except OSError as e:
         log_startup.warning("Could not remove card file %s: %s", card_dst, e)
 
     if not supervisor_token:
@@ -1273,7 +1285,7 @@ def _teardown_lovelace() -> None:
                     log_startup.warning("Could not remove dashboard: %s", resp)
             else:
                 log_startup.debug("Nibe Bridge dashboard not found — already removed")
-        except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+        except Exception as e:  # noqa: BLE001 — best-effort teardown; logged and degrades gracefully
             log_startup.warning("Dashboard removal failed: %s", e)
 
         # ── Remove Lovelace resource registration ─────────────────────────────
@@ -1295,7 +1307,7 @@ def _teardown_lovelace() -> None:
                     log_startup.warning("Could not remove Lovelace resource: %s", resp)
             else:
                 log_startup.debug("Lovelace resource not found — already removed")
-        except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+        except Exception as e:  # noqa: BLE001 — best-effort teardown; logged and degrades gracefully
             log_startup.warning("Resource removal failed: %s", e)
 
     finally:
@@ -1575,7 +1587,10 @@ def build_menu_points(yaml_path: str) -> frozenset[int]:
         points = _collect_menu_points(_load_menu_structure_yaml(yaml_path))
         log_startup.debug("Built MENU_POINTS from YAML: %d unique point_ids", len(points))
         return frozenset(points)
-    except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+    except (OSError, ValueError, yaml.YAMLError, AttributeError, TypeError) as e:
+        # OSError/ValueError/yaml.YAMLError: see _load_menu_structure_yaml.
+        # AttributeError/TypeError: a menu/setting/submenu entry isn't a
+        # dict, so _collect_menu_points' .get() calls fail.
         log_startup.warning("Could not build MENU_POINTS from %s: %s", yaml_path, e)
         return frozenset()
 
@@ -1610,9 +1625,9 @@ def schedule_menu_dashboard_regen(
                                lovelace_thread=lovelace_thread)
 
 
-def teardown_lovelace() -> None:
+def teardown_lovelace(remove_frontend: bool) -> None:
     """Remove dashboard, resource registration, and card file on clean uninstall."""
-    _teardown_lovelace()
+    _teardown_lovelace(remove_frontend)
 
 
 def remove_menu_dashboard() -> None:

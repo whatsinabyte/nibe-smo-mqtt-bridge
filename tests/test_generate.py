@@ -1325,61 +1325,164 @@ class TestBuildSslContext(unittest.TestCase):
 
 
 class TestDeriveDeviceId(unittest.TestCase):
-    """_derive_device_id: serial present vs absent, normalisation."""
+    """_derive_device_id: serial present vs absent, normalisation, and
+    persist/reuse behaviour so device_id doesn't flip-flop across restarts
+    when the device is transiently unreachable (see class docstring on the
+    real bug this caused: a duplicate, empty "ghost" Management device in
+    HA, name-identical to the real one, from a startup that happened to
+    hit the fallback default id instead of the previously-learned real one).
+
+    Every test uses an isolated tmp file for persist_path — not the real
+    /data/device_id — so tests can't pollute each other or depend on
+    /data happening not to exist on the machine running them.
+    """
 
     def setUp(self):
+        import tempfile
+
         from generate_nibe_mqtt import _derive_device_id
         self.fn = _derive_device_id
+        # A path inside a fresh tmp dir that does not exist yet — mirrors
+        # a genuinely first-ever startup with nothing persisted.
+        self._tmpdir = tempfile.mkdtemp()
+        self.persist_path = self._tmpdir + '/device_id'
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_serial_present_returns_nibe_prefix(self):
-        result = self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback')
+        result = self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', self.persist_path)
         self.assertTrue(result.startswith('nibe_'))
 
     def test_serial_normalised_to_lowercase(self):
-        result = self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback')
+        result = self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', self.persist_path)
         self.assertEqual(result, 'nibe_abc123')
 
     def test_serial_special_chars_stripped(self):
-        result = self.fn({'product': {'serialNumber': 'AB-12 CD.EF'}}, 'fallback')
+        result = self.fn({'product': {'serialNumber': 'AB-12 CD.EF'}}, 'fallback', self.persist_path)
         self.assertEqual(result, 'nibe_ab12cdef')
 
     def test_underscore_preserved(self):
-        result = self.fn({'product': {'serialNumber': 'AB_12'}}, 'fallback')
+        result = self.fn({'product': {'serialNumber': 'AB_12'}}, 'fallback', self.persist_path)
         self.assertEqual(result, 'nibe_ab_12')
 
-    def test_serial_absent_returns_fallback(self):
-        result = self.fn({}, 'my_fallback')
+    def test_serial_absent_no_persisted_id_returns_fallback(self):
+        result = self.fn({}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
 
-    def test_serial_empty_string_returns_fallback(self):
-        result = self.fn({'product': {'serialNumber': ''}}, 'my_fallback')
+    def test_serial_empty_string_no_persisted_id_returns_fallback(self):
+        result = self.fn({'product': {'serialNumber': ''}}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
 
-    def test_serial_none_returns_fallback(self):
-        result = self.fn({'product': {'serialNumber': None}}, 'my_fallback')
+    def test_serial_none_no_persisted_id_returns_fallback(self):
+        result = self.fn({'product': {'serialNumber': None}}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
 
-    def test_serial_whitespace_only_returns_fallback(self):
-        result = self.fn({'product': {'serialNumber': '   '}}, 'my_fallback')
+    def test_serial_whitespace_only_no_persisted_id_returns_fallback(self):
+        result = self.fn({'product': {'serialNumber': '   '}}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
 
-    def test_empty_response_returns_fallback(self):
-        result = self.fn({}, 'my_fallback')
+    def test_empty_response_no_persisted_id_returns_fallback(self):
+        result = self.fn({}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
+
+    # ── persist-on-success ──────────────────────────────────────────────────
+
+    def test_successful_derivation_persists_to_file(self):
+        self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', self.persist_path)
+        with open(self.persist_path, encoding='utf-8') as f:
+            self.assertEqual(f.read(), 'nibe_abc123')
+
+    def test_persist_write_failure_does_not_raise_and_still_returns_id(self):
+        """A read-only or missing parent directory must not crash startup
+        over a best-effort persistence write."""
+        unwritable_path = self._tmpdir + '/nonexistent_subdir/device_id'
+        result = self.fn(
+            {'product': {'serialNumber': 'ABC123'}}, 'fallback', unwritable_path,
+        )
+        self.assertEqual(result, 'nibe_abc123')
+
+    # ── reuse-on-failure (the actual bug fix) ───────────────────────────────
+
+    def test_reuses_persisted_id_when_serial_absent(self):
+        """The core fix: a startup where the device is transiently
+        unreachable must reuse the previously-learned real device_id, not
+        fall back to the generic default — otherwise every entity
+        (especially the Management device, published unconditionally at
+        every startup) gets recreated under a different HA device identity,
+        leaving the old one as an orphaned empty duplicate."""
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('nibe_abc123')
+        result = self.fn({}, 'generic_fallback', self.persist_path)
+        self.assertEqual(result, 'nibe_abc123')
+        self.assertNotEqual(result, 'generic_fallback')
+
+    def test_persisted_id_preferred_over_generic_fallback_for_empty_serial(self):
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('nibe_abc123')
+        result = self.fn({'product': {'serialNumber': ''}}, 'generic_fallback', self.persist_path)
+        self.assertEqual(result, 'nibe_abc123')
+
+    def test_persisted_id_whitespace_is_stripped(self):
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('  nibe_abc123  \n')
+        result = self.fn({}, 'generic_fallback', self.persist_path)
+        self.assertEqual(result, 'nibe_abc123')
+
+    def test_empty_persisted_file_falls_back_to_generic_default(self):
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('')
+        result = self.fn({}, 'generic_fallback', self.persist_path)
+        self.assertEqual(result, 'generic_fallback')
+
+    def test_no_persisted_file_and_no_serial_falls_back_to_generic_default(self):
+        """The genuinely-first-ever-startup case: nothing has ever been
+        learned, so the generic config default is the only option."""
+        result = self.fn({}, 'generic_fallback', self.persist_path)
+        self.assertEqual(result, 'generic_fallback')
+
+    def test_new_serial_overwrites_previously_persisted_id(self):
+        """A real device swap (different controller) must update the
+        persisted id, not stick with a stale one from a previous device."""
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('nibe_old_serial')
+        result = self.fn({'product': {'serialNumber': 'NEWSERIAL'}}, 'fallback', self.persist_path)
+        self.assertEqual(result, 'nibe_newserial')
+        with open(self.persist_path, encoding='utf-8') as f:
+            self.assertEqual(f.read(), 'nibe_newserial')
 
     @given(st.text(max_size=30))
     def test_result_always_starts_with_nibe_or_is_fallback(self, serial):
+        import shutil
+        import tempfile
+
         from generate_nibe_mqtt import _derive_device_id
-        result = _derive_device_id({'product': {'serialNumber': serial}}, 'fallback')
-        self.assertTrue(
-            result.startswith('nibe_') or result == 'fallback',
-        )
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result = _derive_device_id(
+                {'product': {'serialNumber': serial}}, 'fallback', tmpdir + '/device_id',
+            )
+            self.assertTrue(
+                result.startswith('nibe_') or result == 'fallback',
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     @given(st.text(min_size=1, max_size=30).filter(lambda s: s.strip()))
     def test_nonempty_serial_gives_nibe_prefix(self, serial):
+        import shutil
+        import tempfile
+
         from generate_nibe_mqtt import _derive_device_id
-        result = _derive_device_id({'product': {'serialNumber': serial}}, 'fallback')
-        self.assertTrue(result.startswith('nibe_'))
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result = _derive_device_id(
+                {'product': {'serialNumber': serial}}, 'fallback', tmpdir + '/device_id',
+            )
+            self.assertTrue(result.startswith('nibe_'))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 
@@ -2191,12 +2294,19 @@ class TestGenerateNibeCrossFunctionProperties(unittest.TestCase):
     @given(st.text(max_size=50))
     def test_derive_then_build_client_id_always_safe(self, serial):
         """_derive_device_id output always produces a safe MQTT client ID ≤23 chars."""
+        import shutil
+        import tempfile
+
         from generate_nibe_mqtt import _build_mqtt_client_id, _derive_device_id
-        device_id = _derive_device_id(
-            {'product': {'serialNumber': serial}}, 'nibe_default'
-        )
-        client_id = _build_mqtt_client_id(device_id)
-        self.assertLessEqual(len(client_id), 23)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            device_id = _derive_device_id(
+                {'product': {'serialNumber': serial}}, 'nibe_default', tmpdir + '/device_id',
+            )
+            client_id = _build_mqtt_client_id(device_id)
+            self.assertLessEqual(len(client_id), 23)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     @given(st.integers(min_value=0, max_value=3600))
     def test_keepalive_always_greater_than_any_poll_interval(self, poll_interval):
@@ -2222,13 +2332,20 @@ class TestGenerateNibeCrossFunctionProperties(unittest.TestCase):
     @given(st.text(max_size=30))
     def test_derive_device_id_output_always_valid_for_client_id(self, serial):
         """Pipeline: serial → device_id → client_id — no step raises."""
+        import shutil
+        import tempfile
+
         from generate_nibe_mqtt import _build_mqtt_client_id, _derive_device_id
-        device_id = _derive_device_id(
-            {'product': {'serialNumber': serial}}, 'nibe_fallback'
-        )
-        client_id = _build_mqtt_client_id(device_id)
-        self.assertIsInstance(client_id, str)
-        self.assertLessEqual(len(client_id), 23)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            device_id = _derive_device_id(
+                {'product': {'serialNumber': serial}}, 'nibe_fallback', tmpdir + '/device_id',
+            )
+            client_id = _build_mqtt_client_id(device_id)
+            self.assertIsInstance(client_id, str)
+            self.assertLessEqual(len(client_id), 23)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ===========================================================================
@@ -3212,17 +3329,16 @@ class TestShutdown(unittest.TestCase):
         mock_unregister.assert_called_once_with(real_atexit_fn)
 
     def test_runs_mqtt_cleanup_when_remove_frontend_set(self):
-        """When NIBE_REMOVE_FRONTEND=1, _cleanup_mqtt_retained must be called."""
+        """When remove_frontend=True, _cleanup_mqtt_retained must be called."""
         from generate_nibe_mqtt import _shutdown
         em            = _make_em()
         mc            = MagicMock()
         shutting_down = [False]
 
         with patch('generate_nibe_mqtt.teardown_lovelace'), \
-             patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1'}), \
              patch('generate_nibe_mqtt._cleanup_mqtt_retained') as mock_cleanup:
             _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
-                      shutting_down, MagicMock())
+                      shutting_down, MagicMock(), remove_frontend=True)
 
         mock_cleanup.assert_called_once_with(mc)
 
@@ -3666,7 +3782,7 @@ class TestRunStartupSequence(unittest.TestCase):
 
             result = _run_startup_sequence(
                 cfg, MagicMock(), mc, response, 'nibe_test001',
-                initial_mode, 'info', MagicMock(),
+                initial_mode, MagicMock(),
             )
 
         return result, em_instance, pub_instance, MockWatcher
@@ -3718,7 +3834,7 @@ class TestRunStartupSequence(unittest.TestCase):
             MockPub.return_value.mqtt   = MagicMock()
 
             _run_startup_sequence(
-                cfg, MagicMock(), MagicMock(), {}, 'nibe_test001', 'essential', 'info',
+                cfg, MagicMock(), MagicMock(), {}, 'nibe_test001', 'essential',
                 MagicMock(),
             )
 
@@ -3726,6 +3842,47 @@ class TestRunStartupSequence(unittest.TestCase):
         call_kwargs = mock_notify.call_args.kwargs
         self.assertIn('notification_id', call_kwargs)
         self.assertEqual(call_kwargs['notification_id'], 'nibe_discovery_incomplete')
+
+    def test_discovery_failure_notification_points_to_test_connection_button(self):
+        """A user hitting this at startup has no entities and no other
+        in-HA diagnostic tool visible yet — the message must point them at
+        the debug 'Test API Connection' button rather than leaving them to
+        guess or dig through container logs."""
+        with patch('generate_nibe_mqtt.notify_ha') as mock_notify, \
+             patch('generate_nibe_mqtt._build_device_info', return_value={}), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())), \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler'), \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=set()), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action'), \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            from generate_nibe_mqtt import _run_startup_sequence
+            cfg = self._cfg()
+            em_inst = MockEM.return_value
+            em_inst.discover_points.return_value = False
+            em_inst.mqtt_enabled_points = set()
+            em_inst.all_points          = []
+            em_inst.active_entities     = []
+            em_inst.bulk_interval       = 30
+            MockPub.return_value.mqtt   = MagicMock()
+
+            _run_startup_sequence(
+                cfg, MagicMock(), MagicMock(), {}, 'nibe_test001', 'essential',
+                MagicMock(),
+            )
+
+        message = mock_notify.call_args.kwargs['message']
+        self.assertIn('Test API Connection', message)
+        self.assertIn('Debug mode', message)
 
     def test_discovery_notification_flag_set_on_failure(self):
         """entity_manager._discovery_notification_active must be True after failed discovery."""
@@ -3774,7 +3931,7 @@ class TestRunStartupSequence(unittest.TestCase):
 
             _run_startup_sequence(
                 cfg, api_client, mc, response, 'nibe_test001',
-                'essential', 'info', set_em,
+                'essential', set_em,
             )
 
         # _build_device_info gets the real response/device_id/device_name/api_base_url
@@ -3923,7 +4080,7 @@ class TestConfigPropagatesThroughFullStartupChain(unittest.TestCase):
 
             _run_startup_sequence(
                 cfg, api_client, mqtt_client, response, device_id,
-                'essential', 'info', set_em,
+                'essential', set_em,
             )
 
         self.assertEqual(em_instance.bulk_interval, 120)
@@ -3940,7 +4097,7 @@ class TestConfigPropagatesThroughFullStartupChain(unittest.TestCase):
 
 class TestRunStartupSequenceDebugReset(unittest.TestCase):
     """_run_startup_sequence clears stale test result sensor on startup
-    when debug mode is active (log_level='debug')."""
+    when debug mode is active (cfg.debug_mode=True)."""
 
     def _run_debug(self):
         from generate_nibe_mqtt import BridgeConfig, _run_startup_sequence
@@ -3951,6 +4108,7 @@ class TestRunStartupSequenceDebugReset(unittest.TestCase):
             device_name='Test', device_id='nibe_test001',
             poll_interval=30, api_failure_threshold=3,
             changelog_retention_days=90, mode='essential',
+            debug_mode=True,
         )
         mc = MagicMock()
         with patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}), \
@@ -3980,7 +4138,7 @@ class TestRunStartupSequenceDebugReset(unittest.TestCase):
             pub_instance.mqtt = MagicMock()
             _run_startup_sequence(
                 cfg, MagicMock(), mc, {}, 'nibe_test001',
-                'essential', 'debug', MagicMock(),
+                'essential', MagicMock(),
             )
         return mc
 
@@ -4046,7 +4204,7 @@ class TestRunStartupSequenceDebugReset(unittest.TestCase):
             pub_instance.mqtt = MagicMock()
             _run_startup_sequence(
                 cfg, MagicMock(), mc, {}, 'nibe_test001',
-                'essential', 'info', MagicMock(),
+                'essential', MagicMock(),
             )
         topics = [c.args[0] for c in mc.publish.call_args_list]
         self.assertNotIn(MgmtTopic.RUN_TESTS_STATE, topics)
@@ -4199,7 +4357,7 @@ class TestRunStartupSequenceMenusMode(unittest.TestCase):
             MockPub.return_value.mqtt = MagicMock()
             _run_startup_sequence(
                 cfg, MagicMock(), MagicMock(), {}, 'nibe_test001',
-                initial_mode, 'info', MagicMock(),
+                initial_mode, MagicMock(),
             )
         return mock_remove, mock_sched
 

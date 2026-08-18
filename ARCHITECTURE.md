@@ -66,6 +66,8 @@ The orchestration layer. Owns configuration parsing, startup sequencing, the pol
 
 **Configuration priority** (highest → lowest): CLI flags → `/data/options.json` → `/config/secrets.yaml` or `/homeassistant/secrets.yaml` → defaults.
 
+**Device identity persistence:** `_derive_device_id()` builds the HA device identifier from the controller's serial number (`nibe_<serial>`) and persists it to `/data/device_id`. A later startup where the device is transiently unreachable (serial not available in that startup's API response) reuses the persisted id rather than falling back to the generic config default — without this, device_id flip-flops across restarts depending on whether that specific connection attempt happened to succeed, and every entity gets recreated under a different HA device identity each time, most visibly the Management device (published unconditionally at every startup regardless of whether point discovery succeeds), leaving the old one behind as an orphaned empty duplicate device in HA.
+
 **What this module does not do:** no entity type logic, no MQTT topic construction, no Nibe API calls outside of the startup sequence wiring.
 
 ---
@@ -155,7 +157,7 @@ Single source of truth for all MQTT topic strings and discovery config payloads.
 
 **Discovery config structure:** each entity type (sensor, binary_sensor, switch, select, number, button) has a dedicated builder — now living in `nibe_discovery_config.py` (§4.5a) — that populates the mandatory and optional HA discovery fields. The builders use `optimistic: false` on all writable types to prevent HA from optimistically reflecting the command before the bridge confirms the write. This module calls those builders and owns publishing the results.
 
-**Debug-only entities:** `Flush Dynamic Map`, `Run Test Suite`, and `Test Suite Result` are only published when `debug_mode=True`. When `debug_mode=False`, empty retained payloads are sent to those discovery topics so HA removes the entities. A full HA restart is required for the entity registry to reflect the removal.
+**Debug-only entities:** `Flush Dynamic Map`, `Run Test Suite`, `Test Suite Result`, `Test API Connection`, and `Connectivity Check Result` are only published when `debug_mode=True`. When `debug_mode=False`, empty retained payloads are sent to those discovery topics so HA removes the entities. A full HA restart is required for the entity registry to reflect the removal.
 
 **What this module does not do:** no HTTP, no entity lifecycle tracking, no threading.
 
@@ -214,6 +216,16 @@ Extracted from the `_handle_run_tests` closure in `nibe_ha_integration.py`. `run
 **Dependency injection:** takes `notify_fn` / `dismiss_fn` / `get_base_url_fn` as parameters rather than importing `notify_ha` / `dismiss_ha` / `_get_ha_base_url` directly, avoiding a circular import back into `nibe_ha_integration.py`.
 
 **What this module does not do:** no MQTT topic construction, no entity lifecycle management.
+
+---
+
+### 4.7b `nibe_connectivity_check.py` — run_connectivity_check
+
+`run_connectivity_check(host, base_url, ca_cert_path, auth_header)` runs an independent `ping` + `curl` diagnostic against the configured Nibe controller, triggered by the "Test API Connection" management button (`ManagementCommandHandler._handle_test_connection`). Added to make "the bridge can't reach the device" reports diagnosable without needing SSH/terminal access to the HA host.
+
+**Deliberately independent of `NibeApiClient`/`urllib`:** shells out to `ping`/`curl` rather than reusing the bridge's own HTTP client, so the check shares no code, bug, or misconfiguration with it — the result can genuinely distinguish "a bug in our client" from "a real network/TLS/credentials problem". When `auth_header` is supplied (the bridge's real, configured `Authorization` value) and a CA cert path is configured, the check exercises the exact same TLS verification mode and credentials the bridge itself uses, so it can tell a network failure, a TLS/CA failure, and a credentials failure (HTTP 401/403) apart from each other in one run.
+
+**What this module does not do:** no MQTT publishing, no HA notifications (`ManagementCommandHandler` handles reporting the result, same separation as `nibe_test_runner.py`).
 
 ---
 

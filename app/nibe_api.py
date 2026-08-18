@@ -26,6 +26,7 @@ NibeApiClient(base_url, auth, ssl_context)
     .write_device_mode(mode, value)   → bool
 """
 
+import http.client
 import json
 import logging
 import random
@@ -36,6 +37,41 @@ import urllib.request
 
 log_api      = logging.getLogger("nibe.api")
 log_commands = logging.getLogger("nibe.commands")
+
+
+def _describe_network_error(e: Exception) -> str:
+    """Return a human-readable description of a network/connection failure.
+
+    str(e) is empty for several common exceptions (a bare ``TimeoutError()``
+    in particular), which produces useless log lines and notification text
+    like "Request to <url> failed:  — giving up" — no indication of what
+    actually went wrong. This adds a category-specific hint on top of
+    whatever text the exception does carry, and a fallback to the exception's
+    class name when str(e) is blank, so there's always something actionable
+    to show a user who has no access to (or isn't looking at) the container
+    logs — this is meant to end up directly in the "API Unreachable" HA
+    notification, not just internal logging.
+    """
+    detail = str(e).strip()
+    if isinstance(e, TimeoutError):
+        hint = "timed out waiting for a response"
+    elif isinstance(e, ConnectionRefusedError):
+        hint = "connection actively refused (wrong port, or the API service isn't running)"
+    elif isinstance(e, ConnectionResetError):
+        hint = "connection reset by the device"
+    elif isinstance(e, urllib.error.URLError) and isinstance(e.reason, OSError):
+        # DNS failures and low-level socket errors surface as URLError
+        # wrapping the real OSError/gaierror in .reason.
+        hint = "could not resolve host or reach network" if not detail else None
+    else:
+        hint = None
+    if detail and hint:
+        return f"{detail} ({hint})"
+    if detail:
+        return detail
+    if hint:
+        return hint
+    return type(e).__name__
 
 # ── Retry / backoff constants ──────────────────────────────────────────────────
 # The API client retries once on transient errors.  The delay uses full jitter
@@ -70,6 +106,14 @@ class NibeApiClient:
         self.base_url    = base_url
         self.auth        = auth
         self.ssl_context = ssl_context
+        # Human-readable reason for the most recent request() failure, or
+        # None after a successful request. Read by EntityManager to include
+        # an actual diagnostic reason in the "API Unreachable" HA
+        # notification — without this, that notification only ever said
+        # "has not responded", giving a user no way to tell a network
+        # problem from a firewall block from an overloaded device without
+        # digging through container logs.
+        self.last_error: str | None = None
 
     # ------------------------------------------------------------------ #
     # Low-level request                                                    #
@@ -106,17 +150,21 @@ class NibeApiClient:
             last_attempt = (attempt == 1)
             try:
                 response = urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
+                self.last_error = None
                 return json.loads(response.read().decode())
 
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
+                    self.last_error = f"HTTP {e.code} — authentication rejected, check credentials"
                     log_api.error(
                         "API authentication failed (HTTP %d) for %s — check credentials",
                         e.code, url,
                     )  # pragma: no mutate
                     raise
                 if e.code == 404:
+                    self.last_error = f"HTTP 404 — {url} not found"
                     raise
+                self.last_error = f"HTTP {e.code} from {url}"
                 log_api.warning(
                     "HTTP %d from %s — %s",
                     e.code, url, "giving up" if last_attempt else "retrying with backoff",
@@ -125,14 +173,16 @@ class NibeApiClient:
                     return None
 
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                self.last_error = _describe_network_error(e)
                 log_api.warning(
                     "Request to %s failed: %s — %s",
-                    url, e, "giving up" if last_attempt else "retrying with backoff",
+                    url, self.last_error, "giving up" if last_attempt else "retrying with backoff",
                 )  # pragma: no mutate
                 if last_attempt:
                     return None
 
-            except Exception:
+            except Exception as e:
+                self.last_error = _describe_network_error(e)
                 log_api.exception(
                     "Unexpected error in request to %s — this is likely a bug",
                     url,
@@ -301,7 +351,11 @@ class NibeApiClient:
             body = ""
             try:
                 body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
-            except Exception as body_err:  # noqa: BLE001 — best-effort read of HTTP error body for logging only
+            except (OSError, http.client.HTTPException, ValueError) as body_err:
+                # OSError/HTTPException: the underlying socket read can fail
+                # (connection reset, timeout, truncated response). ValueError:
+                # raised if the response is already closed. decode() itself
+                # cannot raise here since errors='replace' never raises.
                 log_commands.debug(
                     "Could not read HTTP %d error body for point %d: %s",
                     e.code, point_id, body_err,
@@ -386,7 +440,11 @@ class NibeApiClient:
             body = ""
             try:
                 body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
-            except Exception as body_err:  # noqa: BLE001 — best-effort read of HTTP error body for logging only
+            except (OSError, http.client.HTTPException, ValueError) as body_err:
+                # OSError/HTTPException: the underlying socket read can fail
+                # (connection reset, timeout, truncated response). ValueError:
+                # raised if the response is already closed. decode() itself
+                # cannot raise here since errors='replace' never raises.
                 log_commands.debug(
                     "Could not read HTTP %d error body for device mode %s: %s",
                     e.code, mode_type, body_err,

@@ -464,9 +464,21 @@ def get_value_mapping(
     Lookup order:
       1. VALUE_MAPPINGS[register_type][point_id] — manual table (takes precedence).
       2. parse_description_mapping(point_data['description']) — firmware-provided enum.
+
+    Step 1 checks the manual table for *every* register type, not just the
+    one named by ``register_type`` — that parameter can come back None when
+    the caller's metadata dict is momentarily incomplete (e.g. a dynamic
+    point's very first poll), and callers cache whatever this function
+    returns on the first non-None result. If a None register_type were
+    allowed to skip straight to the raw firmware-description fallback, that
+    inferior mapping (e.g. literal "price"/"co2" instead of the manual
+    table's "Price per kWh"/"CO2") would get permanently cached and never
+    reconsidered even once full metadata becomes available on a later poll.
+    point_id is unique across VALUE_MAPPINGS's register-type sub-tables, so
+    checking both is unambiguous regardless of what register_type resolves to.
     """
-    if register_type:
-        manual = VALUE_MAPPINGS.get(register_type, {}).get(point_id)
+    for table in VALUE_MAPPINGS.values():
+        manual = table.get(point_id)
         if manual:
             return manual
 

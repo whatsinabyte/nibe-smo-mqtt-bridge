@@ -1909,7 +1909,7 @@ class TestNibeApiHttpErrorPaths(unittest.TestCase):
         """If reading the HTTP error body raises, write still returns False."""
         err = urllib.error.HTTPError(
             url='https://test', code=400, msg='Bad Request',
-            hdrs={}, fp=MagicMock(read=MagicMock(side_effect=Exception('read failed'))),
+            hdrs={}, fp=MagicMock(read=MagicMock(side_effect=OSError('read failed'))),
         )
         with patch('urllib.request.urlopen', side_effect=err):
             result = self.client.write_point(100, 50, self._ei())
@@ -1982,7 +1982,7 @@ class TestNibeApiHttpErrorPaths(unittest.TestCase):
     def test_write_device_mode_body_read_failure_still_returns_false(self):
         err = urllib.error.HTTPError(
             url='https://test', code=400, msg='Bad Request',
-            hdrs={}, fp=MagicMock(read=MagicMock(side_effect=Exception('read failed'))),
+            hdrs={}, fp=MagicMock(read=MagicMock(side_effect=OSError('read failed'))),
         )
         with patch('urllib.request.urlopen', side_effect=err):
             result = self.client.write_device_mode('aidmode', 'on')

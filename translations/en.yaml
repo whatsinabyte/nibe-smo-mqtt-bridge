@@ -73,16 +73,19 @@ configuration:
   log_level:
     name: Log level
     description: >-
-      Verbosity of the add-on log. "info" is recommended for normal use.
-      Use "debug" to diagnose connection or entity issues — it produces
-      a large volume of output and should be switched back to "info" afterwards.
+      Verbosity of the add-on log only — does not affect which entities are
+      shown. "info" is recommended for normal use. Use "debug" to diagnose
+      connection or entity issues — it produces a large volume of output and
+      should be switched back to "info" afterwards. To show the debug-only
+      test suite button and result sensor, use "Debug mode" below instead.
   debug_mode:
     name: Debug mode
     description: >-
-      Enables the test suite button and result sensor on the Management device.
-      Useful for running the nightly test suite without setting the log level
-      to debug. When log_level is "debug" the test suite entities are also
-      shown regardless of this setting.
+      Enables the test suite button, flush dynamic map button, and result
+      sensor on the Management device. Independent of "Log level" above —
+      this is the only setting that controls whether these entities are
+      shown. Takes effect on the next add-on restart: turning it off also
+      removes the entities, not just stops adding new ones.
   api_failure_threshold:
     name: API failure threshold
     description: >-

@@ -79,19 +79,22 @@ configuration:
   log_level:
     name: Poziom logowania
     description: >-
-      Szczegółowość dziennika dodatku. "info" jest zalecane do
-      normalnego użytku. Użyj "debug", aby diagnozować problemy z
-      połączeniem lub encjami — generuje to dużą ilość danych
-      wyjściowych i powinno zostać przywrócone do "info" po zakończeniu
-      diagnostyki.
+      Szczegółowość dziennika dodatku — nie wpływa na to, które encje są
+      widoczne. "info" jest zalecane do normalnego użytku. Użyj "debug",
+      aby diagnozować problemy z połączeniem lub encjami — generuje to
+      dużą ilość danych wyjściowych i powinno zostać przywrócone do
+      "info" po zakończeniu diagnostyki. Użyj zamiast tego "Trybu
+      debugowania" poniżej, aby pokazać przycisk pakietu testów i
+      czujnik wyników.
   debug_mode:
     name: Tryb debugowania
     description: >-
-      Włącza przycisk pakietu testów i czujnik wyników na urządzeniu
-      zarządzającym. Przydatne do uruchamiania nocnego pakietu testów
-      bez ustawiania poziomu logowania na debug. Gdy log_level jest
-      ustawiony na "debug", encje pakietu testów są również widoczne
-      niezależnie od tego ustawienia.
+      Włącza przycisk pakietu testów, przycisk czyszczenia dynamicznej
+      mapy oraz czujnik wyników na urządzeniu zarządzającym. Niezależne
+      od "Poziomu logowania" powyżej — to jedyne ustawienie, które
+      kontroluje, czy te encje są widoczne. Zaczyna działać po następnym
+      ponownym uruchomieniu dodatku: wyłączenie go usuwa również te
+      encje, a nie tylko zatrzymuje dodawanie nowych.
   api_failure_threshold:
     name: Próg błędów API
     description: >-

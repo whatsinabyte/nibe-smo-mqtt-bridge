@@ -158,8 +158,33 @@ def run_test_suite(
         the caller sets it before submitting this function to an executor,
         as a duplicate-trigger guard.
     """
-    global _abort_reason
-    _abort_reason = None  # clear any stale reason left over from a prior run
+    global _abort_reason, _current_proc
+
+    # Defensive cleanup: under normal operation _handle_run_tests' duplicate-
+    # trigger guard (_test_running) already prevents this function from being
+    # re-entered while a run is in flight, so _current_proc should always be
+    # None here. But if that guard and _current_proc's tracked state ever
+    # desync — e.g. an abnormal container restart that doesn't fully tear
+    # down a detached process group (start_new_session=True), or any other
+    # bug that clears _test_running without actually killing the subprocess
+    # — a stale process could still be alive and competing for CPU/resources
+    # with the new run. Kill it first rather than let two runs overlap.
+    if _current_proc is not None and _current_proc.poll() is None:
+        stale_proc = _current_proc
+        log_commands.warning(
+            'Stale test subprocess (pid %d) found before starting a new '
+            'run — killing it first', stale_proc.pid,
+        )
+        abort_test_suite('superseded by a new test run')
+        try:
+            stale_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            log_commands.error(
+                'Stale test subprocess (pid %d) did not exit within 10s '
+                'after SIGKILL', stale_proc.pid,
+            )
+
+    _abort_reason = None  # clear any stale reason (incl. from the cleanup above)
     try:
         addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         test_path = '/tests'
@@ -202,7 +227,6 @@ def run_test_suite(
 
         t_start = time.monotonic()
         report_path = '/homeassistant/www/nibe_test_report.html'
-        global _current_proc
         try:
             # subprocess.Popen (rather than the simpler subprocess.run)
             # so the Popen handle can be stashed in _current_proc —
@@ -244,18 +268,43 @@ def run_test_suite(
                 elapsed = time.monotonic() - t_start
                 exit_code = _current_proc.returncode
                 output = (stdout + stderr).strip()
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as timeout_exc:
                 try:
                     os.killpg(os.getpgid(_current_proc.pid), signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                _current_proc.communicate()
+                # The second communicate() call (post-kill) drains whatever
+                # output the process/its xdist workers had buffered and waits
+                # for the pipes to actually close — its return value is the
+                # most complete capture available, so it takes priority over
+                # timeout_exc.stdout/stderr (captured earlier, mid-wait, by
+                # the raise inside the first communicate() call). Previously
+                # this return value was discarded entirely, so a subprocess
+                # that died almost immediately (for any reason — this 4-hour
+                # timeout is a hard ceiling, not the only way to land here)
+                # left no trace of what it actually printed before dying.
+                drained_stdout, drained_stderr = _current_proc.communicate()
+                partial_stdout = drained_stdout or timeout_exc.stdout or ''
+                partial_stderr = drained_stderr or timeout_exc.stderr or ''
+                partial_output = (partial_stdout + partial_stderr).strip()
                 elapsed = time.monotonic() - t_start
                 exit_code = -1
+                log_commands.error(
+                    'Test suite subprocess did not finish within the 14400s hard '
+                    'limit — killed process group (pid %d) after %.1fs elapsed. '
+                    'Captured output (%d bytes):\n%s',
+                    _current_proc.pid, elapsed, len(partial_output),
+                    partial_output[-4000:] if partial_output else '(nothing captured)',
+                )
                 output = (
-                    'Test suite process killed after 4-hour hard limit.\n'
-                    'The nightly profile (500 examples, stateful_step_count=50) exceeded\n'
-                    'the subprocess timeout. Consider reducing max_examples in conftest.py.'
+                    f'Test suite process killed after {elapsed:.1f}s '
+                    '(14400s hard limit).\n'
+                    + (
+                        f'Captured output before kill:\n{partial_output[-2000:]}'
+                        if partial_output
+                        else 'No output was captured before the process was killed — '
+                             'check the add-on log for the exact kill time.'
+                    )
                 )
         except Exception as exc:
             elapsed = time.monotonic() - t_start
@@ -293,7 +342,7 @@ def run_test_suite(
                 'Check requirements-test.txt and rebuild the add-on.',
                 report_path,
             )
-        except Exception as _e:  # noqa: BLE001 — best-effort cosmetic post-processing; must not fail the test run
+        except OSError as _e:
             log_commands.warning(
                 'Could not post-process HTML report at %s: %s',
                 report_path,
@@ -380,7 +429,8 @@ def run_test_suite(
             summary = '\n'.join(meaningful) if meaningful else counts_line
             if report_exists:
                 summary += (
-                    f'\n\n📄 [View full report]({get_base_url_fn()}/local/nibe_test_report.html)\n'
+                    f'\n\n📄 [View full report]({get_base_url_fn()}/local/'
+                    f'nibe_test_report.html?v={int(time.time())})\n'
                     '(large file — may take a moment to load. Left-click opens the '
                     'HA dashboard instead of the report — right-click and choose '
                     '"Open link in new tab" to view it.)'
@@ -452,11 +502,28 @@ def run_test_suite(
             launch_error = exit_code == -2
             if timed_out:
                 title = 'Nibe Test Suite — ⏱ TIMED OUT'
-                body = (
-                    'The test process was killed before it finished. '
-                    'Reduce `max_examples` or `stateful_step_count` in '
-                    '`tests/conftest.py` and rebuild the add-on.'
-                )
+                if elapsed >= 14000:
+                    # Actually ran close to the full 4-hour hard limit — the
+                    # "reduce test volume" advice is the right diagnosis.
+                    body = (
+                        'The test process was killed after running for '
+                        f'{elapsed_str}, close to the 4-hour hard limit. '
+                        'Reduce `max_examples` or `stateful_step_count` in '
+                        '`tests/conftest.py` and rebuild the add-on.'
+                    )
+                else:
+                    # Killed by the same code path, but nowhere near the
+                    # 4-hour limit — this is NOT a "tests are too slow"
+                    # situation. Something else killed or crashed the
+                    # subprocess almost immediately; point at the captured
+                    # output (see `output` above) rather than the wrong fix.
+                    body = (
+                        f'The test process was killed after only {elapsed_str} — '
+                        'nowhere near the 4-hour limit, so this is not a '
+                        '"tests are too slow" situation. Check the captured '
+                        'output above and the add-on log for what actually '
+                        'happened to the subprocess.'
+                    )
             elif launch_error:
                 title = 'Nibe Test Suite — ⚠ LAUNCH ERROR'
                 body = output
@@ -477,7 +544,8 @@ def run_test_suite(
                     body = f'```\n{summary}\n```'
 
             report_link = (
-                f'[View full report]({get_base_url_fn()}/local/nibe_test_report.html) '
+                f'[View full report]({get_base_url_fn()}/local/'
+                f'nibe_test_report.html?v={int(time.time())}) '
                 '(right-click → "Open link in new tab" — left-click opens the HA '
                 'dashboard instead)'
             )

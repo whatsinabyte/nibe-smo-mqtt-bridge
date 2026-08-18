@@ -76,18 +76,23 @@ configuration:
   log_level:
     name: Logniveau
     description: >-
-      Uitgebreidheid van het add-on logboek. "info" wordt aanbevolen voor
-      normaal gebruik. Gebruik "debug" om verbindings- of entiteitsproblemen
-      te diagnosticeren — dit produceert een grote hoeveelheid uitvoer en
-      moet daarna worden teruggezet naar "info".
+      Uitgebreidheid van het add-on logboek — heeft geen invloed op welke
+      entiteiten worden weergegeven. "info" wordt aanbevolen voor normaal
+      gebruik. Gebruik "debug" om verbindings- of entiteitsproblemen te
+      diagnosticeren — dit produceert een grote hoeveelheid uitvoer en
+      moet daarna worden teruggezet naar "info". Gebruik in plaats daarvan
+      "Foutopsporingsmodus" hieronder om de testsuiteknop en
+      resultaatsensor te tonen.
   debug_mode:
     name: Foutopsporingsmodus
     description: >-
-      Schakelt de testsuiteknop en resultaatsensor in op het
-      Beheer-apparaat. Handig om de nachtelijke testsuite uit te voeren
-      zonder het logniveau op debug in te stellen. Wanneer log_level "debug"
-      is, worden de testsuite-entiteiten ook weergegeven ongeacht deze
-      instelling.
+      Schakelt de testsuiteknop, de knop voor het wissen van de
+      dynamische kaart en de resultaatsensor in op het Beheer-apparaat.
+      Onafhankelijk van "Logniveau" hierboven — dit is de enige
+      instelling die bepaalt of deze entiteiten worden weergegeven. Wordt
+      van kracht bij de volgende herstart van de add-on: als deze wordt
+      uitgeschakeld, worden de entiteiten ook verwijderd, niet alleen
+      stopt het toevoegen van nieuwe.
   api_failure_threshold:
     name: API-foutdrempel
     description: >-

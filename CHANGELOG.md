@@ -11,6 +11,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.5] — 2026-08-18
+
+### Added
+- **Test API Connection** debug button and **Connectivity Check Result**
+  sensor — runs an independent `ping` + `curl` diagnostic against the
+  configured Nibe controller, using the bridge's real configured TLS
+  verification mode and credentials, so it can distinguish a network
+  problem, a TLS/CA problem, and a rejected-credentials problem from each
+  other without needing SSH/terminal access to the Home Assistant host.
+  Deliberately shares no code with `NibeApiClient` so the result is
+  independent of any bug in the bridge's own HTTP client.
+- The "API Unreachable" notification (both at startup and after repeated
+  failed polls) now includes the actual last error reason from the API
+  client (e.g. "timed out waiting for a response" instead of a blank
+  message for exceptions with no message text) and points the user at the
+  new Test API Connection button for further diagnosis.
+
+### Fixed
+- The controller's HA device identity (`device_id`) was derived fresh from
+  the API response at every startup, falling back to a generic default
+  whenever the device happened to be transiently unreachable at that exact
+  moment. Since the Management device is published unconditionally at
+  every startup regardless of discovery success, a startup that hit this
+  fallback created a *new* HA device under a different identity, leaving
+  the previous one behind as an orphaned, empty duplicate with the same
+  display name. The real, serial-derived device_id is now persisted and
+  reused on any startup where the device is unreachable, instead of
+  falling back to the generic default.
+- A `select` entity's live state could silently diverge from its discovery
+  config's option list (e.g. showing the raw firmware description text
+  like `"price"` instead of the curated override `"Price per kWh"`) if the
+  point's metadata happened to be incomplete on the specific poll that
+  first populated its cached value mapping — the mapping is now looked up
+  by point ID across the manual override table unconditionally, instead of
+  only when the register type could be resolved from that poll's metadata.
+- Several concurrency/locking gaps found via targeted audit: a Lovelace
+  provisioning-thread iteration over live, unlocked dicts also mutated by
+  the poll thread; `last_bulk_fetch` written outside the lock that
+  protects it elsewhere; a publisher warning-dedup set with a check-then-add
+  race across threads; and `_mgmt_subscriptions` read/appended without a
+  lock during MQTT reconnect replay.
+- The nightly test-runner subprocess launch could fail with an
+  unhelpful, un-diagnosable "permission denied" — the AppArmor profile
+  had no rule granting traversal into `/` itself (only subpaths), which
+  the subprocess's `cwd='/'` needs; the `TimeoutExpired` handler also now
+  captures and logs the subprocess's real output and reports actual
+  elapsed time, instead of a generic message assuming the 4-hour hard
+  limit was reached.
+- A stale test subprocess from a previous run (e.g. after an abnormal
+  restart) is now killed before starting a new one, rather than
+  potentially running concurrently with it.
+- The nightly test suite could fire real Home Assistant persistent
+  notifications from fabricated test fixture data — two tests exercised
+  the real, unmocked `notify_ha`/`dismiss_ha` functions (which make a
+  genuine HTTP call to the Supervisor API, gated only by `SUPERVISOR_TOKEN`
+  being present, which the test subprocess inherits from the live add-on
+  process). Root cause of a real, reproducible false "Critical" alarm
+  notification a user saw with no matching alarm on the physical
+  controller, and a spurious dismiss-notification call on every
+  successful nightly run.
+- `debug_mode` and `log_level: debug` both independently controlled
+  whether debug-only entities (Run Test Suite, Flush Dynamic Map, etc.)
+  were shown — now `debug_mode` is the sole control; `log_level` only
+  affects logging verbosity.
+- `debug_mode`, `remove_frontend`, and `mqtt_tls` were declared as
+  optional (`bool?`) in `config.yaml`'s schema despite each having a real
+  default, unlike every other option with a default — normalized to
+  required `bool`, matching the project's own established convention.
+- The License badge/link in `README.md` used a relative path, which
+  doesn't resolve inside Home Assistant's own add-on documentation
+  viewer (it only renders the single file it's given, not the rest of
+  the repo) — now points at the absolute GitHub URL, matching the
+  README's other doc links.
+- The self-signed-TLS fallback for the Nibe API connection lowered the
+  minimum TLS version and permitted weaker ciphers beyond what's needed
+  just to accept a self-signed certificate — removed; the fallback still
+  accepts an unverified certificate (its intentional purpose) but now
+  uses Python's modern secure defaults otherwise.
+- The generated nightly test report link had no cache-busting, so
+  browsers could keep serving a stale cached copy after a new run —
+  added a `?v=<timestamp>` query parameter.
+
+### Changed
+- Several `except Exception` blocks across `app/` narrowed to the actual
+  bounded set of exceptions the wrapped code can raise, improving
+  diagnosability of unexpected failures — reverted in the one case
+  (`on_dynamic_map_message`) where the narrower set turned out to be
+  incomplete, since that handler wraps a call into another object's
+  method whose full exception contract shouldn't be assumed.
+- Several config.yaml options (`api_failure_threshold`,
+  `changelog_retention_days`, `mode`, `log_level`) are now validated or
+  bounds-clamped in Python as well as HA's schema, closing a bypass via
+  hand-edited `options.json` or the dev-only `NIBE_MODE`/`NIBE_LOG_LEVEL`
+  environment variables — an invalid `mode` previously silently disabled
+  every enabled entity with no distinguishing warning.
+
+---
+
 ## [1.0.4] — 2026-08-16
 
 ### Fixed

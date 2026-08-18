@@ -431,8 +431,8 @@ class DynamicPointMap:
         EntityManager — those remain active until a probe or bulk fetch
         removes them.
 
-        Debug use only.  Called by the flush management button when
-        log_level == 'debug'.
+        Debug use only.  Called by the flush management button, which is
+        only registered when the debug_mode option is enabled.
         """
         log.warning("DynamicPointMap: FLUSH requested — resetting all entries to unprocessed")  # pragma: no mutate
         for entry in self._table.values():
@@ -480,7 +480,12 @@ class DynamicPointMap:
                     entry = DynamicPointEntry.from_dict(entry_dict)
                     self._table[entry.point_id] = entry
                     loaded += 1
-                except Exception as e:  # noqa: BLE001 — one malformed entry must not abort the rest of the table
+                except (KeyError, ValueError, TypeError, AttributeError) as e:
+                    # KeyError: 'point_id' missing. ValueError/TypeError: a
+                    # field failed int()/list() conversion. AttributeError:
+                    # entry_dict isn't a dict (e.g. a bare string/int/list
+                    # from malformed JSON), so .get()/.items() don't exist.
+                    # One malformed entry must not abort the rest of the table.
                     log.warning(
                         "DynamicPointMap: could not deserialise entry %s: %s", pid_str, e
                     )  # pragma: no mutate

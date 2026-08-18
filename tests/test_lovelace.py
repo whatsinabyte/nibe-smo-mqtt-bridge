@@ -2805,8 +2805,8 @@ class TestNibeLovelacePublicWrappers(unittest.TestCase):
     def test_teardown_lovelace_delegates_to_private(self):
         from nibe_lovelace import teardown_lovelace
         with patch('nibe_lovelace._teardown_lovelace') as mock:
-            teardown_lovelace()
-        mock.assert_called_once_with()
+            teardown_lovelace(True)
+        mock.assert_called_once_with(True)
 
 
 # ===========================================================================
@@ -3675,43 +3675,35 @@ class TestWsCallRemainingBranches(unittest.TestCase):
 
 
 class TestTeardownLovelace(unittest.TestCase):
-    """_teardown_lovelace: env gate, card file removal, WS teardown paths."""
+    """_teardown_lovelace: remove_frontend gate, card file removal, WS teardown paths."""
 
-    def test_env_not_set_returns_early(self):
+    def test_flag_false_returns_early(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {}, clear=True), \
-             patch('nibe_lovelace.os.path.exists') as mock_exists:
-            nl._teardown_lovelace()
-        mock_exists.assert_not_called()
-
-    def test_env_wrong_value_returns_early(self):
-        import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '0'}), \
-             patch('nibe_lovelace.os.path.exists') as mock_exists:
-            nl._teardown_lovelace()
+        with patch('nibe_lovelace.os.path.exists') as mock_exists:
+            nl._teardown_lovelace(False)
         mock_exists.assert_not_called()
 
     def test_card_file_removed_when_exists(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=True), \
              patch('nibe_lovelace.os.remove') as mock_rm:
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         mock_rm.assert_any_call('/homeassistant/www/nibe-entity-manager-card.js')
 
     def test_card_file_remove_error_does_not_raise(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=True), \
              patch('nibe_lovelace.os.remove', side_effect=OSError("busy")):
-            nl._teardown_lovelace()  # must not raise
+            nl._teardown_lovelace(True)  # must not raise
 
     def test_no_supervisor_token_skips_ws(self):
         import nibe_lovelace as nl
-        with patch.dict('os.environ', {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': ''}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': ''}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch('nibe_lovelace._open_ha_websocket') as mock_open_ws:
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         mock_open_ws.assert_not_called()
 
     def _make_teardown_ws(self, dashboard_id=7, resource_id=3,
@@ -3744,13 +3736,12 @@ class TestTeardownLovelace(unittest.TestCase):
         ]
         ws_mod = MagicMock()
         ws_mod.create_connection.return_value = ws
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch('nibe_lovelace.os.remove'), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call', side_effect=fake_ws_call):
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         types = [c.get('type') for c in calls]
         self.assertIn('lovelace/dashboards/delete', types)
         self.assertIn('lovelace/resources/delete', types)
@@ -3764,13 +3755,12 @@ class TestTeardownLovelace(unittest.TestCase):
         ]
         ws_mod = MagicMock()
         ws_mod.create_connection.return_value = ws
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch('nibe_lovelace.os.remove'), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call', side_effect=fake_ws_call):
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         types = [c.get('type') for c in calls]
         self.assertNotIn('lovelace/dashboards/delete', types)
 
@@ -3778,13 +3768,12 @@ class TestTeardownLovelace(unittest.TestCase):
         import nibe_lovelace as nl
         ws_mod = MagicMock()
         ws_mod.create_connection.side_effect = OSError("refused")
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call') as mock_ws_call, \
              self.assertLogs('nibe.startup', level='WARNING') as cm:
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         self.assertTrue(any('Could not connect to HA WebSocket' in msg for msg in cm.output))
         mock_ws_call.assert_not_called()
 
@@ -3794,13 +3783,12 @@ class TestTeardownLovelace(unittest.TestCase):
         ws.recv.return_value = json.dumps({"type": "auth_ok"})  # wrong greeting
         ws_mod = MagicMock()
         ws_mod.create_connection.return_value = ws
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call') as mock_ws_call, \
              self.assertLogs('nibe.startup', level='WARNING') as cm:
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         self.assertTrue(any('Unexpected HA WebSocket greeting' in msg for msg in cm.output))
         ws.close.assert_called_once()
         mock_ws_call.assert_not_called()
@@ -3814,13 +3802,12 @@ class TestTeardownLovelace(unittest.TestCase):
         ]
         ws_mod = MagicMock()
         ws_mod.create_connection.return_value = ws
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call') as mock_ws_call, \
              self.assertLogs('nibe.startup', level='WARNING') as cm:
-            nl._teardown_lovelace()
+            nl._teardown_lovelace(True)
         self.assertTrue(any('HA WebSocket auth failed' in msg for msg in cm.output))
         ws.close.assert_called_once()
         mock_ws_call.assert_not_called()
@@ -4012,13 +3999,12 @@ class TestTeardownLovelaceRemainingPaths(unittest.TestCase):
             calls.append(payload)
             return ws_call_side_effect(ws_arg, mid, payload, _timeout)
         self._teardown_calls = calls
-        with patch.dict('os.environ',
-                        {'NIBE_REMOVE_FRONTEND': '1', 'SUPERVISOR_TOKEN': 'tok'}), \
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch('nibe_lovelace.os.path.exists', return_value=False), \
              patch('nibe_lovelace.os.remove', **rm_effects), \
              patch.dict('sys.modules', {'websocket': ws_mod}), \
              patch('nibe_lovelace._ws_call', side_effect=tracked_ws_call):
-            nl._teardown_lovelace()  # must not raise
+            nl._teardown_lovelace(True)  # must not raise
 
     def test_dashboard_delete_failure_logs_warning(self):
         def fake(ws, _mid, payload, _timeout=10):
@@ -4609,7 +4595,11 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
 
         bdi_args = mock_bdi.call_args.args
         self.assertIs(bdi_args[2], rw)                       # registry_watcher
-        self.assertIs(bdi_args[3], em.all_points_by_id)       # all_points_by_id
+        # all_points_by_id: a snapshot copy is passed (not the live dict) to
+        # avoid iterating it unlocked while the poll thread mutates it — see
+        # the _em_lock caveat in EntityManager.__init__ — so compare by value.
+        self.assertEqual(bdi_args[3], em.all_points_by_id)    # all_points_by_id
+        self.assertIsNot(bdi_args[3], em.all_points_by_id)
         self.assertEqual(bdi_args[4], real_point_defaults)    # point_defaults
 
         bmdc_args = mock_bmdc.call_args.args

@@ -368,6 +368,97 @@ class TestRequestRetry(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.client.request('https://192.0.2.1:8443/test', _retry=False)
 
+    # ── last_error tracking (surfaced in the "API Unreachable" HA notification) ──
+
+    def test_last_error_none_after_success(self):
+        with patch('urllib.request.urlopen',
+                   return_value=self._ok_response({'ok': True})):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNone(self.client.last_error)
+
+    def test_last_error_set_on_timeout(self):
+        with patch('urllib.request.urlopen', side_effect=TimeoutError()), \
+             patch('nibe_api.time.sleep'):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIn('timed out', self.client.last_error)
+
+    def test_last_error_set_on_connection_refused(self):
+        with patch('urllib.request.urlopen', side_effect=ConnectionRefusedError()), \
+             patch('nibe_api.time.sleep'):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIn('refused', self.client.last_error)
+
+    def test_last_error_set_on_http_error(self):
+        with patch('urllib.request.urlopen', side_effect=self._http_error(500)), \
+             patch('nibe_api.time.sleep'):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIn('500', self.client.last_error)
+
+    def test_last_error_cleared_after_recovery(self):
+        """A stale reason from an earlier failure streak must not survive
+        into a later successful request — otherwise a since-resolved
+        problem could still be quoted in a future notification."""
+        self.client.last_error = "stale reason from a previous outage"
+        with patch('urllib.request.urlopen',
+                   return_value=self._ok_response({'ok': True})):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNone(self.client.last_error)
+
+    def test_last_error_survives_after_exhausting_retries(self):
+        """After both attempts fail, last_error must reflect the failure,
+        not be left over from client construction (None) or wiped by the
+        retry loop itself."""
+        with patch('urllib.request.urlopen', side_effect=TimeoutError()), \
+             patch('nibe_api.time.sleep'):
+            result = self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNone(result)
+        self.assertIsNotNone(self.client.last_error)
+
+
+class TestDescribeNetworkError(unittest.TestCase):
+    """_describe_network_error() — human-readable failure descriptions for
+    the "API Unreachable" notification. str(e) is empty for several common
+    exceptions (a bare TimeoutError() in particular), which previously
+    produced useless log/notification text with no actual diagnostic
+    content — these tests pin the fallback and categorization behavior."""
+
+    def test_empty_str_falls_back_to_type_name(self):
+        from nibe_api import _describe_network_error
+
+        class _NoMessage(OSError):
+            def __str__(self):
+                return ''
+        result = _describe_network_error(_NoMessage())
+        self.assertEqual(result, '_NoMessage')
+
+    def test_bare_timeout_error_gets_hint(self):
+        from nibe_api import _describe_network_error
+        result = _describe_network_error(TimeoutError())
+        self.assertIn('timed out', result)
+
+    def test_connection_refused_gets_hint(self):
+        from nibe_api import _describe_network_error
+        result = _describe_network_error(ConnectionRefusedError())
+        self.assertIn('refused', result)
+
+    def test_connection_reset_gets_hint(self):
+        from nibe_api import _describe_network_error
+        result = _describe_network_error(ConnectionResetError())
+        self.assertIn('reset', result)
+
+    def test_real_message_is_preserved_and_hint_appended(self):
+        """An exception that DOES carry a real message must keep it, not
+        just the category hint — the original detail is still useful."""
+        from nibe_api import _describe_network_error
+        e = TimeoutError('timed out after 30s')
+        result = _describe_network_error(e)
+        self.assertIn('timed out after 30s', result)
+
+    def test_real_message_without_category_hint_returned_as_is(self):
+        from nibe_api import _describe_network_error
+        result = _describe_network_error(OSError('Network is unreachable'))
+        self.assertEqual(result, 'Network is unreachable')
+
 
 
 class TestRequestRetryProperties(unittest.TestCase):

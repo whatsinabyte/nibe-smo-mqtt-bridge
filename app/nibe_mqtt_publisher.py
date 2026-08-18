@@ -33,6 +33,7 @@ MqttDiscoveryPublisher(mqtt_client, device_info, device_id, device_name)
 import hashlib
 import json
 import logging
+import threading
 import time
 from enum import StrEnum
 
@@ -146,6 +147,12 @@ class MgmtTopic(StrEnum):
     RUN_TESTS_PRESS   = f"{_HA_BASE}/button/nibe_run_tests/press"
     RUN_TESTS_STATE   = "nibe/browser/test_suite/state"
     RUN_TESTS_ATTRS   = "nibe/browser/test_suite/attrs"
+
+    # ── API connectivity check button (debug only) ─────────────────────────
+    TEST_CONNECTION_CONFIG = f"{_HA_BASE}/button/nibe_test_connection/config"
+    TEST_CONNECTION_PRESS  = f"{_HA_BASE}/button/nibe_test_connection/press"
+    TEST_CONNECTION_STATE  = "nibe/browser/connectivity_check/state"
+    TEST_CONNECTION_ATTRS  = "nibe/browser/connectivity_check/attrs"
 
 
 class BrowserTopic(StrEnum):
@@ -306,6 +313,13 @@ class MqttDiscoveryPublisher:
         # _range_warnings_issued, kept separate so the two warning categories
         # can be reasoned about and tested independently.
         self._unit_override_warnings_issued: set[int] = set()
+        # publish_entity_discovery() can run concurrently for the same point_id
+        # from more than one thread (the HA registry watcher thread and
+        # mgmt_executor command workers both call enable_entity() for the same
+        # point). The two sets above use a check-then-add pattern, so without
+        # this lock two threads can both pass the "not yet warned" check before
+        # either adds the point_id, duplicating the one-shot warning.
+        self._warnings_lock = threading.Lock()
         # Hash of the last published discovery config per point_id.
         # Used by publish_entity_discovery to skip redundant MQTT publishes
         # when the config has not changed since the last restart.
@@ -392,7 +406,10 @@ class MqttDiscoveryPublisher:
         is_writable = point.get('is_writable', False)
         description = point.get('description', '')
 
-        unit, _ = resolve_unit(point_id, metadata.get('unit', ''), title, self._unit_override_warnings_issued)
+        with self._warnings_lock:
+            unit, _ = resolve_unit(
+                point_id, metadata.get('unit', ''), title, self._unit_override_warnings_issued
+            )
 
         entity_id = create_entity_id(point_id)
 
@@ -414,10 +431,11 @@ class MqttDiscoveryPublisher:
                 config, t_state("switch", entity_id), t_command("switch", entity_id)
             )
         elif entity_type == "number":
-            discovery_config.build_number_config(
-                config, t_state("number", entity_id), t_command("number", entity_id),
-                point_id, title, unit, metadata, bulk_data, self._range_warnings_issued,
-            )
+            with self._warnings_lock:
+                discovery_config.build_number_config(
+                    config, t_state("number", entity_id), t_command("number", entity_id),
+                    point_id, title, unit, metadata, bulk_data, self._range_warnings_issued,
+                )
         elif entity_type == "select":
             discovery_config.build_select_config(
                 config, t_state("select", entity_id), t_command("select", entity_id),
@@ -1057,6 +1075,23 @@ class MqttDiscoveryPublisher:
                 "device": mgmt_device, "icon": "mdi:test-tube",
                 "entity_category": "diagnostic",
             })
+            _pub(MgmtTopic.TEST_CONNECTION_CONFIG, {
+                "name": "Test API Connection (DEBUG)", "unique_id": "nibe_test_connection",
+                "command_topic": MgmtTopic.TEST_CONNECTION_PRESS,
+                "availability_topic": avail,
+                "device": mgmt_device, "icon": "mdi:lan-connect",
+                "entity_category": "config",
+            })
+            # Sensor that shows last connectivity check result
+            _pub(f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config", {
+                "name": "Connectivity Check Result (DEBUG)",
+                "unique_id": "nibe_connectivity_check_result",
+                "state_topic": MgmtTopic.TEST_CONNECTION_STATE,
+                "json_attributes_topic": MgmtTopic.TEST_CONNECTION_ATTRS,
+                "availability_topic": avail,
+                "device": mgmt_device, "icon": "mdi:lan-connect",
+                "entity_category": "diagnostic",
+            })
         else:
             # Clear any retained debug-entity configs left over from a
             # previous debug-mode run — otherwise HA keeps showing them as
@@ -1064,6 +1099,8 @@ class MqttDiscoveryPublisher:
             self.mqtt.publish(MgmtTopic.FLUSH_MAP_CONFIG, "", retain=True)
             self.mqtt.publish(MgmtTopic.RUN_TESTS_CONFIG, "", retain=True)
             self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", "", retain=True)
+            self.mqtt.publish(MgmtTopic.TEST_CONNECTION_CONFIG, "", retain=True)
+            self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config", "", retain=True)
 
         # Initial sensor states
         self.mqtt.publish(MgmtTopic.UPTIME_STATE,      "0",    retain=True)
