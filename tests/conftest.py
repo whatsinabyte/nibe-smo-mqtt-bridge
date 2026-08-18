@@ -95,6 +95,7 @@ def _make_em():
         )
     em.device_info = {}
     em.device_name = 'Test'
+    em._api.last_error = None
     return em
 
 
@@ -275,3 +276,26 @@ def _reset_description_mapping_cache():
     ned._description_mapping_cache.clear()
     yield
     ned._description_mapping_cache.clear()
+
+
+# generate_nibe_mqtt._derive_device_id() persists the real, serial-derived
+# device_id to _DEVICE_ID_FILE (defaults to /data/device_id) so a later
+# startup during a transient outage reuses it instead of falling back to
+# the generic default (see _derive_device_id's docstring for the real bug
+# this fixes: a duplicate, empty "ghost" HA device from device_id
+# flip-flopping across restarts). The nightly test suite runs *inside the
+# real add-on container*, where /data genuinely exists and is writable —
+# without this fixture, any test that exercises _build_infrastructure()
+# without explicitly mocking _derive_device_id (most of them don't) would
+# write real or fake serial-derived device_id strings straight over the
+# genuine persisted file on a live installation. Same risk class as the
+# menu-cache/description-cache pollution above, just against a real
+# filesystem path instead of an in-process cache — autouse so no test can
+# forget to isolate it, matching that same lesson.
+@pytest.fixture(autouse=True)
+def _isolate_device_id_persistence(tmp_path):
+    import generate_nibe_mqtt as gn
+    original = gn._DEVICE_ID_FILE
+    gn._DEVICE_ID_FILE = str(tmp_path / 'device_id')
+    yield
+    gn._DEVICE_ID_FILE = original

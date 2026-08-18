@@ -7,6 +7,7 @@ Shared fixtures are in conftest.py.
 """
 
 import json
+import threading
 import unittest
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -3632,6 +3633,7 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
         pub.device_id = 'nibe'
         pub._range_warnings_issued = set()
         pub._unit_override_warnings_issued = set()
+        pub._warnings_lock = threading.Lock()
         pub._config_hashes = {}
         pub._point_entity_types = {}
         return pub
@@ -4865,6 +4867,31 @@ class TestPublishManagementDiscovery(unittest.TestCase):
         state_calls = [c for c in self.mqtt.publish.call_args_list
                        if c[0][0] == self.MgmtTopic.RUN_TESTS_STATE]
         self.assertEqual(state_calls, [])
+
+    def test_test_connection_button_not_published_without_debug_mode(self):
+        """Without debug_mode, TEST_CONNECTION_CONFIG is sent with an empty
+        payload to unpublish the entity from HA — not omitted entirely."""
+        self.pub.publish_management_discovery('essential', debug_mode=False)
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list if c.args}
+        self.assertIn(self.MgmtTopic.TEST_CONNECTION_CONFIG, published)
+        self.assertEqual(published[self.MgmtTopic.TEST_CONNECTION_CONFIG], "")
+
+    def test_test_connection_button_published_in_debug_mode(self):
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        self.assertIn(self.MgmtTopic.TEST_CONNECTION_CONFIG, self._topics_published())
+
+    def test_connectivity_check_result_sensor_config_published_in_debug_mode(self):
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        topics = self._topics_published()
+        matches = [t for t in topics if 'nibe_connectivity_check_result' in t]
+        self.assertTrue(matches, "connectivity check result sensor config not published")
+
+    def test_connectivity_check_result_sensor_config_cleared_without_debug_mode(self):
+        self.pub.publish_management_discovery('essential', debug_mode=False)
+        published = {c.args[0]: c.args[1] for c in self.mqtt.publish.call_args_list if c.args}
+        matches = {t: p for t, p in published.items() if 'nibe_connectivity_check_result' in t}
+        self.assertTrue(matches, "connectivity check result sensor config topic not touched")
+        self.assertTrue(all(p == "" for p in matches.values()))
 
     def test_management_interface_marked_online(self):
         self.pub.publish_management_discovery('essential')

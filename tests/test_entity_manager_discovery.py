@@ -1101,6 +1101,59 @@ class TestHandleApiFailure(unittest.TestCase):
         self.assertEqual(context['failure_threshold'], 5)
         self.assertEqual(context['api_url'], 'http://192.0.2.5')
 
+    def test_notification_includes_last_error_when_present(self):
+        """When the API client recorded a diagnostic reason for its most
+        recent failure, the user-facing notification must include it —
+        otherwise a user with no access to container logs has no way to
+        tell a network timeout from a firewall block from a device outage."""
+        em = _make_em()
+        em._api.last_error = "timed out waiting for a response"
+        em.api_consecutive_failures = 2
+        em.api_failure_threshold = 3
+        em._handle_api_failure()
+        call_kwargs = em._notify.call_args.kwargs
+        self.assertIn("Last error: timed out waiting for a response.", call_kwargs['message'])
+
+    def test_notification_points_to_test_connection_button(self):
+        """The ongoing API-unreachable notification must also point at the
+        debug 'Test API Connection' button, same as the startup discovery-
+        failure notification — a user hitting this during normal operation
+        deserves the same guidance toward the in-HA diagnostic tool."""
+        em = _make_em()
+        em.api_consecutive_failures = 2
+        em.api_failure_threshold = 3
+        em._handle_api_failure()
+        call_kwargs = em._notify.call_args.kwargs
+        self.assertIn('Test API Connection', call_kwargs['message'])
+        self.assertIn('Debug mode', call_kwargs['message'])
+
+    def test_notification_omits_last_error_line_when_absent(self):
+        """No last_error recorded (e.g. a fresh client, or a test double
+        without the attribute) must not print a bare 'Last error: None.'
+        fragment in the user-facing message."""
+        em = _make_em()
+        em._api.last_error = None
+        em.api_consecutive_failures = 2
+        em.api_failure_threshold = 3
+        em._handle_api_failure()
+        call_kwargs = em._notify.call_args.kwargs
+        self.assertNotIn("Last error", call_kwargs['message'])
+
+    def test_bridge_alert_context_includes_last_error(self):
+        """The structured MQTT alert context must carry last_error too, so
+        automations/external monitors get the same diagnostic detail as
+        the HA notification."""
+        em = _make_em()
+        em._api.last_error = "HTTP 500 from https://192.0.2.5/api/v1/devices/0/points"
+        em.api_consecutive_failures = 2
+        em.api_failure_threshold = 3
+        em._handle_api_failure()
+        context = em._pub.publish_bridge_alert.call_args.kwargs['context']
+        self.assertEqual(
+            context['last_error'],
+            "HTTP 500 from https://192.0.2.5/api/v1/devices/0/points",
+        )
+
     def test_handle_api_failure_skips_bridge_alert_when_pub_is_none(self):
         """1605->1616: when _pub is None, publish_bridge_alert is skipped
         but the notification and flag are still set."""

@@ -79,18 +79,21 @@ configuration:
   log_level:
     name: Logniveau
     description: >-
-      Tilføjelsens logdetaljeringsgrad. "info" anbefales til normal
-      brug. Brug "debug" til at fejlfinde forbindelses- eller
-      entitetsproblemer — det genererer en stor mængde output og bør
-      sættes tilbage til "info" bagefter.
+      Tilføjelsens logdetaljeringsgrad — påvirker ikke hvilke enheder der
+      vises. "info" anbefales til normal brug. Brug "debug" til at
+      fejlfinde forbindelses- eller entitetsproblemer — det genererer en
+      stor mængde output og bør sættes tilbage til "info" bagefter. Brug
+      "Fejlfindingstilstand" nedenfor for at vise testsuite-knappen og
+      resultatsensoren.
   debug_mode:
     name: Fejlfindingstilstand
     description: >-
-      Aktiverer testsuite-knappen og resultatsensoren på
-      administrationsenheden. Nyttigt til at køre den natlige
-      testsuite uden at sætte logniveauet til debug. Når log_level er
-      "debug", vises testsuite-entiteterne også uanset denne
-      indstilling.
+      Aktiverer testsuite-knappen, knappen til nulstilling af det
+      dynamiske kort og resultatsensoren på administrationsenheden.
+      Uafhængig af "Logniveau" ovenfor — dette er den eneste indstilling,
+      der styrer, om disse enheder vises. Træder i kraft ved næste genstart
+      af tilføjelsen: hvis den slås fra, fjernes enhederne også, ikke kun
+      stoppes tilføjelsen af nye.
   api_failure_threshold:
     name: Tærskel for API-fejl
     description: >-

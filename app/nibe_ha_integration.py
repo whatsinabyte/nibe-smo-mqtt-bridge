@@ -37,9 +37,12 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
+from nibe_connectivity_check import run_connectivity_check
 from nibe_mqtt_publisher import (
     BrowserTopic,
     MgmtTopic,
@@ -111,7 +114,14 @@ def _get_ha_base_url() -> str:
         _ha_base_url = url.rstrip('/')
         log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)
         return _ha_base_url
-    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+    except (
+        urllib.error.URLError, OSError, TimeoutError,
+        json.JSONDecodeError, UnicodeDecodeError, AttributeError,
+    ) as e:
+        # URLError/OSError/TimeoutError: request failed (Supervisor
+        # unreachable, timed out). JSONDecodeError/UnicodeDecodeError: the
+        # response body wasn't valid UTF-8 JSON. AttributeError: the parsed
+        # body wasn't a dict (cfg.get() doesn't exist on e.g. a JSON array).
         log_mqtt.warning("Could not fetch HA base URL: %s", e)
         _ha_base_url_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
         return ''
@@ -150,7 +160,7 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
     try:
         urllib.request.urlopen(req, timeout=10)
         log_mqtt.warning("HA notification sent: [%s] %s", notification_id, title)
-    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+    except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
         log_mqtt.error("Failed to send HA notification: %s", e)
 
 
@@ -177,7 +187,7 @@ def dismiss_ha(mqtt_client, notification_id: str) -> None:
     try:
         urllib.request.urlopen(req, timeout=10)
         log_mqtt.debug("HA notification dismissed: [%s]", notification_id)
-    except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+    except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
         log_mqtt.error("Failed to dismiss HA notification: %s", e)
 
 
@@ -293,7 +303,7 @@ class HAEntityRegistryWatcher:
                             count += 1
                 log_registry.debug("Registry refresh: updated %d nibe entries", count)
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-            log_registry.debug("Registry refresh failed: %s", e)
+            log_registry.warning("Registry refresh failed: %s", e)
 
     _REFRESH_DEBOUNCE_S = 5.0
 
@@ -471,7 +481,7 @@ class HAEntityRegistryWatcher:
                         break
                     try:
                         msg = json.loads(raw)
-                    except Exception as e:  # noqa: BLE001 — malformed frame; skip and keep the connection alive
+                    except json.JSONDecodeError as e:
                         log_registry.debug("Registry watcher: discarding malformed frame: %s", e)
                         continue
 
@@ -718,11 +728,19 @@ class ManagementCommandHandler:
         publisher: MqttDiscoveryPublisher,
         mgmt_executor: concurrent.futures.ThreadPoolExecutor,
         test_executor: concurrent.futures.ThreadPoolExecutor | None = None,
+        ca_cert_path: str | None = None,
     ) -> None:
         self._mqtt     = mqtt_client
         self._em       = entity_manager
         self._pub      = publisher
         self._executor = mgmt_executor
+        # Only set when nibe_ca_cert is configured and the file exists —
+        # mirrors _build_ssl_context()'s own check in generate_nibe_mqtt.py,
+        # so the connectivity check's curl invocation verifies against the
+        # same CA the bridge's own NibeApiClient actually uses, rather than
+        # always skipping verification and giving a falsely reassuring
+        # result for a user who has verified TLS configured.
+        self._ca_cert_path = ca_cert_path
         # Dedicated executor for run_test_suite so a 25-30 minute test run
         # can never be starved by (or starve) other management commands
         # sharing mgmt_executor's fixed worker pool.
@@ -748,6 +766,7 @@ class ManagementCommandHandler:
         self._sub(MgmtTopic.CHANGELOG_READ_PRESS, self._handle_changelog_reset)
         self._sub(MgmtTopic.FLUSH_MAP_PRESS,     self._handle_flush_dynamic_map)
         self._sub(MgmtTopic.RUN_TESTS_PRESS,     self._handle_run_tests)
+        self._sub(MgmtTopic.TEST_CONNECTION_PRESS, self._handle_test_connection)
         self._em.mqtt.subscribe(BrowserTopic.SNAPSHOTS_CMD, qos=1)
         self._em.mqtt.message_callback_add(
             BrowserTopic.SNAPSHOTS_CMD, self._handle_snapshot_cmd
@@ -957,6 +976,54 @@ class ManagementCommandHandler:
             self._em.mqtt, notify_ha, dismiss_ha, _get_ha_base_url,
             self._test_running,
         )
+
+    def _handle_test_connection(self, _client, _userdata, _message) -> None:
+        """Run an independent ping + curl connectivity check against the
+        configured Nibe REST API host, for diagnosing "add-on can't reach
+        the device" reports without needing SSH/terminal access to the HA
+        host. See nibe_connectivity_check.py for why this deliberately
+        avoids reusing NibeApiClient/urllib.
+        """
+        log_commands.info("Test API Connection triggered from HA (debug action)")
+
+        def _do() -> None:
+            base_url = self._em._api.base_url
+            host     = urlparse(base_url).hostname or base_url
+
+            self._em.mqtt.publish(MgmtTopic.TEST_CONNECTION_STATE, 'running', retain=True)
+
+            result = run_connectivity_check(
+                host, base_url, self._ca_cert_path, self._em._api.auth,
+            )
+
+            state = 'reachable' if result['ok'] else 'unreachable'
+            self._em.mqtt.publish(MgmtTopic.TEST_CONNECTION_STATE, state, retain=True)
+            self._em.mqtt.publish(
+                MgmtTopic.TEST_CONNECTION_ATTRS,
+                json.dumps({
+                    'status':    state,
+                    'summary':   result['summary'],
+                    'ping':      result['ping'],
+                    'curl':      result['curl'],
+                    'timestamp': _fmt_ts(),
+                }),
+                retain=True,
+            )
+            if result['ok']:
+                dismiss_ha(self._em.mqtt, 'nibe_connectivity_check')
+            else:
+                notify_ha(
+                    self._em.mqtt,
+                    title="Nibe Bridge: Connectivity Check",
+                    message=(
+                        f"{result['summary']}\n\n"
+                        f"Ping: {result['ping']['summary']}\n"
+                        f"Curl: {result['curl']['summary']}"
+                    ),
+                    notification_id='nibe_connectivity_check',
+                )
+
+        self._submit(_do)
 
 
 # ============================================================================

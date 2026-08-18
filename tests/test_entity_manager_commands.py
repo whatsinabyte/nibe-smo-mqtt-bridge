@@ -643,13 +643,19 @@ class TestHandleCommand(unittest.TestCase):
         self.assertEqual(em.pending_writes[100]['payload'], 'ON')
 
     def test_valid_payload_submits_to_executor(self):
+        # _handle_command wraps the actual worker call in a logging closure
+        # (_submit_write) before handing it to the executor, so submit()
+        # itself no longer receives (_handle_command_worker, *args) directly
+        # — instead verify the worker is invoked with the right args once
+        # the executor's submit() runs synchronously.
         em = _make_em()
         info = self._entity_info()
         msg = self._message(b'ON')
-        with patch.object(em, '_write_executor') as mock_executor:
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)
+        with patch.object(em, '_handle_command_worker') as mock_worker:
             em._handle_command(info, msg)
-        mock_executor.submit.assert_called_once_with(
-            em._handle_command_worker, info, 1, 'ON', mock_executor.submit.call_args[0][4],
+        mock_worker.assert_called_once_with(
+            info, 1, 'ON', mock_worker.call_args[0][3],
         )
 
     def test_submitted_cmd_id_matches_the_generated_correlation_token(self):
@@ -666,11 +672,12 @@ class TestHandleCommand(unittest.TestCase):
         msg = self._message(b'ON')
         fixed_uuid = uuid_module.UUID('12345678-1234-5678-1234-567812345678')
         expected_cmd_id = fixed_uuid.hex[:8]  # _CMD_ID_LENGTH
-        with patch.object(em, '_write_executor') as mock_executor, \
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)
+        with patch.object(em, '_handle_command_worker') as mock_worker, \
              patch('nibe_entity_manager.uuid.uuid4', return_value=fixed_uuid):
             em._handle_command(info, msg)
-        mock_executor.submit.assert_called_once_with(
-            em._handle_command_worker, info, 1, 'ON', expected_cmd_id,
+        mock_worker.assert_called_once_with(
+            info, 1, 'ON', expected_cmd_id,
         )
         self.assertEqual(em.pending_writes[100]['cmd_id'], expected_cmd_id)
 

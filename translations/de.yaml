@@ -83,20 +83,23 @@ configuration:
   log_level:
     name: Protokollstufe
     description: >-
-      Ausführlichkeit des Add-on-Protokolls. "info" wird für den
-      normalen Gebrauch empfohlen. Verwenden Sie "debug", um
-      Verbindungs- oder Entitätsprobleme zu diagnostizieren — dies
-      erzeugt eine große Menge an Ausgaben und sollte danach wieder auf
-      "info" zurückgesetzt werden.
+      Ausführlichkeit des Add-on-Protokolls — hat keinen Einfluss darauf,
+      welche Entitäten angezeigt werden. "info" wird für den normalen
+      Gebrauch empfohlen. Verwenden Sie "debug", um Verbindungs- oder
+      Entitätsprobleme zu diagnostizieren — dies erzeugt eine große Menge
+      an Ausgaben und sollte danach wieder auf "info" zurückgesetzt
+      werden. Verwenden Sie stattdessen den "Debug-Modus" unten, um die
+      Testsuite-Schaltfläche und den Ergebnissensor anzuzeigen.
   debug_mode:
     name: Debug-Modus
     description: >-
-      Aktiviert die Testsuite-Schaltfläche und den Ergebnissensor auf
-      dem Management-Gerät. Nützlich, um die nächtliche Testsuite
-      auszuführen, ohne die Protokollstufe auf debug zu setzen. Wenn
-      log_level auf "debug" gesetzt ist, werden die
-      Testsuite-Entitäten unabhängig von dieser Einstellung ebenfalls
-      angezeigt.
+      Aktiviert die Testsuite-Schaltfläche, die Schaltfläche zum
+      Zurücksetzen der dynamischen Zuordnung und den Ergebnissensor auf
+      dem Management-Gerät. Unabhängig von der "Protokollstufe" oben —
+      dies ist die einzige Einstellung, die steuert, ob diese Entitäten
+      angezeigt werden. Wird beim nächsten Neustart des Add-ons wirksam:
+      Wird der Modus deaktiviert, werden die Entitäten auch entfernt, nicht
+      nur keine neuen mehr hinzugefügt.
   api_failure_threshold:
     name: Schwellenwert für API-Fehler
     description: >-

@@ -181,8 +181,13 @@ class BridgeConfig:
     poll_interval:        int = 30
     log_level:            str = "info"
     mode:                 str = "essential"
+    debug_mode:            bool = False
     api_failure_threshold: int = 3
     changelog_retention_days: int = 90
+
+    # Lifecycle — remove the Lovelace dashboard/resources and card file on
+    # clean uninstall (surfaced as NIBE_REMOVE_FRONTEND=1 by run.sh).
+    remove_frontend: bool = False
 
     # TLS — optional CA certificate for verifying the Nibe device's self-signed cert.
     # When set, TLS verification is fully enabled against this CA.
@@ -324,14 +329,20 @@ def load_config(cli_args=None) -> BridgeConfig:
             cfg.device_name   = _opt_str(opts, 'device_name')   or cfg.device_name
             cfg.log_level     = _opt_str(opts, 'log_level')     or cfg.log_level
             cfg.mode          = _opt_str(opts, 'mode')          or cfg.mode
+            if 'debug_mode' in opts:
+                cfg.debug_mode = bool(opts['debug_mode'])
             if opts.get('poll_interval'):
                 cfg.poll_interval = _validated_poll(
                     int(opts['poll_interval']), "options.json"
                 )
             if opts.get('api_failure_threshold'):
-                cfg.api_failure_threshold = max(1, int(opts['api_failure_threshold']))
+                # Upper bound (100) mirrors config.yaml's schema: int(1,100).
+                cfg.api_failure_threshold = max(1, min(100, int(opts['api_failure_threshold'])))
             if opts.get('changelog_retention_days'):
-                cfg.changelog_retention_days = max(1, int(opts['changelog_retention_days']))
+                # Upper bound (3650) mirrors config.yaml's schema: int(1,3650).
+                cfg.changelog_retention_days = max(
+                    1, min(3650, int(opts['changelog_retention_days']))
+                )
             if opts.get('nibe_ca_cert'):
                 cfg.nibe_ca_cert = str(opts['nibe_ca_cert'])
             if opts.get('mqtt_tls') is True:
@@ -362,6 +373,8 @@ def load_config(cli_args=None) -> BridgeConfig:
         cfg.log_level = env['NIBE_LOG_LEVEL']
     if env.get('NIBE_MODE'):
         cfg.mode = env['NIBE_MODE']
+    if env.get('NIBE_REMOVE_FRONTEND') == '1':
+        cfg.remove_frontend = True
     # Numeric env vars get their own try/except, unlike the plain string
     # settings above — a misconfigured/non-numeric value here must not crash
     # the whole add-on at startup (load_config runs before any exception
@@ -377,7 +390,9 @@ def load_config(cli_args=None) -> BridgeConfig:
                 max(15, int(env['NIBE_POLL_INTERVAL'])), "NIBE_POLL_INTERVAL"
             )
         if env.get('NIBE_API_FAILURE_THRESHOLD'):
-            cfg.api_failure_threshold = max(1, int(env['NIBE_API_FAILURE_THRESHOLD']))
+            cfg.api_failure_threshold = max(
+                1, min(100, int(env['NIBE_API_FAILURE_THRESHOLD']))
+            )
     except (ValueError, TypeError) as e:
         deferred_warnings.append(f"Could not parse numeric environment variable: {e}")
 
@@ -389,6 +404,26 @@ def load_config(cli_args=None) -> BridgeConfig:
             cfg.log_level = cli_args.log_level
         if getattr(cli_args, 'mode', None):
             cfg.mode = cli_args.mode
+
+    # ── Validate mode/log_level against the same sets config.yaml's schema
+    # promises — the schema only guards options.json; a hand-edited
+    # options.json or the NIBE_MODE/NIBE_LOG_LEVEL env vars (dev/Docker-only,
+    # not exposed via the HA UI) bypass it entirely. An unrecognised mode
+    # would otherwise silently disable every enabled entity in apply_mode()
+    # (MODES.get() returns None, falls through to an empty target set) with
+    # no warning distinguishing it from a deliberate mode: none.
+    _VALID_LOG_LEVELS = {"debug", "info", "warning", "error"}
+    if cfg.mode not in MODES:
+        deferred_warnings.append(
+            f"mode={cfg.mode!r} is not valid {sorted(MODES)} — using 'essential'"
+        )
+        cfg.mode = "essential"
+    if cfg.log_level.lower() not in _VALID_LOG_LEVELS:
+        deferred_warnings.append(
+            f"log_level={cfg.log_level!r} is not valid {sorted(_VALID_LOG_LEVELS)} "
+            f"— using 'info'"
+        )
+        cfg.log_level = "info"
 
     # ── Derived values ─────────────────────────────────────────────────────
     cfg.api_base_url = f"https://{cfg.api_host}:{cfg.api_port}/api/v1/devices/0"
@@ -567,7 +602,10 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
             result.wait_for_publish(timeout=2.0)
             cleared += 1
             log_startup.debug("Cleared retained topic: %s", topic)
-        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+        except (ValueError, RuntimeError) as e:
+            # wait_for_publish() only raises these two — ValueError if the
+            # outgoing queue was full, RuntimeError for any other publish
+            # failure (e.g. disconnected mid-publish).
             log_startup.warning("Could not confirm clear for %s: %s", topic, e)
 
     log_startup.info("MQTT cleanup complete — cleared %d/%d retained topics",
@@ -596,8 +634,6 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode    = ssl.CERT_NONE
-    ctx.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
-    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
     log_startup.warning(
         "TLS: Certificate verification disabled (self-signed cert). "
         "Enable verification by setting 'nibe_ca_cert' in add-on options."
@@ -605,20 +641,72 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     return ctx
 
 
-def _derive_device_id(response: dict, fallback: str) -> str:
+_DEVICE_ID_FILE = '/data/device_id'
+
+
+def _derive_device_id(response: dict, fallback: str, persist_path: str | None = None) -> str:
     """Derive a stable HA-safe device identifier from the API response.
 
     Uses the controller's serial number so two bridges running against
     different controllers on the same broker produce distinct identifiers.
-    Falls back to *fallback* (the config default) when the serial is absent
-    — e.g. when the API was unreachable at startup.
+
+    The resolved serial-based id is persisted to *persist_path* so that a
+    LATER startup where the device happens to be transiently unreachable
+    (flaky network, a firmware reboot, the kind of intermittent connectivity
+    issue this add-on's users have hit in practice) reuses the same id
+    instead of silently falling back to *fallback* — the generic config
+    default. Without this, device_id flip-flops between the real
+    serial-derived value and the generic default across restarts depending
+    on whether that specific startup's connection attempt happened to
+    succeed, and every entity (most importantly the Management device,
+    which is published unconditionally at every startup regardless of
+    whether point discovery succeeds) gets recreated under a *different*
+    HA device identity each time this happens — the old one is never
+    cleaned up, since the bridge has no way to know it was ever assigned.
+    The result is an accumulating pile of empty "ghost" devices in HA, all
+    sharing the same display name, that a user has to notice and manually
+    delete. Falls back to *fallback* only on a genuinely first-ever
+    startup, before any real id has ever been learned.
     """
+    # Resolved inside the function body, not as a default-argument value —
+    # default arguments are bound once at function-definition time, so a
+    # test (or anything else) patching the module-level _DEVICE_ID_FILE
+    # constant after import would have no effect on an already-bound
+    # default. Reading it here re-evaluates the current module attribute
+    # on every call instead.
+    if persist_path is None:
+        persist_path = _DEVICE_ID_FILE
+
     serial = (response.get("product", {}).get("serialNumber") or "").strip()
     if serial:
         safe = "".join(c for c in serial.lower() if c.isalnum() or c == "_")
         device_id = f"nibe_{safe}"
         log_startup.info("Device ID derived from serial number: %s", device_id)
+        try:
+            with open(persist_path, 'w', encoding='utf-8') as f:
+                f.write(device_id)
+        except OSError as e:
+            log_startup.warning(
+                "Could not persist device_id to %s: %s — a future startup during "
+                "a transient outage may fall back to the generic default instead.",
+                persist_path, e,
+            )
         return device_id
+
+    try:
+        with open(persist_path, encoding='utf-8') as f:
+            persisted = f.read().strip()
+    except OSError:
+        persisted = ''
+    if persisted:
+        log_startup.warning(
+            "Serial number not available this startup (device unreachable?) — "
+            "reusing the previously learned device_id '%s' instead of the "
+            "generic default, to avoid creating a duplicate HA device.",
+            persisted,
+        )
+        return persisted
+
     log_startup.warning(
         "Serial number not available — using default device_id '%s'. "
         "Running two bridges without serial numbers may cause HA device collisions.",
@@ -1002,7 +1090,6 @@ def _run_startup_sequence(
     response:             dict,
     device_id:            str,
     initial_mode:         str,
-    log_level:            str,
     set_entity_manager,
 ) -> tuple:
     """Assemble all subsystems and bring the bridge to ready state.
@@ -1020,6 +1107,13 @@ def _run_startup_sequence(
     -------
     tuple of (entity_manager, publisher, registry_watcher, mgmt_executor)
     """
+    # debug_mode controls exposure of debug-only entities/actions (Run Test
+    # Suite button, Flush Dynamic Map button, Test Suite Result sensor,
+    # debug dashboard extras) exclusively — log_level is a separate concern
+    # (logging verbosity only) and must not also gate feature exposure, or
+    # the two options become two inconsistent ways to reach the same effect.
+    debug_mode = cfg.debug_mode
+
     device_info = _build_device_info(response, device_id, cfg.device_name, cfg.api_base_url)
 
     publisher = MqttDiscoveryPublisher(
@@ -1074,7 +1168,11 @@ def _run_startup_sequence(
             message=(
                 f"The {cfg.device_name} was unreachable at startup so no entities "
                 "could be loaded. The bridge is running and will restore all "
-                "entities automatically when the device comes back online."
+                "entities automatically when the device comes back online. "
+                "For a detailed diagnostic (network, TLS, and credentials checked "
+                "independently), enable 'Debug mode' in the add-on configuration, "
+                "restart, and use the 'Test API Connection' button on the "
+                "Management device."
             ),
             notification_id="nibe_discovery_incomplete",
         )
@@ -1082,16 +1180,14 @@ def _run_startup_sequence(
         time.sleep(1)
 
     # ── Management interface ──────────────────────────────────────────────────
-    publisher.publish_management_discovery(
-        initial_mode, debug_mode=(log_level.lower() == 'debug')
-    )
+    publisher.publish_management_discovery(initial_mode, debug_mode=debug_mode)
     publisher.publish_initial_device_modes(response)
 
     # Reset stale test result attrs from previous run so the sensor
     # attributes show a clean state after a rebuild.  The state topic is
     # intentionally not published here — doing so would trigger HA
     # automations on every restart.
-    if log_level.lower() == 'debug':
+    if debug_mode:
         _json = json
         mqtt_client.publish(MgmtTopic.RUN_TESTS_ATTRS, _json.dumps({
             "status": "ready",
@@ -1105,7 +1201,8 @@ def _run_startup_sequence(
         max_workers=1, thread_name_prefix="nibe_test_runner"
     )
     ManagementCommandHandler(
-        mqtt_client, entity_manager, publisher, mgmt_executor, test_executor
+        mqtt_client, entity_manager, publisher, mgmt_executor, test_executor,
+        ca_cert_path=cfg.nibe_ca_cert if cfg.nibe_ca_cert and os.path.exists(cfg.nibe_ca_cert) else None,
     ).register_all()
     entity_manager._mgmt_avail_topic = MGMT_AVAIL_TOPIC
 
@@ -1137,8 +1234,7 @@ def _run_startup_sequence(
 
     lovelace_thread = threading.Thread(
         target=provision_lovelace_ui,
-        args=(BRIDGE_VERSION, cfg.device_name, registry_watcher,
-              log_level.lower() == 'debug'),
+        args=(BRIDGE_VERSION, cfg.device_name, registry_watcher, debug_mode),
         kwargs={"mode": initial_mode},
         name="nibe_lovelace_setup",
         daemon=True,
@@ -1147,7 +1243,7 @@ def _run_startup_sequence(
 
     if initial_mode == "menus":
         schedule_menu_dashboard_regen(
-            entity_manager, registry_watcher, log_level.lower() == 'debug',
+            entity_manager, registry_watcher, debug_mode,
             lovelace_thread=lovelace_thread,
         )
     else:
@@ -1213,7 +1309,10 @@ def _poll_loop(
                 if deferred_ran:
                     # complete_deferred_discovery already fetched bulk data —
                     # skip update_all_states to avoid a redundant API call.
-                    entity_manager.last_bulk_fetch = time.time()
+                    # last_bulk_fetch is also reassigned by resubscribe_all() on
+                    # paho's MQTT thread after a reconnect — _em_lock serializes both.
+                    with entity_manager._em_lock:
+                        entity_manager.last_bulk_fetch = time.time()
                 else:
                     entity_manager.update_all_states()
 
@@ -1289,6 +1388,7 @@ def _shutdown(
     test_executor,
     shutting_down:    list[bool],
     atexit_cleanup_fn,
+    remove_frontend:  bool = False,
 ) -> None:
     """Execute a clean shutdown sequence.
 
@@ -1297,7 +1397,7 @@ def _shutdown(
       2. Kill an in-flight test-suite subprocess, if any.
       3. Drain the write, management, and test executors with a timeout.
       4. Publish 'offline' to every active entity's availability topic.
-      5. Optionally wipe all retained MQTT messages (NIBE_REMOVE_FRONTEND=1).
+      5. Optionally wipe all retained MQTT messages (remove_frontend option).
       6. Tear down Lovelace resources.
       7. Disconnect MQTT cleanly.
     """
@@ -1344,15 +1444,17 @@ def _shutdown(
     for pub in pending_publishes:
         try:
             pub.wait_for_publish(timeout=2.0)
-        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+        except (ValueError, RuntimeError) as e:
+            # wait_for_publish() only raises these two — see the analogous
+            # comment on the retained-topic clear above.
             log_mqtt.warning("Offline publish did not confirm: %s", e)
 
-    if os.environ.get('NIBE_REMOVE_FRONTEND') == '1':
+    if remove_frontend:
         _cleanup_mqtt_retained(mqtt_client)
     else:
         log_startup.info("MQTT discovery configs retained for next startup")
 
-    teardown_lovelace()
+    teardown_lovelace(remove_frontend)
 
     # Unregister atexit so loop_stop/disconnect are not called a second time.
     atexit.unregister(atexit_cleanup_fn)
@@ -1413,7 +1515,7 @@ def main():  # pragma: no cover
     entity_manager, publisher, registry_watcher, mgmt_executor, test_executor = \
         _run_startup_sequence(
             cfg, api_client, mqtt_client, response, device_id,
-            initial_mode, log_level, set_entity_manager,
+            initial_mode, set_entity_manager,
         )
 
     # ── Signal handlers: convert SIGTERM/SIGHUP into KeyboardInterrupt ────────
@@ -1437,7 +1539,7 @@ def main():  # pragma: no cover
     _shutdown(
         entity_manager, publisher, mqtt_client,
         registry_watcher, mgmt_executor, test_executor,
-        shutting_down, _atexit_cleanup,
+        shutting_down, _atexit_cleanup, cfg.remove_frontend,
     )
 
 

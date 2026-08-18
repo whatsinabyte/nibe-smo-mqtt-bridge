@@ -285,7 +285,7 @@ Some data points only appear when a related feature is active. These **dynamic d
 
 > ℹ️ When two switches are flipped in quick succession, the Changelog's **Triggered by** field shows the most recent write at the time of detection — this attribution is approximate. The point appearances and disappearances themselves are always detected correctly.
 
-Use the **Flush Dynamic Map (DEBUG)** button to clear all learned relationships and start fresh. Only visible when `log_level` is `debug`.
+Use the **Flush Dynamic Map (DEBUG)** button to clear all learned relationships and start fresh. Only visible when **Debug mode** is enabled.
 
 ### Management entities
 
@@ -305,13 +305,15 @@ Use the **Flush Dynamic Map (DEBUG)** button to clear all learned relationships 
 | API Last Fetch | Sensor | Diagnostic | Timestamp of the last successful bulk data fetch |
 | API Fetch Duration | Sensor | Diagnostic | Duration of the last bulk fetch in seconds |
 
-The following entities are only visible when `log_level` is `debug`:
+The following entities are only visible when **Debug mode** is enabled (a separate setting from `log_level` — see the option's description in the add-on configuration for why):
 
 | Entity | Type | Description |
 |---|---|---|
 | Flush Dynamic Map | Button | Clear all learned dynamic point relationships |
 | Run Test Suite | Button | Trigger the built-in test suite |
 | Test Suite Result | Sensor | Last test suite outcome — full detail in the Attributes tab |
+| Test API Connection | Button | Run an independent ping + curl check against the configured Nibe controller — useful for diagnosing "can't reach the device" issues without SSH/terminal access to the HA host |
+| Connectivity Check Result | Sensor | Last connectivity check outcome — ping and curl detail (including HTTP status and whether credentials were accepted) in the Attributes tab |
 
 > 💡 **Force Poll** is useful after making a change on the controller — it updates HA immediately rather than waiting for the next scheduled poll.
 

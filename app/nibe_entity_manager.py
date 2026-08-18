@@ -396,6 +396,11 @@ class EntityManager:
         self._write_notification_active:     bool = False
         self._discovery_notification_active: bool = False
         self._range_warnings_issued:         set[int] = set()
+        # Points already warned about a missing state_topic — without this,
+        # a point stuck in this state (never reaches last_states, since the
+        # warning path returns before recording it) would re-warn every
+        # single poll cycle indefinitely instead of once.
+        self._missing_state_topic_warned:    set[int] = set()
 
         # ── Incremental stats counters ────────────────────────────────────────
         self._stats_type_counts:     dict[str, int] = {}
@@ -427,6 +432,7 @@ class EntityManager:
         # aid/smart mode, alarm reset, force poll, enable/disable, and
         # changelog-read buttons keep working after Mosquitto restarts.
         self._mgmt_subscriptions: list[tuple] = []
+        self._mgmt_subscriptions_lock = threading.Lock()
 
         self._setup_history_loading()
         self._setup_dynamic_map_loading()
@@ -895,6 +901,7 @@ class EntityManager:
         self.value_cache.discard(point_id)
         self._point_string_cache.pop(point_id, None)
         self._entity_type_cache.pop(point_id, None)
+        self._missing_state_topic_warned.discard(point_id)
         # A write triggered just before disable would otherwise leak here
         # forever: pending_writes is only ever cleared by _update_entity_state
         # (which stops running for this point once it's disabled) or an
@@ -1285,10 +1292,12 @@ class EntityManager:
 
         if should_pub or point_id not in self.last_states or self.last_states[point_id] != state_value:
             if not entity_info.get('state_topic'):
-                log_entities.warning(
-                    "Point %d (%s): no state_topic — cannot publish state",
-                    point_id, entity_info.get('entity_type'),
-                )
+                if point_id not in self._missing_state_topic_warned:
+                    log_entities.warning(
+                        "Point %d (%s): no state_topic — cannot publish state",
+                        point_id, entity_info.get('entity_type'),
+                    )
+                    self._missing_state_topic_warned.add(point_id)
                 return
             self.mqtt.publish(entity_info['state_topic'], state_value, retain=True)
             with self._em_lock:
@@ -1630,12 +1639,17 @@ class EntityManager:
         if (self.api_consecutive_failures >= self.api_failure_threshold
                 and not self._api_notification_active
                 and self.mqtt):
-            model = self.device_info.get('model', 'S-series')
+            model      = self.device_info.get('model', 'S-series')
+            last_error = getattr(self._api, 'last_error', None)
+            reason     = f" Last error: {last_error}." if last_error else ""
             msg   = (
                 f"The Nibe {model} REST API has not responded for "
                 f"{self.api_consecutive_failures} consecutive polls "
                 f"({self.api_consecutive_failures * self.bulk_interval}s). "
-                f"Check that the controller is reachable at {self._api.base_url}. "
+                f"Check that the controller is reachable at {self._api.base_url}.{reason} "
+                f"For a detailed diagnostic, enable 'Debug mode' in the add-on "
+                f"configuration and use the 'Test API Connection' button on the "
+                f"Management device. "
                 f"This notification will clear automatically when contact is restored."
             )
             self._notify(
@@ -1655,6 +1669,7 @@ class EntityManager:
                         "consecutive_failures": self.api_consecutive_failures,
                         "failure_threshold":    self.api_failure_threshold,
                         "api_url":              self._api.base_url,
+                        "last_error":           last_error,
                     },
                 )
             self._api_notification_active = True
@@ -1893,7 +1908,7 @@ class EntityManager:
                     notification_id = "nibe_dashboard_updated",
                 )
         except (ValueError, TypeError, AttributeError) as e:
-            log_discovery.debug("Could not send dashboard update notification: %s", e)
+            log_discovery.warning("Could not send dashboard update notification: %s", e)
         except Exception:
             log_discovery.exception("Unexpected error sending dashboard notification")
 
@@ -2095,6 +2110,14 @@ class EntityManager:
         Payload parsing is delegated to ``_parse_command_payload`` so this method
         stays focused on MQTT decode, correlation ID generation, pending-write
         registration, and executor submission.
+
+        Runs directly on paho's MQTT network thread (registered via
+        ``message_callback_add``). paho is constructed with its default
+        ``suppress_exceptions=False``, so an exception escaping this method
+        propagates out of the network thread's read loop and permanently
+        kills it — no more messages would ever be delivered. Everything past
+        the payload decode is therefore wrapped in a catch-all, matching
+        every sibling ``message_callback_add`` handler in this module.
         """
         try:
             payload = message.payload.decode('utf-8').strip()
@@ -2104,30 +2127,52 @@ class EntityManager:
             )
             return
 
-        point_id = entity_info['point_id']
-        cmd_id   = uuid.uuid4().hex[:_CMD_ID_LENGTH]
+        try:
+            point_id = entity_info['point_id']
+            cmd_id   = uuid.uuid4().hex[:_CMD_ID_LENGTH]
 
-        log_commands.info(
-            "[%s] Command received for %s %d: '%s'",
-            cmd_id, entity_info['entity_type'], point_id, payload,
-        )
+            log_commands.info(
+                "[%s] Command received for %s %d: '%s'",
+                cmd_id, entity_info['entity_type'], point_id, payload,
+            )
 
-        value = self._parse_command_payload(payload, entity_info, cmd_id)
-        if value is None:
-            return
+            value = self._parse_command_payload(payload, entity_info, cmd_id)
+            if value is None:
+                return
 
-        with self._pending_writes_lock:
-            self.pending_writes[point_id] = {
-                'point_id':  point_id,
-                'value':     value,
-                'payload':   payload,
-                'timestamp': time.time(),
-                'cmd_id':    cmd_id,
-            }
+            with self._pending_writes_lock:
+                self.pending_writes[point_id] = {
+                    'point_id':  point_id,
+                    'value':     value,
+                    'payload':   payload,
+                    'timestamp': time.time(),
+                    'cmd_id':    cmd_id,
+                }
 
-        self._write_executor.submit(
-            self._handle_command_worker, entity_info, value, payload, cmd_id
-        )
+            self._submit_write(
+                self._handle_command_worker, entity_info, value, payload, cmd_id
+            )
+        except Exception:
+            log_commands.exception(
+                "Unhandled exception handling command on topic %s", message.topic
+            )
+
+    def _submit_write(self, fn, *args) -> None:
+        """Submit a write-handler call to ``_write_executor`` with logging.
+
+        A bare ``self._write_executor.submit(fn, *args)`` silently swallows
+        any exception ``fn`` raises — nothing awaits the returned Future or
+        checks ``.result()``, so a bug in the handler fails invisibly with
+        no log line and the point's ``pending_writes`` entry is never
+        explicitly cleared. Wrapping it here ensures every write failure is
+        at least logged, mirroring ``ManagementCommandHandler._submit``.
+        """
+        def _wrapped():
+            try:
+                fn(*args)
+            except Exception:
+                log_commands.exception("Unhandled exception in write command handler")
+        self._write_executor.submit(_wrapped)
 
     def _open_post_write_scan(self, point_id: int) -> None:
         """Activate the post-write scan window for a write to ``point_id``.
@@ -2365,7 +2410,8 @@ class EntityManager:
         handler : paho message callback ``(client, userdata, message) -> None``
         qos     : QoS level (default 1)
         """
-        self._mgmt_subscriptions.append((topic, handler, qos))
+        with self._mgmt_subscriptions_lock:
+            self._mgmt_subscriptions.append((topic, handler, qos))
 
     def resubscribe_all(self) -> None:
         """Re-register ALL subscriptions after an MQTT broker reconnect.
@@ -2391,6 +2437,12 @@ class EntityManager:
         with the poll loop thread reading/writing the same two attributes in
         update_all_states(). Without the lock the two threads race on plain,
         unsynchronized attribute writes.
+
+        _mgmt_subscriptions is snapshotted under _mgmt_subscriptions_lock
+        before iterating — register_mgmt_subscription() can still be appending
+        to it from the main thread (during create_management_handlers(), which
+        runs after the MQTT loop is already started) while this method runs
+        concurrently on the MQTT thread.
         """
         with self._em_lock:
             self.value_cache = ValueCache()
@@ -2411,7 +2463,9 @@ class EntityManager:
             entity_count += 1
 
         mgmt_count = 0
-        for topic, handler, qos in self._mgmt_subscriptions:
+        with self._mgmt_subscriptions_lock:
+            mgmt_subscriptions_snapshot = list(self._mgmt_subscriptions)
+        for topic, handler, qos in mgmt_subscriptions_snapshot:
             self.mqtt.subscribe(topic, qos=qos)
             self.mqtt.message_callback_add(topic, handler)
             mgmt_count += 1
@@ -2467,7 +2521,7 @@ class EntityManager:
             try:
                 self._on_enabled_state_change()
             except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-                log_entities.debug("on_enabled_state_change callback error: %s", e)
+                log_entities.warning("on_enabled_state_change callback error: %s", e)
         else:
             self._last_published_enabled = current
 
@@ -2897,7 +2951,7 @@ class EntityManager:
             if message.payload:
                 try:
                     result[0] = message.payload.decode('utf-8').strip() or None
-                except Exception:  # noqa: BLE001 — best-effort; safe fallback value, nothing actionable to log
+                except UnicodeDecodeError:
                     result[0] = None
             received.set()
 
@@ -2992,7 +3046,8 @@ class EntityManager:
                     else:
                         # Already enabled — still need to publish online and
                         # current state so HA doesn't show the entity as unavailable.
-                        entity_info = self.active_entities_by_id.get(point_id)
+                        with self._active_entities_lock:
+                            entity_info = self.active_entities_by_id.get(point_id)
                         if entity_info:
                             self.mqtt.publish(
                                 entity_info['availability_topic'], "online", retain=True
@@ -3075,7 +3130,18 @@ class EntityManager:
                 log_discovery.info(
                     "Restored DynamicPointMap from MQTT: %d entries", count
                 )
-            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+            except Exception as e:  # noqa: BLE001 — best-effort restore from
+                # external/retained MQTT data; must degrade gracefully no
+                # matter what fails. Deliberately broad, not just decode/gzip/
+                # JSON errors: self.dynamic_point_map.deserialise() is a call
+                # into another object's method, not a fixed decode chain — a
+                # test (test_dynamic_map_failure_logs_the_exception) mocks it
+                # raising an arbitrary RuntimeError specifically to pin down
+                # that this handler must not assume it knows deserialise()'s
+                # full exception contract. A previous narrower except here
+                # (UnicodeDecodeError/binascii.Error/OSError/EOFError/
+                # zlib.error/json.JSONDecodeError only) let exactly that kind
+                # of exception escape uncaught.
                 log_discovery.warning(
                     "Could not restore DynamicPointMap from MQTT — "
                     "will try file fallback or start fresh: %s", e
@@ -3096,7 +3162,10 @@ class EntityManager:
                     "Restored %d active dynamic point(s) from MQTT: %s",
                     len(loaded), sorted(loaded),
                 )
-            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as e:
+                # UnicodeDecodeError: payload isn't valid UTF-8.
+                # json.JSONDecodeError: malformed JSON. ValueError/TypeError:
+                # a list entry couldn't be converted with int().
                 log_discovery.warning(
                     "Could not restore active_dynamic_points from MQTT: %s", e
                 )
@@ -3148,7 +3217,10 @@ class EntityManager:
 
         try:
             stats['actual_object_size_mb'] = round(sys.getsizeof(self) / (1024 * 1024), 2)
-        except Exception:  # noqa: BLE001 — best-effort; safe fallback value, nothing actionable to log
+        except TypeError:
+            # sys.getsizeof() raises TypeError if __sizeof__() returns a
+            # non-int — not reachable for a normal instance, but this stat
+            # is a nice-to-have diagnostic, not worth failing get_stats() over.
             stats['actual_object_size_mb'] = None
 
         return stats

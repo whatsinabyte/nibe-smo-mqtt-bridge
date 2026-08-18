@@ -7,8 +7,11 @@ FROM ghcr.io/home-assistant/${BUILD_ARCH}-base:3.24
 # Clear any existing entrypoint from the base image
 ENTRYPOINT []
 
-# Install Python and required system packages
-RUN apk add --no-cache python3 py3-pip bash curl jq
+# Install Python and required system packages.
+# iputils provides `ping`, used by the "Test API Connection" debug button's
+# connectivity check (nibe_connectivity_check.py) — explicit rather than
+# relying on whatever busybox applets happen to be built into the base image.
+RUN apk add --no-cache python3 py3-pip bash curl jq iputils
 
 # Set working directory
 WORKDIR /app

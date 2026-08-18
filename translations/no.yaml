@@ -79,18 +79,21 @@ configuration:
   log_level:
     name: Loggnivå
     description: >-
-      Detaljnivå for tilleggets logg. "info" anbefales for normal bruk.
-      Bruk "debug" for å feilsøke tilkoblings- eller entitetsproblemer —
-      dette gir en stor mengde utdata og bør settes tilbake til "info"
-      etterpå.
+      Detaljnivå for tilleggets logg — påvirker ikke hvilke enheter som
+      vises. "info" anbefales for normal bruk. Bruk "debug" for å
+      feilsøke tilkoblings- eller entitetsproblemer — dette gir en stor
+      mengde utdata og bør settes tilbake til "info" etterpå. Bruk
+      "Feilsøkingsmodus" nedenfor i stedet for å vise testsuite-knappen
+      og resultatsensoren.
   debug_mode:
     name: Feilsøkingsmodus
     description: >-
-      Aktiverer testsuite-knappen og resultatsensoren på
-      administrasjonsenheten. Nyttig for å kjøre den nattlige
-      testsuiten uten å sette loggnivået til debug. Når log_level er
-      "debug" vises testsuite-entitetene også uavhengig av denne
-      innstillingen.
+      Aktiverer testsuite-knappen, knappen for å tilbakestille det
+      dynamiske kartet, og resultatsensoren på administrasjonsenheten.
+      Uavhengig av "Loggnivå" ovenfor — dette er den eneste innstillingen
+      som styrer om disse enhetene vises. Trer i kraft ved neste omstart
+      av tillegget: hvis den slås av, fjernes enhetene også, ikke bare
+      stopper tillegget med å legge til nye.
   api_failure_threshold:
     name: Terskel for API-feil
     description: >-

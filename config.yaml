@@ -1,5 +1,5 @@
 name: "Nibe S-Series MQTT Bridge"
-version: "1.0.4"
+version: "1.0.5"
 slug: "nibe_s_series"
 # Prebuilt multi-arch images (built by .github/workflows/publish-image.yml)
 # are not yet published — while still under active local development,
@@ -62,12 +62,12 @@ schema:
   poll_interval: list(15|30|60|120|300)?
   mode: list(essential|monitoring|advanced|menus|all|none)
   log_level: list(debug|info|warning|error)
-  debug_mode: bool?
+  debug_mode: bool
   api_failure_threshold: "int(1,100)?"
   changelog_retention_days: "int(1,3650)?"
 
   # Lifecycle
-  remove_frontend: bool?
+  remove_frontend: bool
 
   # TLS — optional CA certificate paths for verifying self-signed certificates.
   # nibe_ca_cert: absolute path to a PEM CA cert for the Nibe device API.
@@ -77,7 +77,7 @@ schema:
   # mqtt_ca_cert: absolute path to a PEM CA cert for the MQTT broker.
   #   Only used when mqtt_tls is true. Leave blank to use the system CA store.
   nibe_ca_cert: str?
-  mqtt_tls: bool?
+  mqtt_tls: bool
   mqtt_ca_cert: str?
 
 map:

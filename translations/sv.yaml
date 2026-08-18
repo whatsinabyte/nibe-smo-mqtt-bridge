@@ -76,17 +76,21 @@ configuration:
   log_level:
     name: Loggnivå
     description: >-
-      Tilläggets loggutförlighet. "info" rekommenderas för normal
-      användning. Använd "debug" för att felsöka anslutnings- eller
-      entitetsproblem — det ger en stor mängd utdata och bör återställas
-      till "info" efteråt.
+      Tilläggets loggutförlighet — påverkar inte vilka entiteter som
+      visas. "info" rekommenderas för normal användning. Använd "debug"
+      för att felsöka anslutnings- eller entitetsproblem — det ger en
+      stor mängd utdata och bör återställas till "info" efteråt. Använd
+      "Felsökningsläge" nedan istället för att visa testsvit-knappen och
+      resultatsensorn.
   debug_mode:
     name: Felsökningsläge
     description: >-
-      Aktiverar testsvit-knappen och resultatsensorn på hanteringsenheten.
-      Användbart för att köra den nattliga testsviten utan att ställa in
-      loggnivån till debug. När log_level är "debug" visas
-      testsvit-entiteterna också oavsett denna inställning.
+      Aktiverar testsvit-knappen, knappen för att rensa den dynamiska
+      kartan och resultatsensorn på hanteringsenheten. Oberoende av
+      "Loggnivå" ovan — detta är den enda inställningen som styr om
+      dessa entiteter visas. Träder i kraft vid nästa omstart av
+      tillägget: om det stängs av tas entiteterna också bort, inte bara
+      slutar nya läggas till.
   api_failure_threshold:
     name: Tröskelvärde för API-fel
     description: >-
