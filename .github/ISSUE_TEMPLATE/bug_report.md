@@ -1,9 +1,10 @@
 ---
 name: Bug report
 about: Something is not working correctly
-title: '[BUG] '
-labels: bug
+title: "[BUG] "
+labels: bug, enhancement
 assignees: ''
+
 ---
 
 ## Description
