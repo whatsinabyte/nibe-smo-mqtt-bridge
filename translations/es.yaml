@@ -1,0 +1,184 @@
+configuration:
+  nibe_host:
+    name: Dirección IP del controlador
+    description: >-
+      Dirección IP o nombre de host de su controlador Nibe serie S en su
+      red local. Se recomienda encarecidamente asignar una IP estática a
+      través de su router.
+  nibe_port:
+    name: Puerto API del controlador
+    description: >-
+      Puerto HTTPS de la API REST local del controlador. El valor
+      predeterminado 8443 es correcto para todos los productos de la serie
+      S y normalmente no debería necesitar cambiarse.
+  nibe_username:
+    name: Usuario API del controlador
+    description: >-
+      Nombre de usuario configurado en el menú Service del controlador
+      (menú 7.5.15). Debe coincidir exactamente con el valor configurado
+      en el controlador.
+  nibe_password:
+    name: Contraseña API del controlador
+    description: >-
+      Contraseña configurada en el menú Service del controlador
+      (menú 7.5.15). Distingue entre mayúsculas y minúsculas.
+  mqtt_host:
+    name: Nombre de host del broker MQTT
+    description: >-
+      Nombre de host o dirección IP de su broker MQTT. El valor
+      predeterminado "core-mosquitto" funciona con el add-on oficial de
+      Mosquitto. Use una dirección IP o nombre de host para cualquier otro
+      broker.
+  mqtt_port:
+    name: Puerto del broker MQTT
+    description: >-
+      Puerto TCP de su broker MQTT. El valor predeterminado 1883 es el
+      puerto MQTT estándar sin cifrar. Si habilita "MQTT TLS" más abajo,
+      cambie este valor a 8883 (el puerto MQTT cifrado estándar usado por
+      Mosquitto).
+  mqtt_username:
+    name: Usuario MQTT
+    description: >-
+      Nombre de usuario para la autenticación del broker MQTT. Déjelo en
+      blanco si su broker no requiere autenticación.
+  mqtt_password:
+    name: Contraseña MQTT
+    description: >-
+      Contraseña para la autenticación del broker MQTT. Déjela en blanco
+      si su broker no requiere autenticación.
+  device_name:
+    name: Nombre del dispositivo
+    description: >-
+      Cómo aparece el dispositivo controlador en Home Assistant. Por
+      defecto "Nibe SMO S40", pero puede ajustarlo para que coincida con
+      su hardware real (por ejemplo, "Nibe S1155" o "Nibe VVM S320").
+  language:
+    name: Idioma
+    description: >-
+      Idioma de los nombres/descripciones de entidades devueltos por la
+      API REST del controlador. "auto" (predeterminado) sigue el idioma
+      configurado en Home Assistant; elija un idioma específico para
+      anular esto. Esta lista refleja el propio menú "Language" del
+      controlador — solo unas pocas entradas se han confirmado
+      directamente que funcionan a través de la propia API REST, pero
+      elegir un idioma no compatible es inofensivo: vuelve
+      silenciosamente al inglés, nunca un error. No traduce el panel de
+      Menús Nibe, que permanece como contenido fijo en inglés. Se requiere
+      un reinicio después de cambiar esto.
+  poll_interval:
+    name: Intervalo de sondeo
+    description: >-
+      Con qué frecuencia se obtienen todos los puntos de datos del
+      controlador, en segundos. Se recomiendan 30 segundos. El controlador
+      es un dispositivo embebido — su API REST es secundaria respecto a su
+      tarea principal de gestionar su bomba de calor. Se requiere un
+      reinicio después de cambiar este ajuste.
+  mode:
+    name: Modo de entidades
+    description: >-
+      Qué conjunto de entidades expone el puente: "essential" cubre las
+      temperaturas principales, el estado del agua caliente, los totales
+      de energía y los puntos de ajuste básicos — un buen punto de partida
+      para cualquier instalación. "monitoring" añade líneas de
+      impulsión/retorno, estado del compresor e indicadores de eficiencia.
+      "advanced" añade el circuito refrigerante completo y los registros
+      de ajuste. "menus" expone cada punto necesario para el panel de
+      Menús Nibe y lo construye. "all" expone cada punto descubierto;
+      "none" no expone nada hasta que habilite entidades manualmente. Esto
+      se aplica al iniciar — cambiarlo requiere un reinicio del add-on, y
+      cambiar a otro modo deshabilita de forma predeterminada cualquier
+      entidad no incluida en el nuevo conjunto seleccionado — las
+      entidades que haya habilitado manualmente mediante la tarjeta
+      Entity Manager también se eliminan al cambiar el modo, pero se
+      conservan entre reinicios con el mismo modo. Vea "Comportamiento
+      al cambiar de modo" más abajo para cambiar esto. "essential" es el
+      punto de partida recomendado.
+  mode_switch_behavior:
+    name: Comportamiento al cambiar de modo
+    description: >-
+      Qué ocurre con las entidades ya habilitadas al cambiar a otro
+      modo. "replace" (predeterminado) restablece el conjunto habilitado
+      exactamente a los puntos del nuevo modo — todo lo que esté
+      actualmente habilitado y no forme parte del nuevo modo, incluidas
+      las entidades habilitadas manualmente mediante la tarjeta Entity
+      Manager, se deshabilita. "merge" solo añade los puntos del nuevo
+      modo a lo que ya está habilitado — nunca se deshabilita nada por
+      un cambio de modo. Se aplica a cada cambio de modo. No tiene
+      efecto en una instalación nueva ni al reiniciar con el mismo
+      modo — solo un cambio de modo real activa esto.
+  log_level:
+    name: Nivel de registro
+    description: >-
+      Detalle del registro del add-on únicamente — no afecta a qué
+      entidades se muestran. "info" se recomienda para uso normal. Use
+      "debug" para diagnosticar problemas de conexión o de entidades —
+      produce un gran volumen de salida y debería devolverse a "info"
+      después. Para mostrar el botón de la suite de pruebas y el sensor de
+      resultado exclusivos de depuración, use en su lugar "Modo de
+      depuración" más abajo.
+  debug_mode:
+    name: Modo de depuración
+    description: >-
+      Habilita el botón de la suite de pruebas, el botón de vaciado del
+      mapa dinámico y el sensor de resultado en el dispositivo de gestión.
+      Independiente del "Nivel de registro" anterior — este es el único
+      ajuste que controla si estas entidades se muestran. Surte efecto en
+      el próximo reinicio del add-on: desactivarlo también elimina las
+      entidades, no solo detiene la adición de nuevas.
+  api_failure_threshold:
+    name: Umbral de fallos de API
+    description: >-
+      Número de sondeos fallidos consecutivos antes de que aparezca una
+      notificación persistente en la campana de notificaciones de HA. El
+      valor predeterminado de 3 significa tres fallos consecutivos (90
+      segundos con el intervalo predeterminado) antes de alertar.
+      Auméntelo en una red inestable para evitar falsos positivos.
+  changelog_retention_days:
+    name: Retención del registro de cambios (días)
+    description: >-
+      Cuántos días se conservan las entradas del registro de cambios del
+      Entity Manager antes de eliminarlas. Las entradas más antiguas que
+      este valor se eliminan en cada reinicio del puente. El valor
+      predeterminado de 90 días es adecuado para la mayoría de las
+      instalaciones.
+  remove_frontend:
+    name: Eliminar frontend al apagar
+    description: >-
+      Establézcalo en true antes de detener el add-on para eliminar
+      automáticamente el panel Nibe Bridge, el registro de recursos
+      Lovelace, el archivo de la tarjeta y todos los mensajes MQTT
+      retenidos en el próximo apagado limpio. Use esto solo al
+      desinstalar. Los reinicios normales no se ven afectados. Consulte la
+      documentación para el procedimiento completo de desinstalación.
+  nibe_ca_cert:
+    name: Ruta del certificado CA del controlador Nibe
+    description: >-
+      Opcional. Ruta absoluta a un archivo de certificado CA en formato
+      PEM usado para verificar el certificado HTTPS del controlador Nibe.
+      Cuando se establece, se habilita la verificación completa de la
+      cadena TLS y del nombre de host para todas las llamadas API al
+      controlador. Déjelo en blanco para aceptar el certificado
+      autofirmado integrado del controlador sin verificación — esto es
+      el valor predeterminado y es aceptable en una red doméstica de
+      confianza, pero significa que un ataque de intermediario en su red
+      local podría interceptar el tráfico del controlador.
+      Ejemplo: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: TLS MQTT
+    description: >-
+      Habilita el cifrado TLS para todo el tráfico entre el puente y el
+      broker MQTT. Protege sus credenciales MQTT y todas las cargas útiles
+      de comandos de entidades de ser leídas por otros dispositivos en la
+      red local. Requiere que su broker esté configurado para TLS —
+      cambie el "Puerto del broker MQTT" a 8883 si usa el add-on
+      Mosquitto. Deshabilitado por defecto.
+  mqtt_ca_cert:
+    name: Ruta del certificado CA del broker MQTT
+    description: >-
+      Opcional. Solo se usa cuando "TLS MQTT" está habilitado. Ruta
+      absoluta a un archivo de certificado CA en formato PEM usado para
+      verificar el certificado TLS del broker. Déjelo en blanco para usar
+      el almacén CA del sistema, lo cual es correcto para brokers con un
+      certificado firmado por una CA pública. Establezca esto si su broker
+      usa un certificado autofirmado o firmado de forma privada.
+      Ejemplo: /ssl/mqtt-ca.pem

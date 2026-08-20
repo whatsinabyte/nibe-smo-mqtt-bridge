@@ -30,6 +30,8 @@ What this module does NOT do
 import logging
 import subprocess
 
+from nibe_utils import TLS_COMPAT_CIPHERS
+
 log_commands = logging.getLogger('nibe.commands')
 
 # curl exit codes that are worth a specific, actionable message rather than
@@ -100,7 +102,11 @@ def _run_curl(
     if ca_cert_path:
         cmd += ['--cacert', ca_cert_path]
     else:
-        cmd.append('-k')
+        # Mirror _build_ssl_context's no-CA branch: widen TLS-version/cipher
+        # compatibility the same way, so this diagnostic can't report
+        # "unreachable" against a controller whose old TLS stack the real
+        # polling connection (via NibeApiClient) already tolerates.
+        cmd += ['-k', '--tlsv1.0', '--ciphers', TLS_COMPAT_CIPHERS]
     if auth_header:
         cmd += ['-H', f'Authorization: {auth_header}']
     cmd.append(url)
@@ -202,14 +208,27 @@ def run_connectivity_check(
 
     ok = ping_result['ok'] and curl_result['ok']
     auth_rejected = curl_result.get('http_code') in (401, 403)
+    # http_code is set whenever curl got any real HTTP response, even one
+    # that makes curl_result['ok'] False (e.g. a 500) — distinct from curl
+    # never completing a connection at all (http_code is None). Conflating
+    # the two would misreport a device that's up but erroring server-side
+    # as a full network/firewall outage.
+    curl_reached_host = curl_result.get('http_code') is not None
+    also_ping_failed  = f"{curl_result['summary']} Also, ping did not respond."
     if ok:
         summary = "Reachable — both ping and the REST API responded."
-    elif not ping_result['ok'] and not curl_result['ok'] and not auth_rejected:
+    elif not ping_result['ok'] and not curl_reached_host:
         summary = "Unreachable — no response to ping or the REST API. Likely a network/firewall/VLAN block."
-    elif auth_rejected:
+    elif auth_rejected and ping_result['ok']:
         summary = curl_result['summary']
-    elif not ping_result['ok']:
+    elif auth_rejected:
+        summary = also_ping_failed
+    elif not ping_result['ok'] and curl_result['ok']:
         summary = "REST API responded but ping did not — ICMP may be blocked while HTTPS is allowed; not necessarily a problem."
+    elif not ping_result['ok']:
+        summary = also_ping_failed
+    elif curl_reached_host:
+        summary = curl_result['summary']
     else:
         summary = "Host responds to ping but the REST API did not — check the port/service/firewall for that specific port."
 

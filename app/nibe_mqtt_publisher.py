@@ -331,6 +331,15 @@ class MqttDiscoveryPublisher:
         # or its retained discovery config would linger in HA forever as
         # a ghost/duplicate entity that nothing ever removes.
         self._point_entity_types: dict[int, str] = {}
+        # Hash of the last published static-attributes JSON per point_id.
+        # Independent of _config_hashes: description/intDefaultValue feed
+        # the attributes payload but are NOT part of the hashed discovery
+        # config for most entity types (build_sensor_config/build_number_
+        # config/etc. don't consume them), so gating the attributes
+        # republish on config_hash alone would let a firmware description/
+        # default-value change go unpublished indefinitely whenever nothing
+        # else about the point changed.
+        self._attributes_hashes:  dict[int, str] = {}
 
     # ------------------------------------------------------------------ #
     # Config hash management                                               #
@@ -347,6 +356,7 @@ class MqttDiscoveryPublisher:
         """
         self._config_hashes.pop(point_id, None)
         self._point_entity_types.pop(point_id, None)
+        self._attributes_hashes.pop(point_id, None)
 
     def seed_config_hash_from_retained(self, point_id: int, payload: bytes) -> None:
         """Pre-seed the dedup cache from a retained discovery config found
@@ -439,7 +449,7 @@ class MqttDiscoveryPublisher:
         elif entity_type == "select":
             discovery_config.build_select_config(
                 config, t_state("select", entity_id), t_command("select", entity_id),
-                point_id, metadata, description,
+                point_id, description,
             )
         elif entity_type == "time":
             config["state_topic"]   = t_state("time", entity_id)
@@ -469,8 +479,9 @@ class MqttDiscoveryPublisher:
                 config, t_state("sensor", entity_id), point_id, unit, title, metadata
             )
 
-        self._publish_static_attributes(
-            entity_type, entity_id, point_id, unit, is_writable, description, metadata, config
+        static_attributes = self._publish_static_attributes(
+            entity_type, entity_id, point_id, unit, is_writable, description, metadata, config,
+            publish=False,
         )
 
         config_topic   = t_config(entity_type, entity_id)
@@ -510,6 +521,21 @@ class MqttDiscoveryPublisher:
             self._config_hashes[point_id] = config_hash
             self._point_entity_types[point_id] = entity_type
 
+        # Gated on its own hash, independent of config_hash: description and
+        # intDefaultValue feed this payload but are NOT part of the hashed
+        # discovery config for most entity types, so a firmware description/
+        # default-value change with nothing else different about the point
+        # would never republish if this were still gated on config_hash
+        # alone (see _attributes_hashes' declaration in __init__).
+        if static_attributes is not None:
+            attributes_topic, attributes_json = static_attributes
+            attributes_hash = hashlib.md5(
+                attributes_json.encode(), usedforsecurity=False
+            ).hexdigest()
+            if self._attributes_hashes.get(point_id) != attributes_hash:
+                self.mqtt.publish(attributes_topic, attributes_json, retain=True)
+                self._attributes_hashes[point_id] = attributes_hash
+
         return {
             'point_id':            point_id,
             'entity_id':           entity_id,
@@ -539,16 +565,27 @@ class MqttDiscoveryPublisher:
         description: str,
         metadata: dict,
         config: dict,
-    ) -> None:
+        publish: bool = True,
+    ) -> tuple[str, str] | None:
         """Publish static HA JSON attributes for an entity (once, retained).
 
         Exposes firmware metadata — point ID, Modbus register, default value,
         description, writability — as HA entity attributes.
         Wires ``json_attributes_topic`` into *config* so the discovery payload
-        references the correct topic.  Skipped for button entities.
+        references the correct topic, regardless of *publish*.  Skipped for
+        button entities (returns None).
+
+        *publish* defaults to True (publish immediately, matching every
+        caller's expectation and every existing test of this method). Pass
+        ``publish=False`` to only build the payload and wire ``config``
+        without publishing — the caller then gets back (attributes_topic,
+        attributes_json) to publish itself, conditionally (see
+        publish_entity_discovery, which only republishes this retained topic
+        when the discovery config itself actually changed, rather than
+        rewriting an identical retained payload on every poll cycle).
         """
         if entity_type == 'button':
-            return
+            return None
 
         attributes_topic         = t_attributes(entity_type, entity_id)
         config["json_attributes_topic"] = attributes_topic
@@ -573,7 +610,10 @@ class MqttDiscoveryPublisher:
         if description:
             attributes["description"] = description
 
-        self.mqtt.publish(attributes_topic, json.dumps(attributes), retain=True)
+        attributes_json = json.dumps(attributes)
+        if publish:
+            self.mqtt.publish(attributes_topic, attributes_json, retain=True)
+        return attributes_topic, attributes_json
 
     # ------------------------------------------------------------------ #
     # Frontend metadata                                                    #

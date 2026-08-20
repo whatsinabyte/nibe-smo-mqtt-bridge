@@ -50,6 +50,18 @@ configuration:
       Hvordan styreenheden vises i Home Assistant. Standardværdien er
       "Nibe SMO S40", men du kan ændre dette, så det matcher din
       faktiske hardware (f.eks. "Nibe S1155" eller "Nibe VVM S320").
+  language:
+    name: Sprog
+    description: >-
+      Sprog for entitetsnavne/-beskrivelser, som returneres af styreenhedens
+      REST-API. "auto" (standard) følger det sprog, der er indstillet i Home
+      Assistant selv; vælg et bestemt sprog for at tilsidesætte dette.
+      Denne liste afspejler styreenhedens egen "Language"-menu — kun få
+      poster er direkte bekræftet at virke via selve REST-API'et, men at
+      vælge et sprog, der ikke understøttes, er harmløst: det falder
+      stiltiende tilbage til engelsk, aldrig en fejl. Oversætter ikke
+      Nibe-menuer-dashboardet, som forbliver fast engelsk indhold. En
+      genstart er påkrævet, efter denne indstilling er ændret.
   poll_interval:
     name: Pollingsinterval
     description: >-
@@ -71,11 +83,25 @@ configuration:
       bygger dette dashboard. "all" eksponerer hvert opdaget punkt;
       "none" eksponerer intet, før du aktiverer entiteter manuelt. Dette
       anvendes ved opstart — at ændre det kræver en genstart af
-      tilføjelsen, og at skifte til en anden tilstand deaktiverer
-      entiteter, der ikke er i det nyvalgte sæt — entiteter, du har
-      aktiveret manuelt via Entity Manager-kortet, fjernes også ved
-      tilstandsskift, men bevares ved genstart i samme tilstand.
+      tilføjelsen, og at skifte til en anden tilstand som standard
+      deaktiverer entiteter, der ikke er i det nyvalgte sæt — entiteter,
+      du har aktiveret manuelt via Entity Manager-kortet, fjernes også
+      ved tilstandsskift, men bevares ved genstart i samme tilstand. Se
+      "Adfærd ved tilstandsskift" nedenfor for at ændre dette.
       "essential" er det anbefalede udgangspunkt.
+  mode_switch_behavior:
+    name: Adfærd ved tilstandsskift
+    description: >-
+      Hvad der sker med allerede aktiverede entiteter, når du skifter
+      til en anden tilstand. "replace" (standard) bringer det aktiverede
+      sæt tilbage til nøjagtigt den nye tilstands punkter — alt, der i
+      øjeblikket er aktiveret og ikke er en del af den nye tilstand,
+      inklusive entiteter aktiveret manuelt via Entity Manager-kortet,
+      deaktiveres. "merge" tilføjer kun den nye tilstands punkter til
+      det, der allerede er aktiveret — intet deaktiveres nogensinde af
+      et tilstandsskift. Gælder for hvert tilstandsskift. Har ingen
+      effekt ved en ny installation eller ved genstart i samme
+      tilstand — kun et faktisk tilstandsskift udløser dette.
   log_level:
     name: Logniveau
     description: >-

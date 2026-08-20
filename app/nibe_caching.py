@@ -54,7 +54,15 @@ class ValueCache:
         force: bool = False,
         min_interval: int = 30,
     ) -> bool:
-        """Return True if the value warrants publishing to MQTT."""
+        """Return True if the value warrants publishing to MQTT.
+
+        threshold=0 (the default for any point without explicit firmware
+        'change' metadata) deliberately means "never suppress on value" —
+        every poll republishes once min_interval has elapsed, even with an
+        unchanged value. This matches HA's expectation of continuous history
+        for static sensors and is intentional, not a bug: abs(diff) >= 0 is
+        always true by design here, not an oversight.
+        """
         current_time = time.time()
         with self._lock:
             if force or point_id not in self._cache:

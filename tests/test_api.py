@@ -323,6 +323,26 @@ class TestRequestRetry(unittest.TestCase):
 
         self.assertEqual(len(call_count), 2)  # never more than 2
 
+    def test_http_400_does_not_retry(self):
+        """Regression: a 4xx client error other than 401/403/404 (e.g. a
+        malformed request) will fail identically on retry — retrying it
+        just wastes the jittered delay and doubles load on the device for a
+        response that can never change. Only 5xx (plausibly transient) is
+        worth retrying, per this method's own docstring."""
+        import urllib.error
+        call_count = []
+        def side_effect(*a, **kw):
+            call_count.append(1)
+            raise urllib.error.HTTPError('', 400, 'bad request', None, None)
+
+        with patch('urllib.request.urlopen', side_effect=side_effect), \
+             patch('nibe_api.time.sleep') as mock_sleep:
+            result = self.client.request('https://192.0.2.1:8443/test')
+
+        self.assertIsNone(result)
+        self.assertEqual(len(call_count), 1)
+        mock_sleep.assert_not_called()
+
     # ── Network exception — retries once, then returns None ──────────────────
 
     def test_network_exception_retries_once(self):
@@ -1802,6 +1822,44 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
             self.client.request('https://192.0.2.1:8443/test')
         self.assertTrue(captured)
         self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+
+    def test_no_accept_language_header_when_language_unset(self):
+        """When the client is constructed without a language (the default),
+        no Accept-Language header must be sent — omitting the header, not
+        sending an empty one, is what makes the Nibe API fall back to its
+        default (English) response language."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{}'
+        captured = []
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_response
+        with patch('urllib.request.urlopen', side_effect=capture):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertTrue(captured)
+        self.assertIsNone(captured[0].get_header('Accept-language'))
+
+    def test_accept_language_header_sent_with_configured_language(self):
+        """When the client is constructed with a language, every request
+        must carry a real Accept-Language header with that exact value —
+        this is the only mechanism that makes the Nibe REST API translate
+        its title/description text (confirmed against a live SMO S40:
+        Accept-Language: nl returns Dutch-translated point titles)."""
+        from nibe_api import NibeApiClient
+        client = NibeApiClient(
+            'https://192.0.2.1:8443/api/v1/devices/0', 'Basic dXNlcjpwYXNz',
+            self.client.ssl_context, 'nl',
+        )
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{}'
+        captured = []
+        def capture(req, **kwargs):
+            captured.append(req)
+            return mock_response
+        with patch('urllib.request.urlopen', side_effect=capture):
+            client.request('https://192.0.2.1:8443/test')
+        self.assertTrue(captured)
+        self.assertEqual(captured[0].get_header('Accept-language'), 'nl')
 
 
 class TestWritePointIsWritableDefault(unittest.TestCase):

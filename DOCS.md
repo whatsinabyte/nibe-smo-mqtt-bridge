@@ -98,8 +98,10 @@ These are the only fields you need to get started.
 | `mqtt_username` | MQTT username (leave blank if no authentication) | — |
 | `mqtt_password` | MQTT password (leave blank if no authentication) | — |
 | `device_name` | How the controller appears in HA | `Nibe SMO S40` |
+| `language` | Query language for the Nibe REST API. Dropdown listing every language the SMO S40's own "Language" select entity supports — `nl`, `de`, `sv` are confirmed working against a live controller; the rest are untested but fail safely (an unsupported code silently falls back to English, never an error). `auto` detects Home Assistant's own configured language; any other value overrides auto-detection. Does not translate the "Nibe Menus" Lovelace dashboard, which is static English content. Restart required. | `auto` |
 | `poll_interval` | Fetch interval in seconds. Recommended: `15`, `30`, `60`, `120`, or `300`. Other values are snapped to the nearest. | `30` |
 | `mode` | Which entities the bridge exposes at startup. See [Entity Modes](#entity-modes). | `essential` |
+| `mode_switch_behavior` | What happens to already-enabled entities when you switch to a different `mode`. `replace` reconciles the enabled set to exactly the new mode's points — anything enabled that isn't part of it, including entities you enabled manually via the Entity Manager card, gets disabled. `merge` only ever adds the new mode's points on top of what's already enabled; nothing is ever disabled by a mode change. Applies to every mode switch. No effect on a fresh install or restarting with the same mode. | `replace` |
 | `log_level` | Log verbosity. `debug` also unlocks diagnostic entities on the Management device. Restart required. | `info` |
 | `api_failure_threshold` | Consecutive failed polls before an HA notification appears | `3` |
 | `changelog_retention_days` | Days to retain Entity Manager changelog entries. Minimum 50 entries always kept. | `90` |
@@ -154,7 +156,7 @@ mqtt_user: "my_mqtt_user"
 mqtt_password: "my_mqtt_password"
 ```
 
-The bridge checks `/config/secrets.yaml` and `/homeassistant/secrets.yaml` automatically. Values found here take priority over the app configuration UI.
+The bridge checks `/config/secrets.yaml` and `/homeassistant/secrets.yaml` automatically. This is the lowest-priority source — it only fills in credential fields left blank in the app configuration UI. Any value entered in the UI (options.json) always overrides `secrets.yaml` for that same field.
 
 > ℹ️ Passwords containing special characters including `#` are supported when the value is quoted in `secrets.yaml`.
 
@@ -219,7 +221,7 @@ The bridge only provides current values. If the bridge is stopped for any period
 
 ## Entity Modes
 
-The `mode` option controls which data points are enabled as HA entities at startup. Changing mode requires an app restart — it disables entities not in the new set, including any extras you enabled manually via the Entity Manager card.
+The `mode` option controls which data points are enabled as HA entities at startup. Changing mode requires an app restart — by default it disables entities not in the new set, including any extras you enabled manually via the Entity Manager card. Set `mode_switch_behavior` to `merge` if you'd rather a mode change only ever add entities, never disable any.
 
 | Mode | Description |
 |---|---|
@@ -264,7 +266,7 @@ Entities fall into two categories:
 
 > ⚠️ **Config entities write directly to the controller.** Changes in HA are sent to the controller immediately. If you are exploring unfamiliar registers, observe their current values before writing. The Entity Manager card shows a **Writable** badge on any entity that accepts commands.
 
-> ℹ️ Entity names are always in English — the REST API is English-only. The language setting on the controller affects its own menus, not the HA entity names.
+> ℹ️ **Entity names follow the `language` setting, not the controller's own on-screen language.** Set `language` to translate entity titles/descriptions (see [Configuration](#configuration)); leave it at `auto` (default) or pick `en` for English. Language support comes entirely from the controller's own REST API — this app has no translations of its own. The dropdown lists every language the controller's own "Language" select entity supports (hand-verified against real firmware, since NIBE documents none of this); `nl`, `de`, and `sv` are additionally confirmed working through the REST API's own translation specifically, as of firmware 4.12.8. Any other listed language is untested but fails safely — an unsupported code falls back to English silently, never an error.
 
 ### Dynamic data points
 
@@ -634,9 +636,11 @@ These are design constraints, not bugs. Understanding them helps set the right e
 
 **No write rate limiting** — the bridge does not throttle write commands. Rapidly writing to the same register in an automation loop is technically possible but not recommended — the controller may queue or reject rapid writes.
 
-**Restart required for configuration changes** — changing `nibe_host`, credentials, `poll_interval`, `mode`, or `log_level` requires an app restart. There is no live reconfiguration path.
+**Restart required for configuration changes** — changing `nibe_host`, credentials, `poll_interval`, `mode`, `mode_switch_behavior`, `log_level`, or `language` requires an app restart. There is no live reconfiguration path.
 
-**English entity names only** — the Nibe REST API provides entity names in English regardless of the language setting on the controller itself. Entity names cannot currently be translated.
+**Entity name translation covers the API, not the Lovelace dashboard, and is not guaranteed for every language on the list** — the `language` setting translates entity titles/descriptions as reported by the controller's own REST API (confirmed working via its `Accept-Language` header), independent of whatever display language the controller's own on-screen UI is set to — those are two separate translation layers on Nibe's side. It does **not** translate the "Nibe Menus" Lovelace dashboard: that dashboard's section headings and labels are static content defined in the app itself, not sourced from the API, and remain in English regardless of `language`. The dropdown's options mirror the controller's own hand-verified "Language" select entity, not a REST API capability list NIBE has never published; only `nl`, `de`, and `sv` are confirmed working through the REST API's translation specifically. An unsupported value simply falls back to English with no warning or error, matching the behaviour of `language: auto` when Home Assistant's own language isn't one the controller recognises either. Translation coverage at the individual point level is entirely NIBE's own responsibility, not something dependent on which language you pick or something the bridge's behaviour affects — the bridge only ever forwards whatever text the controller's REST API returns for a given point and language, with no translation logic of its own. In practice this means gaps can occur: a point may return English text under a non-English `language` even while every other point around it translates correctly (observed, for example, on point 24492 under `de`). This is a gap in NIBE's own translation catalog for that specific point under whichever language was requested — it is safe to assume NIBE is responsible for every point's translation in every language, and any point that comes back untranslated is a firmware-side omission the bridge cannot detect or work around. In every one of these cases — an unsupported `language` value, a controller that doesn't recognise the requested language at all, or a single point missing a translation while others succeed — English is always what comes back. This is the controller's own fallback, not a special case the bridge has to implement or detect: whatever isn't translated stays in, or reverts to, English by default.
+
+**Intermittent REST API connection drops on some controllers** — some users have observed the controller stop responding to REST API requests after a period (TCP `SYN` sent, no `SYN,ACK` returned), even though the network path itself is healthy (ARP, cabling, switch port, and firewall rules all check out) and a parallel Modbus TCP connection stays stable throughout. This points to the controller's REST API — a newer, less mature feature than Modbus TCP — having limited tolerance for sustained request load, not a bug in the bridge. If you hit this, check that your controller is on the latest firmware (Nibe has shipped several REST API stability fixes since its introduction in 4.4.7), and consider placing a lightweight reverse proxy between the bridge and the controller's REST API — one user resolved persistent drops this way. See [discussion #2](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/discussions/2) for the full diagnostic trail.
 
 ---
 

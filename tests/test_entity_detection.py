@@ -655,43 +655,41 @@ class TestGetValueMappingProperties(unittest.TestCase):
 class TestGetEntityOptionsProperties(unittest.TestCase):
     """Hypothesis properties for get_entity_options."""
 
-    _meta: ClassVar[dict] = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
-
     @given(_nibe_point_id, st.text(max_size=100))
     def test_never_raises(self, point_id, description):
         from nibe_entity_detection import get_entity_options
-        get_entity_options(point_id, self._meta, description)
+        get_entity_options(point_id, description)
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_always_returns_list(self, point_id, description):
         from nibe_entity_detection import get_entity_options
-        result = get_entity_options(point_id, self._meta, description)
+        result = get_entity_options(point_id, description)
         self.assertIsInstance(result, list)
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_all_elements_are_strings(self, point_id, description):
         from nibe_entity_detection import get_entity_options
-        result = get_entity_options(point_id, self._meta, description)
+        result = get_entity_options(point_id, description)
         for opt in result:
             self.assertIsInstance(opt, str)
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_no_duplicate_options(self, point_id, description):
         from nibe_entity_detection import get_entity_options
-        result = get_entity_options(point_id, self._meta, description)
+        result = get_entity_options(point_id, description)
         self.assertEqual(len(result), len(set(result)))
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_no_empty_string_options(self, point_id, description):
         from nibe_entity_detection import get_entity_options
-        result = get_entity_options(point_id, self._meta, description)
+        result = get_entity_options(point_id, description)
         self.assertNotIn('', result)
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_never_returns_single_option(self, point_id, description):
         """A single option is not a valid select — must have ≥2 or return []."""
         from nibe_entity_detection import get_entity_options
-        result = get_entity_options(point_id, self._meta, description)
+        result = get_entity_options(point_id, description)
         self.assertNotEqual(len(result), 1)
 
 
@@ -2073,6 +2071,31 @@ class TestParseDescriptionMappingEdgeCases(unittest.TestCase):
 
 
 
+class TestValueMappingsTableInvariant(unittest.TestCase):
+    """_lookup_manual_mapping (used by both get_value_mapping and
+    get_entity_options) depends on point_id being unique across every
+    VALUE_MAPPINGS register-type sub-table — if two tables ever defined the
+    same point_id, whichever table iterates first would silently win for
+    both value display and select-entity options, with no error. Enforce
+    that invariant here so a future manual-table edit that violates it
+    fails CI instead of shipping a silent wrong-label bug."""
+
+    def test_no_point_id_appears_in_more_than_one_table(self):
+        from nibe_entity_detection import VALUE_MAPPINGS
+        seen: dict[int, str] = {}
+        collisions = []
+        for table_name, table in VALUE_MAPPINGS.items():
+            for point_id in table:
+                if point_id in seen:
+                    collisions.append((point_id, seen[point_id], table_name))
+                else:
+                    seen[point_id] = table_name
+        self.assertEqual(
+            collisions, [],
+            f"point_id(s) defined in more than one VALUE_MAPPINGS table: {collisions}",
+        )
+
+
 class TestGetValueMappingEdgeCases(unittest.TestCase):
     """get_value_mapping falls back to description when no manual entry."""
 
@@ -2104,40 +2127,30 @@ class TestGetEntityOptionsEdgeCases(unittest.TestCase):
 
     def test_description_with_two_plus_options_returned(self):
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0=Off,1=On,2=Auto')
+        opts = get_entity_options(99999, '0=Off,1=On,2=Auto')
         self.assertGreaterEqual(len(opts), 2)
         self.assertIn('Off', opts)
 
     def test_description_with_only_one_option_returns_empty(self):
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0=Off')
+        opts = get_entity_options(99999, '0=Off')
         self.assertEqual(opts, [])
 
     def test_no_description_no_mapping_returns_empty(self):
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '')
+        opts = get_entity_options(99999, '')
         self.assertEqual(opts, [])
 
     def test_reversed_key_value_label_extracted(self):
         """When value side is int, label is the left side."""
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, 'Off=0,On=1,Auto=2')
+        opts = get_entity_options(99999, 'Off=0,On=1,Auto=2')
         self.assertIn('Off', opts)
         self.assertIn('On', opts)
 
     def test_duplicate_labels_deduplicated(self):
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0=Auto,1=Auto,2=On')
+        opts = get_entity_options(99999, '0=Auto,1=Auto,2=On')
         self.assertEqual(opts.count('Auto'), 1)
 
 
@@ -2148,9 +2161,7 @@ class TestGetOptionsFromDescriptionBranches(unittest.TestCase):
     def test_duplicate_option_not_added_twice(self):
         """509->512: if text is already in options, it is skipped — no duplicates."""
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0=Auto,1=Auto,2=On')
+        opts = get_entity_options(99999, '0=Auto,1=Auto,2=On')
         self.assertEqual(opts.count('Auto'), 1)
         self.assertIn('On', opts)
 
@@ -2158,18 +2169,14 @@ class TestGetOptionsFromDescriptionBranches(unittest.TestCase):
         """509->512: if stripped text is empty, option is not appended."""
         from nibe_entity_detection import get_entity_options
         # '0= ,1=On' — left side is blank after strip
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0= ,1=On')
+        opts = get_entity_options(99999, '0= ,1=On')
         self.assertNotIn('', opts)
         self.assertNotIn(' ', opts)
 
     def test_fewer_than_two_options_returns_empty(self):
         """Only one unique non-empty option → returns [] (< 2 options threshold)."""
         from nibe_entity_detection import get_entity_options
-        opts = get_entity_options(99999, {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'
-        }, '0=On,1=On')
+        opts = get_entity_options(99999, '0=On,1=On')
         self.assertEqual(opts, [])
 
 
@@ -2363,14 +2370,14 @@ class TestEntityDetectionRemainingPaths2(unittest.TestCase):
         from nibe_entity_detection import get_entity_options
         # Mix of valid and invalid parts
         desc = '0=Off, garbage_no_equals, 1=On'
-        opts = get_entity_options(99999, {}, desc)
+        opts = get_entity_options(99999, desc)
         self.assertEqual(opts, ['Off', 'On'])
 
     def test_get_entity_options_skips_parts_without_equals_sign(self):
         """A part with no '=' must be silently skipped (hits the continue on that guard)."""
         from nibe_entity_detection import get_entity_options
         desc = '0=Off, no_equals_here, 1=On'
-        opts = get_entity_options(99999, {}, desc)
+        opts = get_entity_options(99999, desc)
         self.assertEqual(opts, ['Off', 'On'])
 
     def test_get_entity_options_reverse_format_uses_left_as_label(self):
@@ -2378,7 +2385,7 @@ class TestEntityDetectionRemainingPaths2(unittest.TestCase):
         (handles firmware format 'Auto=0, Manual=1')."""
         from nibe_entity_detection import get_entity_options
         desc = 'Auto=0, Manual=1'
-        opts = get_entity_options(99999, {}, desc)
+        opts = get_entity_options(99999, desc)
         self.assertIn('Auto', opts)
         self.assertIn('Manual', opts)
 
@@ -2507,6 +2514,30 @@ class TestEntityDetectionRemainingPaths(unittest.TestCase):
         excluded_id = next(iter(_BINARY_SENSOR_EXCLUSIONS))
         point = {'variableId': excluded_id, 'description': ''}
         result = _is_auto_binary_sensor(point, self._binary_candidate_metadata())
+        self.assertFalse(result)
+
+    def test_point_1760_operating_mode_internal_add_heat_not_binary_sensor(self):
+        """Regression test for GitHub issue #20: point 1760 ('Operating mode
+        internal add. heat') reports a 4-state value (0-3) on real hardware,
+        but the Nibe REST API's own metadata for it is minValue=0, maxValue=0
+        — indistinguishable from the shape used by genuine binary points on
+        the same firmware. Metadata (from a real controller fetch) confirmed
+        via /Volumes/local_apps/nibe-reference-pdfs/all api points.txt."""
+        from nibe_entity_detection import _is_auto_binary_sensor
+
+        metadata = {
+            'variableType': 'integer',
+            'variableSize': 'u8',
+            'unit': '',
+            'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+            'isWritable': False,
+            'divisor': 1,
+            'decimal': 0,
+            'minValue': 0,
+            'maxValue': 0,
+        }
+        point = {'variableId': 1760, 'description': ''}
+        result = _is_auto_binary_sensor(point, metadata)
         self.assertFalse(result)
 
     def test_binary_sensor_value_mapping_more_than_2_states_returns_false(self):
@@ -2769,8 +2800,7 @@ class TestGetEntityOptionsLogicGaps(unittest.TestCase):
         """'=' in description AND ',' in description — both required."""
         from nibe_entity_detection import get_entity_options
         # Has '=' but no ',' — should NOT produce options from description
-        metadata = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER', 'minValue': 0, 'maxValue': 1}
-        result = get_entity_options(99999, metadata, '0=OFF')
+        result = get_entity_options(99999, '0=OFF')
         # No comma → description parsing should not fire, might return None or from VALUE_MAPPINGS
         # Key test: '0=OFF' alone (no comma) must not give options from description
         # (it might give options from VALUE_MAPPINGS if point is known)
@@ -2781,8 +2811,7 @@ class TestGetEntityOptionsLogicGaps(unittest.TestCase):
     def test_description_split_at_first_equals(self):
         """Each part split at first '=' — '0=A=B' gives key=0, value='A=B'."""
         from nibe_entity_detection import get_entity_options
-        metadata = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER', 'minValue': 0, 'maxValue': 1}
-        result = get_entity_options(99999, metadata, '0=A=B,1=C')
+        result = get_entity_options(99999, '0=A=B,1=C')
         if result:
             self.assertIn('A=B', result)
 
@@ -3051,37 +3080,6 @@ class TestIsSwitchCandidateDefaults(unittest.TestCase):
         from nibe_entity_detection import is_switch_candidate
         meta = {**self.BASE}  # no unit key
         self.assertTrue(is_switch_candidate(meta))
-
-
-class TestGetEntityOptionsHoldingCheck(unittest.TestCase):
-    """get_entity_options: 'HOLDING' in modbusRegisterType, not 'holding' in."""
-
-    def test_holding_register_type_detected_correctly(self):
-        """'HOLDING' in 'MODBUS_HOLDING_REGISTER' → register_type='holding'."""
-        from nibe_entity_detection import get_entity_options
-        meta = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                'minValue': 0, 'maxValue': 1}
-        # With 'holding' in (lowercase): 'holding' in 'MODBUS_HOLDING_REGISTER'
-        # → False → register_type='input' (wrong).
-        # With 'HOLDING' in: True → register_type='holding' (correct).
-        # Test by checking a known holding VALUE_MAPPINGS entry exists
-        from nibe_entity_detection import VALUE_MAPPINGS
-        known_holding_id = next(iter(VALUE_MAPPINGS.get('holding', {0: None})), None)
-        if known_holding_id is None:
-            self.skipTest('No holding VALUE_MAPPINGS entries')
-        result = get_entity_options(known_holding_id, meta, '')
-        self.assertIsNotNone(result, "Holding register must find options via VALUE_MAPPINGS")
-
-    def test_input_register_type_detected_correctly(self):
-        """No 'HOLDING' in 'MODBUS_INPUT_REGISTER' → register_type='input'."""
-        from nibe_entity_detection import VALUE_MAPPINGS, get_entity_options
-        meta = {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                'minValue': 0, 'maxValue': 1}
-        known_input_id = next(iter(VALUE_MAPPINGS.get('input', {0: None})), None)
-        if known_input_id is None:
-            self.skipTest('No input VALUE_MAPPINGS entries')
-        result = get_entity_options(known_input_id, meta, '')
-        self.assertIsNotNone(result)
 
 
 # ===========================================================================
@@ -3374,23 +3372,22 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
 
     # ── get_entity_options: register_type selection must pick the right table ─
 
-    def test_get_entity_options_holding_register_uses_holding_table(self):
-        """A HOLDING register must resolve register_type='holding' and read
-        VALUE_MAPPINGS['holding'][3745] (language select) — not 'input'."""
+    def test_get_entity_options_reads_holding_table_entry(self):
+        """VALUE_MAPPINGS['holding'][3745] (language select) must be found —
+        get_entity_options no longer takes a register-type-bearing metadata
+        argument at all — it scans every VALUE_MAPPINGS table via
+        _lookup_manual_mapping, which is exactly what makes this point
+        findable regardless of what caller-supplied metadata would have
+        said (see the sibling get_value_mapping fix this mirrors)."""
         from nibe_entity_detection import get_entity_options
-        options = get_entity_options(
-            3745, {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}, ''
-        )
+        options = get_entity_options(3745, '')
         self.assertEqual(len(options), 25)
         self.assertEqual(options[0], 'English')
 
-    def test_get_entity_options_input_register_uses_input_table(self):
-        """A non-HOLDING register must resolve register_type='input' and read
-        VALUE_MAPPINGS['input'][1758] (priority select) — not 'holding'."""
+    def test_get_entity_options_reads_input_table_entry(self):
+        """VALUE_MAPPINGS['input'][1758] (priority select) must be found."""
         from nibe_entity_detection import get_entity_options
-        options = get_entity_options(
-            1758, {'modbusRegisterType': 'MODBUS_INPUT_REGISTER'}, ''
-        )
+        options = get_entity_options(1758, '')
         self.assertEqual(options, ['Off', 'Hot water', 'Heating', 'Pool', 'Cooling'])
 
     # ── is_switch_candidate: each metadata key must be read under its own name ─

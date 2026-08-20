@@ -1159,6 +1159,54 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
         self.assertIn(pid, entry.dynamic_points_by_value.get(2, []))
         self.assertNotIn(2, entry.unprocessed_values)
 
+    def test_enable_failure_not_recorded_in_dynamic_point_map(self):
+        """Regression: record_outcome used to be called with the raw
+        new_points list, including points whose _enable_entity_locked call
+        failed. Those points are deliberately left out of
+        active_dynamic_points (per the comment at the `continue` above) so
+        a future poll can retry activation — but self.published_configs is
+        unconditionally set to the full current-poll id set every cycle in
+        _fetch_bulk_data, so a point that already appeared once in bulk
+        data can never re-enter new_points on a later poll. If
+        record_outcome still recorded it as 'known' despite the failed
+        enable, dynamic_point_map would believe it's an expected dynamic
+        point HA was never actually told about, with no path left to ever
+        retry — the promised retry would silently never happen. Only
+        successfully-enabled points must be recorded."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9005
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'display_title': 'Ctrl Switch',
+            'entity_type': 'switch', 'metadata': {},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        failing_pid    = 9006
+        succeeding_pid = 9007
+        new_points = [
+            (failing_pid, {'title': 'Fails', 'description': '', 'metadata': {}}),
+            (succeeding_pid, {'title': 'Succeeds', 'description': '', 'metadata': {}}),
+        ]
+
+        real_enable = em._enable_entity_locked
+        def fake_enable(point_id):
+            if point_id == failing_pid:
+                return False
+            return real_enable(point_id)
+
+        with patch.object(em, '_enable_entity_locked', side_effect=fake_enable):
+            em._publish_dynamic_changes(
+                new_points, set(), controlling_point_id=controlling_pid,
+            )
+
+        entry = em.dynamic_point_map.get(controlling_pid)
+        recorded_pids = entry.dynamic_points_by_value.get(1, [])
+        self.assertIn(succeeding_pid, recorded_pids)
+        self.assertNotIn(failing_pid, recorded_pids,
+            "a point whose discovery publish failed must not be recorded "
+            "as a known dynamic point — it was never actually enabled in HA")
+        self.assertNotIn(failing_pid, em.active_dynamic_points)
+
     def test_controlling_raw_defaults_to_one_when_bulk_data_missing(self):
         em = _make_em()
         em.initial_discovery_complete = True
@@ -1246,6 +1294,38 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
         em._publish_dynamic_changes([(pid, point_data)], set())
         kwargs = em._notify.call_args.kwargs
         self.assertNotIn('Triggered by', kwargs['message'])
+
+    def test_added_and_removed_in_same_call_both_appear_in_one_notification(self):
+        """Regression: added and removed both used the same hardcoded
+        notification_id ('nibe_dashboard_updated'). notify_ha() creates-or-
+        REPLACES a persistent notification by that ID, so sending two
+        separate notifications (one for added, one for removed) in the same
+        call — plausible whenever a mode-select point swaps one dynamic set
+        for another in a single poll cycle — silently dropped whichever was
+        sent first. Both must now be combined into one notification."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        added_pid = 8040
+        added_point_data = {
+            'title': 'Newly Added Point', 'description': '', 'metadata': {},
+        }
+        removed_pid = 8041
+        em.all_points_by_id[removed_pid] = {
+            'variableId': removed_pid, 'display_title': 'Newly Removed Point',
+            'entity_type': 'switch', 'entity_category': 'config',
+            'is_dynamic': True, 'is_writable': True,
+            'metadata': {'variableSize': 'u8', 'divisor': 1,
+                         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'},
+            'description': '',
+        }
+        em.active_dynamic_points.add(removed_pid)
+        em._publish_dynamic_changes([(added_pid, added_point_data)], {removed_pid})
+        # Exactly one notification, not two — and it must mention both sides.
+        em._notify.assert_called_once()
+        kwargs = em._notify.call_args.kwargs
+        self.assertEqual(kwargs['notification_id'], 'nibe_dashboard_updated')
+        self.assertIn('Newly Added Point', kwargs['message'])
+        self.assertIn('Newly Removed Point', kwargs['message'])
 
 
 class TestDynamicLearningDetection(unittest.TestCase):
@@ -1426,6 +1506,22 @@ class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
             3, [100, 200, 300],
         )
 
+    def test_active_dynamic_arbitrary_exception_does_not_escape(self):
+        """Regression: on_active_dynamic_message's except clause was
+        narrowed to a fixed list of decode/parse exception types, unlike its
+        sibling on_dynamic_map_message which deliberately catches Exception
+        because both callbacks run on paho's MQTT network thread — any
+        exception that escapes here permanently kills that thread and stops
+        all future MQTT message delivery for the process's life. Simulate an
+        exception type outside the old narrow list (e.g. a bug in
+        active_dynamic_points.update) and confirm it's still swallowed."""
+        em = self._make_em_with_dynamic_loading()
+        em.initial_discovery_complete = False
+        with patch('nibe_entity_manager.log_discovery') as mock_log:
+            mock_log.info.side_effect = RuntimeError("boom")
+            em._on_active_dynamic_message(
+                None, None, self._make_message(json.dumps([1, 2]).encode()))  # must not raise
+
     def test_active_dynamic_failure_logs_the_exception(self):
         """A malformed but non-crashing payload path (e.g. int() raising) must
         log the real exception object, not None or a literal."""
@@ -1574,6 +1670,40 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
              patch.object(em, '_deindex_point'):
             em._reconcile_dynamic_points()
         self.assertNotIn(point_id, em.active_dynamic_points)
+
+    def test_activating_multiple_points_publishes_enabled_state_once(self):
+        """Regression: _reconcile_dynamic_points must suppress
+        publish_enabled_state() for the duration of its enable/disable
+        loops, like apply_mode does — otherwise each individual (real,
+        unmocked) _enable_entity_locked call fires its own
+        publish_enabled_state(), flooding MQTT with N intermediate publishes
+        instead of the single one at the end of this method. Uses the real
+        _enable_entity_locked (only mocking publish_entity_discovery, its
+        actual MQTT-facing dependency) so the internal publish_enabled_state
+        call inside it isn't mocked away, unlike the other tests in this
+        class which mock _enable_entity_locked itself and so can't see this
+        flood."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point_ids = {1001, 1002, 1003}
+        for pid in point_ids:
+            em.bulk_data[pid] = self._bulk_entry(pid)
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(
+            return_value=point_ids
+        )
+        em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
+        em._pub.publish_entity_discovery.side_effect = lambda point, bulk_data: {
+            'point_id': point['variableId'],
+            'entity_type': 'switch',
+            'availability_topic': f"homeassistant/switch/nibe_{point['variableId']}/available",
+            'state_topic': f"homeassistant/switch/nibe_{point['variableId']}/state",
+            'command_topic': None,
+            'entity_id': f"nibe_{point['variableId']}",
+        }
+        with patch.object(em, 'publish_enabled_state') as mock_publish:
+            em._reconcile_dynamic_points()
+        self.assertEqual(point_ids, em.active_dynamic_points)
+        mock_publish.assert_called_once()
 
     def test_stale_persisted_not_in_expected_is_removed(self):
         em = _make_em()

@@ -359,6 +359,19 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(options={'mode': 'all'})
         self.assertEqual(cfg.mode, 'all')
 
+    def test_options_json_sets_mode_switch_behavior(self):
+        cfg = self._load(options={'mode_switch_behavior': 'merge'})
+        self.assertEqual(cfg.mode_switch_behavior, 'merge')
+
+    def test_mode_switch_behavior_defaults_to_replace(self):
+        cfg = self._load()
+        self.assertEqual(cfg.mode_switch_behavior, 'replace')
+
+    def test_invalid_mode_switch_behavior_falls_back_to_replace_with_warning(self):
+        cfg = self._load(options={'mode_switch_behavior': 'bogus'})
+        self.assertEqual(cfg.mode_switch_behavior, 'replace')
+        self.assertTrue(any('mode_switch_behavior' in w for w in cfg.warnings))
+
     def test_options_json_sets_log_level(self):
         cfg = self._load(options={'log_level': 'debug'})
         self.assertEqual(cfg.log_level, 'debug')
@@ -366,6 +379,10 @@ class TestLoadConfig(unittest.TestCase):
     def test_options_json_sets_device_name(self):
         cfg = self._load(options={'device_name': 'My Heat Pump'})
         self.assertEqual(cfg.device_name, 'My Heat Pump')
+
+    def test_options_json_sets_language(self):
+        cfg = self._load(options={'language': 'nl'})
+        self.assertEqual(cfg.language, 'nl')
 
     def test_options_json_sets_api_failure_threshold(self):
         cfg = self._load(options={'api_failure_threshold': 5})
@@ -444,6 +461,10 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(env={'NIBE_DEVICE_NAME': 'Custom Name'})
         self.assertEqual(cfg.device_name, 'Custom Name')
 
+    def test_env_sets_language(self):
+        cfg = self._load(env={'NIBE_LANGUAGE': 'de'})
+        self.assertEqual(cfg.language, 'de')
+
     def test_env_sets_log_level(self):
         cfg = self._load(env={'NIBE_LOG_LEVEL': 'debug'})
         self.assertEqual(cfg.log_level, 'debug')
@@ -451,6 +472,10 @@ class TestLoadConfig(unittest.TestCase):
     def test_env_sets_mode(self):
         cfg = self._load(env={'NIBE_MODE': 'advanced'})
         self.assertEqual(cfg.mode, 'advanced')
+
+    def test_env_sets_mode_switch_behavior(self):
+        cfg = self._load(env={'NIBE_MODE_SWITCH_BEHAVIOR': 'merge'})
+        self.assertEqual(cfg.mode_switch_behavior, 'merge')
 
     def test_env_sets_poll_interval(self):
         cfg = self._load(env={'NIBE_POLL_INTERVAL': '120'})
@@ -644,6 +669,87 @@ class TestLoadConfig(unittest.TestCase):
         self.assertNotIn('myspecialuser',    r)
         self.assertNotIn('mqttspecialuser',  r)
         self.assertIn('***', r)
+
+
+class TestLoadConfigLanguageAutoDetect(unittest.TestCase):
+    """language: an explicit value from any source always wins; only when
+    left blank does load_config() fall back to HA's own configured language
+    via _get_ha_language() — same precedence pattern already used for
+    mqtt_host's Supervisor-based auto-discovery (see run.sh)."""
+
+    def setUp(self):
+        self._env_patcher = patch.dict('os.environ', {}, clear=True)
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+
+    def _load(self, options=None, ha_language=''):
+        import generate_nibe_mqtt as gn
+
+        def fake_exists(path):
+            return path == '/data/options.json' and options is not None
+
+        import io
+        def fake_open(path, *a, **kw):
+            if path == '/data/options.json':
+                return io.StringIO(json.dumps(options))
+            raise FileNotFoundError(path)
+
+        with patch('os.path.exists', side_effect=fake_exists), \
+             patch('builtins.open', side_effect=fake_open), \
+             patch('generate_nibe_mqtt._get_ha_language', return_value=ha_language):
+            return gn.load_config()
+
+    def test_blank_language_auto_detects_from_ha(self):
+        """No explicit language anywhere — the auto-detected HA language is
+        used."""
+        cfg = self._load(options={}, ha_language='sv')
+        self.assertEqual(cfg.language, 'sv')
+
+    def test_explicit_auto_sentinel_auto_detects_from_ha(self):
+        """language: "auto" is config.yaml's actual default value (the
+        dropdown's selected option out of the box) — this is the real path
+        exercised in production, not just an absent/blank value."""
+        cfg = self._load(options={'language': 'auto'}, ha_language='de')
+        self.assertEqual(cfg.language, 'de')
+
+    def test_explicit_options_json_language_wins_over_auto_detect(self):
+        """An explicit language in options.json must not be overridden by
+        HA's auto-detected language, even if they differ."""
+        cfg = self._load(options={'language': 'nl'}, ha_language='de')
+        self.assertEqual(cfg.language, 'nl')
+
+    def test_auto_detect_not_called_when_language_already_set(self):
+        """_get_ha_language() must not even be invoked once an explicit
+        language has already been resolved from an earlier source — the
+        Supervisor call is unnecessary work, and a test asserting only the
+        final value can't tell 'never called' apart from 'called but its
+        result was discarded'."""
+        import generate_nibe_mqtt as gn
+
+        def fake_exists(path):
+            return path == '/data/options.json'
+
+        import io
+        def fake_open(path, *a, **kw):
+            if path == '/data/options.json':
+                return io.StringIO(json.dumps({'language': 'fr'}))
+            raise FileNotFoundError(path)
+
+        with patch('os.path.exists', side_effect=fake_exists), \
+             patch('builtins.open', side_effect=fake_open), \
+             patch('generate_nibe_mqtt._get_ha_language') as mock_detect:
+            cfg = gn.load_config()
+        self.assertEqual(cfg.language, 'fr')
+        mock_detect.assert_not_called()
+
+    def test_ha_auto_detect_returning_empty_leaves_language_blank(self):
+        """When HA itself has no language configured (or the Supervisor call
+        fails), language stays '' — meaning the API's own default
+        (English), not a crash or a placeholder value."""
+        cfg = self._load(options={}, ha_language='')
+        self.assertEqual(cfg.language, '')
 
 
 # ===========================================================================
@@ -1290,6 +1396,30 @@ class TestBuildSslContext(unittest.TestCase):
         from generate_nibe_mqtt import _build_ssl_context
         ctx = _build_ssl_context('/nonexistent/ca.crt')
         self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
+
+    def test_no_ca_cert_widens_cipher_and_version_compatibility(self):
+        """Regression: the self-signed branch must relax the minimum TLS
+        version and cipher security level to stay compatible with the Nibe
+        controller's old embedded TLS stack. verify_mode is already
+        CERT_NONE in this branch, so this doesn't weaken security — it was
+        previously dropped silently and would break connectivity against
+        controllers that can't meet OpenSSL's stricter platform defaults."""
+        from generate_nibe_mqtt import _build_ssl_context
+        ctx = _build_ssl_context(None)
+        self.assertEqual(ctx.minimum_version, ssl.TLSVersion.MINIMUM_SUPPORTED)
+
+    def test_no_ca_cert_sets_compat_cipher_string(self):
+        """set_ciphers() must actually be called with the shared
+        TLS_COMPAT_CIPHERS constant — SSLContext exposes no getter for the
+        cipher string, so this must be verified via the call itself rather
+        than by reading it back off the context, otherwise a future edit
+        that silently drops or breaks the set_ciphers() call would pass
+        the sibling minimum_version-only test above undetected."""
+        from generate_nibe_mqtt import _build_ssl_context
+        from nibe_utils import TLS_COMPAT_CIPHERS
+        with patch('ssl.SSLContext.set_ciphers') as mock_set_ciphers:
+            _build_ssl_context(None)
+        mock_set_ciphers.assert_called_once_with(TLS_COMPAT_CIPHERS)
 
     def test_valid_ca_cert_enables_verification(self):
         import ssl
@@ -2836,8 +2966,10 @@ class TestBuildInfrastructure(unittest.TestCase):
              patch('generate_nibe_mqtt.time.sleep'):
             _build_infrastructure(cfg)
 
-        # NibeApiClient built with the real base_url/auth/ssl_context
-        MockApiClient.assert_called_once_with(cfg.api_base_url, cfg.nibe_auth, mock_ssl_ctx)
+        # NibeApiClient built with the real base_url/auth/ssl_context/language
+        MockApiClient.assert_called_once_with(
+            cfg.api_base_url, cfg.nibe_auth, mock_ssl_ctx, cfg.language
+        )
         # _fetch_api_response called with the constructed api_client
         mock_fetch.assert_called_once_with(MockApiClient.return_value)
 
@@ -3053,6 +3185,7 @@ class TestConfigPropagatesToInfrastructure(unittest.TestCase):
         _, MockApiClient, _, mock_ssl_ctx = self._build_full(cfg)
         MockApiClient.assert_called_once_with(
             'https://10.20.30.40:9443/api/v1/devices/0', cfg.nibe_auth, mock_ssl_ctx,
+            cfg.language,
         )
 
     def test_options_json_nibe_credentials_reach_nibe_api_client_auth(self):
@@ -4453,6 +4586,45 @@ class TestShutdownExecutorTimeout(unittest.TestCase):
         warning_calls = str(mock_log.warning.call_args_list)
         self.assertIn('did not finish', warning_calls)
 
+    def test_executor_drains_share_one_deadline_not_independent_budgets(self):
+        """Regression: the three executor drains (write, management, test
+        suite) must share one _SHUTDOWN_TIMEOUT deadline, not each get their
+        own full budget — three independent timeouts could otherwise sum to
+        ~3x _SHUTDOWN_TIMEOUT if all three are legitimately busy at once,
+        risking a SIGKILL mid-drain from a supervisor whose stop grace
+        period is shorter than that. Each successive t.join() call's
+        timeout must be <= the previous one's (strictly less once real time
+        has elapsed, but with mocked join()s returning instantly, a shared
+        deadline still yields non-increasing — not repeated-full — budgets)."""
+        from generate_nibe_mqtt import _SHUTDOWN_TIMEOUT, _shutdown
+        em = _make_em()
+        mc = MagicMock()
+        join_timeouts = []
+
+        class FakeThread:
+            def __init__(self, target=None, kwargs=None):
+                pass
+            def start(self):
+                pass
+            def join(self, timeout=None):
+                join_timeouts.append(timeout)
+            def is_alive(self):
+                return False
+
+        with patch('generate_nibe_mqtt.threading.Thread', FakeThread), \
+             patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch.dict('os.environ', {}, clear=False), \
+             patch('generate_nibe_mqtt.log_startup'):
+            os.environ.pop('NIBE_REMOVE_FRONTEND', None)
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+
+        self.assertEqual(len(join_timeouts), 3)
+        for t in join_timeouts:
+            self.assertLessEqual(t, _SHUTDOWN_TIMEOUT)
+        # Non-increasing: each subsequent join must not get a fresh full budget.
+        self.assertEqual(join_timeouts, sorted(join_timeouts, reverse=True))
+
 
 # ===========================================================================
 # Branch coverage: targeted gaps from --cov-branch audit
@@ -4689,3 +4861,78 @@ class TestPollLoopFreezeTime(unittest.TestCase):
             any(s == 5 for s in backoff_sleeps),
             f"Expected a 5s backoff (count=1 after reset), got: {backoff_sleeps}",
         )
+
+
+# ===========================================================================
+# config.yaml / translations/*.yaml — key parity
+# ===========================================================================
+
+
+class TestConfigTranslationsParity(unittest.TestCase):
+    """Every config.yaml options field must have a matching entry in every
+    translations/<lang>.yaml — otherwise that field silently shows no
+    name/description in the add-on Configuration UI for users on that
+    language (falls back to the raw field key, e.g. "language" instead of
+    "Sprache"). This guards against exactly the kind of oversight that can
+    happen when a new option is added to config.yaml without remembering
+    the separate translations/ directory that has no schema link to it."""
+
+    @classmethod
+    def setUpClass(cls):
+        import pathlib
+        import yaml as _yaml
+        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        with open(repo_root / 'config.yaml') as f:
+            cls.config_options = set(_yaml.safe_load(f)['options'].keys())
+        cls.translations_dir = repo_root / 'translations'
+        cls.translation_files = sorted(cls.translations_dir.glob('*.yaml'))
+
+    def test_translation_files_exist(self):
+        self.assertTrue(self.translation_files, "no translations/*.yaml files found")
+
+    def test_every_translation_file_covers_every_config_option(self):
+        import yaml as _yaml
+        for path in self.translation_files:
+            with open(path) as f:
+                data = _yaml.safe_load(f)
+            translated_keys = set(data.get('configuration', {}).keys())
+            missing = self.config_options - translated_keys
+            self.assertFalse(
+                missing,
+                f"{path.name} is missing translation entries for: {sorted(missing)}",
+            )
+
+    def test_no_stale_translation_keys_for_removed_options(self):
+        """A translation entry for an option no longer in config.yaml is not
+        a crash, but it is dead content that should be cleaned up — this
+        surfaces it rather than letting it silently accumulate."""
+        import yaml as _yaml
+        for path in self.translation_files:
+            with open(path) as f:
+                data = _yaml.safe_load(f)
+            translated_keys = set(data.get('configuration', {}).keys())
+            stale = translated_keys - self.config_options
+            self.assertFalse(
+                stale,
+                f"{path.name} has translation entries for options no longer "
+                f"in config.yaml: {sorted(stale)}",
+            )
+
+    def test_every_translated_entry_has_name_and_description(self):
+        import yaml as _yaml
+        for path in self.translation_files:
+            with open(path) as f:
+                data = _yaml.safe_load(f)
+            for key, entry in data.get('configuration', {}).items():
+                self.assertIn('name', entry, f"{path.name}: {key} missing 'name'")
+                self.assertIn(
+                    'description', entry, f"{path.name}: {key} missing 'description'"
+                )
+                self.assertTrue(
+                    (entry.get('name') or '').strip(),
+                    f"{path.name}: {key} has an empty 'name'",
+                )
+                self.assertTrue(
+                    (entry.get('description') or '').strip(),
+                    f"{path.name}: {key} has an empty 'description'",
+                )

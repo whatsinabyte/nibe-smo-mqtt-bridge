@@ -49,6 +49,18 @@ configuration:
       Hoe het controller-apparaat in Home Assistant wordt weergegeven.
       Standaard "Nibe SMO S40", maar u kunt dit aanpassen aan uw hardware
       (bijv. "Nibe S1155" of "Nibe VVM S320").
+  language:
+    name: Taal
+    description: >-
+      Taal voor entiteitsnamen/-beschrijvingen die de REST API van de
+      controller teruggeeft. "auto" (standaard) volgt de taal die in Home
+      Assistant zelf is ingesteld; kies een specifieke taal om dit te
+      overschrijven. Deze lijst komt overeen met het "Language"-menu van de
+      controller zelf — slechts enkele opties zijn rechtstreeks bevestigd te
+      werken via de REST API, maar een niet-ondersteunde taal kiezen is
+      onschadelijk: dit valt stilzwijgend terug op Engels, nooit een fout.
+      Vertaalt het Nibe-menusdashboard niet, dat blijft vaste Engelse
+      inhoud. Een herstart is vereist na het wijzigen van deze instelling.
   poll_interval:
     name: Peilinterval
     description: >-
@@ -69,10 +81,25 @@ configuration:
       punt beschikbaar; "none" stelt niets beschikbaar totdat u entiteiten
       handmatig inschakelt. Dit wordt toegepast bij het opstarten — wijzigen
       vereist een herstart van de add-on. Overschakelen naar een andere modus
-      schakelt entiteiten uit die niet in de nieuwe selectie zitten, inclusief
-      entiteiten die u handmatig hebt ingeschakeld via de Entity Manager-kaart
-      — deze blijven wel behouden bij een herstart in dezelfde modus.
+      schakelt standaard entiteiten uit die niet in de nieuwe selectie zitten,
+      inclusief entiteiten die u handmatig hebt ingeschakeld via de Entity
+      Manager-kaart — deze blijven wel behouden bij een herstart in dezelfde
+      modus. Zie "Gedrag bij moduswissel" hieronder om dit te wijzigen.
       "essential" is het aanbevolen startpunt.
+  mode_switch_behavior:
+    name: Gedrag bij moduswissel
+    description: >-
+      Wat er gebeurt met reeds ingeschakelde entiteiten wanneer u naar een
+      andere modus overschakelt. "replace" (standaard) brengt de
+      ingeschakelde set exact terug naar de punten van de nieuwe modus —
+      alles wat momenteel is ingeschakeld en geen deel uitmaakt van de
+      nieuwe modus, inclusief handmatig via de Entity Manager-kaart
+      ingeschakelde entiteiten, wordt uitgeschakeld. "merge" voegt alleen
+      de punten van de nieuwe modus toe aan wat al is ingeschakeld — er
+      wordt nooit iets uitgeschakeld door een moduswissel. Geldt voor
+      elke moduswissel. Heeft geen effect bij een nieuwe installatie of
+      bij herstarten met dezelfde modus — alleen een daadwerkelijke
+      moduswissel activeert dit.
   log_level:
     name: Logniveau
     description: >-

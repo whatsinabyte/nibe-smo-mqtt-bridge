@@ -100,12 +100,33 @@ class NibeApiClient:
         HTTP Authorization header value, e.g. ``"Basic <token>"``.
     ssl_context : ssl.SSLContext
         Pre-built context with hostname verification disabled (self-signed cert).
+    language : str | None
+        Optional BCP-47 language tag (e.g. ``"nl"``, ``"de"``) sent as the
+        ``Accept-Language`` header on every request. The Nibe REST API
+        translates ``title``/``description`` text in its responses when this
+        is set; leaving it unset (the default) gets English, matching prior
+        behaviour. ``variableId`` and all numeric metadata are unaffected by
+        language — only human-readable text changes.
     """
 
-    def __init__(self, base_url: str, auth: str, ssl_context: ssl.SSLContext) -> None:
+    # Class-level default so instances built via NibeApiClient.__new__()
+    # bypassing __init__ (a pattern used by several tests that only set the
+    # specific attributes each test cares about) still see a valid
+    # self.language via normal attribute-lookup fallthrough, instead of
+    # raising AttributeError.
+    language: str | None = None
+
+    def __init__(
+        self,
+        base_url: str,
+        auth: str,
+        ssl_context: ssl.SSLContext,
+        language: str | None = None,
+    ) -> None:
         self.base_url    = base_url
         self.auth        = auth
         self.ssl_context = ssl_context
+        self.language    = language
         # Human-readable reason for the most recent request() failure, or
         # None after a successful request. Read by EntityManager to include
         # an actual diagnostic reason in the "API Unreachable" HA
@@ -140,6 +161,8 @@ class NibeApiClient:
             'Authorization': self.auth,  # pragma: no mutate
             'Accept':        'application/json',  # pragma: no mutate
         }
+        if self.language:
+            headers['Accept-Language'] = self.language
         if data:
             headers['Content-Type'] = 'application/json'
 
@@ -165,11 +188,20 @@ class NibeApiClient:
                     self.last_error = f"HTTP 404 — {url} not found"
                     raise
                 self.last_error = f"HTTP {e.code} from {url}"
+                # Only 5xx is plausibly transient (an overloaded/rebooting
+                # controller) and worth a retry, per this method's own
+                # docstring ("A single automatic retry ... for transient
+                # network errors"). A 4xx other than 401/403/404 (e.g. a
+                # malformed request) will fail identically on retry — retrying
+                # it just wastes the jittered delay and doubles load on the
+                # device for a response that can never change.
+                retryable = e.code >= 500
                 log_api.warning(
                     "HTTP %d from %s — %s",
-                    e.code, url, "giving up" if last_attempt else "retrying with backoff",
+                    e.code, url,
+                    "giving up" if (last_attempt or not retryable) else "retrying with backoff",
                 )  # pragma: no mutate
-                if last_attempt:
+                if last_attempt or not retryable:
                     return None
 
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:

@@ -1,0 +1,173 @@
+configuration:
+  nibe_host:
+    name: IP adresa řídicí jednotky
+    description: >-
+      IP adresa nebo název hostitele vaší řídicí jednotky Nibe řady S ve
+      vaší místní síti. Důrazně se doporučuje přiřadit statickou IP adresu
+      prostřednictvím routeru.
+  nibe_port:
+    name: Port API řídicí jednotky
+    description: >-
+      HTTPS port lokálního REST API řídicí jednotky. Výchozí hodnota 8443
+      je správná pro všechny produkty řady S a obvykle by neměla být
+      nutná změna.
+  nibe_username:
+    name: Uživatelské jméno API řídicí jednotky
+    description: >-
+      Uživatelské jméno nastavené v servisní nabídce řídicí jednotky
+      (nabídka 7.5.15). Musí přesně odpovídat hodnotě nastavené na řídicí
+      jednotce.
+  nibe_password:
+    name: Heslo API řídicí jednotky
+    description: >-
+      Heslo nastavené v servisní nabídce řídicí jednotky (nabídka
+      7.5.15). Rozlišuje velká a malá písmena.
+  mqtt_host:
+    name: Název hostitele MQTT brokeru
+    description: >-
+      Název hostitele nebo IP adresa vašeho MQTT brokeru. Výchozí hodnota
+      "core-mosquitto" funguje s oficiálním doplňkem Mosquitto. Pro
+      jakéhokoli jiného brokera použijte IP adresu nebo název hostitele.
+  mqtt_port:
+    name: Port MQTT brokeru
+    description: >-
+      TCP port vašeho MQTT brokeru. Výchozí hodnota 1883 je standardní
+      nešifrovaný port MQTT. Pokud níže povolíte "MQTT TLS", změňte tuto
+      hodnotu na 8883 (standardní šifrovaný port MQTT používaný
+      Mosquittem).
+  mqtt_username:
+    name: Uživatelské jméno MQTT
+    description: >-
+      Uživatelské jméno pro ověřování u MQTT brokeru. Ponechte prázdné,
+      pokud váš broker nevyžaduje ověřování.
+  mqtt_password:
+    name: Heslo MQTT
+    description: >-
+      Heslo pro ověřování u MQTT brokeru. Ponechte prázdné, pokud váš
+      broker nevyžaduje ověřování.
+  device_name:
+    name: Název zařízení
+    description: >-
+      Jak se zařízení řídicí jednotky zobrazuje v Home Assistant. Výchozí
+      hodnota je "Nibe SMO S40", ale můžete ji upravit podle svého
+      skutečného hardwaru (např. "Nibe S1155" nebo "Nibe VVM S320").
+  language:
+    name: Jazyk
+    description: >-
+      Jazyk názvů/popisů entit vracených REST API řídicí jednotky. "auto"
+      (výchozí) sleduje jazyk nastavený přímo v Home Assistant; vyberte
+      konkrétní jazyk pro jeho přepsání. Tento seznam odpovídá vlastní
+      nabídce "Language" řídicí jednotky — pouze několik položek bylo
+      přímo potvrzeno jako funkčních přes samotné REST API, ale výběr
+      nepodporovaného jazyka je neškodný: systém se tiše vrátí k
+      angličtině, nikdy nezpůsobí chybu. Nepřekládá dashboard Nibe Menus,
+      který zůstává pevně v angličtině. Po změně tohoto nastavení je
+      vyžadován restart.
+  poll_interval:
+    name: Interval dotazování
+    description: >-
+      Jak často se z řídicí jednotky načítají všechny datové body, v
+      sekundách. Doporučuje se 30 sekund. Řídicí jednotka je vestavěné
+      zařízení — její REST API je vedlejší vůči jejímu hlavnímu úkolu
+      řídit vaše tepelné čerpadlo. Po změně tohoto nastavení je vyžadován
+      restart.
+  mode:
+    name: Režim entit
+    description: >-
+      Kterou sadu entit most zpřístupní: "essential" pokrývá základní
+      teploty, stav teplé vody, energetické součty a základní žádané
+      hodnoty — dobrý výchozí bod pro jakoukoli instalaci. "monitoring"
+      přidává přívodní/vratné vedení, stav kompresoru a ukazatele
+      účinnosti. "advanced" přidává celý chladicí okruh a ladicí registry.
+      "menus" zpřístupní každý bod potřebný pro dashboard Nibe Menus a
+      tento dashboard sestaví. "all" zpřístupní každý zjištěný bod; "none"
+      nezpřístupní nic, dokud entity ručně nepovolíte. Toto se použije při
+      spuštění — jeho změna vyžaduje restart doplňku a přepnutí do jiného
+      režimu ve výchozím nastavení zakáže všechny entity, které nejsou v
+      nově vybrané sadě — entity, které jste ručně povolili přes kartu
+      Entity Manager, jsou také odstraněny při změně režimu, ale
+      zachovány při restartech se stejným režimem. Chcete-li to změnit,
+      viz "Chování při přepnutí režimu" níže. "essential" je doporučený
+      výchozí bod.
+  mode_switch_behavior:
+    name: Chování při přepnutí režimu
+    description: >-
+      Co se stane s již povolenými entitami při přepnutí do jiného
+      režimu. "replace" (výchozí) obnoví povolenou sadu přesně na body
+      nového režimu — vše, co je aktuálně povoleno a není součástí
+      nového režimu, včetně entit povolených ručně přes kartu Entity
+      Manager, se zakáže. "merge" pouze přidá body nového režimu k tomu,
+      co je již povoleno — přepnutí režimu nikdy nic nezakáže. Platí pro
+      každé přepnutí režimu. Nemá žádný vliv na novou instalaci ani na
+      restart se stejným režimem — spustí to pouze skutečná změna
+      režimu.
+  log_level:
+    name: Úroveň protokolování
+    description: >-
+      Podrobnost pouze protokolu doplňku — neovlivňuje, které entity jsou
+      zobrazeny. "info" se doporučuje pro běžné použití. Použijte "debug"
+      k diagnostice problémů s připojením nebo entitami — vytváří velký
+      objem výstupu a poté by mělo být přepnuto zpět na "info". Pro
+      zobrazení tlačítka testovací sady a senzoru výsledku určených pouze
+      pro ladění použijte místo toho níže "Ladicí režim".
+  debug_mode:
+    name: Ladicí režim
+    description: >-
+      Povolí tlačítko testovací sady, tlačítko vyprázdnění dynamické mapy
+      a senzor výsledku na správcovském zařízení. Nezávislé na "Úrovni
+      protokolování" výše — toto je jediné nastavení, které řídí, zda jsou
+      tyto entity zobrazeny. Projeví se při příštím restartu doplňku:
+      jeho vypnutí také odstraní entity, nejen zastaví přidávání nových.
+  api_failure_threshold:
+    name: Práh selhání API
+    description: >-
+      Počet po sobě jdoucích neúspěšných dotazů před zobrazením trvalého
+      upozornění ve zvonku oznámení HA. Výchozí hodnota 3 znamená tři
+      selhání po sobě (90 sekund při výchozím intervalu) před
+      upozorněním. Zvyšte tuto hodnotu u nestabilní sítě, abyste se
+      vyhnuli falešným poplachům.
+  changelog_retention_days:
+    name: Doba uchování protokolu změn (dny)
+    description: >-
+      Kolik dní se uchovávají záznamy v protokolu změn Entity Manageru,
+      než jsou odstraněny. Záznamy starší než tato hodnota jsou odstraněny
+      při každém restartu mostu. Výchozí hodnota 90 dní vyhovuje většině
+      instalací.
+  remove_frontend:
+    name: Odebrat frontend při vypnutí
+    description: >-
+      Před zastavením doplňku nastavte na true, aby se při příštím čistém
+      vypnutí automaticky odebral dashboard Nibe Bridge, registrace zdroje
+      Lovelace, soubor karty a všechny uchované MQTT zprávy. Použijte
+      pouze při odinstalaci. Běžné restarty tím nejsou ovlivněny. Úplný
+      postup odinstalace naleznete v dokumentaci.
+  nibe_ca_cert:
+    name: Cesta k CA certifikátu řídicí jednotky Nibe
+    description: >-
+      Volitelné. Absolutní cesta k souboru CA certifikátu ve formátu PEM
+      použitého k ověření HTTPS certifikátu řídicí jednotky Nibe. Je-li
+      nastaveno, povolí se úplné ověření řetězu TLS a názvu hostitele pro
+      všechna volání API na řídicí jednotku. Ponechte prázdné pro přijetí
+      vestavěného samopodepsaného certifikátu řídicí jednotky bez ověření
+      — toto je výchozí chování a je přijatelné v důvěryhodné domácí síti,
+      ale znamená to, že útok typu man-in-the-middle ve vaší LAN by mohl
+      zachytit provoz řídicí jednotky. Příklad: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Povolí šifrování TLS pro veškerý provoz mezi mostem a MQTT brokerem.
+      Chrání vaše přihlašovací údaje MQTT a všechny datové zátěže příkazů
+      entit před čtením jinými zařízeními v místní síti. Vyžaduje, aby byl
+      váš broker nakonfigurován pro TLS — pokud používáte doplněk
+      Mosquitto, změňte "Port MQTT brokeru" na 8883. Ve výchozím stavu
+      zakázáno.
+  mqtt_ca_cert:
+    name: Cesta k CA certifikátu MQTT brokeru
+    description: >-
+      Volitelné. Použije se pouze tehdy, je-li povoleno "MQTT TLS".
+      Absolutní cesta k souboru CA certifikátu ve formátu PEM použitého k
+      ověření TLS certifikátu brokeru. Ponechte prázdné pro použití
+      systémového úložiště CA, což je správné pro brokery s certifikátem
+      podepsaným veřejnou CA. Nastavte toto, pokud váš broker používá
+      samopodepsaný nebo soukromě podepsaný certifikát.
+      Příklad: /ssl/mqtt-ca.pem

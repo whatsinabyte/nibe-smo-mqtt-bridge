@@ -74,6 +74,21 @@ class TestRunCurl(unittest.TestCase):
         self.assertIn('-k', cmd)
         self.assertNotIn('--cacert', cmd)
 
+    def test_no_ca_cert_uses_shared_tls_compat_cipher_constant(self):
+        """Regression: this diagnostic's cipher-compatibility widening must
+        stay in lockstep with _build_ssl_context's (app/generate_nibe_mqtt.py)
+        — both import TLS_COMPAT_CIPHERS from nibe_utils rather than each
+        hardcoding their own literal, so a future change to one can't
+        silently drift from the other and make this diagnostic report a
+        false negative against a controller the real polling connection can
+        actually reach."""
+        from nibe_connectivity_check import _run_curl
+        from nibe_utils import TLS_COMPAT_CIPHERS
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        cmd = mock_run.call_args.args[0]
+        self.assertIn(TLS_COMPAT_CIPHERS, cmd)
+
     def test_ca_cert_path_uses_cacert_flag_not_insecure(self):
         """When a CA cert is configured, the check must verify against it
         (matching what NibeApiClient's own ssl_context actually does) —
@@ -236,6 +251,46 @@ class TestRunConnectivityCheck(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertIn('ICMP may be blocked', result['summary'])
 
+    def test_ping_and_curl_both_fail_but_curl_got_an_http_response_is_not_reported_as_full_outage(self):
+        """Regression: a device that's up and answering HTTP (just with an
+        unexpected/error status, e.g. 500) while ICMP is blocked must not be
+        reported the same way as a genuine network/firewall outage — curl
+        getting *any* http_code means the host was actually reached, even
+        though curl_result['ok'] is False for that status."""
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': False, 'summary': 'ping timed out'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={
+                       'ok': False, 'http_code': 500,
+                       'summary': 'Reachable, but got an unexpected HTTP 500.',
+                   }):
+            result = run_connectivity_check(
+                '192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertFalse(result['ok'])
+        self.assertNotIn('Unreachable', result['summary'])
+        self.assertIn('HTTP 500', result['summary'])
+
+    def test_ping_ok_curl_got_error_status_reports_curl_summary_not_generic_message(self):
+        """Regression: when ping succeeds but curl reaches the host and gets
+        back an error status (e.g. 500), the summary must reflect that the
+        REST API actually responded — not the generic 'did not respond'
+        port/firewall message, which was previously used for both this case
+        and a genuine connection-level curl failure."""
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': True, 'summary': 'x'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={
+                       'ok': False, 'http_code': 500,
+                       'summary': 'Reachable, but got an unexpected HTTP 500.',
+                   }):
+            result = run_connectivity_check(
+                '192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertFalse(result['ok'])
+        self.assertIn('HTTP 500', result['summary'])
+        self.assertNotIn('port/service/firewall', result['summary'])
+
     def test_ping_succeeds_curl_fails_distinct_summary(self):
         """Host is up but the REST API specifically is unreachable — a
         different, more actionable diagnosis than a full network outage."""
@@ -290,6 +345,31 @@ class TestRunConnectivityCheck(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertIn('credentials were rejected', result['summary'])
         self.assertNotIn('network/firewall/VLAN', result['summary'])
+
+    def test_credentials_rejected_and_ping_failed_mentions_both(self):
+        """Regression: when curl gets a 401/403 the summary used to always
+        become curl's own summary verbatim, silently dropping a concurrent
+        ping failure. ICMP-blocked-and-wrong-credentials is a real
+        combination (a strict firewall drops ping while still allowing
+        HTTPS through with an outdated auth header) and both problems must
+        be visible, not just the credentials one."""
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': False, 'summary': 'ping timed out'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={
+                       'ok': False, 'http_code': 401,
+                       'summary': 'Reachable, but credentials were rejected (HTTP 401) '
+                                  '— check nibe_username/nibe_password in add-on options, '
+                                  'or nibe_basic_auth in secrets.yaml.',
+                   }):
+            result = run_connectivity_check(
+                '192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0',
+                auth_header='Basic d3Jvbmc=',
+            )
+        self.assertFalse(result['ok'])
+        self.assertIn('credentials were rejected', result['summary'])
+        self.assertIn('ping', result['summary'].lower())
 
 
 if __name__ == '__main__':

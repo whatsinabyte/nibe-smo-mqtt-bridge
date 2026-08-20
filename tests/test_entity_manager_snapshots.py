@@ -698,6 +698,134 @@ class TestDeleteSnapshot(unittest.TestCase):
         self.assertEqual(cm.output[0], "INFO:nibe.restore:Snapshot 'DelLog' deleted")
 
 
+class TestSnapshotConcurrency(unittest.TestCase):
+    """Regression: save_snapshot/delete_snapshot previously had no locking
+    around their load-modify-save sequence over snapshots.json, and
+    save_snapshot read self.mqtt_enabled_points (a set mutated by
+    _enable_entity_locked/_disable_entity_locked on other threads) without
+    holding _em_lock. mgmt_executor runs commands with multiple worker
+    threads, so two snapshot commands — or a snapshot save racing a
+    concurrent enable/disable — genuinely run concurrently in production.
+    These tests use real threads against the real (locked) implementation
+    to prove the race is closed, not just that the code runs single-
+    threaded without crashing."""
+
+    def setUp(self):
+        self._path = '/tmp/test_snapshots_concurrency.json'
+        import os
+        try:
+            os.remove(self._path)
+        except FileNotFoundError:
+            pass
+
+    def test_concurrent_saves_of_distinct_names_all_persist(self):
+        """N concurrent save_snapshot calls with distinct names must all
+        end up in the file — a lost-update race (each thread loading the
+        same on-disk list before any of them writes back) would silently
+        drop all but the last writer's snapshot."""
+        import threading
+
+        em = _make_em()
+        em.all_points_by_id[1] = {'variableId': 1, 'title': 'P1'}
+        em.mqtt_enabled_points.add(1)
+
+        n = 8   # below _SNAPSHOTS_MAX (10) so the cap doesn't interfere
+        barrier = threading.Barrier(n)
+
+        def save(i):
+            barrier.wait(timeout=5)
+            em.save_snapshot(f'Snap{i}', path=self._path)
+
+        threads = [threading.Thread(target=save, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        snaps = em._load_snapshots(path=self._path)
+        names = {s['name'] for s in snaps}
+        self.assertEqual(names, {f'Snap{i}' for i in range(n)},
+            "a concurrent save_snapshot lost-update race dropped some snapshots")
+
+    def test_concurrent_save_and_delete_leave_consistent_file(self):
+        """A save racing a delete (of a different, pre-existing snapshot)
+        must not corrupt the file or silently undo the delete."""
+        import threading
+
+        em = _make_em()
+        em.all_points_by_id[1] = {'variableId': 1, 'title': 'P1'}
+        em.mqtt_enabled_points.add(1)
+        em.save_snapshot('PreExisting', path=self._path)
+
+        barrier = threading.Barrier(2)
+
+        def do_save():
+            barrier.wait(timeout=5)
+            em.save_snapshot('NewOne', path=self._path)
+
+        def do_delete():
+            barrier.wait(timeout=5)
+            em.delete_snapshot('PreExisting', path=self._path)
+
+        t1 = threading.Thread(target=do_save)
+        t2 = threading.Thread(target=do_delete)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        snaps = em._load_snapshots(path=self._path)
+        names = {s['name'] for s in snaps}
+        self.assertEqual(names, {'NewOne'},
+            "concurrent save+delete must leave exactly the new snapshot, "
+            "with the deleted one gone — not both, and not neither")
+
+    def test_save_snapshot_point_count_matches_point_ids_length_under_concurrent_mutation(self):
+        """Regression: save_snapshot previously read self.mqtt_enabled_points
+        twice, unlocked, to build point_ids and point_count separately — a
+        concurrent enable/disable landing between the two reads could make
+        them disagree. Both must now come from a single _em_lock-held
+        snapshot of the set."""
+        em = _make_em()
+        for pid in range(50):
+            em.all_points_by_id[pid] = {'variableId': pid, 'title': f'P{pid}'}
+            em.mqtt_enabled_points.add(pid)
+
+        ok, _msg = em.save_snapshot('Consistent', path=self._path)
+        self.assertTrue(ok)
+        snaps = em._load_snapshots(path=self._path)
+        snap = snaps[0]
+        self.assertEqual(snap['point_count'], len(snap['point_ids']))
+
+    def test_restore_snapshot_holds_lock_while_reading(self):
+        """Regression: restore_snapshot's initial _load_snapshots call
+        previously ran unlocked — a concurrent save_snapshot/delete_snapshot
+        write (mgmt_executor has multiple workers) could produce a torn/
+        partial JSON read, which _load_snapshots silently turns into [],
+        making restore_snapshot spuriously report 'not found' for a
+        snapshot that genuinely exists on disk. It must now hold
+        _snapshots_lock for the read, same as save/delete hold it for
+        their load-modify-save sequence."""
+        em = _make_em()
+        em.all_points_by_id[1] = {'variableId': 1, 'title': 'P1'}
+        em.mqtt_enabled_points.add(1)
+        em.save_snapshot('Locked', path=self._path)
+
+        lock_held_during_read = []
+        real_load = em._load_snapshots
+        def spying_load(path=None):
+            lock_held_during_read.append(em._snapshots_lock.locked())
+            return real_load(path=path)
+
+        with patch.object(em, '_load_snapshots', side_effect=spying_load):
+            em.restore_snapshot('Locked', path=self._path)
+
+        self.assertTrue(lock_held_during_read,
+            "restore_snapshot must call _load_snapshots")
+        self.assertTrue(all(lock_held_during_read),
+            "_snapshots_lock must be held while restore_snapshot reads the file")
+
+
 class TestPublishSnapshots(unittest.TestCase):
     """publish_snapshots: publishes current file contents to MQTT."""
 

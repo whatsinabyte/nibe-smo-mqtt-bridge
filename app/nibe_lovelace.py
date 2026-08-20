@@ -200,7 +200,6 @@ def _build_menu_view(
     menu:           dict,
     registry_watcher,
     known_dynamic:  set[int] | None = None,
-    absent_dynamic: set[int] | None = None,
     point_defaults: dict[int, str] | None = None,
     dynamic_injection: dict[int, list[tuple[str, str, str, str]]] | None = None,
 ) -> list:
@@ -213,8 +212,9 @@ def _build_menu_view(
     known_dynamic :  Points seen at least once in a bulk fetch on this
                      installation.  A point absent from this set has never
                      appeared — hardware not installed or feature inactive.
-    absent_dynamic : Subset of known_dynamic currently absent from the API
-                     (accessory unplugged / setting deactivated).
+                     Dynamic points are skipped from this view's rows
+                     entirely regardless of active/absent state (below) —
+                     when active they appear via dynamic_injection instead.
     point_defaults : point_id → formatted default string, from
                      _build_point_defaults().  Appended to section-divider
                      labels as "· default: X" where present.
@@ -224,7 +224,6 @@ def _build_menu_view(
                      labelled with a ↳ indent to show the relationship.
     """
     known_dynamic      = known_dynamic      or set()
-    absent_dynamic     = absent_dynamic     or set()
     point_defaults     = point_defaults     or {}
     dynamic_injection  = dynamic_injection  or {}
     cards = []
@@ -305,21 +304,23 @@ def _build_menu_view(
             # Dynamic points: skip entirely regardless of active state.
             # When active they appear via injection below the controlling point.
             # When inactive they should not appear at all.
-            if point_id and point_id in known_dynamic:
+            # is not None, not a truthy check — see _collect_menu_points
+            # for why point_id: 0 must not be treated the same as no point.
+            if point_id is not None and point_id in known_dynamic:
                 continue
 
             # Section divider: label · range · default (where known)
             section_label = label
             if rng:
                 section_label += f"  ·  {rng}"
-            if point_id and point_id in point_defaults:
+            if point_id is not None and point_id in point_defaults:
                 section_label += f"  ·  default: {point_defaults[point_id]}"
             entities_rows.append({
                 "type":  "section",
                 "label": section_label,
             })
 
-            if point_id:
+            if point_id is not None:
                 entity_id = registry_watcher.entity_id_for(point_id)
                 if entity_id:
                     entities_rows.append({"entity": entity_id})
@@ -488,7 +489,6 @@ def _build_menu_dashboard_config(
     menu_structure:    list,
     registry_watcher,
     known_dynamic:     set[int] | None = None,
-    absent_dynamic:    set[int] | None = None,
     point_defaults:    dict[int, str] | None = None,
     dynamic_injection: dict[int, list[tuple[str, str, str, str]]] | None = None,
     debug_mode:        bool = False,
@@ -506,7 +506,6 @@ def _build_menu_dashboard_config(
         cards = _build_menu_view(
             menu, registry_watcher,
             known_dynamic  or set(),
-            absent_dynamic or set(),
             point_defaults or {},
             dynamic_injection or {},
         )
@@ -550,7 +549,11 @@ def _collect_menu_points(menus: list) -> set[int]:
     for m in menus:
         for s in m.get('settings', []):
             pid = s.get('point_id')
-            if pid:
+            # is not None, not a truthy check: the schema's documented
+            # label-only-row sentinel is point_id: null, not point_id: 0 —
+            # a real (if currently unseen) firmware variableId of 0 must
+            # not be silently dropped and treated the same as "no point".
+            if pid is not None:
                 pids.add(pid)
         pids.update(_collect_menu_points(m.get('submenus', [])))
     return pids
@@ -567,7 +570,8 @@ def _build_point_to_menu(menus: list, result: dict | None = None) -> dict:
         title = m.get('title', '')
         for s in m.get('settings', []):
             pid = s.get('point_id')
-            if pid:
+            # is not None, not a truthy check — see _collect_menu_points.
+            if pid is not None:
                 result[pid] = (mid, title)
         _build_point_to_menu(m.get('submenus', []), result)
     return result
@@ -748,17 +752,22 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     _wait_for_registry_stable(registry_watcher, available_menu_points, active_dynamic)
 
     # Build dashboard config
-    # all_points_by_id and bulk_data are mutated unlocked by _fetch_bulk_data
-    # on the poll thread (see the _em_lock caveat in EntityManager.__init__),
-    # so snapshot them here rather than iterating the live dicts on this
-    # provisioning thread — dict() is a single atomic C-level copy under the
-    # GIL, avoiding "dictionary changed size during iteration" / torn reads.
+    # all_points_by_id is mutated under _em_lock by _index_point/_deindex_point
+    # (e.g. from _publish_dynamic_changes when new dynamic points appear), so
+    # taking the lock here does serialize against that writer. But per the
+    # _em_lock caveat in EntityManager.__init__, _fetch_bulk_data also mutates
+    # all_points_by_id and bulk_data directly from the poll thread WITHOUT
+    # acquiring this lock — so the lock is real but partial protection: it
+    # closes the race against _index_point-based writers, not against
+    # _fetch_bulk_data. The pair of snapshots can still be mutually
+    # inconsistent if a poll cycle's unlocked mutation lands between the two
+    # dict() copies below; that residual, bounded staleness is accepted for a
+    # dashboard rebuild rather than a correctness guarantee.
     with entity_manager._em_lock:
         all_points_snapshot = dict(entity_manager.all_points_by_id)
         bulk_data_snapshot  = dict(entity_manager.bulk_data)
 
     known_dynamic      = entity_manager.dynamic_point_map.all_known_dynamic_point_ids()
-    absent_dynamic     = known_dynamic - entity_manager.active_dynamic_points
     point_defaults     = _build_point_defaults(all_points_snapshot)
     dynamic_injection  = _build_dynamic_injection(
         entity_manager.dynamic_point_map,
@@ -768,7 +777,7 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
         point_defaults,
     )
     dashboard_config = _build_menu_dashboard_config(
-        menu_structure, registry_watcher, known_dynamic, absent_dynamic,
+        menu_structure, registry_watcher, known_dynamic,
         point_defaults, dynamic_injection,
         debug_mode       = debug_mode,
         bulk_data        = bulk_data_snapshot,
@@ -1082,12 +1091,21 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
     # logging a system-log error for "URL already in use" on every restart
     # after a container rebuild that wiped the flag file.
     dashboards = _ws_call(ws, next_id(), {"type": "lovelace/dashboards/list"})
-    existing   = next(
-        (d for d in dashboards.get("result", [])
-         if d.get("url_path") == _DASHBOARD_SLUG),
-        None,
-    )
-    if existing is not None:
+    if not _should_attempt_dashboard_create(dashboards, _DASHBOARD_SLUG):
+        if not dashboards.get("success"):
+            # Genuine list failure (e.g. _ws_call returning {} after a dead
+            # WebSocket) — do NOT write the flag file here. Unlike the
+            # "dashboard confirmed to exist" case below, we don't actually
+            # know whether it exists; writing the flag would permanently
+            # skip creation on a fresh install if this happened to fail on
+            # the very first startup. Leave flag_file absent so this is
+            # retried on the next restart, matching the menu dashboard
+            # path's equivalent branch.
+            log_startup.warning(
+                "lovelace/dashboards/list call failed — will retry creating "
+                "the Nibe Bridge dashboard on next restart."
+            )
+            return
         log_startup.info(
             "Nibe Bridge dashboard already exists (/%s) — writing flag to skip future attempts",
             _DASHBOARD_SLUG,

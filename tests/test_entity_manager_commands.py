@@ -134,6 +134,26 @@ class TestParseCommandPayload(unittest.TestCase):
                       point_data={'description': '0 = Off, 1 = Active'})
         self.assertIsNone(self.em._parse_command_payload("Unknown", ei, "t"))
 
+    def test_select_mapped_raw_int_payload_falls_back_to_key(self):
+        """A payload that doesn't match any label text (e.g. HA's published
+        options were built from a description mapping in a different query
+        language than the mapping currently in hand) must still succeed if
+        the payload is itself one of the mapping's raw integer keys, rather
+        than being dropped as an 'Invalid select option'."""
+        ei = self._ei('select', point_id=1001,
+                      metadata={'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'},
+                      point_data={'description': '0 = Off, 1 = Active'})
+        self.assertEqual(self.em._parse_command_payload("1", ei, "t"), 1)
+
+    def test_select_mapped_raw_int_payload_not_a_key_returns_none(self):
+        """A numeric payload that is NOT one of the mapping's known keys
+        must still be rejected — the raw-int fallback is not a blanket
+        acceptance of any integer, only ones the mapping actually defines."""
+        ei = self._ei('select', point_id=1001,
+                      metadata={'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'},
+                      point_data={'description': '0 = Off, 1 = Active'})
+        self.assertIsNone(self.em._parse_command_payload("99", ei, "t"))
+
     def test_select_uses_manual_value_mapping_keyed_by_register_type(self):
         """register_type must be correctly computed and passed through to
         get_value_mapping — point 1758 has a manual VALUE_MAPPINGS entry

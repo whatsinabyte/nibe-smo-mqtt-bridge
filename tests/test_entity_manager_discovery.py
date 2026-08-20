@@ -728,6 +728,38 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em.restore_from_mqtt()
         self.assertIn(100, em.active_entities_by_id)
 
+    def test_restore_populates_stats_type_counts(self):
+        """Regression: restore_from_mqtt is a separate code path from
+        _enable_entity_locked and previously never touched
+        _stats_type_counts/_stats_category_counts/_stats_writable_count —
+        those are read directly by nibe_ha_integration.py's _publish_stats
+        to populate the nibe_entity_stats HA sensor. Without this, every
+        bridge restart (the normal path: scan_mqtt_discovery + restore_
+        from_mqtt re-populating from retained configs) reset that sensor's
+        per-type/category/writable counts to ~0, even though the entities
+        themselves were correctly restored."""
+        em = self._make_em_with_points([100])
+        em.mqtt_enabled_points.add(100)
+        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
+        em.restore_from_mqtt()
+        self.assertEqual(em._stats_type_counts.get('sensor'), 1)
+        self.assertEqual(em._stats_category_counts.get('diagnostic'), 1)
+
+    def test_restore_increments_writable_count_for_writable_points(self):
+        em = self._make_em_with_points([100])
+        em.all_points_by_id[100]['is_writable'] = True
+        em.mqtt_enabled_points.add(100)
+        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
+        em.restore_from_mqtt()
+        self.assertEqual(em._stats_writable_count, 1)
+
+    def test_restore_does_not_increment_writable_count_for_read_only_points(self):
+        em = self._make_em_with_points([100])
+        em.mqtt_enabled_points.add(100)
+        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
+        em.restore_from_mqtt()
+        self.assertEqual(em._stats_writable_count, 0)
+
     def test_command_topic_subscribed_when_writable(self):
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
@@ -901,13 +933,20 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
         )
         return pub, mqtt
 
-    def _retained_bytes_from_publish_call(self, mqtt_mock):
+    def _retained_bytes_from_publish_call(self, mqtt_mock, topic):
         """The real retained bytes a broker would redeliver are whatever
-        was actually published, re-encoded as MQTT payloads always are —
-        publish_entity_discovery() publishes a str, but the broker stores
-        and redelivers bytes, so this must match how publish_entity_
-        discovery() itself computes its hash (over the same str.encode())."""
-        payload = mqtt_mock.publish.call_args.args[1]
+        was actually published to *topic*, re-encoded as MQTT payloads
+        always are — publish_entity_discovery() publishes a str, but the
+        broker stores and redelivers bytes, so this must match how
+        publish_entity_discovery() itself computes its hash (over the same
+        str.encode()). Looked up by topic rather than "the last publish
+        call" — publish_entity_discovery() also publishes a static
+        attributes payload to a different topic in the same call, and which
+        of the two is published last is an implementation detail, not
+        something this test should depend on."""
+        matching = [c for c in mqtt_mock.publish.call_args_list if c.args[0] == topic]
+        self.assertEqual(len(matching), 1, f"expected exactly one publish to {topic}")
+        payload = matching[0].args[1]
         return payload.encode('utf-8') if isinstance(payload, str) else payload
 
     def _restart_and_restore(self, retained_payload, live_point):
@@ -947,11 +986,12 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
         return real_pub_mqtt
 
     def test_unchanged_config_is_not_republished_across_simulated_restart(self):
+        from nibe_mqtt_publisher import t_config
         point = self._point()
         writer_pub, writer_mqtt = self._real_publisher()
         writer_pub.publish_entity_discovery(point, bulk_data={})
-        config_topic     = writer_mqtt.publish.call_args.args[0]
-        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt)
+        config_topic     = t_config('sensor', 'nibe_100')
+        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt, config_topic)
 
         real_pub_mqtt = self._restart_and_restore(retained_payload, point)
         config_calls = [c for c in real_pub_mqtt.publish.call_args_list
@@ -963,11 +1003,12 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
     def test_changed_config_is_still_republished_across_simulated_restart(self):
         """The fix must not accidentally suppress a genuine change — only
         a byte-identical config may be skipped."""
+        from nibe_mqtt_publisher import t_config
         point = self._point()
         writer_pub, writer_mqtt = self._real_publisher()
         writer_pub.publish_entity_discovery(point, bulk_data={})
-        config_topic     = writer_mqtt.publish.call_args.args[0]
-        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt)
+        config_topic     = t_config('sensor', 'nibe_100')
+        retained_payload = self._retained_bytes_from_publish_call(writer_mqtt, config_topic)
 
         changed_point = self._point(title='Changed Title')
 
@@ -1113,6 +1154,24 @@ class TestHandleApiFailure(unittest.TestCase):
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
         self.assertIn("Last error: timed out waiting for a response.", call_kwargs['message'])
+
+    def test_explicit_last_error_argument_wins_over_api_attribute(self):
+        """Regression: self._api is shared with the write-command executor
+        thread, which can overwrite self._api.last_error between when the
+        poll thread's own request failed and whenever _handle_api_failure
+        happens to run. _fetch_bulk_data now captures last_error immediately
+        in its except block and passes it explicitly — that captured value
+        must be used, not a fresh (and possibly unrelated) read of
+        self._api.last_error."""
+        em = _make_em()
+        em._api.last_error = "unrelated write-thread error set later"
+        em.api_consecutive_failures = 2
+        em.api_failure_threshold = 3
+        em._handle_api_failure("the actual poll failure, captured at the time")
+        call_kwargs = em._notify.call_args.kwargs
+        self.assertIn("Last error: the actual poll failure, captured at the time.",
+                       call_kwargs['message'])
+        self.assertNotIn("unrelated write-thread error", call_kwargs['message'])
 
     def test_notification_points_to_test_connection_button(self):
         """The ongoing API-unreachable notification must also point at the
