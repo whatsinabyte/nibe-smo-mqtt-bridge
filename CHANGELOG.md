@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.7] — 2026-08-20
+
+### Fixed
+- `NibeApiClient` had no coordination between the poll thread, the write
+  executor, and the management executor — all three could send requests to
+  the controller at genuinely the same time, with nothing preventing it. A
+  community report (GitHub discussion #2) traced intermittent connection
+  drops to overlapping request load on the controller's embedded TCP stack,
+  and found that a request-serializing reverse proxy resolved it. `request()`
+  now holds a lock for the full duration of each logical request (including
+  any retry backoff), guaranteeing at most one request is ever in flight
+  against the controller at a time — the same effect that reverse proxy was
+  providing, built into the client itself.
+
+---
+
 ## [1.0.6] — 2026-08-20
 
 ### Added

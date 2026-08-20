@@ -1,5 +1,5 @@
 name: "Nibe S-Series MQTT Bridge"
-version: "1.0.6"
+version: "1.0.7"
 slug: "nibe_s_series"
 # Prebuilt multi-arch images (built by .github/workflows/publish-image.yml)
 # are not yet published — while still under active local development,

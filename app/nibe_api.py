@@ -31,6 +31,7 @@ import json
 import logging
 import random
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -116,6 +117,12 @@ class NibeApiClient:
     # raising AttributeError.
     language: str | None = None
 
+    # Same reasoning: a class-level default lock so __new__()-constructed
+    # test instances that never set self._lock still serialize correctly
+    # rather than raising AttributeError. A real instance's own __init__
+    # gives it its own lock (see below) — this default is only a fallback.
+    _lock: threading.Lock = threading.Lock()
+
     def __init__(
         self,
         base_url: str,
@@ -127,6 +134,10 @@ class NibeApiClient:
         self.auth        = auth
         self.ssl_context = ssl_context
         self.language    = language
+        # One lock per real instance — see request()'s docstring for why
+        # this exists. The class-level default above is only a fallback for
+        # test doubles built via __new__() that bypass this constructor.
+        self._lock       = threading.Lock()
         # Human-readable reason for the most recent request() failure, or
         # None after a successful request. Read by EntityManager to include
         # an actual diagnostic reason in the "API Unreachable" HA
@@ -156,6 +167,17 @@ class NibeApiClient:
 
         A single automatic retry is attempted after a jittered delay for
         transient network errors.  Auth errors and 404s are never retried.
+
+        Serialized via self._lock: the poll thread, the write executor, and
+        the management executor all share this one client and can call this
+        method concurrently with no coordination otherwise. The controller
+        is a single embedded device that has been observed (via community
+        reports — see GitHub discussion #2) to stop responding under
+        overlapping request load; holding one lock for the full duration of
+        a logical request (including any retry backoff) — not just the
+        socket I/O — guarantees at most one request is in flight against the
+        device at a time, the same effect a serializing reverse proxy in
+        front of the controller was independently found to provide.
         """
         headers = {
             'Authorization': self.auth,  # pragma: no mutate
@@ -169,64 +191,65 @@ class NibeApiClient:
         body = data.encode() if isinstance(data, str) else data
         req  = urllib.request.Request(url, data=body, headers=headers, method=method)
 
-        for attempt in range(2):   # attempt 0 = first try, attempt 1 = single retry
-            last_attempt = (attempt == 1)
-            try:
-                response = urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
-                self.last_error = None
-                return json.loads(response.read().decode())
+        with self._lock:
+            for attempt in range(2):   # attempt 0 = first try, attempt 1 = single retry
+                last_attempt = (attempt == 1)
+                try:
+                    response = urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
+                    self.last_error = None
+                    return json.loads(response.read().decode())
 
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    self.last_error = f"HTTP {e.code} — authentication rejected, check credentials"
-                    log_api.error(
-                        "API authentication failed (HTTP %d) for %s — check credentials",
+                except urllib.error.HTTPError as e:
+                    if e.code in (401, 403):
+                        self.last_error = f"HTTP {e.code} — authentication rejected, check credentials"
+                        log_api.error(
+                            "API authentication failed (HTTP %d) for %s — check credentials",
+                            e.code, url,
+                        )  # pragma: no mutate
+                        raise
+                    if e.code == 404:
+                        self.last_error = f"HTTP 404 — {url} not found"
+                        raise
+                    self.last_error = f"HTTP {e.code} from {url}"
+                    # Only 5xx is plausibly transient (an overloaded/rebooting
+                    # controller) and worth a retry, per this method's own
+                    # docstring ("A single automatic retry ... for transient
+                    # network errors"). A 4xx other than 401/403/404 (e.g. a
+                    # malformed request) will fail identically on retry — retrying
+                    # it just wastes the jittered delay and doubles load on the
+                    # device for a response that can never change.
+                    retryable = e.code >= 500
+                    log_api.warning(
+                        "HTTP %d from %s — %s",
                         e.code, url,
+                        "giving up" if (last_attempt or not retryable) else "retrying with backoff",
                     )  # pragma: no mutate
-                    raise
-                if e.code == 404:
-                    self.last_error = f"HTTP 404 — {url} not found"
-                    raise
-                self.last_error = f"HTTP {e.code} from {url}"
-                # Only 5xx is plausibly transient (an overloaded/rebooting
-                # controller) and worth a retry, per this method's own
-                # docstring ("A single automatic retry ... for transient
-                # network errors"). A 4xx other than 401/403/404 (e.g. a
-                # malformed request) will fail identically on retry — retrying
-                # it just wastes the jittered delay and doubles load on the
-                # device for a response that can never change.
-                retryable = e.code >= 500
-                log_api.warning(
-                    "HTTP %d from %s — %s",
-                    e.code, url,
-                    "giving up" if (last_attempt or not retryable) else "retrying with backoff",
-                )  # pragma: no mutate
-                if last_attempt or not retryable:
+                    if last_attempt or not retryable:
+                        return None
+
+                except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                    self.last_error = _describe_network_error(e)
+                    log_api.warning(
+                        "Request to %s failed: %s — %s",
+                        url, self.last_error, "giving up" if last_attempt else "retrying with backoff",
+                    )  # pragma: no mutate
+                    if last_attempt:
+                        return None
+
+                except Exception as e:
+                    self.last_error = _describe_network_error(e)
+                    log_api.exception(
+                        "Unexpected error in request to %s — this is likely a bug",
+                        url,
+                    )  # pragma: no mutate
                     return None
 
-            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
-                self.last_error = _describe_network_error(e)
-                log_api.warning(
-                    "Request to %s failed: %s — %s",
-                    url, self.last_error, "giving up" if last_attempt else "retrying with backoff",
-                )  # pragma: no mutate
-                if last_attempt:
-                    return None
+                # Transient failure on first attempt — sleep before retry
+                delay = _retry_delay()
+                log_api.debug("Retry delay: %.2fs", delay)  # pragma: no mutate
+                time.sleep(delay)
 
-            except Exception as e:
-                self.last_error = _describe_network_error(e)
-                log_api.exception(
-                    "Unexpected error in request to %s — this is likely a bug",
-                    url,
-                )  # pragma: no mutate
-                return None
-
-            # Transient failure on first attempt — sleep before retry
-            delay = _retry_delay()
-            log_api.debug("Retry delay: %.2fs", delay)  # pragma: no mutate
-            time.sleep(delay)
-
-        return None  # pragma: no cover — unreachable; satisfies type checkers
+            return None  # pragma: no cover — unreachable; satisfies type checkers
 
 
     # ------------------------------------------------------------------ #

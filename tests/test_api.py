@@ -2828,3 +2828,64 @@ class TestNibeApiClientInit(unittest.TestCase):
         self.assertEqual(client.base_url, 'https://192.0.2.9:8443/api/v1/devices/0')
         self.assertEqual(client.auth, 'Basic dGVzdC1hdXRoLXZhbHVl')
         self.assertIs(client.ssl_context, ctx)
+
+    def test_init_gives_each_instance_its_own_lock(self):
+        """Two real instances must not share the class-level fallback lock —
+        each __init__ call must create a fresh threading.Lock, or requests
+        against two independent client instances would serialize against
+        each other for no reason."""
+        import ssl
+
+        from nibe_api import NibeApiClient
+        ctx = ssl.create_default_context()
+        client_a = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0', 'Basic a', ctx)
+        client_b = NibeApiClient('https://192.0.2.10:8443/api/v1/devices/0', 'Basic b', ctx)
+        self.assertIsNot(client_a._lock, client_b._lock)
+
+
+class TestRequestConcurrencyLock(unittest.TestCase):
+    """request() must serialize concurrent calls from different threads —
+    added after a GitHub user (discussion #2) found their Nibe controller
+    would stop responding under overlapping request load, and confirmed a
+    request-serializing reverse proxy fixed it. This holds one lock for the
+    full duration of a logical request so at most one is ever in flight
+    against the device, replicating that same effect without a proxy."""
+
+    def test_concurrent_calls_never_overlap(self):
+        import ssl
+        import threading
+        import time as time_module
+
+        from nibe_api import NibeApiClient
+        ctx = ssl.create_default_context()
+        client = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0', 'Basic x', ctx)
+
+        overlap_detected = []
+        in_flight = []
+        in_flight_lock = threading.Lock()
+
+        def slow_urlopen(req, context=None, timeout=None):
+            with in_flight_lock:
+                if in_flight:
+                    overlap_detected.append(True)
+                in_flight.append(1)
+            time_module.sleep(0.05)
+            with in_flight_lock:
+                in_flight.pop()
+            resp = MagicMock()
+            resp.read.return_value = b'{}'
+            return resp
+
+        threads = []
+        with patch('urllib.request.urlopen', side_effect=slow_urlopen):
+            for _ in range(5):
+                t = threading.Thread(target=client.request, args=('https://192.0.2.9:8443/test',))
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+        self.assertEqual(
+            overlap_detected, [],
+            "two request() calls executed their HTTP I/O concurrently — the lock did not serialize them",
+        )
