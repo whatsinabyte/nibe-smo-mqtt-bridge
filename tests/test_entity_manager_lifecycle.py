@@ -192,6 +192,44 @@ class TestEnableDisableEntity(unittest.TestCase):
         with self.em._active_entities_lock:
             self.assertNotIn(self.point_id, self.em.active_entities_by_id)
 
+    def test_disable_removes_active_dynamic_point_and_persists(self):
+        """Regression: manually disabling an active dynamic entity (e.g. via
+        the Entity Manager card) must remove it from active_dynamic_points
+        and persist that, not just leave it there. active_dynamic_points is
+        meant to be "firmware-state-driven, not mode-driven" per apply_mode's
+        docstring — apply_mode deliberately protects active dynamic points
+        from being disabled by a mode change — but a MANUAL disable is
+        explicit user intent, not a mode change, and must override that
+        firmware-driven bookkeeping. Without this, _reconcile_dynamic_points()
+        silently re-enables the point on the next restart (its controlling
+        switch hasn't changed, so it's still "expected active"), undoing the
+        user's explicit choice with no indication why."""
+        self.em.enable_entity(self.point_id)
+        self.em.active_dynamic_points.add(self.point_id)
+        self.em.disable_entity(self.point_id)
+        self.assertNotIn(self.point_id, self.em.active_dynamic_points)
+        # Must be persisted (retained MQTT publish), not just an in-memory
+        # change that's lost on the very restart this exists to survive.
+        from nibe_mqtt_publisher import BrowserTopic
+        persist_calls = [
+            c for c in self.em.mqtt.publish.call_args_list
+            if c.args[0] == BrowserTopic.ACTIVE_DYNAMIC
+        ]
+        self.assertTrue(persist_calls, "active_dynamic_points removal must be persisted")
+
+    def test_disable_non_dynamic_point_does_not_touch_active_dynamic_points(self):
+        """A disable for a point that was never in active_dynamic_points
+        must not publish a spurious ACTIVE_DYNAMIC persist — only an actual
+        removal should trigger it."""
+        self.em.enable_entity(self.point_id)
+        self.em.disable_entity(self.point_id)
+        from nibe_mqtt_publisher import BrowserTopic
+        persist_calls = [
+            c for c in self.em.mqtt.publish.call_args_list
+            if c.args[0] == BrowserTopic.ACTIVE_DYNAMIC
+        ]
+        self.assertFalse(persist_calls)
+
     def test_disable_clears_last_state(self):
         self.em.enable_entity(self.point_id)
         self.em.last_states[self.point_id] = "11.9"
@@ -1614,6 +1652,37 @@ class TestApplyMode(unittest.TestCase):
         with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
             em.apply_mode('essential')
         self.assertEqual(em.mqtt_enabled_points, {1, 2})
+
+    def test_mode_switch_behavior_replace_is_the_default(self):
+        """mode_switch_behavior defaults to 'replace' on a freshly
+        constructed EntityManager — generate_nibe_mqtt.py only overrides
+        this post-construction if cfg.mode_switch_behavior differs, so the
+        default itself must already be the safe, existing prune behaviour."""
+        em = _make_em()
+        self.assertEqual(em.mode_switch_behavior, 'replace')
+
+    def test_mode_switch_behavior_merge_does_not_disable_anything(self):
+        """With mode_switch_behavior='merge', points enabled under a
+        previous mode must survive a mode change even though they are not
+        part of the new mode's set — only 'replace' (the default) prunes."""
+        em = _make_em()
+        em.all_points_by_id = self._all_points([1, 2, 3, 4])
+        em.mqtt_enabled_points = {3, 4}
+        em.mode_switch_behavior = 'merge'
+        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
+            em.apply_mode('essential')
+        self.assertEqual(em.mqtt_enabled_points, {1, 2, 3, 4})
+
+    def test_mode_switch_behavior_merge_still_enables_new_points(self):
+        """'merge' must still enable the new mode's points — it only skips
+        the disable side, it isn't a no-op."""
+        em = _make_em()
+        em.all_points_by_id = self._all_points([1, 2, 3])
+        em.mqtt_enabled_points = {3}
+        em.mode_switch_behavior = 'merge'
+        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
+            em.apply_mode('essential')
+        self.assertEqual(em.mqtt_enabled_points, {1, 2, 3})
 
     def test_active_dynamic_points_protected_from_disable(self):
         """A mode change must never disable a currently-active dynamic

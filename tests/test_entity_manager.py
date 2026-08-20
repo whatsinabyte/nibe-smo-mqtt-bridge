@@ -881,16 +881,6 @@ class TestBuildMenuViewProperties(unittest.TestCase):
         self.assertEqual(result_none, result_empty)
 
     @given(_menu_strategy)
-    def test_none_absent_dynamic_defaults_safely(self, menu):
-        """absent_dynamic=None must be handled identically to empty set."""
-        from nibe_lovelace import _build_menu_view
-        rw = MagicMock()
-        rw.entity_id_for.return_value = None
-        result_none  = _build_menu_view(menu, rw, absent_dynamic=None)
-        result_empty = _build_menu_view(menu, rw, absent_dynamic=set())
-        self.assertEqual(result_none, result_empty)
-
-    @given(_menu_strategy)
     def test_none_point_defaults_defaults_safely(self, menu):
         """point_defaults=None must be handled identically to empty dict."""
         from nibe_lovelace import _build_menu_view

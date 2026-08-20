@@ -95,13 +95,20 @@ log_history   = logging.getLogger("nibe.history")
 _CMD_ID_LENGTH          = 8     # hex chars in a correlation ID (uuid4 prefix)
 _TEXT_REGISTER_MAX_LEN  = 64    # max chars for a Nibe string register
 
-# Pending-write staleness: entries older than this are treated as timed-out
-_STALE_WRITE_AGE_S      = 60    # seconds
-
 # Post-write dynamic-point scan window
 _POST_WRITE_SCAN_S      = 90    # seconds to keep accelerated bulk polling
                                 # Nibe firmware has ~60s internal cache refresh
                                 # cycle; 90s gives comfortable margin.
+
+# Pending-write staleness: entries older than this are treated as timed-out.
+# Must exceed _POST_WRITE_SCAN_S — the write executor is single-worker
+# (deliberately, to serialize writes), so a write queued behind another
+# write's in-progress _POST_WRITE_SCAN_S-long learning-detection scan can
+# legitimately still be pending that long without anything actually being
+# stuck. A threshold shorter than the scan window would evict a perfectly
+# healthy queued write and log a misleading "write executor may be stuck"
+# warning during expected serialization.
+_STALE_WRITE_AGE_S      = _POST_WRITE_SCAN_S + 10   # seconds
 
 # Changelog
 _CHANGELOG_MAX_ENTRIES  = 500   # hard deque cap; time-based prune also runs
@@ -298,6 +305,13 @@ class EntityManager:
         # ── Enabled-state tracking ────────────────────────────────────────────
         self.mqtt_enabled_points: set[int] = set()
 
+        # Set post-construction from cfg.mode_switch_behavior, same pattern as
+        # api_failure_threshold/changelog_retention_days below. "replace"
+        # (default) is apply_mode()'s original prune-to-exact-set behaviour;
+        # "merge" only ever adds the new mode's points, never disables
+        # anything already enabled — see apply_mode() for the actual branch.
+        self.mode_switch_behavior: str = "replace"
+
         # ── Dynamic point tracking ────────────────────────────────────────────
         # DynamicPointMap replaces the former flat known_dynamic_points set.
         # It records, for every writable switch/select, which values cause
@@ -387,6 +401,13 @@ class EntityManager:
         # next poll refreshes from the API.
         self.device_modes_cache: dict[str, str] = {}
         self.device_modes_dirty: bool = True
+        # Incremented under _em_lock every time a write handler sets
+        # device_modes_dirty = True. _publish_device_modes captures this
+        # before its unlocked fetch_device_info() call and compares it
+        # after — if a write landed while the fetch was in flight, the
+        # fetched response may predate that write, so it must not be
+        # allowed to clear the dirty flag a concurrent writer just set.
+        self.device_modes_write_seq: int = 0
 
         # ── Notification flags ────────────────────────────────────────────────
         self._api_notification_active:       bool = False
@@ -433,6 +454,14 @@ class EntityManager:
         # changelog-read buttons keep working after Mosquitto restarts.
         self._mgmt_subscriptions: list[tuple] = []
         self._mgmt_subscriptions_lock = threading.Lock()
+
+        # Serializes the load-modify-save sequence in save_snapshot/
+        # delete_snapshot — mgmt_executor has multiple workers, so two
+        # snapshot commands issued close together could otherwise both load
+        # the same on-disk snapshots.json, each apply their own change in
+        # memory, and write back with the second write silently clobbering
+        # the first (a lost update).
+        self._snapshots_lock = threading.Lock()
 
         self._setup_history_loading()
         self._setup_dynamic_map_loading()
@@ -775,6 +804,8 @@ class EntityManager:
                         entity_info['command_topic'], _make_handler(entity_info)
                     )
 
+                self._increment_stats(point)
+
                 # Publish online for all restored entities so HA doesn't
                 # show them as unavailable on startup. State will be updated
                 # on the first bulk fetch poll.
@@ -803,6 +834,38 @@ class EntityManager:
         """Publish an MQTT discovery config for a point, making it visible in HA."""
         with self._em_lock:
             return self._enable_entity_locked(point_id)
+
+    def _increment_stats(self, point: dict) -> None:
+        """Update incremental type/category/writable stats for a point that
+        just became enabled. Shared by _enable_entity_locked and
+        restore_from_mqtt so the nibe_entity_stats HA sensor's counts stay
+        correct on both a fresh enable and a restart-time restore."""
+        entity_type_key = point.get('entity_type', 'unknown')
+        category_key    = point.get('entity_category', 'none')
+        self._stats_type_counts[entity_type_key] = (
+            self._stats_type_counts.get(entity_type_key, 0) + 1
+        )
+        self._stats_category_counts[category_key] = (
+            self._stats_category_counts.get(category_key, 0) + 1
+        )
+        if point.get('is_writable', False):
+            self._stats_writable_count += 1
+
+    def _decrement_stats(self, point: dict) -> None:
+        """Update incremental type/category/writable stats for a point that
+        just became disabled. Mirror of _increment_stats, clamped at 0."""
+        entity_type_key = point.get('entity_type', 'unknown')
+        category_key    = point.get('entity_category', 'none')
+        if entity_type_key in self._stats_type_counts:
+            self._stats_type_counts[entity_type_key] = max(
+                0, self._stats_type_counts[entity_type_key] - 1
+            )
+        if category_key in self._stats_category_counts:
+            self._stats_category_counts[category_key] = max(
+                0, self._stats_category_counts[category_key] - 1
+            )
+        if point.get('is_writable', False):
+            self._stats_writable_count = max(0, self._stats_writable_count - 1)
 
     def _enable_entity_locked(self, point_id: int) -> bool:
         """Implementation of enable_entity — caller must hold _em_lock."""
@@ -836,17 +899,7 @@ class EntityManager:
             self.mqtt.subscribe(entity_info['command_topic'], qos=1)
             self.mqtt.message_callback_add(entity_info['command_topic'], command_handler)
 
-        # Update incremental stats
-        entity_type_key = point.get('entity_type', 'unknown')
-        category_key    = point.get('entity_category', 'none')
-        self._stats_type_counts[entity_type_key] = (
-            self._stats_type_counts.get(entity_type_key, 0) + 1
-        )
-        self._stats_category_counts[category_key] = (
-            self._stats_category_counts.get(category_key, 0) + 1
-        )
-        if point.get('is_writable', False):
-            self._stats_writable_count += 1
+        self._increment_stats(point)
 
         self.mqtt.publish(entity_info['availability_topic'], "online", retain=True)
         # Only call _update_entity_state if bulk data is available for this point.
@@ -868,9 +921,33 @@ class EntityManager:
         return True
 
     def disable_entity(self, point_id: int) -> bool:
-        """Remove the MQTT discovery config for a point, hiding it from HA."""
+        """Remove the MQTT discovery config for a point, hiding it from HA.
+
+        A manual disable through this public entry point (e.g. via the
+        Entity Manager card, or mirroring an HA-side registry disable) is
+        explicit user intent and must override the "firmware-state-driven,
+        not mode-driven" active_dynamic_points bookkeeping apply_mode relies
+        on for its own to_disable exclusion (see apply_mode's docstring and
+        its `protected = set(self.active_dynamic_points)`). Without this, a
+        manually-disabled dynamic point would stay in active_dynamic_points,
+        so _reconcile_dynamic_points() would silently re-enable it on the
+        next restart (its controlling switch hasn't changed, so it's still
+        in expected_active) — undoing the user's choice with no indication
+        why.
+
+        This clearing lives here, not in _disable_entity_locked, because
+        that lower-level helper has several other internal callers
+        (apply_mode, _publish_dynamic_changes, _reconcile_dynamic_points)
+        that already own active_dynamic_points bookkeeping and already
+        persist it themselves at a point of their choosing — those callers
+        must not inherit this side effect.
+        """
         with self._em_lock:
-            return self._disable_entity_locked(point_id)
+            result = self._disable_entity_locked(point_id)
+            if point_id in self.active_dynamic_points:
+                self.active_dynamic_points.discard(point_id)
+                self._persist_active_dynamic()
+            return result
 
     def _disable_entity_locked(self, point_id: int) -> bool:
         """Implementation of disable_entity — caller must hold _em_lock."""
@@ -897,6 +974,9 @@ class EntityManager:
                 self.mqtt.unsubscribe(entity_info['command_topic'])
 
         self.mqtt_enabled_points.discard(point_id)
+        # active_dynamic_points is deliberately NOT touched here — see
+        # disable_entity()'s docstring for why that clearing belongs at the
+        # public entry point, not this shared internal helper.
         self.last_states.pop(point_id, None)
         self.value_cache.discard(point_id)
         self._point_string_cache.pop(point_id, None)
@@ -910,19 +990,8 @@ class EntityManager:
         with self._pending_writes_lock:
             self.pending_writes.pop(point_id, None)
 
-        point           = self.all_points_by_id.get(point_id, {})
-        entity_type_key = point.get('entity_type', 'unknown')
-        category_key    = point.get('entity_category', 'none')
-        if entity_type_key in self._stats_type_counts:
-            self._stats_type_counts[entity_type_key] = max(
-                0, self._stats_type_counts[entity_type_key] - 1
-            )
-        if category_key in self._stats_category_counts:
-            self._stats_category_counts[category_key] = max(
-                0, self._stats_category_counts[category_key] - 1
-            )
-        if point.get('is_writable', False):
-            self._stats_writable_count = max(0, self._stats_writable_count - 1)
+        point = self.all_points_by_id.get(point_id, {})
+        self._decrement_stats(point)
 
         if not self._is_suppressed():
             self.publish_enabled_state()
@@ -965,7 +1034,12 @@ class EntityManager:
             reconciled here to the newly selected mode.
         It is never called on an ordinary same-mode restart, so manually
         curated additions (via the Entity Manager card) survive normal
-        restarts and are only pruned when the mode itself changes.
+        restarts and are only pruned when the mode itself changes — and
+        even then, only when self.mode_switch_behavior == "replace" (the
+        default). When it's "merge", nothing already enabled is ever
+        disabled by a mode change; the mode's point set is only ever added
+        to what's already active. See the `mode_switch_behavior` config
+        option.
         """
         log_restore.info("Applying mode: %s", mode_name)
 
@@ -979,7 +1053,10 @@ class EntityManager:
 
         protected  = set(self.active_dynamic_points)
         to_enable  = target - self.mqtt_enabled_points
-        to_disable = (self.mqtt_enabled_points - target) - protected
+        if self.mode_switch_behavior == "merge":
+            to_disable: set[int] = set()
+        else:
+            to_disable = (self.mqtt_enabled_points - target) - protected
 
         # Suppress publish_enabled_state() for the duration of the enable/disable
         # loop so that each individual enable_entity/disable_entity call doesn't
@@ -1318,9 +1395,9 @@ class EntityManager:
         poll and the normal polling loop) never run simultaneously.
 
         Returns:
-          int > 0  — number of dynamic changes detected
-          True     — success, no changes
-          False    — failure or lock busy
+          True   — success (whether or not dynamic changes were detected —
+                   callers only test truthiness/is False, not a count)
+          False  — failure or lock busy
         """
         if not self._bulk_fetch_lock.acquire(blocking=False):
             log_discovery.info(
@@ -1333,12 +1410,21 @@ class EntityManager:
             response   = self._api.fetch_bulk_points()
 
             if not response or not isinstance(response, dict):
+                # Captured immediately after the (successful, no exception)
+                # fetch_bulk_points() call and before the logging below —
+                # same reasoning as the HTTPError/Exception branches further
+                # down: self._api is shared with the write-executor thread,
+                # and log_discovery.warning() can yield the GIL, so a fresh
+                # read inside _handle_api_failure's own fallback could pick
+                # up an unrelated concurrent write's last_error instead of
+                # this call's (expected-None, since the fetch succeeded).
+                api_last_error = getattr(self._api, 'last_error', None)
                 log_discovery.warning(
                     "Bulk fetch returned an unexpected response type (%s) — "
                     "expected a JSON object. API may be temporarily unavailable.",
                     type(response).__name__,
                 )
-                self._handle_api_failure()
+                self._handle_api_failure(api_last_error)
                 return False
 
             current_point_ids = set()
@@ -1612,6 +1698,10 @@ class EntityManager:
             return bool(new_points or disappeared_points) if detect_changes else True
 
         except urllib.error.HTTPError as e:
+            # Captured immediately, before any logging that could yield the
+            # GIL to the write-executor thread — see _handle_api_failure's
+            # docstring for why this can't be re-read later.
+            api_last_error = getattr(self._api, 'last_error', None)
             if e.code in (401, 403):
                 log_discovery.warning(
                     "Bulk fetch rejected (HTTP %d) — credentials may not yet be "
@@ -1622,25 +1712,39 @@ class EntityManager:
                 log_discovery.warning(
                     "Bulk fetch failed with HTTP %d — will retry.", e.code,
                 )
-            self._handle_api_failure()
+            self._handle_api_failure(api_last_error)
             return False
         except Exception:
+            api_last_error = getattr(self._api, 'last_error', None)
             log_discovery.exception(
                 "Unhandled exception during bulk fetch — this is a bug, "
                 "please report it"
             )
-            self._handle_api_failure()
+            self._handle_api_failure(api_last_error)
             return False
         finally:
             self._bulk_fetch_lock.release()
 
-    def _handle_api_failure(self) -> None:
+    def _handle_api_failure(self, last_error: str | None = None) -> None:
+        """Record a bulk-fetch failure and notify HA once the threshold is hit.
+
+        Prefer passing *last_error*, captured by the caller at the moment its
+        own request failed (e.g. ``getattr(self._api, 'last_error', None)``
+        taken immediately in the except block) — ``self._api`` is shared with
+        the write-command executor thread, which can run its own
+        request()/last_error assignment between this failure and whenever
+        this method happens to run, so re-reading ``self._api.last_error``
+        here risks attributing the wrong request's error (or masking a real
+        one with a stale success) to this notification. When omitted, falls
+        back to reading it fresh, for callers with no closer capture point.
+        """
         self.api_consecutive_failures += 1
+        if last_error is None:
+            last_error = getattr(self._api, 'last_error', None)
         if (self.api_consecutive_failures >= self.api_failure_threshold
                 and not self._api_notification_active
                 and self.mqtt):
             model      = self.device_info.get('model', 'S-series')
-            last_error = getattr(self._api, 'last_error', None)
             reason     = f" Last error: {last_error}." if last_error else ""
             msg   = (
                 f"The Nibe {model} REST API has not responded for "
@@ -1711,6 +1815,7 @@ class EntityManager:
         }
 
         with self._em_lock, self._suppress_enabled_state():
+            enabled_new_pids: list[int] = []
             for point_id, point_data in new_points:
                 # `or {}` also covers an explicit "metadata": null from the
                 # API — .get()'s default only applies when the key is
@@ -1747,6 +1852,7 @@ class EntityManager:
                     # false "active" state.
                     continue
                 self.active_dynamic_points.add(point_id)
+                enabled_new_pids.append(point_id)
 
                 change_event['added'].append({  # type: ignore[attr-defined]
                     'id': point_id, 'title': title,
@@ -1760,9 +1866,23 @@ class EntityManager:
         # so the map is populated identically regardless of learning mode.
         # This ensures known_dynamic is correct for dashboard suppression
         # and injection — both in learning mode and normal operation.
+        #
+        # Uses enabled_new_pids (points that actually succeeded through
+        # _enable_entity_locked above), not the raw new_points list. A point
+        # whose discovery publish failed is deliberately left out of
+        # active_dynamic_points so a future poll's reconciliation can retry
+        # it (see the comment at the `continue` above) — but self.
+        # published_configs is unconditionally set to the full current-poll
+        # id set every cycle in _fetch_bulk_data, so a point that already
+        # appeared once in bulk data can never re-enter new_points on a
+        # later poll. If it were still recorded here as "known" despite the
+        # failed enable, dynamic_point_map would believe it's an expected
+        # dynamic point that HA was never actually told about, with no path
+        # left to retry activation — the promised retry would silently
+        # never happen.
         controlling = controlling_point_id
-        if controlling and new_points:
-            new_pids = [p for p, _ in new_points]
+        if controlling and enabled_new_pids:
+            new_pids = enabled_new_pids
             controlling_raw = self.bulk_data.get(controlling, {}).get('raw_value', 1)
             # dynamic_point_map._table is also mutated (unlocked, from the
             # write-executor thread) by _run_learning_detection's own
@@ -1802,9 +1922,9 @@ class EntityManager:
                     self._deindex_point(point_id)
                     self._pub.invalidate_config_hash(point_id)
                     self.mqtt.publish(BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True)
+                    self.active_dynamic_points.discard(point_id)
                     if point_id in self.mqtt_enabled_points:
                         self._disable_entity_locked(point_id)
-                    self.active_dynamic_points.discard(point_id)
                     change_event['removed'].append({  # type: ignore[attr-defined]
                         'id':         point_id,
                         'title':      entity.get('display_title', f'Point {point_id}'),
@@ -1816,7 +1936,12 @@ class EntityManager:
                     # ordering so a crash after this line leaves correct state.
                     self._persist_active_dynamic()
 
-        if new_points:
+        # enabled_new_pids (points that actually succeeded through
+        # _enable_entity_locked), not the raw new_points list — matches
+        # record_outcome's gating above. If every point in new_points failed
+        # to enable, nothing actually changed and these calls would just be
+        # a wasted MQTT publish/persist cycle.
+        if enabled_new_pids:
             self.publish_enabled_state()
 
         if disappeared_points:
@@ -1827,7 +1952,7 @@ class EntityManager:
 
         # Persist active_dynamic_points for appearance events.
         # Disappearances are already persisted per-point above for crash safety.
-        if new_points:
+        if enabled_new_pids:
             self._persist_active_dynamic()
 
         self._pub.publish_point_list(self.all_points_by_id)
@@ -1867,39 +1992,37 @@ class EntityManager:
                 trig['id'] if trig else None, len(added), len(removed),
             )
 
-            if added:
-                point_lines = '\n'.join(
-                    f"- **{p['title']}** (point {p['id']})" for p in added
-                )
+            # Both sections share one HA persistent-notification ID
+            # ("nibe_dashboard_updated") — notify_ha() creates-or-REPLACES by
+            # that ID, so sending two separate notifications here (one for
+            # added, one for removed) would silently drop whichever one is
+            # sent first whenever a single poll cycle produces both (e.g. a
+            # mode-select point swapping from one dynamic-point set to
+            # another). Build one combined message instead.
+            if added or removed:
                 ctrl_line = f"\nTriggered by: **{ctrl_title}**" if ctrl_title else ''
                 menu_line = f" in {ctrl_menu}" if ctrl_menu else ''
+                sections = []
+                if added:
+                    added_lines = '\n'.join(
+                        f"- **{p['title']}** (point {p['id']})" for p in added
+                    )
+                    sections.append(
+                        f"{len(added)} new setting(s) are now available:\n\n{added_lines}"
+                    )
+                if removed:
+                    removed_lines = '\n'.join(
+                        f"- **{p['title']}** (point {p['id']})" for p in removed
+                    )
+                    sections.append(
+                        f"{len(removed)} setting(s) are no longer available:\n\n{removed_lines}"
+                    )
                 message = (
-                    f"The Nibe Menus dashboard was updated — "
-                    f"{len(added)} new setting(s) are now available{menu_line}:"
+                    f"The Nibe Menus dashboard was updated{menu_line}:"
                     f"{ctrl_line}\n\n"
-                    f"{point_lines}\n\n"
-                    f"[Open Nibe Menus dashboard](/nibe-menus) and reload the page "
-                    f"to see the new settings."
-                )
-                self._notify(
-                    self.mqtt,
-                    title           = "Nibe Menus — Dashboard updated",
-                    message         = message,
-                    notification_id = "nibe_dashboard_updated",
-                )
-
-            if removed:
-                point_lines = '\n'.join(
-                    f"- **{p['title']}** (point {p['id']})" for p in removed
-                )
-                ctrl_line = f"\nTriggered by: **{ctrl_title}**" if ctrl_title else ''
-                menu_line = f" in {ctrl_menu}" if ctrl_menu else ''
-                message = (
-                    f"The Nibe Menus dashboard was updated — "
-                    f"{len(removed)} setting(s) are no longer available{menu_line}:"
-                    f"{ctrl_line}\n\n"
-                    f"{point_lines}\n\n"
-                    f"[Open Nibe Menus dashboard](/nibe-menus) and reload the page."
+                    + "\n\n".join(sections) +
+                    "\n\n[Open Nibe Menus dashboard](/nibe-menus) and reload the page "
+                    "to see the changes."
                 )
                 self._notify(
                     self.mqtt,
@@ -1961,6 +2084,20 @@ class EntityManager:
                 reverse_map = {v.strip(): k for k, v in mapping.items()}
                 if payload in reverse_map:
                     return reverse_map[payload]
+                # Fallback: mapping labels can be built from the API's live
+                # description text, which is language-dependent. If the
+                # options published to HA were built under a different query
+                # language than the mapping in hand now (e.g. a restart with
+                # a changed `language` setting), the label round-trip above
+                # fails even though the write itself is legitimate. Accept a
+                # raw integer payload directly as long as it's one of the
+                # mapping's own known keys, rather than silently dropping it.
+                try:
+                    raw_value = int(payload)
+                except ValueError:
+                    raw_value = None
+                if raw_value is not None and raw_value in mapping:
+                    return raw_value
                 log_commands.warning("[%s] Invalid select option: '%s'", cmd_id, payload)
                 return None
             try:
@@ -2036,8 +2173,10 @@ class EntityManager:
         appear in the bulk fetch.  We must not terminate early on a quiet
         poll; we wait the full window and record whatever appeared.
 
-        If new points appear partway through the window, we extend by one
-        more full quiet period to catch any stragglers.
+        If the bulk-fetch size changes partway through the window, we stop
+        immediately rather than waiting out the rest of it — the bulk fetch
+        has already shown the full post-write state at that point, so
+        waiting longer adds nothing.
 
         Parameters
         ----------
@@ -2843,12 +2982,16 @@ class EntityManager:
                         entry['unread'] = False
                     if unread_count > 0 and self.change_history:
                         # deque doesn't support slice notation — convert to list
-                        # for the tail operation.  The list is temporary and small.
+                        # for the head operation.  The list is temporary and small.
                         # Cap to history length: after a prune, unread_count from the
                         # broker may exceed the number of surviving entries; without
-                        # the cap list[-n:] returns all entries, over-marking them.
+                        # the cap list[:n] returns all entries, over-marking them.
+                        # Entries are appendleft()-ed everywhere (_update_changelog_
+                        # history), so index 0 is the NEWEST entry — take the head
+                        # ([:n]), not the tail ([-n:]), which would mark the oldest
+                        # entries unread instead of the actually-recent ones.
                         safe_count = min(unread_count, len(self.change_history))
-                        for entry in list(self.change_history)[-safe_count:]:
+                        for entry in list(self.change_history)[:safe_count]:
                             entry['unread'] = True
             except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                 log_history.warning(
@@ -3005,7 +3148,15 @@ class EntityManager:
         activated = 0
         removed   = 0
 
-        with self._em_lock:
+        with self._em_lock, self._suppress_enabled_state():
+            # Suppress publish_enabled_state() for the duration of the
+            # enable/disable loops below — same reasoning as apply_mode's
+            # bulk enable/disable loop: without it, each individual
+            # _enable_entity_locked/_disable_entity_locked call fires its
+            # own publish_enabled_state() (since _is_suppressed() would
+            # otherwise be False the whole time), flooding MQTT with N
+            # intermediate publishes instead of the single one at the end
+            # of this method.
             # Case 1 + 2: process expected active set
             for point_id in expected_active:
                 if point_id in bulk_present:
@@ -3062,9 +3213,9 @@ class EntityManager:
                         self.mqtt.publish(
                             BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
                         )
+                        self.active_dynamic_points.discard(point_id)
                         if point_id in self.mqtt_enabled_points:
                             self._disable_entity_locked(point_id)
-                        self.active_dynamic_points.discard(point_id)
                         removed += 1
                         log_discovery.info(
                             "Reconcile: removed stale dynamic point %d "
@@ -3080,9 +3231,9 @@ class EntityManager:
                 self.mqtt.publish(
                     BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
                 )
+                self.active_dynamic_points.discard(point_id)
                 if point_id in self.mqtt_enabled_points:
                     self._disable_entity_locked(point_id)
-                self.active_dynamic_points.discard(point_id)
                 removed += 1
                 log_discovery.info(
                     "Reconcile: removed stale dynamic point %d "
@@ -3162,10 +3313,13 @@ class EntityManager:
                     "Restored %d active dynamic point(s) from MQTT: %s",
                     len(loaded), sorted(loaded),
                 )
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as e:
-                # UnicodeDecodeError: payload isn't valid UTF-8.
-                # json.JSONDecodeError: malformed JSON. ValueError/TypeError:
-                # a list entry couldn't be converted with int().
+            except Exception as e:  # noqa: BLE001 — best-effort restore from
+                # external/retained MQTT data; must degrade gracefully no
+                # matter what fails. Deliberately broad, same reasoning as
+                # on_dynamic_map_message above: this runs on paho's MQTT
+                # network thread (suppress_exceptions=False), so any
+                # exception that escapes here permanently kills the thread
+                # and stops all future MQTT message delivery.
                 log_discovery.warning(
                     "Could not restore active_dynamic_points from MQTT: %s", e
                 )
@@ -3294,30 +3448,43 @@ class EntityManager:
         if not name:
             return False, "Snapshot name must not be empty."
 
-        snapshots = self._load_snapshots(path=path)
+        # _em_lock: mqtt_enabled_points is mutated by _enable_entity_locked/
+        # _disable_entity_locked on other mgmt_executor worker threads (the
+        # executor has multiple workers) — read it under the same lock those
+        # mutators hold, and snapshot it once so the point_ids list and
+        # point_count below can't disagree if a concurrent enable/disable
+        # lands between two separate reads of the live set.
+        with self._em_lock:
+            enabled_snapshot = sorted(self.mqtt_enabled_points)
 
-        # Replace existing snapshot with the same name
-        snapshots = [s for s in snapshots if s.get('name') != name]
+        # _snapshots_lock: serializes this load-modify-save sequence against
+        # concurrent save_snapshot/delete_snapshot calls — see its
+        # declaration in __init__ for why an unguarded sequence is unsafe.
+        with self._snapshots_lock:
+            snapshots = self._load_snapshots(path=path)
 
-        if len(snapshots) >= _SNAPSHOTS_MAX:
-            return False, (
-                f"Maximum of {_SNAPSHOTS_MAX} snapshots reached. "
-                "Delete one before saving a new snapshot."
-            )
+            # Replace existing snapshot with the same name
+            snapshots = [s for s in snapshots if s.get('name') != name]
 
-        snapshot = {
-            'name':        name,
-            'timestamp':   time.strftime('%Y-%m-%d %H:%M:%S'),
-            'point_ids':   sorted(self.mqtt_enabled_points),
-            'point_count': len(self.mqtt_enabled_points),
-            'mode':        self._read_applied_mode_from_file() or 'unknown',
-        }
-        snapshots.append(snapshot)
-        self._save_snapshots(snapshots, path=path)
+            if len(snapshots) >= _SNAPSHOTS_MAX:
+                return False, (
+                    f"Maximum of {_SNAPSHOTS_MAX} snapshots reached. "
+                    "Delete one before saving a new snapshot."
+                )
+
+            snapshot = {
+                'name':        name,
+                'timestamp':   time.strftime('%Y-%m-%d %H:%M:%S'),
+                'point_ids':   enabled_snapshot,
+                'point_count': len(enabled_snapshot),
+                'mode':        self._read_applied_mode_from_file() or 'unknown',
+            }
+            snapshots.append(snapshot)
+            self._save_snapshots(snapshots, path=path)
         log_restore.info(
-            "Snapshot '%s' saved: %d points", name, len(self.mqtt_enabled_points)
+            "Snapshot '%s' saved: %d points", name, len(enabled_snapshot)
         )
-        return True, f"Snapshot '{name}' saved ({len(self.mqtt_enabled_points)} points)."
+        return True, f"Snapshot '{name}' saved ({len(enabled_snapshot)} points)."
 
     def restore_snapshot(self, name: str, mode: str = 'flush', path: str | None = None) -> tuple[bool, str]:
         """Restore a named snapshot.
@@ -3334,7 +3501,13 @@ class EntityManager:
         -------
         (success, message)
         """
-        snapshots = self._load_snapshots(path=path)
+        # _snapshots_lock: see save_snapshot's declaration in __init__ —
+        # without it, this read can race a concurrent save_snapshot/
+        # delete_snapshot's write (mgmt_executor has multiple workers), get
+        # a torn/partial JSON read, and silently report "not found" for a
+        # snapshot that genuinely exists on disk.
+        with self._snapshots_lock:
+            snapshots = self._load_snapshots(path=path)
         snapshot  = next((s for s in snapshots if s.get('name') == name), None)
         if snapshot is None:
             return False, f"Snapshot '{name}' not found."
@@ -3397,11 +3570,14 @@ class EntityManager:
 
     def delete_snapshot(self, name: str, path: str | None = None) -> tuple[bool, str]:
         """Delete a named snapshot."""
-        snapshots = self._load_snapshots(path=path)
-        filtered  = [s for s in snapshots if s.get('name') != name]
-        if len(filtered) == len(snapshots):
-            return False, f"Snapshot '{name}' not found."
-        self._save_snapshots(filtered, path=path)
+        # _snapshots_lock: see save_snapshot — serializes this load-modify-
+        # save sequence against concurrent save_snapshot/delete_snapshot calls.
+        with self._snapshots_lock:
+            snapshots = self._load_snapshots(path=path)
+            filtered  = [s for s in snapshots if s.get('name') != name]
+            if len(filtered) == len(snapshots):
+                return False, f"Snapshot '{name}' not found."
+            self._save_snapshots(filtered, path=path)
         log_restore.info("Snapshot '%s' deleted", name)
         return True, f"Snapshot '{name}' deleted."
 

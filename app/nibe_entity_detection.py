@@ -13,7 +13,7 @@ Public surface
 detect_entity_type(point)          → (entity_type, entity_category)
 map_device_class(entity_type, unit, title) → str | None
 get_value_mapping(point_id, point_data, register_type) → dict | None
-get_entity_options(point_id, metadata, description) → list[str]
+get_entity_options(point_id, description)          → list[str]
 get_register_type(point)           → "input" | "holding" | None
 clean_string(text)                 → str
 apply_divisor(raw, divisor)        → str
@@ -117,7 +117,19 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         1709: {0: "No alarm", 1: "Active alarm"},
     },
     "holding": {
-        # Language selection — ordering reflects Nibe's market priority
+        # Language selection — ordering reflects Nibe's market priority.
+        #
+        # MULTI-PLACE UPDATE: this is the controller's own hand-verified list
+        # of firmware-supported languages (Nibe documents none of this — each
+        # entry was confirmed against a real device's select entity). The
+        # `language` config option's dropdown in config.yaml's schema (used
+        # to set the REST API's Accept-Language header, a separate feature
+        # from this select entity) is a hand-maintained BCP-47-code mirror of
+        # this exact list. Adding a language here (new firmware release, user
+        # request) means also adding its BCP-47 code to config.yaml's
+        # `language` schema line — config.yaml is static and cannot derive
+        # its dropdown from this Python dict at runtime, so the two must be
+        # kept in sync by hand, in both directions.
         3745: {
              0: "English",
              1: "Svenska",
@@ -331,12 +343,17 @@ def clean_string(text) -> str | None:
     """
     if not text or not isinstance(text, str):
         return text
-    cleaned = text.strip().strip('"').strip("'")
+    cleaned = text.strip()
     cleaned = cleaned.replace('\u00c2', '').replace('\u00a0', ' ').replace('\xa0', ' ')  # pragma: no mutate
     # U+00AD is the soft-hyphen inserted by Nibe firmware as an invisible
     # line-break hint.  It does not display but breaks substring search:
     # "exter\u00adn" does not match "extern".  Strip it entirely.  # pragma: no mutate
     cleaned = cleaned.replace('\u00ad', '')  # pragma: no mutate
+    # Quote-stripping must run after mojibake removal above: a stray quote
+    # next to a mojibake byte (e.g. '0"\u00c2') is not at the true string edge
+    # until that byte is gone, so stripping quotes first can leave a
+    # dangling quote that only a second clean_string() call would remove.
+    cleaned = cleaned.strip().strip('"').strip("'")
     return ' '.join(cleaned.split())
 
 
@@ -454,6 +471,28 @@ def parse_description_mapping(description: str) -> dict | None:
     return result
 
 
+def _lookup_manual_mapping(point_id: int) -> dict | None:
+    """Return VALUE_MAPPINGS[<any register type>][point_id], or None.
+
+    Checks *every* register-type sub-table, not just a single one named by
+    a caller-derived register_type — that value can come back None or wrong
+    when the caller's metadata dict is momentarily incomplete (e.g. a
+    dynamic point's very first poll), and callers may cache whatever they
+    get back on the first non-None result. If an incomplete register_type
+    were allowed to skip straight to an inferior fallback, that inferior
+    result (e.g. literal "price"/"co2" instead of the manual table's "Price
+    per kWh"/"CO2") could get permanently cached and never reconsidered even
+    once full metadata becomes available on a later poll. point_id is
+    unique across VALUE_MAPPINGS's register-type sub-tables, so checking all
+    of them is unambiguous regardless of what register_type resolves to.
+    """
+    for table in VALUE_MAPPINGS.values():
+        manual = table.get(point_id)
+        if manual:
+            return manual
+    return None
+
+
 def get_value_mapping(
     point_id: int,
     point_data: dict,
@@ -462,25 +501,12 @@ def get_value_mapping(
     """Return a {raw_int: label_str} mapping for a point, or None.
 
     Lookup order:
-      1. VALUE_MAPPINGS[register_type][point_id] — manual table (takes precedence).
+      1. _lookup_manual_mapping(point_id) — manual table (takes precedence).
       2. parse_description_mapping(point_data['description']) — firmware-provided enum.
-
-    Step 1 checks the manual table for *every* register type, not just the
-    one named by ``register_type`` — that parameter can come back None when
-    the caller's metadata dict is momentarily incomplete (e.g. a dynamic
-    point's very first poll), and callers cache whatever this function
-    returns on the first non-None result. If a None register_type were
-    allowed to skip straight to the raw firmware-description fallback, that
-    inferior mapping (e.g. literal "price"/"co2" instead of the manual
-    table's "Price per kWh"/"CO2") would get permanently cached and never
-    reconsidered even once full metadata becomes available on a later poll.
-    point_id is unique across VALUE_MAPPINGS's register-type sub-tables, so
-    checking both is unambiguous regardless of what register_type resolves to.
     """
-    for table in VALUE_MAPPINGS.values():
-        manual = table.get(point_id)
-        if manual:
-            return manual
+    manual = _lookup_manual_mapping(point_id)
+    if manual:
+        return manual
 
     description = point_data.get('description', '')
     return parse_description_mapping(description)
@@ -488,17 +514,13 @@ def get_value_mapping(
 
 def get_entity_options(
     point_id: int,
-    metadata: dict,
     description: str,
 ) -> list[str]:
     """Return the ordered list of option labels for a select entity.
 
     Returns an empty list when no options can be determined.
     """
-    register_type = (
-        "holding" if 'HOLDING' in metadata.get('modbusRegisterType', '') else "input"
-    )
-    mapping = VALUE_MAPPINGS.get(register_type, {}).get(point_id)
+    mapping = _lookup_manual_mapping(point_id)
 
     if mapping:
         return [text for _, text in sorted(mapping.items())]
@@ -580,6 +602,7 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset({
     # Multi-state registers that happen to share the binary shape
     1758, 55000,  # Priority (5-state)
     55335,        # EEV Control Mode (EB101) — multi-state valve control
+    1760,         # Operating mode internal add. heat (4-state: off/step1/step2/step3)
 })
 
 

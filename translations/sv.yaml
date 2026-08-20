@@ -49,6 +49,18 @@ configuration:
       Hur styrenheten visas i Home Assistant. Standardvärdet är
       "Nibe SMO S40", men du kan ändra detta till att matcha din faktiska
       hårdvara (t.ex. "Nibe S1155" eller "Nibe VVM S320").
+  language:
+    name: Språk
+    description: >-
+      Språk för entitetsnamn/beskrivningar som returneras av styrenhetens
+      REST-API. "auto" (standard) följer det språk som är inställt i Home
+      Assistant själv; välj ett specifikt språk för att åsidosätta detta.
+      Listan speglar styrenhetens egen "Language"-meny — endast ett fåtal
+      poster har direkt bekräftats fungera via själva REST-API:et, men att
+      välja ett språk som inte stöds är ofarligt: det faller tyst tillbaka
+      till engelska, aldrig ett fel. Översätter inte
+      Nibe-menyer-instrumentpanelen, som förblir fast engelskt innehåll.
+      En omstart krävs efter att denna inställning ändrats.
   poll_interval:
     name: Avfrågningsintervall
     description: >-
@@ -69,10 +81,24 @@ configuration:
       exponerar varje upptäckt punkt; "none" exponerar inget förrän du
       aktiverar entiteter manuellt. Detta tillämpas vid uppstart — att
       ändra det kräver en omstart av tillägget, och att byta till ett
-      annat läge inaktiverar entiteter som inte ingår i det nya valet —
-      entiteter du aktiverat manuellt via Entity Manager-kortet rensas
-      också vid lägesbyte, men bevaras vid omstart i samma läge.
-      "essential" är den rekommenderade utgångspunkten.
+      annat läge inaktiverar som standard entiteter som inte ingår i det
+      nya valet — entiteter du aktiverat manuellt via Entity
+      Manager-kortet rensas också vid lägesbyte, men bevaras vid omstart
+      i samma läge. Se "Beteende vid lägesbyte" nedan för att ändra
+      detta. "essential" är den rekommenderade utgångspunkten.
+  mode_switch_behavior:
+    name: Beteende vid lägesbyte
+    description: >-
+      Vad som händer med redan aktiverade entiteter när du byter till
+      ett annat läge. "replace" (standard) återställer den aktiverade
+      uppsättningen till exakt det nya lägets punkter — allt som för
+      närvarande är aktiverat och inte ingår i det nya läget, inklusive
+      entiteter som aktiverats manuellt via Entity Manager-kortet,
+      inaktiveras. "merge" lägger endast till det nya lägets punkter
+      till det som redan är aktiverat — inget inaktiveras någonsin av
+      ett lägesbyte. Gäller för varje lägesbyte. Har ingen effekt vid en
+      ny installation eller vid omstart i samma läge — endast ett
+      faktiskt lägesbyte utlöser detta.
   log_level:
     name: Loggnivå
     description: >-

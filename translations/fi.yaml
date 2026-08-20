@@ -1,0 +1,185 @@
+configuration:
+  nibe_host:
+    name: Ohjaimen IP-osoite
+    description: >-
+      Nibe S-sarjan ohjaimesi IP-osoite tai isäntänimi lähiverkossasi.
+      Kiinteän IP-osoitteen määrittäminen reitittimen kautta on erittäin
+      suositeltavaa.
+  nibe_port:
+    name: Ohjaimen API-portti
+    description: >-
+      Ohjaimen paikallisen REST-rajapinnan HTTPS-portti. Oletusarvo 8443
+      on oikea kaikille S-sarjan tuotteille, eikä sitä yleensä tarvitse
+      muuttaa.
+  nibe_username:
+    name: Ohjaimen API-käyttäjätunnus
+    description: >-
+      Ohjaimen Service-valikossa (valikko 7.5.15) asetettu
+      käyttäjätunnus. Täytyy vastata täsmälleen ohjaimeen määritettyä
+      arvoa.
+  nibe_password:
+    name: Ohjaimen API-salasana
+    description: >-
+      Ohjaimen Service-valikossa (valikko 7.5.15) asetettu salasana.
+      Kirjainkoko on merkitsevä.
+  mqtt_host:
+    name: MQTT-välittäjän isäntänimi
+    description: >-
+      MQTT-välittäjäsi isäntänimi tai IP-osoite. Oletusarvo
+      "core-mosquitto" toimii virallisen Mosquitto-lisäosan kanssa. Käytä
+      IP-osoitetta tai isäntänimeä muiden välittäjien kanssa.
+  mqtt_port:
+    name: MQTT-välittäjän portti
+    description: >-
+      MQTT-välittäjäsi TCP-portti. Oletusarvo 1883 on vakiomuotoinen
+      salaamaton MQTT-portti. Jos otat käyttöön alla olevan "MQTT TLS"
+      -asetuksen, vaihda tämä arvoksi 8883 (Mosquitton käyttämä
+      vakiomuotoinen salattu MQTT-portti).
+  mqtt_username:
+    name: MQTT-käyttäjätunnus
+    description: >-
+      Käyttäjätunnus MQTT-välittäjän todennukseen. Jätä tyhjäksi, jos
+      välittäjäsi ei vaadi todennusta.
+  mqtt_password:
+    name: MQTT-salasana
+    description: >-
+      Salasana MQTT-välittäjän todennukseen. Jätä tyhjäksi, jos
+      välittäjäsi ei vaadi todennusta.
+  device_name:
+    name: Laitteen nimi
+    description: >-
+      Miten ohjainlaite näkyy Home Assistantissa. Oletuksena "Nibe SMO
+      S40", mutta voit muuttaa tämän vastaamaan omaa laitteistoasi
+      (esim. "Nibe S1155" tai "Nibe VVM S320").
+  language:
+    name: Kieli
+    description: >-
+      Ohjaimen REST-rajapinnan palauttamien entiteettien nimien/kuvausten
+      kieli. "auto" (oletus) noudattaa Home Assistantiin itseensä
+      asetettua kieltä; valitse tietty kieli ohittaaksesi tämän. Tämä
+      luettelo vastaa ohjaimen omaa "Language"-valikkoa — vain muutaman
+      kohdan on suoraan vahvistettu toimivan itse REST-rajapinnan kautta,
+      mutta ei-tuetun kielen valitseminen on harmitonta: järjestelmä
+      palautuu hiljaisesti englantiin, ei koskaan virheeseen. Ei käännä
+      Nibe-valikot-hallintapaneelia, joka pysyy kiinteänä
+      englanninkielisenä sisältönä. Uudelleenkäynnistys vaaditaan tämän
+      asetuksen muuttamisen jälkeen.
+  poll_interval:
+    name: Kyselyväli
+    description: >-
+      Kuinka usein kaikki datapisteet haetaan ohjaimelta, sekunteina. 30
+      sekuntia on suositeltava. Ohjain on sulautettu laite — sen
+      REST-rajapinta on toissijainen sen päätehtävään, lämpöpumppusi
+      ohjaamiseen, nähden. Uudelleenkäynnistys vaaditaan tämän asetuksen
+      muuttamisen jälkeen.
+  mode:
+    name: Entiteettitila
+    description: >-
+      Minkä joukon entiteettejä silta paljastaa: "essential" kattaa
+      keskeiset lämpötilat, lämpimän veden tilan, energiasummat ja
+      perusasetusarvot — hyvä lähtökohta mille tahansa asennukselle.
+      "monitoring" lisää meno-/paluulinjat, kompressorin tilan ja
+      hyötysuhdeilmaisimet. "advanced" lisää koko kylmäainepiirin ja
+      säätörekisterit. "menus" paljastaa jokaisen Nibe-valikot
+      -hallintapaneelin tarvitseman pisteen ja rakentaa kyseisen paneelin.
+      "all" paljastaa jokaisen löydetyn pisteen; "none" ei paljasta
+      mitään, ennen kuin otat entiteettejä käyttöön manuaalisesti. Tämä
+      sovelletaan käynnistyksessä — sen muuttaminen vaatii lisäosan
+      uudelleenkäynnistyksen, ja toiseen tilaan vaihtaminen poistaa
+      oletuksena käytöstä kaikki entiteetit, jotka eivät kuulu uuteen
+      valittuun joukkoon — myös Entity Manager -kortin kautta
+      manuaalisesti käyttöön otetut entiteetit karsitaan tilan
+      vaihtuessa, mutta ne säilyvät uudelleenkäynnistysten yli samalla
+      tilalla. Katso alta "Tilanvaihdon käyttäytyminen" muuttaaksesi
+      tätä. "essential" on suositeltu lähtökohta.
+  mode_switch_behavior:
+    name: Tilanvaihdon käyttäytyminen
+    description: >-
+      Mitä jo käytössä oleville entiteeteille tapahtuu, kun vaihdat
+      toiseen tilaan. "replace" (oletus) palauttaa käytössä olevan joukon
+      tarkalleen uuden tilan pisteisiin — kaikki, mikä on tällä hetkellä
+      käytössä eikä kuulu uuteen tilaan, mukaan lukien Entity Manager
+      -kortin kautta manuaalisesti käyttöön otetut entiteetit, poistetaan
+      käytöstä. "merge" lisää vain uuden tilan pisteet jo käytössä
+      olevien joukkoon — tilanvaihto ei koskaan poista mitään käytöstä.
+      Koskee jokaista tilanvaihtoa. Ei vaikuta uuteen asennukseen eikä
+      uudelleenkäynnistykseen samalla tilalla — vain todellinen
+      tilanvaihto laukaisee tämän.
+  log_level:
+    name: Lokitaso
+    description: >-
+      Vain lisäosan lokin monisanaisuus — ei vaikuta siihen, mitkä
+      entiteetit näytetään. "info" on suositeltava normaalikäyttöön.
+      Käytä "debug"-tasoa yhteys- tai entiteettiongelmien
+      diagnosointiin — se tuottaa suuren määrän tulostetta ja tulisi
+      vaihtaa takaisin "info"-tasoon sen jälkeen. Näyttääksesi vain
+      vianetsintää varten tarkoitetun testisarjapainikkeen ja
+      tulossensorin, käytä sen sijaan alla olevaa "Vianetsintätila"
+      -asetusta.
+  debug_mode:
+    name: Vianetsintätila
+    description: >-
+      Ottaa käyttöön testisarjapainikkeen, dynaamisen kartan
+      tyhjennyspainikkeen ja tulossensorin hallintalaitteessa.
+      Riippumaton yllä olevasta "Lokitaso"-asetuksesta — tämä on ainoa
+      asetus, joka määrää näytetäänkö nämä entiteetit. Astuu voimaan
+      seuraavassa lisäosan uudelleenkäynnistyksessä: sen poistaminen
+      käytöstä myös poistaa entiteetit, ei vain lopeta uusien lisäämistä.
+  api_failure_threshold:
+    name: API-vikaraja
+    description: >-
+      Kuinka monta peräkkäistä epäonnistunutta kyselyä ennen kuin pysyvä
+      ilmoitus näkyy HA:n ilmoituskellossa. Oletusarvo 3 tarkoittaa
+      kolmea peräkkäistä epäonnistumista (90 sekuntia oletusvälillä)
+      ennen hälytystä. Nosta tätä arvoa epävakaassa verkossa
+      välttääksesi virheelliset hälytykset.
+  changelog_retention_days:
+    name: Muutoslokin säilytysaika (päivää)
+    description: >-
+      Kuinka monta päivää Entity Managerin muutoslokin merkintöjä
+      säilytetään ennen niiden poistamista. Tätä arvoa vanhemmat
+      merkinnät poistetaan jokaisen sillan uudelleenkäynnistyksen
+      yhteydessä. Oletusarvo 90 päivää sopii useimmille asennuksille.
+  remove_frontend:
+    name: Poista käyttöliittymä sammutettaessa
+    description: >-
+      Aseta arvoon true ennen lisäosan pysäyttämistä, jotta Nibe
+      Bridge -hallintapaneeli, Lovelace-resurssirekisteröinti,
+      korttitiedosto ja kaikki säilytetyt MQTT-viestit poistetaan
+      automaattisesti seuraavan siistin sammutuksen yhteydessä. Käytä
+      tätä vain lisäosaa poistettaessa. Normaalit
+      uudelleenkäynnistykset eivät vaikuta tähän. Katso dokumentaatiosta
+      täydellinen poistomenettely.
+  nibe_ca_cert:
+    name: Nibe-ohjaimen CA-varmenteen polku
+    description: >-
+      Valinnainen. Absoluuttinen polku PEM-muotoiseen
+      CA-varmennetiedostoon, jota käytetään Nibe-ohjaimen
+      HTTPS-varmenteen todentamiseen. Kun tämä on asetettu, täysi
+      TLS-ketjun ja isäntänimen todennus otetaan käyttöön kaikissa
+      ohjaimelle tehtävissä API-kutsuissa. Jätä tyhjäksi
+      hyväksyäksesi ohjaimen sisäänrakennetun itse allekirjoitetun
+      varmenteen ilman todennusta — tämä on oletusarvo ja hyväksyttävää
+      luotetussa kotiverkossa, mutta tarkoittaa, että
+      man-in-the-middle-hyökkäys lähiverkossasi voisi siepata ohjaimen
+      liikenteen. Esimerkki: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Ottaa käyttöön TLS-salauksen kaikelle sillan ja MQTT-välittäjän
+      väliselle liikenteelle. Suojaa MQTT-tunnuksesi ja kaikki
+      entiteettien komentojen hyötykuormat muiden lähiverkon laitteiden
+      luennalta. Vaatii, että välittäjäsi on määritetty TLS:lle — vaihda
+      "MQTT-välittäjän portti" arvoon 8883, jos käytät
+      Mosquitto-lisäosaa. Pois käytöstä oletuksena.
+  mqtt_ca_cert:
+    name: MQTT-välittäjän CA-varmenteen polku
+    description: >-
+      Valinnainen. Käytetään vain, kun "MQTT TLS" on käytössä.
+      Absoluuttinen polku PEM-muotoiseen CA-varmennetiedostoon, jota
+      käytetään välittäjän TLS-varmenteen todentamiseen. Jätä tyhjäksi
+      käyttääksesi järjestelmän CA-varastoa, mikä on oikein julkisen
+      CA:n allekirjoittamalla varmenteella varustetuille välittäjille.
+      Aseta tämä, jos välittäjäsi käyttää itse allekirjoitettua tai
+      yksityisesti allekirjoitettua varmennetta.
+      Esimerkki: /ssl/mqtt-ca.pem

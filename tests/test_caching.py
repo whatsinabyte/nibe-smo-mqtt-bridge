@@ -304,6 +304,16 @@ class TestValueCache(unittest.TestCase):
         self.cache.should_publish(1, 100, threshold=5, min_interval=0)
         self.assertTrue(self.cache.should_publish(1, 106, threshold=5, min_interval=0))
 
+    def test_unchanged_value_still_published_with_zero_threshold(self):
+        """change=0 (the default for any point without explicit firmware
+        'change' metadata) is deliberate 'never suppress' behavior — static
+        sensors must keep publishing every poll for continuous HA history,
+        matching test_zero_change_threshold_always_publishes in
+        test_entity_manager_state.py. Not a bug: do not 'fix' should_publish
+        to suppress unchanged values when threshold=0."""
+        self.cache.should_publish(1, 100, threshold=0, min_interval=0)
+        self.assertTrue(self.cache.should_publish(1, 100, threshold=0, min_interval=0))
+
     def test_force_overrides_suppression(self):
         self.cache.should_publish(1, 100, threshold=1, min_interval=30)
         self.assertTrue(self.cache.should_publish(1, 100, threshold=1, min_interval=30, force=True))

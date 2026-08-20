@@ -127,6 +127,60 @@ def _get_ha_base_url() -> str:
         return ''
 
 
+_ha_language: str | None = None  # cached after first successful fetch
+_ha_language_retry_after: float = 0.0  # time.time(); a failed fetch is retryable after this
+
+
+def _get_ha_language() -> str:
+    """Return Home Assistant's configured language, for auto-detecting the
+    Nibe REST API query language when the ``language`` option is left blank.
+
+    Fetches the ``language`` field from HA's config API via the Supervisor
+    proxy — the same endpoint ``_get_ha_base_url()`` reads ``internal_url``/
+    ``external_url`` from. Kept as an independent request (not sharing that
+    cached response) so a failure or retry cooldown in one does not couple
+    to the other, and each stays simple to test in isolation.
+
+    A successful result is cached for the lifetime of the add-on process.
+    A *failed* fetch is retried after a short cooldown rather than cached
+    forever, for the same reason documented on ``_get_ha_base_url()``.
+    Falls back to the empty string, meaning "use the API's default
+    (English)" — callers must never crash or block startup on this being
+    unavailable.
+    """
+    global _ha_language, _ha_language_retry_after
+    if _ha_language is not None:
+        return _ha_language
+
+    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    if not supervisor_token:
+        _ha_language = ''
+        return _ha_language
+
+    now = time.time()
+    if now < _ha_language_retry_after:
+        return ''
+
+    req = urllib.request.Request(
+        "http://supervisor/core/api/config",
+        headers={"Authorization": f"Bearer {supervisor_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            cfg = json.loads(resp.read().decode())
+        _ha_language = cfg.get('language') or ''
+        log_mqtt.debug("HA language resolved: %r", _ha_language)
+        return _ha_language
+    except (
+        urllib.error.URLError, OSError, TimeoutError,
+        json.JSONDecodeError, UnicodeDecodeError, AttributeError,
+    ) as e:
+        log_mqtt.warning("Could not fetch HA language: %s", e)
+        _ha_language_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
+        return ''
+
+
 def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> None:
     """Create or replace a persistent notification in Home Assistant.
 
@@ -287,11 +341,16 @@ class HAEntityRegistryWatcher:
                 # that raise this — closing again here would double-close.
                 log_registry.warning("Registry refresh: %s", e)
                 return
-            # Fetch registry
-            ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
-            raw = ws.recv()
-            resp = json.loads(raw)
-            ws.close()
+            # Fetch registry — close ws in a finally so a send/recv/parse
+            # failure after a successful auth handshake can't leak the
+            # socket (unlike the auth-failure paths above, which close it
+            # themselves before raising).
+            try:
+                ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
+                raw = ws.recv()
+                resp = json.loads(raw)
+            finally:
+                ws.close()
             if resp.get("success"):
                 count = 0
                 with self._registry_map_lock:
@@ -478,7 +537,18 @@ class HAEntityRegistryWatcher:
                     ping_sent_at = 0.0
 
                     if not raw:
-                        break
+                        # Server-initiated clean close (websocket-client's
+                        # normal signal — recv() doesn't always raise for
+                        # this). Must go through the except Exception branch
+                        # below like any other disconnect, not `break`
+                        # straight to the outer loop — a bare break skips
+                        # both the backoff wait and the consec_failures
+                        # counter, so a proxy that closes cleanly on every
+                        # attempt (restart loop, rate-limiting, HA Core not
+                        # yet ready at startup) would spin in a zero-delay
+                        # reconnect loop that can never trip
+                        # _MAX_CONSEC_FAILURES and give up.
+                        raise ConnectionError("WebSocket closed by server (empty recv)")
                     try:
                         msg = json.loads(raw)
                     except json.JSONDecodeError as e:
@@ -629,10 +699,21 @@ class HAEntityRegistryWatcher:
         if action == "remove":
             # Clean up the local map so stale unique_id → entity_id entries
             # do not accumulate over time (Finding 7 — _unique_id_map growth).
+            eid = data.get("entity_id")
             uid = data.get("unique_id") or data.get("config", {}).get("unique_id")
             if uid:
                 with self._registry_map_lock:
                     self._unique_id_map.pop(uid, None)
+            elif eid:
+                # Same fallback as the create/update branches above: if HA's
+                # remove event doesn't carry unique_id (plausible — the
+                # registry entry being deleted isn't necessarily echoed back
+                # in full), a reverse pop by uid can't happen, and the stale
+                # entry would otherwise never clear until the next full
+                # refresh_registry()/reconnect. A debounced refresh rebuilds
+                # the map from scratch, which naturally drops the removed
+                # entity too.
+                self._schedule_refresh_registry()
             return
 
     def _on_entity_enabled(self, ha_entity_id: str) -> None:
@@ -767,10 +848,7 @@ class ManagementCommandHandler:
         self._sub(MgmtTopic.FLUSH_MAP_PRESS,     self._handle_flush_dynamic_map)
         self._sub(MgmtTopic.RUN_TESTS_PRESS,     self._handle_run_tests)
         self._sub(MgmtTopic.TEST_CONNECTION_PRESS, self._handle_test_connection)
-        self._em.mqtt.subscribe(BrowserTopic.SNAPSHOTS_CMD, qos=1)
-        self._em.mqtt.message_callback_add(
-            BrowserTopic.SNAPSHOTS_CMD, self._handle_snapshot_cmd
-        )
+        self._sub(BrowserTopic.SNAPSHOTS_CMD,    self._handle_snapshot_cmd)
 
     # ── Internal helper ───────────────────────────────────────────────────────
 
@@ -811,8 +889,12 @@ class ManagementCommandHandler:
                 # device_modes_dirty/device_modes_cache are also read+written
                 # together as a pair by _publish_device_modes on the poll
                 # thread — _em_lock (RLock) serializes both sides.
+                # device_modes_write_seq is bumped so _publish_device_modes
+                # can detect a write landing while its own fetch_device_info()
+                # call is in flight (see its declaration for why).
                 with self._em._em_lock:
                     self._em.device_modes_dirty = True
+                    self._em.device_modes_write_seq += 1
         self._submit(_do)
 
     def _handle_aid_mode(self, _client, _userdata, message) -> None:
@@ -827,6 +909,7 @@ class ManagementCommandHandler:
                 )
                 with self._em._em_lock:
                     self._em.device_modes_dirty = True
+                    self._em.device_modes_write_seq += 1
         self._submit(_do)
 
     def _handle_reset_alarms(self, _client, _userdata, _message) -> None:
@@ -850,11 +933,13 @@ class ManagementCommandHandler:
 
     def _handle_regen_dashboard(self, _client, _userdata, _message) -> None:
         log_startup.info("Regenerate Dashboard triggered from HA")
-        cb = self._em._on_enabled_state_change
-        if cb is not None:
-            cb()
-        else:
-            log_startup.warning("Regenerate Dashboard: no callback registered")
+        def _do():
+            cb = self._em._on_enabled_state_change
+            if cb is not None:
+                cb()
+            else:
+                log_startup.warning("Regenerate Dashboard: no callback registered")
+        self._submit(_do)
 
     def _handle_enable(self, _client, _userdata, message) -> None:
         raw = message.payload.decode().strip()
@@ -880,7 +965,7 @@ class ManagementCommandHandler:
 
     def _handle_changelog_reset(self, _client, _userdata, _message) -> None:
         log_history.info("Changelog reset requested by user")
-        self._em.mark_changelog_read()
+        self._submit(self._em.mark_changelog_read)
 
     def _handle_flush_dynamic_map(self, _client, _userdata, _message) -> None:
         log_commands.info("Flush Dynamic Map triggered from HA (debug action)")
@@ -1185,6 +1270,15 @@ def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> 
             fresh        = False
         else:
             fresh = True
+        # Captured before the unlocked fetch below — see device_modes_write_seq's
+        # declaration in EntityManager.__init__ for why this matters: a write
+        # handler on another thread can set dirty=True (and bump this seq)
+        # while fetch_device_info() is in flight, meaning the response we're
+        # about to get may predate that write. Blindly clearing dirty=False
+        # afterward would clobber the writer's dirty=True with stale data,
+        # leaving HA showing the pre-write mode until another write happens
+        # to re-dirty the cache.
+        write_seq_before = entity_manager.device_modes_write_seq
 
     if not fresh:
         publisher.publish_device_modes(aid_mode=cached_aid, smart_mode=cached_smart)
@@ -1199,12 +1293,18 @@ def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> 
         return
 
     with entity_manager._em_lock:
-        entity_manager.device_modes_cache = {
-            "aidMode":   response.get("aidMode",   "off"),
-            "smartMode": response.get("smartMode", "normal"),
-        }
-        entity_manager.device_modes_dirty = False
-        aid_mode   = entity_manager.device_modes_cache["aidMode"]
-        smart_mode = entity_manager.device_modes_cache["smartMode"]
+        aid_mode   = response.get("aidMode",   "off")
+        smart_mode = response.get("smartMode", "normal")
+        if entity_manager.device_modes_write_seq == write_seq_before:
+            # No concurrent write landed during the fetch — safe to cache
+            # and clear dirty.
+            entity_manager.device_modes_cache = {
+                "aidMode": aid_mode, "smartMode": smart_mode,
+            }
+            entity_manager.device_modes_dirty = False
+        # else: a write raced this fetch and already set dirty=True for us
+        # (with a bumped write_seq) — leave dirty/cache alone so the next
+        # poll re-fetches, rather than overwriting the writer's dirty flag
+        # with a response that may predate the write.
 
     publisher.publish_device_modes(aid_mode=aid_mode, smart_mode=smart_mode)

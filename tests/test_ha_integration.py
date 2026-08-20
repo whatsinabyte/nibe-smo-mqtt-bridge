@@ -175,6 +175,37 @@ class TestSubProperties(unittest.TestCase):
         h._sub(topic, MagicMock())  # must not raise
 
 
+class TestRegisterAllRecordsEveryTopic(unittest.TestCase):
+    """register_all() must route every management topic — including
+    BrowserTopic.SNAPSHOTS_CMD — through _sub(), not a raw
+    mqtt.subscribe()/message_callback_add() call, so every one of them gets
+    recorded via entity_manager.register_mgmt_subscription() and can be
+    replayed by resubscribe_all() after a Mosquitto restart.
+
+    Regression: SNAPSHOTS_CMD was previously wired up with a direct
+    self._em.mqtt.subscribe()/message_callback_add() call, bypassing _sub()
+    entirely. It worked at startup but silently stopped receiving snapshot
+    save/restore/delete commands after any broker restart, since
+    resubscribe_all() had no record of it to replay — with no error and no
+    log line, since the broker legitimately has no subscriber for a topic
+    it was never told to keep.
+    """
+
+    def test_snapshots_cmd_is_recorded_for_resubscription(self):
+        from nibe_ha_integration import ManagementCommandHandler
+        from nibe_mqtt_publisher import BrowserTopic
+
+        em = _make_em()
+        pub = MagicMock()
+        exe = MagicMock()
+        with patch.object(em, 'register_mgmt_subscription') as mock_register:
+            handler = ManagementCommandHandler(em.mqtt, em, pub, exe)
+            handler.register_all()
+
+        registered_topics = [call.args[0] for call in mock_register.call_args_list]
+        self.assertIn(BrowserTopic.SNAPSHOTS_CMD, registered_topics)
+
+
 # ---------------------------------------------------------------------------
 # DynamicPointMap expected_active_dynamic_points properties
 # ---------------------------------------------------------------------------
@@ -619,6 +650,23 @@ class TestManagementHandlers(unittest.TestCase):
         topics = [c.args[0] for c in self.mqtt.publish.call_args_list]
         self.assertNotIn(MgmtTopic.AID_STATE, topics)
 
+    def test_aid_mode_success_bumps_write_seq(self):
+        """Regression: _publish_device_modes (nibe_ha_integration.py) uses
+        device_modes_write_seq to detect a write landing while its own
+        fetch_device_info() call is in flight — without bumping it here,
+        that race-detection is a no-op and a concurrent write's dirty=True
+        can be silently clobbered by a stale in-flight fetch's result."""
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        before = self.em.device_modes_write_seq
+        self._run('AID_SET', 'ON')
+        self.assertEqual(self.em.device_modes_write_seq, before + 1)
+
+    def test_aid_mode_failure_does_not_bump_write_seq(self):
+        self.em._api.write_device_mode = MagicMock(return_value=False)
+        before = self.em.device_modes_write_seq
+        self._run('AID_SET', 'ON')
+        self.assertEqual(self.em.device_modes_write_seq, before)
+
     # ── smart mode handler ────────────────────────────────────────────────────
 
     def test_smart_mode_normal(self):
@@ -642,6 +690,18 @@ class TestManagementHandlers(unittest.TestCase):
         from nibe_mqtt_publisher import MgmtTopic
         topics = [c.args[0] for c in self.mqtt.publish.call_args_list]
         self.assertNotIn(MgmtTopic.SMART_STATE, topics)
+
+    def test_smart_mode_success_bumps_write_seq(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        before = self.em.device_modes_write_seq
+        self._run('SMART_SET', 'away')
+        self.assertEqual(self.em.device_modes_write_seq, before + 1)
+
+    def test_smart_mode_failure_does_not_bump_write_seq(self):
+        self.em._api.write_device_mode = MagicMock(return_value=False)
+        before = self.em.device_modes_write_seq
+        self._run('SMART_SET', 'away')
+        self.assertEqual(self.em.device_modes_write_seq, before)
 
     # ── reset alarms handler ──────────────────────────────────────────────────
 
@@ -719,9 +779,14 @@ class TestManagementHandlers(unittest.TestCase):
     # ── changelog reset handler ───────────────────────────────────────────────
 
     def test_changelog_reset_calls_mark_changelog_read(self):
+        """Regression: _handle_changelog_reset now dispatches through
+        _submit() (like every other handler) so an exception in
+        mark_changelog_read() gets this project's own log_commands.exception
+        safety net instead of silently vanishing into paho's own message-
+        dispatch exception handling — so this must wait for the executor via
+        _run(), not call the handler synchronously and assert immediately."""
         with patch.object(self.em, 'mark_changelog_read') as mock_read:
-            handler = self._get_handler('CHANGELOG_READ_PRESS')
-            handler(None, None, self._msg(''))
+            self._run('CHANGELOG_READ_PRESS', '')
         mock_read.assert_called_once()
 
     # ── flush dynamic map handler ───────────────────────────────────────────
@@ -2191,6 +2256,54 @@ class TestPublishDeviceModesHaIntegration(unittest.TestCase):
         self.assertEqual(em.device_modes_cache, {'aidMode': 'on', 'smartMode': 'normal'})
         pub.publish_device_modes.assert_not_called()
 
+    def test_concurrent_write_during_fetch_does_not_clobber_its_dirty_flag(self):
+        """Regression: fetch_device_info() runs unlocked — if a mode-write
+        handler on another thread sets dirty=True (bumping
+        device_modes_write_seq) while this fetch is in flight, the response
+        we get back may predate that write. Blindly clearing dirty=False
+        afterward would clobber the writer's dirty=True with stale data,
+        leaving HA showing the pre-write mode until another write happens
+        to re-dirty the cache. Simulated here by bumping write_seq from
+        inside the fetch_device_info side_effect, mimicking a write landing
+        mid-fetch."""
+        fn = self._import()
+        em = _make_em()
+        em.device_modes_dirty = True
+        em.device_modes_cache = {}
+
+        def fetch_with_concurrent_write():
+            # Simulate _handle_smart_mode's write landing while our fetch
+            # is in flight: it bumps the seq and (re-)sets dirty=True.
+            em.device_modes_write_seq += 1
+            em.device_modes_dirty = True
+            return {'aidMode': 'off', 'smartMode': 'normal'}  # stale response
+
+        em._api.fetch_device_info.side_effect = fetch_with_concurrent_write
+        pub = MagicMock()
+        fn(em, pub)
+
+        # The stale response is still published this cycle (best-effort —
+        # matches existing behavior of always publishing on a successful
+        # fetch), but the dirty flag the concurrent writer set must survive.
+        self.assertTrue(em.device_modes_dirty,
+            "a concurrent write's dirty=True must not be clobbered by a "
+            "fetch that was already in flight when the write landed")
+        # And the cache must not have been overwritten with the stale
+        # response either — the next poll needs to actually re-fetch.
+        self.assertEqual(em.device_modes_cache, {})
+
+    def test_no_concurrent_write_still_clears_dirty_normally(self):
+        """Sanity check: without a concurrent write (write_seq unchanged
+        during the fetch), the normal cache-update-and-clear-dirty path
+        must still work exactly as before."""
+        fn = self._import()
+        em = _make_em()
+        em.device_modes_dirty = True
+        em._api.fetch_device_info.return_value = {'aidMode': 'on', 'smartMode': 'away'}
+        fn(em, MagicMock())
+        self.assertIs(em.device_modes_dirty, False)
+        self.assertEqual(em.device_modes_cache, {'aidMode': 'on', 'smartMode': 'away'})
+
     def test_missing_aidmode_key_defaults_to_off(self):
         fn = self._import()
         em = _make_em()
@@ -3115,10 +3228,18 @@ class TestHandleRegenDashboard(unittest.TestCase):
         raise KeyError('No handler for REGEN_DASH_PRESS')
 
     def test_callback_called_when_registered(self):
+        """Regression: _handle_regen_dashboard now dispatches through
+        _submit() (like every other handler) so an exception in the
+        callback gets this project's own log_commands.exception safety net
+        instead of silently vanishing into paho's own message-dispatch
+        exception handling — so this must wait for the executor before
+        asserting, not assert immediately after the synchronous-looking
+        handler call."""
         callback = MagicMock()
         self.em._on_enabled_state_change = callback
         handler = self._get_regen_handler()
         handler(None, None, MagicMock())
+        self.executor.shutdown(wait=True)
         callback.assert_called_once()
 
     def test_no_crash_when_callback_is_none(self):
@@ -3126,6 +3247,7 @@ class TestHandleRegenDashboard(unittest.TestCase):
         self.em._on_enabled_state_change = None
         handler = self._get_regen_handler()
         handler(None, None, MagicMock())  # must not raise
+        self.executor.shutdown(wait=True)
 
     def test_handler_registered_for_regen_topic(self):
         """Verify the handler is wired to the correct MQTT topic."""
@@ -4146,6 +4268,33 @@ class TestRegistryWatcherRun(unittest.TestCase):
             w._run()
         self.assertEqual(inner_call[0], 1)  # recv called once before empty break
 
+    def test_inner_loop_empty_recv_goes_through_backoff_and_failure_count(self):
+        """Regression: an empty recv() (server-initiated clean close) must be
+        treated like any other disconnect — going through the except
+        Exception branch's backoff wait and consec_failures increment — not
+        a bare `break` straight to the outer loop's immediate reconnect.
+        Without this, a proxy that closes cleanly on every attempt (restart
+        loop, rate-limiting, HA Core not yet ready at startup) spins in a
+        zero-delay reconnect loop that can never trip _MAX_CONSEC_FAILURES
+        and give up."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = ""   # every connect's recv immediately closes
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch.object(w._stop_event, 'wait') as mock_wait:
+            # Stop after a few reconnect attempts rather than running until
+            # _MAX_CONSEC_FAILURES (10) — set the stop event once we've seen
+            # enough backoff waits to prove the throttle is engaged.
+            def fake_wait(timeout=None):
+                if mock_wait.call_count >= 3:
+                    w._stop_event.set()
+            mock_wait.side_effect = fake_wait
+            w._run()
+        self.assertGreaterEqual(mock_wait.call_count, 3,
+            "empty recv() must trigger the backoff wait on every disconnect, "
+            "not bypass it via a bare break")
+
     def test_inner_loop_invalid_json_continues(self):
         """Unparseable JSON is silently skipped; loop continues."""
         w = self._make_watcher()
@@ -4414,6 +4563,25 @@ class TestRefreshRegistryAuthHandshake(unittest.TestCase):
                           if c.get('type') == 'config/entity_registry/list']
         self.assertEqual(registry_sends, [])
 
+    def test_post_auth_fetch_failure_still_closes_ws(self):
+        """Regression: a failure after successful auth (send/recv/json.loads
+        raising — a network hiccup, timeout, or malformed frame from the
+        Supervisor's WebSocket proxy) must still close the socket. Before the
+        fix, ws.close() only ran after send/recv/json.loads succeeded, so
+        any exception in that fetch step leaked the connection — the outer
+        except caught the error but never reached the close() call."""
+        w = self._make_watcher()
+        ws_mod, ws = self._make_ws([{"type": "auth_required"}, {"type": "auth_ok"}])
+        ws.recv.side_effect = [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "auth_ok"}),
+            RuntimeError("connection reset mid-fetch"),
+        ]
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.dict('sys.modules', {'websocket': ws_mod}):
+            w.refresh_registry()   # must not raise
+        ws.close.assert_called_once()
+
     def test_auth_required_received_before_sending_auth(self):
         """Verify the correct handshake order: recv auth_required FIRST,
         then send auth — not the reversed order that was previously used."""
@@ -4596,6 +4764,22 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
             returncode=0,
             stdout='2226 passed in 51s',
             open_side_effect=PermissionError('read-only filesystem'),
+        )
+        from nibe_mqtt_publisher import MgmtTopic
+        states = [p for t, p in calls if t == MgmtTopic.RUN_TESTS_STATE]
+        self.assertIn('passed', states)
+
+    def test_html_postprocess_unicode_decode_error_does_not_crash_handler(self):
+        """Regression: a kill (abort or hard-timeout) can truncate the HTML
+        report mid-write, mid-multibyte-UTF-8-sequence — open(encoding='utf-8')
+        then raises UnicodeDecodeError, which is NOT an OSError subclass. It
+        must be caught alongside OSError, not left to propagate to the outer
+        except Exception, which would replace the real 'passed' status with a
+        generic 'error' state."""
+        calls = self._trigger_and_wait(
+            returncode=0,
+            stdout='2226 passed in 51s',
+            open_side_effect=UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte'),
         )
         from nibe_mqtt_publisher import MgmtTopic
         states = [p for t, p in calls if t == MgmtTopic.RUN_TESTS_STATE]
@@ -5521,6 +5705,41 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
                 w._refresh_timer.cancel()
         mock_sched.assert_called_once()
 
+    # ── remove: no uid → _schedule_refresh_registry ──────────────────────────
+
+    def test_remove_no_uid_calls_schedule_refresh_registry(self):
+        """Regression: remove event with eid but no unique_id must call
+        _schedule_refresh_registry(), mirroring the create/update fallback
+        above — otherwise, if HA's remove event genuinely lacks unique_id
+        (the registry entry being deleted isn't necessarily echoed back in
+        full), the reverse pop by uid can't happen and the stale
+        _unique_id_map entry never clears until the next full
+        refresh_registry()/reconnect."""
+        w = self._make_watcher()
+        with patch.object(w, '_schedule_refresh_registry') as mock_sched:
+            w._handle_event({'data': {
+                'action':    'remove',
+                'entity_id': 'sensor.nibe_100',
+                # deliberately no 'unique_id'
+            }})
+            if w._refresh_timer is not None:
+                w._refresh_timer.cancel()
+        mock_sched.assert_called_once()
+
+    def test_remove_with_uid_does_not_call_schedule_refresh_registry(self):
+        """When unique_id IS present, remove must take the direct pop path,
+        not the refresh fallback — no wasted WebSocket round-trip."""
+        w = self._make_watcher()
+        w._unique_id_map['nibe_100'] = 'sensor.nibe_100'
+        with patch.object(w, '_schedule_refresh_registry') as mock_sched:
+            w._handle_event({'data': {
+                'action':    'remove',
+                'entity_id': 'sensor.nibe_100',
+                'unique_id': 'nibe_100',
+            }})
+        mock_sched.assert_not_called()
+        self.assertNotIn('nibe_100', w._unique_id_map)
+
     # ── update: disabled_by change → _on_entity_enabled / _disabled ──────────
 
     def test_update_disabled_by_user_calls_on_entity_enabled(self):
@@ -5727,6 +5946,119 @@ class TestGetHaBaseUrl(unittest.TestCase):
             second = _get_ha_base_url()
         self.assertEqual(second, '')
         mock_open.assert_not_called()
+
+
+# ===========================================================================
+# _get_ha_language — supervisor API fetch and caching
+# ===========================================================================
+
+
+class TestGetHaLanguage(unittest.TestCase):
+    """Tests for _get_ha_language():
+
+      • Returns HA's configured language when present
+      • Returns '' when language is absent from the supervisor response
+      • Returns '' when no supervisor token
+      • Returns '' and logs warning when supervisor API call fails
+      • Caches the result after first successful fetch
+      • Independent of _get_ha_base_url's own cache/retry state
+    """
+
+    def setUp(self):
+        import nibe_ha_integration as _hi
+        _hi._ha_language = None
+        _hi._ha_language_retry_after = 0.0
+
+    def tearDown(self):
+        import nibe_ha_integration as _hi
+        _hi._ha_language = None
+        _hi._ha_language_retry_after = 0.0
+
+    def _mock_api(self, response_dict):
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = json.dumps(response_dict).encode()
+        return patch('urllib.request.urlopen', return_value=mock_resp)
+
+    def test_returns_language_when_present(self):
+        from nibe_ha_integration import _get_ha_language
+        cfg = {'language': 'nl', 'internal_url': 'http://192.168.1.10:8123'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg):
+            result = _get_ha_language()
+        self.assertEqual(result, 'nl')
+
+    def test_returns_empty_string_when_language_absent(self):
+        from nibe_ha_integration import _get_ha_language
+        cfg = {'internal_url': 'http://192.168.1.10:8123'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg):
+            result = _get_ha_language()
+        self.assertEqual(result, '')
+
+    def test_no_supervisor_token_returns_empty_string(self):
+        from nibe_ha_integration import _get_ha_language
+        with patch.dict('os.environ', {}, clear=True):
+            result = _get_ha_language()
+        self.assertEqual(result, '')
+
+    def test_api_failure_returns_empty_string_and_is_retryable(self):
+        """A failed fetch must not be cached forever — it's retried after
+        the cooldown, unlike a permanently-missing SUPERVISOR_TOKEN."""
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError("unreachable")):
+            result = _get_ha_language()
+        self.assertEqual(result, '')
+        self.assertIsNone(_hi._ha_language)  # not cached — only the cooldown was set
+        self.assertGreater(_hi._ha_language_retry_after, 0.0)
+
+    def test_result_cached_after_first_successful_fetch(self):
+        """A second call must not re-hit the network."""
+        from nibe_ha_integration import _get_ha_language
+        cfg = {'language': 'de'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg):
+            first = _get_ha_language()
+        self.assertEqual(first, 'de')
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen') as mock_open:
+            second = _get_ha_language()
+        self.assertEqual(second, 'de')
+        mock_open.assert_not_called()
+
+    def test_independent_of_get_ha_base_url_cache(self):
+        """_get_ha_language() must not be blocked or skipped just because
+        _get_ha_base_url()'s own cache/retry-cooldown state is set — the two
+        must fetch independently, since one's failure must not silently
+        disable the other."""
+        import nibe_ha_integration as _hi
+        _hi._ha_base_url = 'http://cached-from-earlier:8123'
+        _hi._ha_base_url_retry_after = 0.0
+        try:
+            from nibe_ha_integration import _get_ha_language
+            cfg = {'language': 'sv'}
+            with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+                 self._mock_api(cfg):
+                result = _get_ha_language()
+            self.assertEqual(result, 'sv')
+        finally:
+            _hi._ha_base_url = None
+            _hi._ha_base_url_retry_after = 0.0
+
+    def test_request_built_with_correct_url_headers_and_method(self):
+        from nibe_ha_integration import _get_ha_language
+        cfg = {'language': 'nl'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'sekrit-tok'}), \
+             self._mock_api(cfg) as mock_open:
+            _get_ha_language()
+        req = mock_open.call_args.args[0]
+        self.assertEqual(req.full_url, "http://supervisor/core/api/config")
+        self.assertEqual(req.get_header('Authorization'), 'Bearer sekrit-tok')
+        self.assertEqual(req.get_method(), 'GET')
+
 
 # ===========================================================================
 # Branch coverage: targeted gaps from --cov-branch audit

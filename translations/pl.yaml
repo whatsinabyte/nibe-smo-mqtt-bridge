@@ -50,6 +50,18 @@ configuration:
       Sposób wyświetlania sterownika w Home Assistant. Domyślnie
       "Nibe SMO S40", ale można to dostosować do rzeczywistego sprzętu
       (np. "Nibe S1155" lub "Nibe VVM S320").
+  language:
+    name: Język
+    description: >-
+      Język nazw/opisów encji zwracanych przez REST API sterownika. "auto"
+      (domyślnie) podąża za językiem ustawionym w samym Home Assistant;
+      wybierz konkretny język, aby to nadpisać. Ta lista odzwierciedla
+      własne menu "Language" sterownika — tylko kilka pozycji zostało
+      bezpośrednio potwierdzonych jako działające przez samo REST API, ale
+      wybór nieobsługiwanego języka jest nieszkodliwy: system po cichu
+      przełącza się na angielski, nigdy nie zwracając błędu. Nie tłumaczy
+      pulpitu Menu Nibe, który pozostaje stałą treścią w języku angielskim.
+      Po zmianie tego ustawienia wymagany jest restart.
   poll_interval:
     name: Interwał odpytywania
     description: >-
@@ -71,11 +83,25 @@ configuration:
       pulpit. "all" udostępnia każdy wykryty punkt; "none" nie
       udostępnia niczego, dopóki nie włączysz encji ręcznie. Jest to
       stosowane przy uruchomieniu — zmiana wymaga ponownego uruchomienia
-      dodatku, a przełączenie na inny tryb wyłącza encje, które nie
-      znajdują się w nowo wybranym zestawie — encje włączone ręcznie za
-      pomocą karty Entity Manager są również usuwane przy zmianie trybu,
-      ale zachowywane przy ponownym uruchomieniu w tym samym trybie.
-      "essential" to zalecany punkt wyjścia.
+      dodatku, a przełączenie na inny tryb domyślnie wyłącza encje, które
+      nie znajdują się w nowo wybranym zestawie — encje włączone ręcznie
+      za pomocą karty Entity Manager są również usuwane przy zmianie
+      trybu, ale zachowywane przy ponownym uruchomieniu w tym samym
+      trybie. Zobacz "Zachowanie przy zmianie trybu" poniżej, aby to
+      zmienić. "essential" to zalecany punkt wyjścia.
+  mode_switch_behavior:
+    name: Zachowanie przy zmianie trybu
+    description: >-
+      Co dzieje się z już włączonymi encjami po przełączeniu na inny
+      tryb. "replace" (domyślnie) przywraca zestaw włączonych encji
+      dokładnie do punktów nowego trybu — wszystko, co jest obecnie
+      włączone i nie należy do nowego trybu, w tym encje włączone
+      ręcznie za pomocą karty Entity Manager, zostaje wyłączone. "merge"
+      jedynie dodaje punkty nowego trybu do tego, co już jest włączone —
+      zmiana trybu nigdy niczego nie wyłącza. Dotyczy każdej zmiany
+      trybu. Nie ma wpływu na nową instalację ani na ponowne
+      uruchomienie w tym samym trybie — wywołuje to tylko faktyczna
+      zmiana trybu.
   log_level:
     name: Poziom logowania
     description: >-

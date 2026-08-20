@@ -51,6 +51,18 @@ configuration:
       Hvordan styringsenheten vises i Home Assistant. Standardverdien er
       "Nibe SMO S40", men du kan endre dette til å matche din faktiske
       maskinvare (f.eks. "Nibe S1155" eller "Nibe VVM S320").
+  language:
+    name: Språk
+    description: >-
+      Språk for entitetsnavn/-beskrivelser som returneres av styringsenhetens
+      REST-API. "auto" (standard) følger språket som er satt i Home
+      Assistant selv; velg et spesifikt språk for å overstyre dette. Denne
+      listen speiler styringsenhetens egen "Language"-meny — kun noen få
+      oppføringer er direkte bekreftet å fungere via selve REST-APIet, men
+      å velge et språk som ikke støttes er ufarlig: det faller stille
+      tilbake til engelsk, aldri en feil. Oversetter ikke
+      Nibe-menyer-dashbordet, som forblir fast engelsk innhold. En omstart
+      kreves etter at denne innstillingen er endret.
   poll_interval:
     name: Avspørringsintervall
     description: >-
@@ -71,11 +83,25 @@ configuration:
       dashbordet. "all" eksponerer hvert oppdaget punkt; "none"
       eksponerer ingenting før du aktiverer entiteter manuelt. Dette
       brukes ved oppstart — å endre det krever en omstart av tillegget,
-      og å bytte til en annen modus deaktiverer entiteter som ikke er i
-      det nye valgte settet — entiteter du har aktivert manuelt via
-      Entity Manager-kortet blir også fjernet ved modusbytte, men
-      bevares ved omstart i samme modus. "essential" er det anbefalte
-      utgangspunktet.
+      og å bytte til en annen modus deaktiverer som standard entiteter
+      som ikke er i det nye valgte settet — entiteter du har aktivert
+      manuelt via Entity Manager-kortet blir også fjernet ved
+      modusbytte, men bevares ved omstart i samme modus. Se
+      "Oppførsel ved modusbytte" nedenfor for å endre dette. "essential"
+      er det anbefalte utgangspunktet.
+  mode_switch_behavior:
+    name: Oppførsel ved modusbytte
+    description: >-
+      Hva som skjer med allerede aktiverte entiteter når du bytter til
+      en annen modus. "replace" (standard) tilbakestiller det aktiverte
+      settet til nøyaktig den nye modusens punkter — alt som for
+      øyeblikket er aktivert og ikke er en del av den nye modusen,
+      inkludert entiteter aktivert manuelt via Entity Manager-kortet,
+      deaktiveres. "merge" legger kun til den nye modusens punkter til
+      det som allerede er aktivert — ingenting deaktiveres noensinne av
+      et modusbytte. Gjelder for hvert modusbytte. Har ingen effekt ved
+      en ny installasjon eller ved omstart i samme modus — bare et
+      faktisk modusbytte utløser dette.
   log_level:
     name: Loggnivå
     description: >-

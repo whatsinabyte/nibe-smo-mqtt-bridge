@@ -342,7 +342,14 @@ def run_test_suite(
                 'Check requirements-test.txt and rebuild the add-on.',
                 report_path,
             )
-        except OSError as _e:
+        except (OSError, UnicodeDecodeError) as _e:
+            # UnicodeDecodeError (not an OSError subclass) can happen when a
+            # kill (abort_test_suite's SIGKILL, or the hard-timeout path)
+            # truncates the report mid-write, mid-multibyte-UTF-8-sequence.
+            # Must not be allowed to propagate to the outer except below —
+            # that would replace the carefully-computed aborted/timed_out/
+            # failed status with a generic 'error' state, losing exactly the
+            # abort/timeout distinction this module exists to preserve.
             log_commands.warning(
                 'Could not post-process HTML report at %s: %s',
                 report_path,

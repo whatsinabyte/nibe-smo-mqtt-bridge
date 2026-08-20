@@ -79,6 +79,7 @@ from nibe_entity_manager import EntityManager, _build_device_info, decide_startu
 from nibe_ha_integration import (
     HAEntityRegistryWatcher,
     ManagementCommandHandler,
+    _get_ha_language,
     dismiss_ha,
     notify_ha,
     update_alarm_state,
@@ -103,6 +104,7 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import abort_test_suite
+from nibe_utils import TLS_COMPAT_CIPHERS
 
 # ============================================================================
 # BRIDGE VERSION
@@ -177,10 +179,17 @@ class BridgeConfig:
     device_name: str = "Nibe SMO S40"
     device_id:   str = "nibe_heatpump_001"
 
+    # Query language for the Nibe REST API (BCP-47 tag, e.g. "nl"). "auto"
+    # (config.yaml's default) means "not explicitly set" — load_config()
+    # resolves this to HA's own configured language via the Supervisor API
+    # in that case; any other value here always wins over auto-detection.
+    language: str = "auto"
+
     # Behaviour
     poll_interval:        int = 30
     log_level:            str = "info"
     mode:                 str = "essential"
+    mode_switch_behavior: str = "replace"
     debug_mode:            bool = False
     api_failure_threshold: int = 3
     changelog_retention_days: int = 90
@@ -327,8 +336,12 @@ def load_config(cli_args=None) -> BridgeConfig:
             cfg.nibe_username = _opt_str(opts, 'nibe_username') or cfg.nibe_username
             cfg.nibe_password = _opt_str(opts, 'nibe_password') or cfg.nibe_password
             cfg.device_name   = _opt_str(opts, 'device_name')   or cfg.device_name
+            cfg.language      = _opt_str(opts, 'language')      or cfg.language
             cfg.log_level     = _opt_str(opts, 'log_level')     or cfg.log_level
             cfg.mode          = _opt_str(opts, 'mode')          or cfg.mode
+            cfg.mode_switch_behavior = (
+                _opt_str(opts, 'mode_switch_behavior') or cfg.mode_switch_behavior
+            )
             if 'debug_mode' in opts:
                 cfg.debug_mode = bool(opts['debug_mode'])
             if opts.get('poll_interval'):
@@ -373,6 +386,10 @@ def load_config(cli_args=None) -> BridgeConfig:
         cfg.log_level = env['NIBE_LOG_LEVEL']
     if env.get('NIBE_MODE'):
         cfg.mode = env['NIBE_MODE']
+    if env.get('NIBE_MODE_SWITCH_BEHAVIOR'):
+        cfg.mode_switch_behavior = env['NIBE_MODE_SWITCH_BEHAVIOR']
+    if env.get('NIBE_LANGUAGE'):
+        cfg.language = env['NIBE_LANGUAGE']
     if env.get('NIBE_REMOVE_FRONTEND') == '1':
         cfg.remove_frontend = True
     # Numeric env vars get their own try/except, unlike the plain string
@@ -424,6 +441,22 @@ def load_config(cli_args=None) -> BridgeConfig:
             f"— using 'info'"
         )
         cfg.log_level = "info"
+    _VALID_MODE_SWITCH_BEHAVIORS = {"replace", "merge"}
+    if cfg.mode_switch_behavior not in _VALID_MODE_SWITCH_BEHAVIORS:
+        deferred_warnings.append(
+            f"mode_switch_behavior={cfg.mode_switch_behavior!r} is not valid "
+            f"{sorted(_VALID_MODE_SWITCH_BEHAVIORS)} — using 'replace'"
+        )
+        cfg.mode_switch_behavior = "replace"
+
+    # ── Language auto-detection ────────────────────────────────────────────
+    # An explicit `language` from any source above always wins. Only when
+    # it's "auto" (config.yaml's default) or blank (a hand-edited
+    # options.json or NIBE_LANGUAGE, which bypass the schema) do we ask HA's
+    # own configured language via the Supervisor API — same precedence
+    # pattern as mqtt_host's auto-discovery.
+    if cfg.language in ('', 'auto'):
+        cfg.language = _get_ha_language()
 
     # ── Derived values ─────────────────────────────────────────────────────
     cfg.api_base_url = f"https://{cfg.api_host}:{cfg.api_port}/api/v1/devices/0"
@@ -634,6 +667,12 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode    = ssl.CERT_NONE
+    # Verification is already off above, so these don't weaken security —
+    # they widen compatibility with the Nibe controller's old embedded TLS
+    # stack, which can offer ciphers below OpenSSL's default SECLEVEL=2 or
+    # negotiate below the platform's default minimum TLS version.
+    ctx.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    ctx.set_ciphers(TLS_COMPAT_CIPHERS)
     log_startup.warning(
         "TLS: Certificate verification disabled (self-signed cert). "
         "Enable verification by setting 'nibe_ca_cert' in add-on options."
@@ -946,8 +985,12 @@ def _build_infrastructure(
         log_api.error("  secrets.yaml: add  nibe_basic_auth: <base64token>")
         sys.exit(1)
 
-    ssl_context = _build_ssl_context(cfg.nibe_ca_cert)
-    api_client  = NibeApiClient(cfg.api_base_url, cfg.nibe_auth, ssl_context)
+    try:
+        ssl_context = _build_ssl_context(cfg.nibe_ca_cert)
+    except ssl.SSLError as e:
+        log_startup.error("Could not build TLS context for the Nibe API connection: %s", e)
+        sys.exit(1)
+    api_client  = NibeApiClient(cfg.api_base_url, cfg.nibe_auth, ssl_context, cfg.language)
 
     log_startup.info("Bridge version: %s", BRIDGE_VERSION)
     copy_card_file()
@@ -1134,6 +1177,7 @@ def _run_startup_sequence(
     entity_manager.bulk_interval            = cfg.poll_interval
     entity_manager.api_failure_threshold    = cfg.api_failure_threshold
     entity_manager.changelog_retention_days = cfg.changelog_retention_days
+    entity_manager.mode_switch_behavior     = cfg.mode_switch_behavior
     entity_manager.device_info              = device_info
 
     # Wire entity_manager into the on_connect reconnection callback.
@@ -1413,6 +1457,13 @@ def _shutdown(
     abort_test_suite("add-on shutting down")
 
     log_startup.info("Waiting for in-flight commands to complete...")
+    # Share one _SHUTDOWN_TIMEOUT deadline across all three executors rather
+    # than giving each its own full budget — three independent 35s joins
+    # could otherwise sum to ~105s if all three are legitimately busy at
+    # once, defeating the point of _SHUTDOWN_TIMEOUT being "slightly longer
+    # than the 30s API request timeout" and risking a SIGKILL mid-drain from
+    # a supervisor whose stop grace period is shorter than that.
+    shutdown_deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
     for executor, name in [
         (entity_manager._write_executor, "write"),
         (mgmt_executor,                  "management"),
@@ -1422,10 +1473,12 @@ def _shutdown(
             target=executor.shutdown, kwargs={"wait": True, "cancel_futures": False}
         )
         t.start()
-        t.join(timeout=_SHUTDOWN_TIMEOUT)
+        remaining = max(0.0, shutdown_deadline - time.monotonic())
+        t.join(timeout=remaining)
         if t.is_alive():
             log_startup.warning(
-                "%s executor did not finish within %ds — proceeding with shutdown",
+                "%s executor did not finish within the shared %ds shutdown "
+                "budget — proceeding with shutdown",
                 name, _SHUTDOWN_TIMEOUT,
             )
 

@@ -46,6 +46,17 @@ configuration:
       How the controller device appears in Home Assistant. Defaults to
       "Nibe SMO S40" but you can set this to match your actual hardware
       (e.g. "Nibe S1155" or "Nibe VVM S320").
+  language:
+    name: Language
+    description: >-
+      Language for entity names/descriptions returned by the controller's
+      REST API. "auto" (default) follows Home Assistant's own configured
+      language; pick a specific language to override it. This list mirrors
+      the controller's own "Language" menu — only a few entries have been
+      directly confirmed to work through the REST API itself, but picking
+      an unsupported one is harmless: it silently falls back to English,
+      never an error. Does not translate the Nibe Menus dashboard, which
+      is fixed English content. A restart is required after changing this.
   poll_interval:
     name: Poll interval
     description: >-
@@ -66,10 +77,23 @@ configuration:
       exposes nothing until you enable entities manually. This is applied
       at startup — changing it requires an add-on restart, and switching
       to a different mode disables any entities not in the newly selected
-      set — any entities you enabled manually via the Entity Manager card
-      are also pruned when the mode changes, but preserved across
-      restarts with the same mode.
+      set by default — any entities you enabled manually via the Entity
+      Manager card are also pruned when the mode changes, but preserved
+      across restarts with the same mode. See "Mode switch behavior"
+      below to change this.
       "essential" is the recommended starting point.
+  mode_switch_behavior:
+    name: Mode switch behavior
+    description: >-
+      What happens to already-enabled entities when you switch to a
+      different mode. "replace" (default) reconciles the enabled set to
+      exactly the new mode's points — anything currently enabled that
+      isn't part of the new mode, including entities enabled manually via
+      the Entity Manager card, gets disabled. "merge" only ever adds the
+      new mode's points on top of what's already enabled — nothing is
+      ever disabled by a mode change. Applies to every mode switch. Has
+      no effect on a fresh install or on restarting with the same mode —
+      only an actual mode change triggers this.
   log_level:
     name: Log level
     description: >-

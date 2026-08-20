@@ -268,8 +268,7 @@ class TestCrossFunctionProperties(unittest.TestCase):
         from nibe_entity_detection import get_entity_options, parse_description_mapping
         mapping = parse_description_mapping(description)
         if mapping is not None and len(mapping) >= 2:
-            meta = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
-            opts = get_entity_options(99999, meta, description)
+            opts = get_entity_options(99999, description)
             # Not guaranteed to match exactly due to dedup, but must be ≥2 or
             # the description had duplicate labels
             if len(set(mapping.values())) >= 2:
@@ -3133,7 +3132,7 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '0=Off,1=On')
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, '0=Off,1=On')
         self.assertIn('state_topic',   config)
         self.assertIn('command_topic', config)
 
@@ -3141,7 +3140,7 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '0=Off,1=On')
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, '0=Off,1=On')
         self.assertIn('options', config)
         self.assertEqual(len(config['options']), 2)
 
@@ -3149,7 +3148,7 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, self._meta(), '')
+        discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, '')
         self.assertNotIn('options', config)
 
     # ── publish_entity_discovery integration ─────────────────────────────────
@@ -3178,6 +3177,30 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
             if c.args[0] == config_topic
         ]
         self.assertEqual(len(config_publishes_after), 1, "Second call must not republish unchanged config")
+
+    def test_publish_entity_discovery_skips_unchanged_attributes(self):
+        """Regression: _publish_static_attributes used to be called
+        unconditionally, before the config-hash dedup check, so every poll
+        cycle for an unchanged point rewrote the retained .../attributes
+        topic with identical JSON — wasted broker I/O on every single poll,
+        which matters on an ODROID-M1. It must now be gated by the same
+        hash check that already skips the unchanged .../config topic."""
+        from nibe_mqtt_publisher import t_attributes
+        point = self._point('sensor')
+        self.pub.publish_entity_discovery(point, {})
+        attributes_topic = t_attributes('sensor', 'nibe_1000')
+        attr_publishes = [
+            c for c in self.mqtt.publish.call_args_list
+            if c.args[0] == attributes_topic
+        ]
+        self.assertEqual(len(attr_publishes), 1, "First call should publish attributes once")
+        self.pub.publish_entity_discovery(point, {})
+        attr_publishes_after = [
+            c for c in self.mqtt.publish.call_args_list
+            if c.args[0] == attributes_topic
+        ]
+        self.assertEqual(len(attr_publishes_after), 1,
+                          "Second call must not republish unchanged attributes")
 
     def test_publish_entity_discovery_republishes_after_hash_invalidation(self):
         point = self._point('sensor')
@@ -5193,6 +5216,13 @@ class TestPublishEntityDiscoveryMqttBranches(unittest.TestCase):
     def setUp(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
         self.mqtt = MagicMock()
+        # rc=0 ("success") on every publish() call — matches the convention
+        # used throughout this file. Without it, mqtt.publish(...).rc is an
+        # unconfigured MagicMock attribute, which is != 0, so
+        # publish_entity_discovery's own "MQTT error" branch fires on every
+        # discovery-config publish in this class, independently of whatever
+        # each test is actually trying to exercise.
+        self.mqtt.publish.return_value = MagicMock(rc=0)
         self.pub = MqttDiscoveryPublisher(
             mqtt_client=self.mqtt, device_info={},
             device_id='test', device_name='Test',
@@ -6757,11 +6787,10 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
         """Key must be 'options' exactly — HA selects won't populate otherwise."""
         self._pub()
         config = {}
-        metadata = {'minValue': 0, 'maxValue': 1, 'divisor': 1}
         description = '0=Manual\n1=Auto'
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, metadata, description)
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, description)
         if 'options' in config:  # only if get_entity_options returns non-empty
             self.assertIsInstance(config['options'], list)
             self.assertGreater(len(config['options']), 0)
@@ -6772,7 +6801,7 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, {}, '')
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, '')
         # No options → key must not be present (HA would render empty select)
         if 'options' in config:
             self.assertIsInstance(config['options'], list)
@@ -6785,7 +6814,7 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
-        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, {}, '')
+        discovery_config.build_select_config(config, t_state('select', 'test_id'), t_command('select', 'test_id'), 9999, '')
         self.assertFalse(config.get('optimistic', True),
                          "select discovery config must include optimistic:false")
 

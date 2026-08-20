@@ -41,6 +41,7 @@ Accessories connected to the controller's internal bus appear automatically — 
 - **Nibe Menus dashboard** — a Lovelace dashboard mirroring the full Nibe installer menu hierarchy, rebuilt automatically on every startup
 - **Entity Manager card** — a companion Lovelace card with search, filtering, sorting, enable/disable, and full firmware metadata per entity; automatically installed and provisioned on first start
 - **Bidirectional control** — read sensor values and write settings back to the controller
+- **Localized entity names** — translates entity titles/descriptions via the controller's own REST API (`language` setting, a dropdown of every language the controller supports); auto-detects Home Assistant's configured language by default
 - **Mode-based entity management** — `essential`, `monitoring`, `advanced`, `menus`, `all`, or `none`; start small and expand as you explore
 - **Active alarm monitoring** — faults appear in HA within 10 seconds via a dedicated fast poll
 - **Persistent notifications** — active alarms, API outages, write failures, and dynamic point changes all surface in the HA notification bell
@@ -74,7 +75,7 @@ On first start the bridge automatically copies the companion card to `/config/ww
 - **Values update every poll cycle** (default 30 seconds), not in real time. The controller does not push data — the bridge polls it.
 - **If the bridge is offline, data from that window is not collected.** There is no backfill from the controller.
 - **Configuration changes require a restart** — changing the IP address, credentials, poll interval, or mode takes effect on the next app start.
-- **Changing the mode replaces your entity selection.** Switching from `essential` to `monitoring` enables additional entities; switching back disables them. Use the Entity Manager card to manage individual entities within a mode.
+- **Changing the mode replaces your entity selection by default.** Switching from `essential` to `monitoring` enables additional entities; switching back disables them, including anything you enabled manually via the Entity Manager card. Set `mode_switch_behavior` to `merge` if you'd rather a mode change only ever add entities, never disable any. Use the Entity Manager card to manage individual entities within a mode.
 
 ## Links
 

@@ -9,6 +9,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Entity name localization** — a new `language` option translates entity
+  titles/descriptions via the Nibe REST API's own `Accept-Language`
+  support (confirmed against a live SMO S40: `nl`/`de`/`sv` return
+  correctly translated text). `auto` (default) detects Home Assistant's
+  own configured language via the Supervisor API; any other value
+  overrides auto-detection. The dropdown mirrors the controller's own
+  hand-verified "Language" select entity (`VALUE_MAPPINGS[3745]`).
+  Does not translate the "Nibe Menus" Lovelace dashboard, which stays
+  static English content by design. An unsupported language, an
+  unrecognised one, or an individual point missing from NIBE's own
+  translation catalog all fail safely — no error, silent fallback to
+  English, matching the API's own default behaviour.
+- **`mode_switch_behavior` option** (`replace`/`merge`, default
+  `replace`) — controls what happens to already-enabled entities when
+  switching `mode`. `replace` keeps the existing behaviour: entities not
+  in the newly selected mode's set are disabled, including anything
+  enabled manually via the Entity Manager card. `merge` only ever adds
+  the new mode's points; nothing already enabled is ever disabled by a
+  mode change.
+- 5 new `translations/*.yaml` files (French, Spanish, Italian, Czech,
+  Finnish) covering the app's own Configuration UI, added for NIBE's
+  stated strong-presence markets (Sweden, Norway, Finland, Denmark,
+  Germany, France, UK, Netherlands, Poland, Czech Republic, Italy,
+  Spain) alongside the 7 that already existed.
+- A test (`TestConfigTranslationsParity`) enforcing that every
+  `config.yaml` option has a matching, non-empty translation entry in
+  every `translations/*.yaml` file, and flagging stale entries for
+  removed options.
+
+### Fixed
+- Point `1760` ("Operating mode internal add. heat") was misclassified
+  as a `binary_sensor` — it's actually a 4-state integer (0–3). The
+  Nibe REST API reports `minValue: 0, maxValue: 0` for this point, which
+  is indistinguishable from the metadata shape of ~125 genuinely binary
+  points on the same firmware (confirmed against a real 1158-point API
+  dump), ruling out a general heuristic fix; resolved with a targeted
+  `_BINARY_SENSOR_EXCLUSIONS` entry, the same approach already used for
+  other points sharing this ambiguity.
+- `clean_string()` was not idempotent: mojibake-character removal ran
+  *after* quote-stripping, so a string like `0"Â` could leave a stray
+  trailing `"` that only a second call would strip. Reordered so
+  mojibake/soft-hyphen removal happens before quote-stripping.
+- A `select` entity's write path could silently drop a legitimate
+  command if its value-mapping labels were built from live API
+  description text in a different state than what was used to publish
+  the entity's options to HA (e.g. after a restart with a different
+  `language`). It now accepts a raw integer payload as a fallback when
+  it's one of the mapping's own known keys, instead of only matching by
+  label text.
+- `DOCS.md` incorrectly stated that `secrets.yaml` credentials take
+  priority over the app's configuration UI — it's actually the lowest-
+  priority source and only fills in fields left blank in the UI.
+- The **Test API Connection** diagnostic could report the controller as
+  unreachable even when the bridge's real polling connection worked fine,
+  because the diagnostic's `curl` call didn't widen OpenSSL's default TLS
+  security level the way the real connection does to tolerate the
+  controller's old embedded TLS stack. The compatibility cipher string is
+  now a shared constant (`TLS_COMPAT_CIPHERS` in `nibe_utils.py`) used by
+  both, so the diagnostic mirrors the real connection's TLS behaviour.
+- The connectivity check's summary logic conflated "curl never reached
+  the host" with "curl reached the host but got an error status" (e.g.
+  HTTP 500), and a 401/403 response discarded any concurrent ping
+  failure from the summary. Now distinguishes "reached the host" from
+  "genuine network outage," and reports combined failure modes (e.g.
+  blocked ICMP *and* stale credentials) instead of only the first one
+  found.
+- Static MQTT entity attributes (description, default value, Modbus
+  register, etc.) were republished unconditionally on every discovery
+  call with no dedup, while the discovery config itself was already
+  deduped by a content hash — meaning an attributes-only firmware change
+  had no dedicated mechanism ensuring it got republished, and unchanged
+  attributes were rewritten to the broker every poll for no reason. Added
+  a separate attributes-content hash so attributes are republished only
+  when they actually change, independent of the discovery config hash.
+- The Lovelace menu dashboard treated a real firmware point with
+  `variableId`/`point_id` of `0` identically to the schema's "no point"
+  sentinel (`point_id: null`), because the code used a truthy check
+  (`if point_id:`) rather than an explicit `is not None` check — silently
+  dropping any such point from menus, defaults, and dynamic-point lookups.
+- Lovelace dashboard creation could permanently skip creating the
+  dashboard on a fresh install if the initial `lovelace/dashboards/list`
+  WebSocket call itself failed (e.g. a dead socket) — an empty result
+  from a failed call was indistinguishable from "no dashboard exists
+  yet," so it proceeded as if nothing needed creating. Now checks the
+  call's own success flag and retries on the next restart instead of
+  writing a skip flag on a failed list.
+- The nightly test-runner subprocess can leave its HTML report truncated
+  mid-multibyte-UTF-8 sequence when killed (hard timeout or manual
+  abort), which raised `UnicodeDecodeError` when post-processing the
+  report — uncaught, this overwrote the carefully-tracked aborted/
+  timed-out status with a generic error state. Now caught alongside the
+  existing `OSError` handling.
+
+### Changed
+- `build_select_config()` no longer takes an unused `metadata` parameter,
+  tightening the pure-config-builder contract now that entity options are
+  resolved from `point_id`/`description` alone.
+
 ---
 
 ## [1.0.5] — 2026-08-18

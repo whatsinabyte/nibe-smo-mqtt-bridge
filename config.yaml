@@ -1,5 +1,5 @@
 name: "Nibe S-Series MQTT Bridge"
-version: "1.0.5"
+version: "1.0.6"
 slug: "nibe_s_series"
 # Prebuilt multi-arch images (built by .github/workflows/publish-image.yml)
 # are not yet published — while still under active local development,
@@ -33,8 +33,10 @@ options:
   mqtt_username: ""
   mqtt_password: ""
   device_name: "Nibe SMO S40"
+  language: "auto"
   poll_interval: 30
   mode: "essential"
+  mode_switch_behavior: "replace"
   log_level: "info"
   debug_mode: false
   api_failure_threshold: 3
@@ -59,8 +61,38 @@ schema:
 
   # Bridge behaviour
   device_name: str?
+  # Query language for the Nibe REST API. Translates entity titles/
+  # descriptions returned by the controller (confirmed working for nl/de/sv
+  # against a live SMO S40; other codes below are untested but fail safely —
+  # an unsupported code silently falls back to English, never an error).
+  # "auto" (default) detects Home Assistant's own configured language via
+  # the Supervisor API; any other value here overrides auto-detection (same
+  # precedence pattern as mqtt_host). Does not affect the "Nibe Menus"
+  # Lovelace dashboard, which is static English content independent of the
+  # API's own translations.
+  #
+  # MULTI-PLACE UPDATE: this list is a hand-maintained BCP-47-code mirror of
+  # VALUE_MAPPINGS[3745] in app/nibe_entity_detection.py — the controller's
+  # own hand-verified list of firmware-supported languages (for its
+  # "Language" select entity, a separate feature from this REST API
+  # setting). config.yaml is static and cannot derive this dropdown from
+  # that Python dict at runtime. Adding a language to one list (new Nibe
+  # firmware release, user request) means adding it to the other too, by
+  # hand, in both directions.
+  language: list(auto|en|sv|de|fr|es|fi|lt|cs|pl|nl|no|da|et|lv|ru|it|hu|sk|tr|hr|ro|is|sl|uk|bg)
   poll_interval: list(15|30|60|120|300)?
   mode: list(essential|monitoring|advanced|menus|all|none)
+  # What happens to already-enabled entities when you switch to a different
+  # mode. "replace" (default) reconciles the enabled set to exactly the new
+  # mode's points — anything currently enabled that isn't part of the new
+  # mode (including entities you enabled manually via the Entity Manager
+  # card) gets disabled. "merge" only ever adds the new mode's points on
+  # top of whatever is already enabled — nothing is ever disabled by a mode
+  # change. Applies uniformly to every mode switch, not just specific
+  # modes. Has no effect on a fresh install (nothing is enabled yet) or on
+  # restarting with the same mode (mode changes are the only trigger for
+  # this reconciliation at all).
+  mode_switch_behavior: list(replace|merge)
   log_level: list(debug|info|warning|error)
   debug_mode: bool
   api_failure_threshold: "int(1,100)?"

@@ -528,6 +528,24 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
         self.assertIs(result, False)
         mock_fail.assert_called_once()
 
+    def test_http_401_passes_captured_last_error_to_handle_api_failure(self):
+        """Regression: _fetch_bulk_data must capture self._api.last_error
+        immediately in the except block and pass it explicitly to
+        _handle_api_failure — not rely on _handle_api_failure re-reading
+        self._api.last_error later, which races against the write-command
+        executor thread's own concurrent request()/last_error writes."""
+        import urllib.error
+        em = _make_em()
+        err = urllib.error.HTTPError(url='', code=401, msg='Unauthorized',
+                                     hdrs=None, fp=None)
+        em._api.fetch_bulk_points.side_effect = err
+        em._api.last_error = "HTTP 401 — authentication rejected, check credentials"
+        with patch.object(em, '_handle_api_failure') as mock_fail:
+            em._fetch_bulk_data()
+        mock_fail.assert_called_once_with(
+            "HTTP 401 — authentication rejected, check credentials"
+        )
+
     def test_http_503_calls_handle_api_failure(self):
         import urllib.error
         em = _make_em()

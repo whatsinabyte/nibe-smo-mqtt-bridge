@@ -128,13 +128,12 @@ def build_select_config(
     state_topic: str,
     command_topic: str,
     point_id: int,
-    metadata: dict,
     description: str,
 ) -> None:
     config["state_topic"]   = state_topic
     config["command_topic"] = command_topic
     config["optimistic"]    = False
-    options = get_entity_options(point_id, metadata, description)
+    options = get_entity_options(point_id, description)
     if options:
         config["options"] = options
 

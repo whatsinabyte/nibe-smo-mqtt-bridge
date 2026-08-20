@@ -1056,6 +1056,10 @@ class TestSetupHistoryLoadingUnreadCallback(unittest.TestCase):
         em._on_unread_message(None, None, self._make_message(b''))
 
     def test_valid_unread_marks_entries(self):
+        """Regression: appendleft(1) then appendleft(2) makes change_history
+        = [2, 1] (2 is newest, at index 0). unread_count=1 must mark the
+        NEWEST entry (id=2, index 0) unread — not the oldest (id=1, index -1),
+        which is what the pre-fix list(...)[-n:] slice incorrectly selected."""
         em = _make_em()
         from nibe_entity_manager import EntityManager
         EntityManager._setup_history_loading(em)
@@ -1064,9 +1068,8 @@ class TestSetupHistoryLoadingUnreadCallback(unittest.TestCase):
         payload = json.dumps({'unread_count': 1}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
         entries = list(em.change_history)
-        # list[-1:] selects the oldest entry (id=1, at the end of the list)
-        self.assertTrue(entries[-1]['unread'])
-        self.assertFalse(entries[0]['unread'])
+        self.assertTrue(entries[0]['unread'], "newest entry (id=2) must be marked unread")
+        self.assertFalse(entries[-1]['unread'], "oldest entry (id=1) must stay read")
 
     def test_bad_unread_payload_does_not_crash(self):
         em = _make_em()
@@ -1231,20 +1234,30 @@ class TestUnreadCountOverfillGuard(unittest.TestCase):
         self.assertEqual(len(unread), 2,
             "unread_count > len(history) should mark all entries, not crash")
 
-    def test_unread_count_less_than_history_marks_tail_only(self):
-        """unread_count=2 with 5 history entries marks only the last 2."""
+    def test_unread_count_less_than_history_marks_newest_only(self):
+        """unread_count=2 with 5 history entries marks only the 2 newest.
+
+        Regression: entries are appendleft()-ed everywhere in this module
+        (_update_changelog_history), so index 0 is the NEWEST entry and the
+        deque's tail is the OLDEST. The fix must select the newest N via
+        list(...)[:n] (the head) — the previous list(...)[-n:] (the tail)
+        marked the OLDEST entries unread instead, which this test's
+        predecessor (asserting only a count, not which entries) never
+        caught."""
         from nibe_entity_manager import EntityManager
         em = _make_em()
         EntityManager._setup_history_loading(em)
         for i in range(5):
             em.change_history.appendleft({'unread': False, 'id': i})
+        # appendleft(0..4) in order -> change_history is [4,3,2,1,0] (newest first)
 
         payload = json.dumps({'unread_count': 2}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
 
-        unread = [e for e in em.change_history if e.get('unread')]
-        self.assertEqual(len(unread), 2,
-            "unread_count=2 with 5 entries must mark exactly 2 entries")
+        unread_ids = {e['id'] for e in em.change_history if e.get('unread')}
+        self.assertEqual(unread_ids, {4, 3},
+            "unread_count=2 must mark the 2 NEWEST entries (ids 4, 3), "
+            "not the 2 oldest (ids 0, 1)")
 
     def test_unread_count_zero_marks_nothing(self):
         """unread_count=0 must leave all entries as unread=False."""

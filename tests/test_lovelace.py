@@ -8,7 +8,6 @@ Shared fixtures are in conftest.py.
 
 import json
 import unittest
-from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -586,8 +585,6 @@ class TestMetadataDictTypeCrossModuleProperties(unittest.TestCase):
 class TestBuildSelectConfigProperties(unittest.TestCase):
     """Hypothesis properties for _build_select_config."""
 
-    _meta: ClassVar[dict] = {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}
-
     @given(_nibe_point_id,
            _safe_entity_id, st.text(max_size=100))
     def test_always_sets_state_and_command_topic(self, pid, entity_id, description):
@@ -596,7 +593,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         self.assertIn('state_topic', config)
         self.assertIn('command_topic', config)
 
@@ -608,7 +605,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         self.assertIn(entity_id, config['state_topic'])
         self.assertIn(entity_id, config['command_topic'])
 
@@ -620,7 +617,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         if 'options' in config:
             self.assertIsInstance(config['options'], list)
             for opt in config['options']:
@@ -634,7 +631,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         if 'options' in config:
             opts = config['options']
             self.assertEqual(len(opts), len(set(opts)))
@@ -648,7 +645,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         if 'options' in config:
             self.assertGreaterEqual(len(config['options']), 2)
 
@@ -660,7 +657,7 @@ class TestBuildSelectConfigProperties(unittest.TestCase):
         config = {}
         discovery_config.build_select_config(
             config, t_state('select', entity_id), t_command('select', entity_id),
-            pid, self._meta, description)
+            pid, description)
         self.assertEqual(config['state_topic'], t_state('select', entity_id))
         self.assertEqual(config['command_topic'], t_command('select', entity_id))
 
@@ -1241,6 +1238,15 @@ class TestCollectMenuPoints(unittest.TestCase):
         menus = [{'id': '1', 'settings': [{'point_id': 100}, {'point_id': None}]}]
         self.assertEqual(nl._collect_menu_points(menus), {100})
 
+    def test_point_id_zero_is_collected_not_treated_as_sentinel(self):
+        """Regression: point_id: 0 is a valid (if currently unseen in real
+        firmware) variableId, distinct from the schema's point_id: null
+        label-only-row sentinel — a truthy check on pid would silently drop
+        it, treating it the same as 'no point' with no error anywhere."""
+        import nibe_lovelace as nl
+        menus = [{'id': '1', 'settings': [{'point_id': 0}, {'point_id': None}]}]
+        self.assertEqual(nl._collect_menu_points(menus), {0})
+
     def test_duplicate_point_id_across_menus_collapses_to_one(self):
         """Several real points (e.g. outdoor temperature BT1) are
         intentionally shown in multiple menus — the collected set must
@@ -1405,6 +1411,16 @@ class TestBuildPointToMenu(unittest.TestCase):
         }]
         result = nl._build_point_to_menu(menus)
         self.assertEqual(result[14968], ('7.1.5.1', 'Additional heat settings'))
+
+    def test_point_id_zero_is_mapped_not_treated_as_sentinel(self):
+        """Regression: point_id: 0 is a valid (if currently unseen in real
+        firmware) variableId, distinct from the schema's point_id: null
+        label-only-row sentinel — a truthy check on pid would silently drop
+        it from the reverse lookup with no error anywhere."""
+        import nibe_lovelace as nl
+        menus = [{'id': '1', 'title': 'Menu', 'settings': [{'point_id': 0}]}]
+        result = nl._build_point_to_menu(menus)
+        self.assertEqual(result[0], ('1', 'Menu'))
 
     def test_duplicate_point_id_keeps_last_menu_seen(self):
         """When the same point appears in multiple menus (e.g. point 4527
@@ -2345,9 +2361,9 @@ class TestBuildMenuView(unittest.TestCase):
         self.assertEqual(len(entities_cards), 2)
 
     def test_default_mutable_args_not_shared_across_calls(self):
-        """known_dynamic/absent_dynamic/point_defaults/dynamic_injection
-        default to None -> fresh set()/dict() each call, not a shared
-        mutable default — confirms no cross-call state leakage."""
+        """known_dynamic/point_defaults/dynamic_injection default to None ->
+        fresh set()/dict() each call, not a shared mutable default —
+        confirms no cross-call state leakage."""
         import nibe_lovelace as nl
         menu1 = self._menu(settings=[{'label': 'X', 'point_id': 100}])
         nl._build_menu_view(menu1, self._watcher({}), known_dynamic={100})
@@ -2357,6 +2373,32 @@ class TestBuildMenuView(unittest.TestCase):
         cards2 = nl._build_menu_view(menu2, self._watcher({100: 'switch.foo'}))
         entities_card = next(c for c in cards2 if c['type'] == 'entities')
         self.assertIn({'entity': 'switch.foo'}, entities_card['entities'])
+
+    def test_point_id_zero_renders_entity_row_not_dropped(self):
+        """Regression: point_id: 0 is a valid (if currently unseen in real
+        firmware) variableId, distinct from the schema's point_id: null
+        label-only-row sentinel — a truthy check on point_id would silently
+        drop point 0's entity row entirely (rendering the section divider
+        with no entity underneath) and also fail to skip it correctly if it
+        were a known dynamic point. Mirrors the fix already applied to
+        _collect_menu_points/_build_point_to_menu."""
+        import nibe_lovelace as nl
+        menu = self._menu(settings=[{'label': 'Zero Point', 'point_id': 0}])
+        cards = nl._build_menu_view(menu, self._watcher({0: 'sensor.zero'}))
+        entities_card = next(c for c in cards if c['type'] == 'entities')
+        self.assertIn({'entity': 'sensor.zero'}, entities_card['entities'])
+
+    def test_point_id_zero_skipped_when_known_dynamic(self):
+        """point_id: 0 as a known dynamic point must be skipped from the
+        static row, same as any other dynamic point_id."""
+        import nibe_lovelace as nl
+        menu = self._menu(settings=[{'label': 'Zero Point', 'point_id': 0}])
+        cards = nl._build_menu_view(
+            menu, self._watcher({0: 'sensor.zero'}), known_dynamic={0},
+        )
+        entities_cards = [c for c in cards if c['type'] == 'entities']
+        for c in entities_cards:
+            self.assertNotIn({'entity': 'sensor.zero'}, c['entities'])
 
 
 # ===========================================================================
@@ -2512,18 +2554,17 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         self.assertEqual(titles, ['1 First', '2 Second', '3 Third'])
 
     def test_default_none_arguments_become_empty_collections(self):
-        """known_dynamic/absent_dynamic/point_defaults/dynamic_injection
-        default to None at this function's boundary too — confirm they're
-        passed through to _build_menu_view as empty set()/dict(), not None,
-        matching that function's own expectations."""
+        """known_dynamic/point_defaults/dynamic_injection default to None at
+        this function's boundary too — confirm they're passed through to
+        _build_menu_view as empty set()/dict(), not None, matching that
+        function's own expectations."""
         import nibe_lovelace as nl
         menus = [self._menu('1')]
         captured = {}
 
-        def fake_build_menu_view(menu, watcher, known_dynamic, absent_dynamic,
+        def fake_build_menu_view(menu, watcher, known_dynamic,
                                   point_defaults, dynamic_injection):
             captured['known_dynamic'] = known_dynamic
-            captured['absent_dynamic'] = absent_dynamic
             captured['point_defaults'] = point_defaults
             captured['dynamic_injection'] = dynamic_injection
             return [{'type': 'markdown', 'content': 'x'}]
@@ -2532,7 +2573,6 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             nl._build_menu_dashboard_config(menus, MagicMock())
 
         self.assertEqual(captured['known_dynamic'], set())
-        self.assertEqual(captured['absent_dynamic'], set())
         self.assertEqual(captured['point_defaults'], {})
         self.assertEqual(captured['dynamic_injection'], {})
 
@@ -2830,7 +2870,7 @@ class TestEntityDetectionFinalGaps(unittest.TestCase):
         holding = VALUE_MAPPINGS.get('holding', {})
         self.assertTrue(holding, 'No holding VALUE_MAPPINGS — test precondition failed')
         pid = next(iter(holding))
-        opts = get_entity_options(pid, {'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'}, '')
+        opts = get_entity_options(pid, '')
         self.assertIsInstance(opts, list)
         self.assertGreater(len(opts), 0)
 
@@ -3421,7 +3461,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
     def test_existing_dashboard_writes_flag_and_returns(self):
         def ws_resp(payload):
             if payload.get('type') == 'lovelace/dashboards/list':
-                return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
+                return {'success': True, 'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
             return {'success': True}
         calls, _flag_file, _ = self._run(False, ws_resp)
         types = [c.get('type') for c in calls]
@@ -3431,7 +3471,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': True, 'result': {'id': 42}}
             if t == 'lovelace/config/save':
@@ -3446,7 +3486,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'message': 'already in use'}}
             return {'success': True}
@@ -3459,7 +3499,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'message': 'internal error'}}
             return {'success': True}
@@ -3471,7 +3511,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': True, 'result': {'id': 1}}
             if t == 'lovelace/config/save':
@@ -3489,7 +3529,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': True, 'result': {'id': 42}}
             return {'success': True}
@@ -3513,7 +3553,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': True, 'result': {'id': 42}}
             return {'success': True}
@@ -3541,7 +3581,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         satisfy os.path.exists() on the next restart."""
         def ws_resp(payload):
             if payload.get('type') == 'lovelace/dashboards/list':
-                return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
+                return {'success': True, 'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
             return {'success': True}
         _, _, flag_content = self._run(False, ws_resp)
         self.assertEqual(flag_content, 'provisioned\n')
@@ -3550,7 +3590,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': True, 'result': {'id': 42}}
             return {'success': True}
@@ -3561,7 +3601,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'message': 'already in use'}}
             return {'success': True}
@@ -3575,7 +3615,7 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         def ws_resp(payload):
             t = payload.get('type')
             if t == 'lovelace/dashboards/list':
-                return {'result': []}
+                return {'success': True, 'result': []}
             if t == 'lovelace/dashboards/create':
                 return {'success': False, 'error': {'translation_key': 'url_already_exists'}}
             return {'success': True}
@@ -3584,10 +3624,28 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         self.assertNotIn('lovelace/config/save', types)
         self.assertEqual(flag_content, 'provisioned\n')
 
+    def test_list_call_failed_does_not_write_flag_or_attempt_create(self):
+        """Regression: a failed/stale lovelace/dashboards/list response
+        (e.g. {} after a dead WebSocket) must be treated as "don't know
+        whether the dashboard exists" — NOT as "no dashboards exist" (which
+        would attempt a doomed create) and NOT as "dashboard confirmed to
+        exist" (which would permanently write the flag file and skip
+        creation forever, even on a fresh install where this failure was
+        transient). Mirrors the menu dashboard path's equivalent guard via
+        _should_attempt_dashboard_create."""
+        def ws_resp(payload):
+            if payload.get('type') == 'lovelace/dashboards/list':
+                return {}  # stale connection: success=False implicitly
+            return {'success': True}
+        calls, _, flag_content = self._run(False, ws_resp)
+        types = [c.get('type') for c in calls]
+        self.assertNotIn('lovelace/dashboards/create', types)
+        self.assertIsNone(flag_content, "flag file must not be written on a failed list call")
+
     def test_flag_file_write_error_does_not_raise_on_existing_dashboard(self):
         def ws_resp(payload):
             if payload.get('type') == 'lovelace/dashboards/list':
-                return {'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
+                return {'success': True, 'result': [{'url_path': 'nibe-bridge', 'id': 7}]}
             return {'success': True}
         import nibe_lovelace as nl
         ws = MagicMock()
@@ -3952,6 +4010,7 @@ class TestSetupLovelaceDashboardFlagWriteFailure(unittest.TestCase):
         """Dashboard found in list — writing flag fails → must not raise."""
         self._make_ws_and_call({
             'lovelace/dashboards/list': {
+                'success': True,
                 'result': [{'url_path': 'nibe-bridge', 'id': 7}]
             },
         })
@@ -3959,7 +4018,7 @@ class TestSetupLovelaceDashboardFlagWriteFailure(unittest.TestCase):
     def test_flag_write_fails_on_url_already_exists(self):
         """Create returns url_already_exists — writing flag fails → must not raise."""
         self._make_ws_and_call({
-            'lovelace/dashboards/list': {'result': []},
+            'lovelace/dashboards/list': {'success': True, 'result': []},
             'lovelace/dashboards/create': {
                 'success': False,
                 'error': {'message': 'already in use'},
@@ -3969,7 +4028,7 @@ class TestSetupLovelaceDashboardFlagWriteFailure(unittest.TestCase):
     def test_flag_write_fails_after_successful_create(self):
         """Create succeeds, config saved, writing flag fails → must not raise."""
         self._make_ws_and_call({
-            'lovelace/dashboards/list': {'result': []},
+            'lovelace/dashboards/list': {'success': True, 'result': []},
             'lovelace/dashboards/create': {'success': True, 'result': {'id': 1}},
             'lovelace/config/save': {'success': True},
         })

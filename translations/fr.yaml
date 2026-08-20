@@ -1,0 +1,185 @@
+configuration:
+  nibe_host:
+    name: Adresse IP du contrôleur
+    description: >-
+      Adresse IP ou nom d'hôte de votre contrôleur Nibe série S sur votre
+      réseau local. Il est fortement recommandé d'attribuer une adresse IP
+      statique via votre routeur.
+  nibe_port:
+    name: Port API du contrôleur
+    description: >-
+      Port HTTPS de l'API REST locale du contrôleur. La valeur par défaut
+      8443 est correcte pour tous les produits de la série S et ne devrait
+      normalement pas avoir besoin d'être modifiée.
+  nibe_username:
+    name: Nom d'utilisateur API du contrôleur
+    description: >-
+      Nom d'utilisateur défini dans le menu Service du contrôleur
+      (menu 7.5.15). Doit correspondre exactement à la valeur configurée
+      sur le contrôleur.
+  nibe_password:
+    name: Mot de passe API du contrôleur
+    description: >-
+      Mot de passe défini dans le menu Service du contrôleur (menu 7.5.15).
+      Sensible à la casse.
+  mqtt_host:
+    name: Nom d'hôte du courtier MQTT
+    description: >-
+      Nom d'hôte ou adresse IP de votre courtier MQTT. La valeur par
+      défaut "core-mosquitto" fonctionne avec l'add-on Mosquitto officiel.
+      Utilisez une adresse IP ou un nom d'hôte pour tout autre courtier.
+  mqtt_port:
+    name: Port du courtier MQTT
+    description: >-
+      Port TCP de votre courtier MQTT. La valeur par défaut 1883 est le
+      port MQTT standard non chiffré. Si vous activez "MQTT TLS"
+      ci-dessous, changez ce port pour 8883 (le port MQTT chiffré standard
+      utilisé par Mosquitto).
+  mqtt_username:
+    name: Nom d'utilisateur MQTT
+    description: >-
+      Nom d'utilisateur pour l'authentification au courtier MQTT. Laissez
+      vide si votre courtier ne nécessite pas d'authentification.
+  mqtt_password:
+    name: Mot de passe MQTT
+    description: >-
+      Mot de passe pour l'authentification au courtier MQTT. Laissez vide
+      si votre courtier ne nécessite pas d'authentification.
+  device_name:
+    name: Nom de l'appareil
+    description: >-
+      Comment l'appareil contrôleur apparaît dans Home Assistant. Par
+      défaut "Nibe SMO S40", mais vous pouvez l'ajuster pour correspondre
+      à votre matériel réel (par ex. "Nibe S1155" ou "Nibe VVM S320").
+  language:
+    name: Langue
+    description: >-
+      Langue des noms/descriptions d'entités renvoyés par l'API REST du
+      contrôleur. "auto" (par défaut) suit la langue configurée dans Home
+      Assistant lui-même ; choisissez une langue spécifique pour remplacer
+      ce comportement. Cette liste reflète le propre menu "Language" du
+      contrôleur — seules quelques entrées ont été directement confirmées
+      comme fonctionnant via l'API REST elle-même, mais choisir une langue
+      non prise en charge est sans danger : le système revient
+      silencieusement à l'anglais, jamais une erreur. Ne traduit pas le
+      tableau de bord Menus Nibe, qui reste un contenu anglais fixe. Un
+      redémarrage est requis après modification de ce paramètre.
+  poll_interval:
+    name: Intervalle d'interrogation
+    description: >-
+      Fréquence de récupération de tous les points de données depuis le
+      contrôleur, en secondes. 30 secondes est recommandé. Le contrôleur
+      est un appareil embarqué — son API REST est secondaire par rapport
+      à sa tâche principale de gestion de votre pompe à chaleur. Un
+      redémarrage est requis après modification de ce paramètre.
+  mode:
+    name: Mode d'entités
+    description: >-
+      Quel ensemble d'entités le pont expose : "essential" couvre les
+      températures principales, l'état de l'eau chaude, les totaux
+      d'énergie et les points de consigne de base — un bon point de
+      départ pour toute installation. "monitoring" ajoute les lignes
+      d'alimentation/retour, l'état du compresseur et les indicateurs
+      d'efficacité. "advanced" ajoute le circuit frigorifique complet et
+      les registres de réglage. "menus" expose chaque point nécessaire au
+      tableau de bord Menus Nibe et construit ce tableau de bord. "all"
+      expose chaque point découvert ; "none" n'expose rien tant que vous
+      n'activez pas les entités manuellement. Ceci est appliqué au
+      démarrage — le modifier nécessite un redémarrage de l'add-on, et
+      passer à un autre mode désactive par défaut toute entité non
+      incluse dans le nouvel ensemble sélectionné — les entités que vous
+      avez activées manuellement via la carte Entity Manager sont
+      également supprimées lors du changement de mode, mais conservées
+      lors des redémarrages avec le même mode. Voir « Comportement lors
+      du changement de mode » ci-dessous pour modifier cela. "essential"
+      est le point de départ recommandé.
+  mode_switch_behavior:
+    name: Comportement lors du changement de mode
+    description: >-
+      Ce qui arrive aux entités déjà activées lorsque vous passez à un
+      autre mode. "replace" (par défaut) ramène l'ensemble activé
+      exactement aux points du nouveau mode — tout ce qui est
+      actuellement activé et ne fait pas partie du nouveau mode, y
+      compris les entités activées manuellement via la carte Entity
+      Manager, est désactivé. "merge" ajoute uniquement les points du
+      nouveau mode à ce qui est déjà activé — rien n'est jamais
+      désactivé par un changement de mode. S'applique à chaque
+      changement de mode. N'a aucun effet lors d'une nouvelle
+      installation ou d'un redémarrage avec le même mode — seul un
+      véritable changement de mode déclenche ceci.
+  log_level:
+    name: Niveau de journalisation
+    description: >-
+      Verbosité du journal de l'add-on uniquement — n'affecte pas les
+      entités affichées. "info" est recommandé pour une utilisation
+      normale. Utilisez "debug" pour diagnostiquer des problèmes de
+      connexion ou d'entités — cela produit un volume important de
+      sorties et devrait être remis sur "info" ensuite. Pour afficher le
+      bouton de suite de tests et le capteur de résultat réservés au
+      débogage, utilisez plutôt "Mode débogage" ci-dessous.
+  debug_mode:
+    name: Mode débogage
+    description: >-
+      Active le bouton de suite de tests, le bouton de vidage de la carte
+      dynamique et le capteur de résultat sur l'appareil de gestion.
+      Indépendant du "Niveau de journalisation" ci-dessus — c'est le seul
+      paramètre qui contrôle si ces entités sont affichées. Prend effet au
+      prochain redémarrage de l'add-on : le désactiver supprime également
+      les entités, pas seulement l'ajout de nouvelles.
+  api_failure_threshold:
+    name: Seuil d'échec API
+    description: >-
+      Nombre d'interrogations échouées consécutives avant qu'une
+      notification persistante apparaisse dans la cloche de notification
+      HA. La valeur par défaut de 3 signifie trois échecs consécutifs (90
+      secondes à l'intervalle par défaut) avant l'alerte. Augmentez cette
+      valeur sur un réseau instable pour éviter les faux positifs.
+  changelog_retention_days:
+    name: Conservation du journal des modifications (jours)
+    description: >-
+      Nombre de jours de conservation des entrées du journal des
+      modifications de l'Entity Manager avant leur suppression. Les
+      entrées plus anciennes que cette valeur sont supprimées à chaque
+      redémarrage du pont. La valeur par défaut de 90 jours convient à la
+      plupart des installations.
+  remove_frontend:
+    name: Supprimer le frontend à l'arrêt
+    description: >-
+      Réglez sur true avant d'arrêter l'add-on pour supprimer
+      automatiquement le tableau de bord Nibe Bridge, l'enregistrement de
+      ressource Lovelace, le fichier de carte et tous les messages MQTT
+      conservés lors du prochain arrêt propre. N'utilisez ceci que lors de
+      la désinstallation. Les redémarrages normaux ne sont pas affectés.
+      Consultez la documentation pour la procédure complète de
+      désinstallation.
+  nibe_ca_cert:
+    name: Chemin du certificat CA du contrôleur Nibe
+    description: >-
+      Optionnel. Chemin absolu vers un fichier de certificat CA au format
+      PEM utilisé pour vérifier le certificat HTTPS du contrôleur Nibe.
+      Lorsqu'il est défini, la vérification complète de la chaîne TLS et
+      du nom d'hôte est activée pour tous les appels API au contrôleur.
+      Laissez vide pour accepter le certificat auto-signé intégré du
+      contrôleur sans vérification — c'est le comportement par défaut et
+      acceptable sur un réseau domestique de confiance, mais cela signifie
+      qu'une attaque de l'homme du milieu sur votre réseau local pourrait
+      intercepter le trafic du contrôleur. Exemple : /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: TLS MQTT
+    description: >-
+      Active le chiffrement TLS pour tout le trafic entre le pont et le
+      courtier MQTT. Protège vos identifiants MQTT et toutes les charges
+      utiles de commandes d'entités contre la lecture par d'autres
+      appareils sur le réseau local. Nécessite que votre courtier soit
+      configuré pour TLS — changez le "Port du courtier MQTT" à 8883 si
+      vous utilisez l'add-on Mosquitto. Désactivé par défaut.
+  mqtt_ca_cert:
+    name: Chemin du certificat CA du courtier MQTT
+    description: >-
+      Optionnel. Utilisé uniquement lorsque "TLS MQTT" est activé. Chemin
+      absolu vers un fichier de certificat CA au format PEM utilisé pour
+      vérifier le certificat TLS du courtier. Laissez vide pour utiliser
+      le magasin CA du système, ce qui est correct pour les courtiers avec
+      un certificat signé par une AC publique. Définissez ceci si votre
+      courtier utilise un certificat auto-signé ou signé de manière
+      privée. Exemple : /ssl/mqtt-ca.pem

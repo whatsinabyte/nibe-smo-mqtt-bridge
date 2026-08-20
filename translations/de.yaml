@@ -52,6 +52,19 @@ configuration:
       Wie der Regler in Home Assistant angezeigt wird. Standardmäßig
       "Nibe SMO S40", Sie können dies aber an Ihre tatsächliche Hardware
       anpassen (z. B. "Nibe S1155" oder "Nibe VVM S320").
+  language:
+    name: Sprache
+    description: >-
+      Sprache für Entitätsnamen/-beschreibungen, die von der REST-API des
+      Reglers zurückgegeben werden. "auto" (Standard) folgt der in Home
+      Assistant selbst eingestellten Sprache; wählen Sie eine bestimmte
+      Sprache, um dies zu überschreiben. Diese Liste entspricht dem
+      "Language"-Menü des Reglers selbst — nur wenige Einträge wurden
+      direkt über die REST-API bestätigt, aber die Wahl einer nicht
+      unterstützten Sprache ist unbedenklich: es wird stillschweigend auf
+      Englisch zurückgegriffen, nie ein Fehler. Übersetzt nicht das
+      Nibe-Menüs-Dashboard, das feste englische Inhalte bleibt. Nach
+      Ändern dieser Einstellung ist ein Neustart erforderlich.
   poll_interval:
     name: Abfrageintervall
     description: >-
@@ -74,12 +87,26 @@ configuration:
       "all" stellt jeden erkannten Punkt bereit; "none" stellt nichts
       bereit, bis Sie Entitäten manuell aktivieren. Dies wird beim Start
       angewendet — eine Änderung erfordert einen Neustart des Add-ons,
-      und ein Wechsel in einen anderen Modus deaktiviert Entitäten, die
-      nicht im neu ausgewählten Satz enthalten sind — auch Entitäten,
-      die Sie manuell über die Entity-Manager-Karte aktiviert haben,
-      werden beim Moduswechsel entfernt, bleiben aber bei einem Neustart
-      im selben Modus erhalten. "essential" ist der empfohlene
-      Ausgangspunkt.
+      und ein Wechsel in einen anderen Modus deaktiviert standardmäßig
+      Entitäten, die nicht im neu ausgewählten Satz enthalten sind — auch
+      Entitäten, die Sie manuell über die Entity-Manager-Karte aktiviert
+      haben, werden beim Moduswechsel entfernt, bleiben aber bei einem
+      Neustart im selben Modus erhalten. Siehe "Verhalten beim
+      Moduswechsel" unten, um dies zu ändern. "essential" ist der
+      empfohlene Ausgangspunkt.
+  mode_switch_behavior:
+    name: Verhalten beim Moduswechsel
+    description: >-
+      Was mit bereits aktivierten Entitäten geschieht, wenn Sie zu einem
+      anderen Modus wechseln. "replace" (Standard) gleicht die aktivierte
+      Menge exakt an die Punkte des neuen Modus an — alles, was derzeit
+      aktiviert ist und nicht zum neuen Modus gehört, einschließlich
+      manuell über die Entity-Manager-Karte aktivierter Entitäten, wird
+      deaktiviert. "merge" fügt nur die Punkte des neuen Modus zu dem
+      bereits Aktivierten hinzu — durch einen Moduswechsel wird nie
+      etwas deaktiviert. Gilt für jeden Moduswechsel. Hat keine
+      Auswirkung bei einer Neuinstallation oder einem Neustart im
+      selben Modus — nur ein tatsächlicher Moduswechsel löst dies aus.
   log_level:
     name: Protokollstufe
     description: >-
