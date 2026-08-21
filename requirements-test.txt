@@ -7,6 +7,6 @@ pytest-html>=4.2.0
 pytest-metadata>=3.1.1
 pytest-randomly>=4.1.0
 pytest-xdist>=3.8.0
-hypothesis>=6.165.3
+hypothesis>=6.165.10
 websocket-client>=1.9.0
 freezegun>=1.5.5
