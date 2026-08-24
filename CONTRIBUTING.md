@@ -34,7 +34,7 @@ For running tests only — no Nibe controller or HA installation required.
 ```
 nibe_s_series/          ← add-on content (installed into HA)
   app/                  ← all Python source modules
-  tests/                ← test suite (19 files + conftest.py)
+  tests/                ← test suite (20 files + conftest.py)
   translations/         ← en.yaml, nl.yaml, da.yaml, de.yaml, no.yaml, pl.yaml, sv.yaml
   app/menu_structure.yaml ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
   config.yaml           ← add-on manifest

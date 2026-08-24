@@ -1,6 +1,9 @@
 # Mutation testing
 mutants/
+mutants-*/
+mutmut-results/
 .mutmut-cache
+.mutmut_current_phase
 
 # Python
 __pycache__/

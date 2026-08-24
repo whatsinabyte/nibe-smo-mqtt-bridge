@@ -464,6 +464,35 @@ class TestParseDescriptionMappingProperties(unittest.TestCase):
             values = list(result.values())
             self.assertEqual(len(values), len(set(values)))
 
+    _label = st.text(
+        alphabet=st.characters(blacklist_characters='=,', blacklist_categories=('Cs',)),
+        min_size=1, max_size=20,
+    ).map(str.strip).filter(lambda s: s and not s.lstrip('-').isdigit())
+
+    @given(st.dictionaries(st.integers(min_value=-1000, max_value=1000), _label,
+                            min_size=1, max_size=6))
+    def test_roundtrip_int_left_ordering(self, mapping):
+        """A description built as 'int = label, int = label, ...' (the
+        '0 = Off, 1 = Active' firmware style) must parse back to exactly
+        the dict it was built from — this is never checked anywhere else;
+        existing property tests only fuzz arbitrary text for crash-safety
+        and structural invariants (dict-or-None, int keys, unique values),
+        never construct a real mapping and verify it survives the
+        parse/serialize round trip."""
+        from nibe_entity_detection import parse_description_mapping
+        description = ', '.join(f'{k} = {v}' for k, v in mapping.items())
+        self.assertEqual(parse_description_mapping(description), mapping)
+
+    @given(st.dictionaries(st.integers(min_value=-1000, max_value=1000), _label,
+                            min_size=1, max_size=6))
+    def test_roundtrip_label_left_ordering(self, mapping):
+        """The other firmware ordering ('Auto = 0, Manual = 1', label
+        before the integer) must round-trip identically to the int-left
+        ordering above."""
+        from nibe_entity_detection import parse_description_mapping
+        description = ', '.join(f'{v} = {k}' for k, v in mapping.items())
+        self.assertEqual(parse_description_mapping(description), mapping)
+
 
 
 
@@ -691,6 +720,37 @@ class TestGetEntityOptionsProperties(unittest.TestCase):
         from nibe_entity_detection import get_entity_options
         result = get_entity_options(point_id, description)
         self.assertNotEqual(len(result), 1)
+
+    _label = st.text(
+        alphabet=st.characters(blacklist_characters='=,', blacklist_categories=('Cs',)),
+        min_size=1, max_size=20,
+    ).map(str.strip).filter(lambda s: s and not s.lstrip('-').isdigit())
+
+    @given(st.lists(st.integers(min_value=-1000, max_value=1000), min_size=2,
+                     max_size=6, unique=True),
+           st.lists(_label, min_size=2, max_size=6, unique=True))
+    def test_agrees_with_parse_description_mapping_int_left(self, keys, labels):
+        """get_entity_options and parse_description_mapping are two
+        independent implementations that both parse the same
+        'int = label, int = label' firmware description grammar — one for
+        HA select dropdown options, the other for raw-value <-> label
+        translation. Nothing anywhere checks they agree on the same input.
+        If they ever drifted (e.g. one handles an ambiguous 'label looks
+        like an int' case differently), HA's dropdown could show options
+        that don't match the values actually used to interpret firmware
+        state — a real-world-visible inconsistency, not just an internal
+        one. Uses a point_id (999999999) guaranteed absent from every
+        VALUE_MAPPINGS sub-table so only the description string drives both
+        functions, and unique keys/labels so get_entity_options's own
+        by-label dedup (a real, separate behaviour — duplicate labels
+        collapse to one option) doesn't confound the comparison."""
+        from nibe_entity_detection import get_entity_options, parse_description_mapping
+        n = min(len(keys), len(labels))
+        mapping = dict(zip(keys[:n], labels[:n]))
+        description = ', '.join(f'{k} = {v}' for k, v in mapping.items())
+        options = get_entity_options(999999999, description)
+        expected = [text for _, text in sorted(parse_description_mapping(description).items())]
+        self.assertEqual(sorted(options), sorted(expected))
 
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1140,41 @@ class TestParseDescriptionMapping(unittest.TestCase):
     def test_cached(self):
         desc = "0 = Off, 1 = On"
         self.assertIs(self.fn(desc), self.fn(desc))
+
+    def test_colon_separator(self):
+        """Real firmware description (points 14318-14325, all 4 shipped
+        language dumps): some register families use ':' instead of '='."""
+        self.assertEqual(
+            self.fn("0: Zones, 1: Climate system, 2: Profile"),
+            {0: 'Zones', 1: 'Climate system', 2: 'Profile'},
+        )
+
+    def test_mixed_equals_and_colon_separators(self):
+        """Real firmware description (point 22268, all 4 shipped language
+        dumps) mixes '=' and ':' within the SAME description string. The
+        old parser only handled a single separator convention per whole
+        description, so it silently dropped every ':'-separated pair here
+        (keeping only the two '='-separated ones) instead of raising or
+        logging — exactly the kind of silent partial data loss flagged for
+        the backlog."""
+        self.assertEqual(
+            self.fn(
+                "0 = Successful, 1: Low supply, 2: Low return, 3: Low flow, "
+                "4: Low LP, 5: Max time, 255 = Not accessible"
+            ),
+            {
+                0: 'Successful', 1: 'Low supply', 2: 'Low return',
+                3: 'Low flow', 4: 'Low LP', 5: 'Max time',
+                255: 'Not accessible',
+            },
+        )
+
+    def test_free_text_with_no_separator_returns_none(self):
+        """Real firmware description with no enum mapping at all (points
+        14326-14365/14646-14653, 55749) must still return None, not be
+        misparsed just because it now also checks for ':'."""
+        self.assertIsNone(self.fn("Bit position for zone"))
+        self.assertIsNone(self.fn("Block new compressors"))
 
 
 # ===========================================================================
@@ -2136,6 +2231,27 @@ class TestGetEntityOptionsEdgeCases(unittest.TestCase):
         opts = get_entity_options(99999, '0=Off')
         self.assertEqual(opts, [])
 
+    def test_colon_separated_description_returns_options(self):
+        """Real firmware description (points 14318-14325): ':' instead of
+        '=' — the `and`->`or` gate rewrite must actually let this through."""
+        from nibe_entity_detection import get_entity_options
+        opts = get_entity_options(99999, "0: Zones, 1: Climate system, 2: Profile")
+        self.assertEqual(opts, ['Zones', 'Climate system', 'Profile'])
+
+    def test_mixed_separator_description_returns_all_options(self):
+        """Real firmware description (point 22268) mixes '=' and ':' —
+        every option must be captured, not just the '='-separated ones."""
+        from nibe_entity_detection import get_entity_options
+        opts = get_entity_options(
+            99999,
+            "0 = Successful, 1: Low supply, 2: Low return, 3: Low flow, "
+            "4: Low LP, 5: Max time, 255 = Not accessible",
+        )
+        self.assertEqual(opts, [
+            'Successful', 'Low supply', 'Low return', 'Low flow',
+            'Low LP', 'Max time', 'Not accessible',
+        ])
+
     def test_no_description_no_mapping_returns_empty(self):
         from nibe_entity_detection import get_entity_options
         opts = get_entity_options(99999, '')
@@ -2217,6 +2333,76 @@ class TestDetectHoldingEntityEdgeCases(unittest.TestCase):
         self.assertIn(result[0], ('number', 'switch', 'select'))
 
 
+class TestDetectHoldingEntityMissingMetadataKeys(unittest.TestCase):
+    """_detect_holding_entity reads 'description', 'variableType', and
+    'variableSize' via .get() with a '' default. Every other test in this
+    file supplies these keys explicitly (even if empty), so the .get()
+    fallback path — what happens when firmware metadata omits a key
+    entirely, as opposed to sending it empty — is never exercised. A
+    mutation that swaps the default (e.g. '' -> None) or the key name only
+    changes behaviour when the key is actually absent, so it can only be
+    caught by a point/metadata dict that omits the key."""
+
+    def test_missing_description_key_does_not_crash(self):
+        from nibe_entity_detection import _detect_holding_entity
+        p = {
+            'variableId': 99999,
+            'title': 'Point 99999',
+            'metadata': {
+                'variableType': '',
+                'variableSize': 's16',
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'isWritable': True,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 10,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        # No 'description' key at all.
+        result = _detect_holding_entity(p, p['metadata'])
+        self.assertEqual(result, ('number', 'config'))
+
+    def test_missing_variable_type_key_falls_through_to_number(self):
+        from nibe_entity_detection import _detect_holding_entity
+        p = {
+            'variableId': 99999,
+            'title': 'Point 99999',
+            'description': '',
+            'metadata': {
+                # No 'variableType' key at all — must default to '' and
+                # fall through, not raise or match a special-cased branch.
+                'variableSize': 's16',
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'isWritable': True,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 10,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        result = _detect_holding_entity(p, p['metadata'])
+        self.assertEqual(result, ('number', 'config'))
+
+    def test_missing_variable_size_key_does_not_crash(self):
+        from nibe_entity_detection import _detect_holding_entity
+        p = {
+            'variableId': 99999,
+            'title': 'Point 99999',
+            'description': '',
+            'metadata': {
+                'variableType': 'floating-point',
+                # No 'variableSize' key at all.
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'isWritable': True,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 10,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        # var_type == 'floating-point' alone is enough to hit the fall-through
+        # branch regardless of variableSize, so this must not raise.
+        result = _detect_holding_entity(p, p['metadata'])
+        self.assertEqual(result, ('number', 'config'))
+
 
 class TestDetectInputEntityEdgeCases(unittest.TestCase):
     """Edge cases in _detect_input_entity for unusual variableType values."""
@@ -2249,6 +2435,77 @@ class TestDetectInputEntityEdgeCases(unittest.TestCase):
         result = _detect_input_entity(p, p['metadata'])
         self.assertEqual(result[0], 'sensor')
 
+
+class TestDetectInputEntityDescriptionAbsent(unittest.TestCase):
+    """A point reaching the final '=' / ',' description check without a
+    'description' key must not crash — a wrong .get() default (e.g. None
+    instead of '') would raise TypeError on the 'in' check and break
+    classification for every point missing that field."""
+
+    def test_missing_description_key_falls_through_to_sensor(self):
+        from nibe_entity_detection import _detect_input_entity
+        p = {
+            'variableId': 999999,
+            'title': 'Point 999999',
+            'metadata': {
+                'variableType': '',
+                'variableSize': 's16',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'isWritable': False,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 100,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        result = _detect_input_entity(p, p['metadata'])
+        self.assertEqual(result, ('sensor', 'diagnostic'))
+
+
+class TestDetectInputEntityMissingMetadataKeys(unittest.TestCase):
+    """_detect_input_entity reads 'variableType' and 'variableSize' via
+    .get() with a '' default — same rationale as
+    TestDetectHoldingEntityMissingMetadataKeys and
+    TestDetectInputEntityDescriptionAbsent above (which already covers the
+    missing 'description' key case): the fallback path is only exercised
+    when the key is absent entirely, not merely empty."""
+
+    def test_missing_variable_type_key_falls_through_to_sensor(self):
+        from nibe_entity_detection import _detect_input_entity
+        p = {
+            'variableId': 99999,
+            'title': 'Point 99999',
+            'description': '',
+            'metadata': {
+                # No 'variableType' key at all.
+                'variableSize': 's16',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'isWritable': False,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 1000,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        result = _detect_input_entity(p, p['metadata'])
+        self.assertEqual(result, ('sensor', 'diagnostic'))
+
+    def test_missing_variable_size_key_does_not_crash(self):
+        from nibe_entity_detection import _detect_input_entity
+        p = {
+            'variableId': 99999,
+            'title': 'Point 99999',
+            'description': '',
+            'metadata': {
+                'variableType': 'floating-point',
+                # No 'variableSize' key at all.
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'isWritable': False,
+                'divisor': 1, 'decimal': 0,
+                'minValue': 0, 'maxValue': 1000,
+                'unit': '', 'shortUnit': '',
+            },
+        }
+        result = _detect_input_entity(p, p['metadata'])
+        self.assertEqual(result, ('sensor', 'diagnostic'))
 
 
 class TestMapDeviceClassEdgeCases(unittest.TestCase):
@@ -2971,8 +3228,8 @@ class TestDetectHoldingEntityLogicGaps(unittest.TestCase):
         self.assertNotEqual(entity_type, 'binary_sensor')
 
     def test_description_with_equals_and_comma_gives_select(self):
-        """Both '=' AND ',' required — with 'or' a description with only '='
-        would incorrectly trigger select detection."""
+        """A description with >=2 parseable pairs (via parse_description_mapping)
+        must give select."""
         from nibe_entity_detection import _detect_holding_entity
         # Has both '=' and ',' → select
         p = self._point(var_type='integer', var_size='u8')
@@ -2983,7 +3240,9 @@ class TestDetectHoldingEntityLogicGaps(unittest.TestCase):
         self.assertEqual(entity_type, 'select')
 
     def test_description_with_only_equals_no_comma_not_select(self):
-        """Only '=' but no ',' → must NOT give select (needs both)."""
+        """A single pair (no comma) parses to only 1 entry — below the >=2
+        minimum required to avoid a select with zero rendered options
+        (get_entity_options itself requires >=2) — must NOT give select."""
         from nibe_entity_detection import _detect_holding_entity
         p = self._point(var_type='integer', var_size='u8')
         p['description'] = '0=Off'  # no comma
@@ -2991,6 +3250,18 @@ class TestDetectHoldingEntityLogicGaps(unittest.TestCase):
         p['metadata']['maxValue'] = 1
         entity_type, _ = _detect_holding_entity(p, p['metadata'])
         self.assertNotEqual(entity_type, 'select')
+
+    def test_colon_separated_holding_description_gives_select(self):
+        """Real firmware description (points 14318-14325): writable HOLDING
+        registers using ':' instead of '=' must also classify as select,
+        not fall through to number."""
+        from nibe_entity_detection import _detect_holding_entity
+        p = self._point(var_type='integer', var_size='u8')
+        p['description'] = '0: Zones, 1: Climate system, 2: Profile'
+        p['metadata']['minValue'] = 0
+        p['metadata']['maxValue'] = 2
+        entity_type, _ = _detect_holding_entity(p, p['metadata'])
+        self.assertEqual(entity_type, 'select')
 
 
 class TestDetectInputEntityDescriptionParsing(unittest.TestCase):

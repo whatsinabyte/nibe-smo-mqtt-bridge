@@ -119,6 +119,23 @@ class TestDynamicPoints(unittest.TestCase):
         self.em._publish_dynamic_changes([], {6983})
         self.assertNotIn(6983, self.em.active_dynamic_points)
 
+    def test_disappeared_deindex_invalidate_and_mqtt_clear_use_the_real_point(self):
+        """A disappeared point's cleanup calls must all target the real
+        point_id, and the retained MQTT clear must be an empty payload
+        (to actually clear the retained topic) with retain=True (so the
+        clear itself persists) — not a wrong point_id, non-empty payload,
+        or non-retained publish, any of which would leave stale HA state."""
+        from nibe_mqtt_publisher import BrowserTopic
+        self._seed(6983)
+        self.em.active_dynamic_points.add(6983)
+        with patch.object(self.em, '_deindex_point') as mock_deindex:
+            self.em._publish_dynamic_changes([], {6983})
+        mock_deindex.assert_called_once_with(6983)
+        self.em._pub.invalidate_config_hash.assert_called_once_with(6983)
+        self.em.mqtt.publish.assert_any_call(
+            BrowserTopic.META_TEMPLATE.format(id=6983), "", retain=True
+        )
+
     def test_disappeared_not_refired_next_poll(self):
         """After disappearance, point no longer in active set so no re-fire."""
         self._seed(6983)
@@ -160,6 +177,59 @@ class TestDynamicPoints(unittest.TestCase):
         }
         self.em._publish_dynamic_changes([(pid, fake_point_data)], set())
         self.assertIn(pid, self.em.active_dynamic_points)
+
+    def test_appeared_point_without_controlling_id_does_not_create_bogus_map_entry(self):
+        """`if controlling and enabled_new_pids:` — an `and`->`or` mutation
+        would enter this block even when controlling_point_id is None (the
+        default, e.g. a firmware-triggered appearance with no write in
+        progress), calling self.dynamic_point_map.get(None) and creating a
+        garbage DynamicPointEntry keyed at None. No prior test asserts
+        dynamic_point_map._table has no such entry."""
+        pid = 7002
+        self.em.initial_discovery_complete = True
+        fake_point_data = {
+            'title': 'New point', 'description': '',
+            'metadata': {
+                'divisor': 1, 'unit': 'kW',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'isWritable': False, 'variableType': 'integer',
+                'variableSize': 's16', 'minValue': 0, 'maxValue': 100,
+                'shortUnit': 'kW', 'modbusRegisterID': 1000,
+                'intDefaultValue': 0, 'change': 1, 'stringDefaultValue': '',
+            },
+            'value': {'isOk': True, 'integerValue': 10, 'stringValue': ''},
+        }
+        self.em._publish_dynamic_changes([(pid, fake_point_data)], set())
+        self.assertNotIn(None, self.em.dynamic_point_map._table)
+
+    def test_appeared_point_entity_type_dict_uses_real_keys_and_values(self):
+        """The dict built for _get_cached_entity_type (and processed for
+        _index_point) must use the real key names ('metadata', 'title',
+        'description') with the real title/description text — a mistyped
+        key would silently fall back to defaults inside detect_entity_type."""
+        pid = 7005
+        self.em.initial_discovery_complete = True
+        fake_point_data = {
+            'title': 'Real Dynamic Title', 'description': 'Real dynamic description',
+            'metadata': {
+                'divisor': 1, 'unit': 'kW',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'isWritable': False, 'variableType': 'integer',
+                'variableSize': 's16', 'minValue': 0, 'maxValue': 100,
+            },
+            'value': {'isOk': True, 'integerValue': 10, 'stringValue': ''},
+        }
+        with patch.object(self.em, '_get_cached_entity_type',
+                          return_value=('sensor', 'diagnostic')) as mock_detect:
+            self.em._publish_dynamic_changes([(pid, fake_point_data)], set())
+        detect_arg = mock_detect.call_args.args[0]
+        self.assertEqual(detect_arg['variableId'], pid)
+        self.assertEqual(detect_arg['title'], 'Real Dynamic Title')
+        self.assertEqual(detect_arg['description'], 'Real dynamic description')
+        self.assertEqual(detect_arg['metadata']['unit'], 'kW')
+        indexed = self.em.all_points_by_id[pid]
+        self.assertEqual(indexed['display_title'], 'Real Dynamic Title')
+        self.assertEqual(indexed['description'], 'Real dynamic description')
 
     def test_appeared_point_with_explicit_null_metadata_does_not_crash(self):
         """A newly-appeared dynamic point with "metadata": null (present but
@@ -798,6 +868,37 @@ class TestTriggeredByPopulation(unittest.TestCase):
         self.assertIsNotNone(trig)
         self.assertEqual(trig['id'], 5110)
 
+    def test_changelog_entry_reuses_the_change_events_own_timestamp(self):
+        """change_event['timestamp']/['iso_timestamp'] must be the exact
+        values captured when the event was built — if the dict keys were
+        ever wrong, _update_changelog_history's .get(key, time.time())
+        fallback would silently recompute a LATER timestamp instead of
+        reusing the original one. An increasing time.time() sequence makes
+        that distinguishable: the very first call is the event's own
+        creation time; any later call returns a strictly greater value."""
+        import itertools
+        em = self._make_em()
+        iso_values = ['iso-first', 'iso-later', 'iso-later', 'iso-later']
+        # log_discovery.info(...) fires unconditionally near the top of
+        # _publish_dynamic_changes, before change_event is built. If some
+        # other test in the suite leaves the 'nibe.discovery' logger at
+        # INFO/DEBUG (order-dependent under pytest-randomly), that log
+        # call's LogRecord creation calls the patched time.time() too,
+        # consuming the first value from the sequence below and making
+        # this test's "very first call" assumption false. Patching the
+        # logger out removes that incidental consumer.
+        with patch('nibe_entity_manager.time.time', side_effect=itertools.count(1000.0, 1.0)), \
+             patch('nibe_entity_manager._fmt_ts', side_effect=iso_values), \
+             patch('nibe_entity_manager.log_discovery'):
+            em._publish_dynamic_changes(
+                new_points=[self._dynamic_point_data(50827)],
+                disappeared_points=set(),
+                controlling_point_id=5110,
+            )
+        entry = em.change_history[0]
+        self.assertEqual(entry['timestamp'], 1000.0)
+        self.assertEqual(entry['iso_timestamp'], 'iso-first')
+
     def test_uses_snapshot_not_live_attribute_when_they_differ(self):
         """Regression test for the post-write misattribution race: the write
         executor doesn't block for the 90s scan window, so a second write
@@ -881,6 +982,30 @@ class TestPublishDynamicChangesEmptyChangeEvent(unittest.TestCase):
         dynamic_calls = [c for c in em.mqtt.publish.call_args_list
                          if 'dynamic' in str(c)]
         self.assertEqual(dynamic_calls, [])
+
+
+class TestPublishDynamicChangesMissingDescriptionKey(unittest.TestCase):
+    """A new dynamic point whose API payload omits 'description' entirely
+    must fall back to '' (not None) — detect_entity_type()'s HOLDING-register
+    enum-syntax check does `'=' in description`, which crashes on None."""
+
+    def test_missing_description_key_does_not_crash_holding_register_point(self):
+        em = _make_em()
+        point_data = {
+            'variableId': 60001,
+            'title': 'No description key',
+            'metadata': {
+                'minValue': 0, 'maxValue': 1,
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'isWritable': True,
+            },
+        }
+        em._publish_dynamic_changes(
+            new_points=[(60001, point_data)],
+            disappeared_points=set(),
+            controlling_point_id=None,
+        )
+        self.assertEqual(em.all_points_by_id[60001]['description'], '')
 
 
 class TestPublishDynamicChangesDisablesEnabledPoint(unittest.TestCase):
@@ -1005,6 +1130,49 @@ class TestPublishDynamicChangesChangeEventStructure(unittest.TestCase):
             if args and args[0] == BrowserTopic.DYNAMIC:
                 return json.loads(args[1])
         return None
+
+    def test_triggered_by_title_falls_back_to_title_key_when_no_display_title(self):
+        """ctrl_title = cp.get('display_title') or cp.get('title', ...) —
+        the second tier ('title' key) must be reachable and use the real
+        value, not a wrong key or the f'Point {id}' default."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 8020
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'title': 'Fallback Ctrl Title',
+            'entity_type': 'switch', 'metadata': {},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        pid = 8021
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        event = self._capture_dynamic_publish(em)
+        self.assertEqual(event['triggered_by']['title'], 'Fallback Ctrl Title')
+
+    def test_triggered_by_title_falls_back_to_point_id_when_controlling_point_unknown(self):
+        """When the controlling point isn't in all_points_by_id at all
+        (cp defaults to {}), both fallback tiers miss and ctrl_title must
+        become the final f'Point {id}' placeholder — not None or a crash."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 8022  # deliberately never added to all_points_by_id
+        pid = 8023
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        event = self._capture_dynamic_publish(em)
+        self.assertEqual(event['triggered_by']['title'], f'Point {controlling_pid}')
+
+    def test_publish_point_list_receives_the_real_point_index(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        pid = 8009
+        point_data = {'title': 'Marker Point', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes([(pid, point_data)], set())
+        em._pub.publish_point_list.assert_called_once_with(em.all_points_by_id)
 
     def test_added_entry_has_real_id_title_type_and_is_dynamic(self):
         em = _make_em()
@@ -1137,6 +1305,142 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
         self.assertEqual(entry.unprocessed_values, set())  # value 1 got processed
         self.assertIn(pid, entry.dynamic_points_by_value.get(1, []))
 
+    def test_new_controlling_entry_uses_real_min_max_from_metadata(self):
+        """When the controlling point's metadata DOES have minValue/maxValue
+        set to non-default, distinctive values, the created entry's
+        unprocessed_values range must reflect them — a mistyped metadata
+        or minValue/maxValue lookup key would silently fall back to the
+        0/1 defaults instead, and a value=1 test point wouldn't reveal
+        that (0/1 happens to already include 1)."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9010
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'display_title': 'Ctrl Select',
+            'entity_type': 'select',
+            'metadata': {'minValue': 5, 'maxValue': 8},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 6}
+        pid = 9011
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        entry = em.dynamic_point_map.get(controlling_pid)
+        self.assertIsNotNone(entry)
+        # Range 5-8 minus the processed value 6 leaves {5, 7, 8} unprocessed.
+        self.assertEqual(entry.unprocessed_values, {5, 7, 8})
+        self.assertEqual(entry.point_id, controlling_pid)
+        self.assertEqual(entry.title, 'Ctrl Select')
+        self.assertEqual(entry.entity_type, 'select')
+
+    def test_unknown_controlling_point_falls_back_without_crashing(self):
+        """If the controlling point somehow isn't in all_points_by_id (e.g.
+        a race with deindexing), the {} fallback must be used — not None,
+        which would crash the very next .get('metadata', {}) call."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9040  # deliberately never added to all_points_by_id
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        pid = 9041
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        entry = em.dynamic_point_map.get(controlling_pid)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.title, f'Point {controlling_pid}')
+        self.assertEqual(entry.entity_type, 'switch')
+
+    def test_unknown_controlling_point_min_max_default_to_0_and_1(self):
+        """minValue/maxValue must default to 0/1 specifically — using a
+        3-value range (0,1,2) so the switch inverse-marking shortcut
+        (which only applies to exactly-2-value entries) doesn't mask a
+        wrong minValue/maxValue default."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9042
+        em.bulk_data[controlling_pid] = {'raw_value': 2}
+        pid = 9043
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        entry = em.dynamic_point_map.get(controlling_pid)
+        self.assertIsNotNone(entry)
+        # range(0, 2) = {0, 1} minus processed value 2 (not even in range,
+        # since maxValue defaults to 1) -> unprocessed stays {0, 1}. A wrong
+        # minValue default (e.g. 1) would instead leave just {1}.
+        self.assertEqual(entry.unprocessed_values, {0, 1})
+
+    def test_existing_controlling_entry_is_not_recreated(self):
+        """When a DynamicPointEntry for the controlling point already
+        exists, it must be reused, not silently replaced with a fresh one —
+        recreating it would discard the accumulated learning-mode state
+        (processed_values/unprocessed_values/is_controlling) from prior
+        write cycles."""
+        from nibe_dynamic_map import DynamicPointEntry
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9030
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'display_title': 'Ctrl Switch',
+            'entity_type': 'switch', 'metadata': {'minValue': 0, 'maxValue': 1},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        # Pre-populate an entry as if a prior write cycle already fully
+        # processed value 0 (leaving only 1 unprocessed) and had already
+        # determined this point IS controlling.
+        em.dynamic_point_map._table[controlling_pid] = DynamicPointEntry(
+            point_id=controlling_pid, title='Ctrl Switch', entity_type='switch',
+            processed_values={0}, unprocessed_values={1},
+            dynamic_points_by_value={0: [12345]}, is_controlling=True,
+        )
+
+        pid = 9031
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+
+        entry = em.dynamic_point_map.get(controlling_pid)
+        # If the entry had been recreated, processed_values would be reset
+        # to empty and the prior value-0 recording would be lost.
+        self.assertIn(0, entry.processed_values)
+        self.assertIn(12345, entry.dynamic_points_by_value.get(0, []))
+
+    def test_new_controlling_entry_title_falls_back_to_title_key_then_default(self):
+        """title = display_title or title-key or f'Point {id}' — each
+        fallback tier must be reachable and use the real value, not a
+        wrong key or inverted 'and' short-circuit."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+
+        # Tier 2: no display_title, but 'title' key present.
+        pid_a = 9020
+        em.all_points_by_id[pid_a] = {
+            'variableId': pid_a, 'entity_type': 'switch',
+            'title': 'Fallback Title', 'metadata': {},
+        }
+        em.bulk_data[pid_a] = {'raw_value': 1}
+        em._publish_dynamic_changes(
+            [(9021, {'title': 'Dyn', 'description': '', 'metadata': {}})],
+            set(), controlling_point_id=pid_a,
+        )
+        self.assertEqual(em.dynamic_point_map.get(pid_a).title, 'Fallback Title')
+
+        # Tier 3: neither display_title nor title present -> f'Point {id}'.
+        pid_b = 9022
+        em.all_points_by_id[pid_b] = {'variableId': pid_b, 'entity_type': 'switch', 'metadata': {}}
+        em.bulk_data[pid_b] = {'raw_value': 1}
+        em._publish_dynamic_changes(
+            [(9023, {'title': 'Dyn2', 'description': '', 'metadata': {}})],
+            set(), controlling_point_id=pid_b,
+        )
+        self.assertEqual(em.dynamic_point_map.get(pid_b).title, f'Point {pid_b}')
+
     def test_record_outcome_uses_real_controlling_raw_value(self):
         """controlling_raw = bulk_data.get(controlling, {}).get('raw_value', 1) —
         must reflect the actual bulk_data value, not the (1) default, when
@@ -1239,8 +1543,11 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
             'title': 'Unique Added Notification Title', 'description': '',
             'metadata': {},
         }
-        em._publish_dynamic_changes([(pid, point_data)], set())
+        with patch.object(em, '_read_applied_mode_from_file', return_value='menus'):
+            em._publish_dynamic_changes([(pid, point_data)], set())
         em._notify.assert_called_once()
+        self.assertEqual(em._notify.call_args.args[0], em.mqtt,
+                         "_notify must be called with the real mqtt client, not None")
         kwargs = em._notify.call_args.kwargs
         self.assertEqual(kwargs['notification_id'], 'nibe_dashboard_updated')
         self.assertIn('Unique Added Notification Title', kwargs['message'])
@@ -1261,12 +1568,52 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
             'description': '',
         }
         em.active_dynamic_points.add(pid)
-        em._publish_dynamic_changes([], {pid})
+        with patch.object(em, '_read_applied_mode_from_file', return_value='menus'):
+            em._publish_dynamic_changes([], {pid})
         em._notify.assert_called_once()
         kwargs = em._notify.call_args.kwargs
         self.assertIn('Unique Removed Notification Title', kwargs['message'])
         self.assertIn(f'point {pid}', kwargs['message'])
         self.assertIn('1 setting(s)', kwargs['message'])
+
+    def test_notification_wording_when_not_in_menus_mode_does_not_reference_menus_dashboard(self):
+        """The Nibe Menus dashboard only exists when mode == 'menus' (see
+        nibe_lovelace.py's provision_lovelace_ui docstring) — in any other
+        mode the notification must point at the Nibe Bridge dashboard
+        (provisioned in every mode) instead, not a dashboard that was never
+        created."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        pid = 8032
+        point_data = {
+            'title': 'Non-Menus Mode Point', 'description': '', 'metadata': {},
+        }
+        with patch.object(em, '_read_applied_mode_from_file', return_value='none'):
+            em._publish_dynamic_changes([(pid, point_data)], set())
+        em._notify.assert_called_once()
+        kwargs = em._notify.call_args.kwargs
+        self.assertNotIn('Nibe Menus', kwargs['title'])
+        self.assertNotIn('Nibe Menus', kwargs['message'])
+        self.assertIn('/nibe-bridge', kwargs['message'])
+        self.assertIn('Non-Menus Mode Point', kwargs['message'])
+        self.assertIn(f'point {pid}', kwargs['message'])
+
+    def test_notification_wording_when_applied_mode_file_absent_uses_non_menus_wording(self):
+        """No applied-mode record (e.g. fresh install, or a test/dev
+        environment with no /data/applied_mode) must default to the
+        dashboard-agnostic wording, not assume 'menus' — read_applied_mode_
+        from_file() returns None in that case, which must not equal 'menus'."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        pid = 8033
+        point_data = {
+            'title': 'No Mode Record Point', 'description': '', 'metadata': {},
+        }
+        with patch.object(em, '_read_applied_mode_from_file', return_value=None):
+            em._publish_dynamic_changes([(pid, point_data)], set())
+        kwargs = em._notify.call_args.kwargs
+        self.assertNotIn('Nibe Menus', kwargs['title'])
+        self.assertIn('/nibe-bridge', kwargs['message'])
 
     def test_notification_includes_triggered_by_line_when_controlling_point_set(self):
         em = _make_em()
@@ -1291,9 +1638,65 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
         em.initial_discovery_complete = True
         pid = 9012
         point_data = {'title': 'Untriggered Point', 'description': '', 'metadata': {}}
-        em._publish_dynamic_changes([(pid, point_data)], set())
+        with patch.object(em, '_read_applied_mode_from_file', return_value='menus'):
+            em._publish_dynamic_changes([(pid, point_data)], set())
         kwargs = em._notify.call_args.kwargs
         self.assertNotIn('Triggered by', kwargs['message'])
+        # ctrl_menu/menu_line must stay '' when there's no controlling point
+        # (trig is None, so the `if trig:` block that would otherwise set
+        # ctrl_menu never runs) — a wrong initial value would leak an
+        # " in <garbage>" fragment into the message header. Likewise
+        # ctrl_line (built from `if ctrl_title else ''`) must contribute
+        # nothing — checked by requiring the exact header text immediately
+        # followed by the double-newline before the added/removed sections.
+        self.assertIn(
+            'The Nibe Menus dashboard was updated:\n\n1 new setting(s)',
+            kwargs['message'],
+        )
+
+    def test_notification_includes_real_menu_entry_when_controlling_point_has_one(self):
+        """When the controlling point is mapped in point_to_menu_map, the
+        notification's menu_line must use that REAL (menu_id, menu_name)
+        entry — a wrong lookup key or a hardcoded None would silently drop
+        the menu location from the message."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9013
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'display_title': 'Ctrl',
+            'entity_type': 'switch', 'metadata': {},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        em.point_to_menu_map[controlling_pid] = ('7', 'Distinctive Menu Name')
+        pid = 9014
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        em._publish_dynamic_changes(
+            [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+        )
+        kwargs = em._notify.call_args.kwargs
+        self.assertIn('menu 7 — Distinctive Menu Name', kwargs['message'])
+
+    def test_no_menu_fragment_when_controlling_point_has_no_menu_mapping(self):
+        """A controlling point with no point_to_menu_map entry must leave
+        ctrl_menu/menu_line empty — not a placeholder — since the message
+        format only inserts ' in {ctrl_menu}' when ctrl_menu is truthy."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9015
+        em.all_points_by_id[controlling_pid] = {
+            'variableId': controlling_pid, 'display_title': 'Ctrl',
+            'entity_type': 'switch', 'metadata': {},
+        }
+        em.bulk_data[controlling_pid] = {'raw_value': 1}
+        # No entry in em.point_to_menu_map for controlling_pid.
+        pid = 9016
+        point_data = {'title': 'Dyn', 'description': '', 'metadata': {}}
+        with patch.object(em, '_read_applied_mode_from_file', return_value='menus'):
+            em._publish_dynamic_changes(
+                [(pid, point_data)], set(), controlling_point_id=controlling_pid,
+            )
+        kwargs = em._notify.call_args.kwargs
+        self.assertIn('The Nibe Menus dashboard was updated:', kwargs['message'])
 
     def test_added_and_removed_in_same_call_both_appear_in_one_notification(self):
         """Regression: added and removed both used the same hardcoded
@@ -1385,6 +1788,53 @@ class TestDynamicLearningDetection(unittest.TestCase):
             em._run_learning_detection(10, 0, 'test')
         mock_rec.assert_called_once_with(10, 0, [])
 
+    def test_post_write_until_and_poll_interval_use_correct_values(self):
+        """_post_write_until must be time.time() + _POST_WRITE_SCAN_S (not None
+        or a subtraction), and time.sleep must be called with the configured
+        post_write_interval (not None)."""
+        em = self._em_with_bulk(initial_size=1)
+        em.post_write_interval = 7.5
+        captured_sleep_args = []
+        def fake_sleep(t):
+            captured_sleep_args.append(t)
+            em.bulk_data[999] = {'raw_value': 1, 'string_value': '', 'is_ok': True,
+                                  'metadata': {}, 'title': 'New'}
+        with patch('nibe_entity_manager.time.sleep', side_effect=fake_sleep), \
+             patch('nibe_entity_manager.time.time', return_value=1000.0), \
+             patch.object(em.dynamic_point_map, 'record_outcome'), \
+             patch.object(em, '_persist_dynamic_map'):
+            em._run_learning_detection(5, 1, 'test')
+        self.assertEqual(em._post_write_until, 1000.0 + 90)
+        self.assertEqual(captured_sleep_args, [7.5])
+
+    def test_deadline_uses_addition_not_subtraction(self):
+        """deadline = time.time() + _POST_WRITE_SCAN_S. If it were a
+        subtraction, the loop would exit on its first iteration instead of
+        continuing to poll."""
+        em = self._em_with_bulk(initial_size=1)
+        time_seq = itertools.chain([100.0, 100.0, 50.0, 999.0], itertools.repeat(999.0))
+        with patch('nibe_entity_manager.time.sleep') as mock_sleep, \
+             patch('nibe_entity_manager.time.time', side_effect=time_seq), \
+             patch('nibe_entity_manager.log_commands'), \
+             patch.object(em.dynamic_point_map, 'record_outcome'), \
+             patch.object(em, '_persist_dynamic_map'):
+            em._run_learning_detection(5, 1, 'test')
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_deadline_boundary_is_reached_when_equal(self):
+        """The exit check is `time.time() >= deadline` (inclusive), not a
+        strict `>`. At exact equality the loop must exit on the first
+        iteration."""
+        em = self._em_with_bulk(initial_size=1)
+        time_seq = itertools.chain([100.0, 100.0, 190.0], itertools.repeat(999.0))
+        with patch('nibe_entity_manager.time.sleep') as mock_sleep, \
+             patch('nibe_entity_manager.time.time', side_effect=time_seq), \
+             patch('nibe_entity_manager.log_commands'), \
+             patch.object(em.dynamic_point_map, 'record_outcome'), \
+             patch.object(em, '_persist_dynamic_map'):
+            em._run_learning_detection(5, 1, 'test')
+        self.assertEqual(mock_sleep.call_count, 1)
+
 
 class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
     """on_dynamic_map_message and on_active_dynamic_message handlers."""
@@ -1409,6 +1859,18 @@ class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
         em.device_info = {}
         em.device_name = 'Test'
         return em
+
+    def test_wanted_points_message_restores_set(self):
+        em = self._make_em_with_dynamic_loading()
+        em.initial_discovery_complete = False
+        em._on_wanted_points_message(None, None, self._make_message(b'[1, 2, 3]'))
+        self.assertEqual(em._wanted_points, {1, 2, 3})
+
+    def test_wanted_points_message_ignored_after_discovery_complete(self):
+        em = self._make_em_with_dynamic_loading()
+        em.initial_discovery_complete = True
+        em._on_wanted_points_message(None, None, self._make_message(b'[1, 2, 3]'))
+        self.assertEqual(em._wanted_points, set())
 
     def test_dynamic_map_ignored_after_discovery_complete(self):
         em = self._make_em_with_dynamic_loading()
@@ -1544,15 +2006,18 @@ class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
 
         subscribe_topics = [c.args[0] for c in em.mqtt.subscribe.call_args_list]
         self.assertEqual(
-            subscribe_topics, [BrowserTopic.DYNAMIC_MAP, BrowserTopic.ACTIVE_DYNAMIC]
+            subscribe_topics,
+            [BrowserTopic.DYNAMIC_MAP, BrowserTopic.ACTIVE_DYNAMIC, BrowserTopic.WANTED_POINTS],
         )
 
         cb_calls = em.mqtt.message_callback_add.call_args_list
-        self.assertEqual(len(cb_calls), 2)
+        self.assertEqual(len(cb_calls), 3)
         self.assertEqual(cb_calls[0].args[0], BrowserTopic.DYNAMIC_MAP)
         self.assertEqual(cb_calls[0].args[1], em._on_dynamic_map_message)
         self.assertEqual(cb_calls[1].args[0], BrowserTopic.ACTIVE_DYNAMIC)
         self.assertEqual(cb_calls[1].args[1], em._on_active_dynamic_message)
+        self.assertEqual(cb_calls[2].args[0], BrowserTopic.WANTED_POINTS)
+        self.assertEqual(cb_calls[2].args[1], em._on_wanted_points_message)
 
 
     """_reconcile_dynamic_points returns early when initial discovery not complete."""
@@ -1740,9 +2205,15 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
         )
         em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
         with patch.object(em, '_enable_entity_locked'), \
-             patch.object(em, '_get_cached_entity_type', return_value=('sensor', 'diagnostic')), \
+             patch.object(em, '_get_cached_entity_type',
+                          return_value=('sensor', 'diagnostic')) as mock_detect, \
              patch.object(em, '_index_point') as mock_index:
             em._reconcile_dynamic_points()
+        detect_arg = mock_detect.call_args.args[0]
+        self.assertEqual(detect_arg['variableId'], point_id)
+        self.assertEqual(detect_arg['metadata'], {})
+        self.assertEqual(detect_arg['title'], 'Real Title')
+        self.assertEqual(detect_arg['description'], 'Real Description')
         indexed = mock_index.call_args.args[0]
         self.assertEqual(indexed['variableId'], point_id)
         self.assertEqual(indexed['display_title'], 'Real Title')
@@ -1752,6 +2223,27 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
         self.assertEqual(indexed['entity_category'], 'diagnostic')
         self.assertIs(indexed['is_writable'], False)
         self.assertIs(indexed['is_dynamic'], True)
+
+    def test_activated_dict_is_writable_true_propagates(self):
+        """metadata['isWritable']=True must reach indexed['is_writable']
+        unchanged — a mistyped lookup key would silently fall back to the
+        False default and mark a writable point read-only."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point_id = 1004
+        entry = self._bulk_entry(point_id)
+        entry['metadata'] = {'isWritable': True}
+        em.bulk_data[point_id] = entry
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(
+            return_value={point_id}
+        )
+        em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
+        with patch.object(em, '_enable_entity_locked'), \
+             patch.object(em, '_get_cached_entity_type', return_value=('sensor', 'diagnostic')), \
+             patch.object(em, '_index_point') as mock_index:
+            em._reconcile_dynamic_points()
+        indexed = mock_index.call_args.args[0]
+        self.assertIs(indexed['is_writable'], True)
 
     def test_activation_continues_to_next_point_after_one_fails(self):
         """If _enable_entity_locked fails for one expected point, the loop
@@ -1794,6 +2286,7 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
              patch.object(em, '_deindex_point') as mock_deindex:
             em._reconcile_dynamic_points()
         mock_deindex.assert_called_once_with(point_id)
+        em._pub.invalidate_config_hash.assert_called_once_with(point_id)
         em.mqtt.publish.assert_any_call(
             BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
         )
@@ -1813,6 +2306,7 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
              patch.object(em, '_deindex_point') as mock_deindex:
             em._reconcile_dynamic_points()
         mock_deindex.assert_called_once_with(stale_id)
+        em._pub.invalidate_config_hash.assert_called_once_with(stale_id)
         em.mqtt.publish.assert_any_call(
             BrowserTopic.META_TEMPLATE.format(id=stale_id), "", retain=True
         )
@@ -2207,7 +2701,8 @@ class TestDynamicMapFileFallbackSurvivesSimulatedRestart(unittest.TestCase):
         import nibe_dynamic_map as ndm
         from nibe_dynamic_map import DynamicPointEntry
 
-        tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False).name
+        fd, tmp = tempfile.mkstemp(suffix='.json')
+        os.close(fd)
         try:
             os.unlink(tmp)
             with patch.object(ndm, '_FILE_FALLBACK', tmp):

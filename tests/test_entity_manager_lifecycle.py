@@ -5,6 +5,7 @@ Entity enable/disable and mode lifecycle tests for nibe_entity_manager.py — sp
 for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
+import json
 import time
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
@@ -13,7 +14,7 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
@@ -107,7 +108,9 @@ class TestEnableDisableEntity(unittest.TestCase):
 
     def test_enable_calls_publish_entity_discovery(self):
         self.em.enable_entity(self.point_id)
-        self.em._pub.publish_entity_discovery.assert_called_once()
+        self.em._pub.publish_entity_discovery.assert_called_once_with(
+            self.em.all_points_by_id[self.point_id], self.em.bulk_data
+        )
 
     def test_enable_publishes_availability_online(self):
         self.em.enable_entity(self.point_id)
@@ -138,6 +141,15 @@ class TestEnableDisableEntity(unittest.TestCase):
         before = self.em._stats_writable_count
         self.em.enable_entity(self.point_id)
         self.assertEqual(self.em._stats_writable_count, before + 1)
+
+    def test_increment_stats_accumulates_writable_count_not_resets_to_one(self):
+        """_stats_writable_count must accumulate (+=1), not be reset to 1 —
+        a starting count of 0 can't distinguish the two, so this seeds a
+        nonzero count first."""
+        self.em._stats_writable_count = 5
+        point = {'entity_type': 'switch', 'entity_category': 'config', 'is_writable': True}
+        self.em._increment_stats(point)
+        self.assertEqual(self.em._stats_writable_count, 6)
 
     def test_enable_publish_fails_returns_false(self):
         """If discovery publish fails (returns None), enable must return False."""
@@ -172,7 +184,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         msg.payload = b'1'
         with patch.object(self.em, '_handle_command') as mock_handle:
             stored_cb[cmd_topic](None, None, msg)
-        mock_handle.assert_called_once()
+        mock_handle.assert_called_once_with(self.mock_entity_info, msg)
 
     # ── disable_entity ────────────────────────────────────────────────────────
 
@@ -368,6 +380,24 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.assertIsNotNone(self.em._point_string_cache.get(other_pid))
         self.assertIsNone(self.em._entity_type_cache.get(self.point_id))
         self.assertIsNotNone(self.em._entity_type_cache.get(other_pid))
+
+    def test_disable_pops_caches_without_default_when_absent(self):
+        """A point never seen by _point_string_cache/_entity_type_cache
+        must still disable cleanly — a missing .pop() default there would
+        raise KeyError instead of silently no-op'ing."""
+        self.em.enable_entity(self.point_id)
+        # Deliberately never populate _point_string_cache/_entity_type_cache
+        # for this point_id, unlike test_disable_pops_caches_keyed_by_this_point_id.
+        self.em.disable_entity(self.point_id)  # must not raise
+
+    def test_disable_clears_missing_state_topic_warned_for_this_point(self):
+        """A point previously warned about a missing state_topic must have
+        that dedup marker cleared on disable — otherwise re-enabling it
+        later would silently suppress the warning it should get again."""
+        self.em.enable_entity(self.point_id)
+        self.em._missing_state_topic_warned.add(self.point_id)
+        self.em.disable_entity(self.point_id)
+        self.assertNotIn(self.point_id, self.em._missing_state_topic_warned)
 
     def test_disable_decrements_category_stat_by_exactly_one(self):
         """Category stat decrement must reduce the pre-seeded count by
@@ -1154,6 +1184,50 @@ class TestSuppressEnabledState(unittest.TestCase):
         self.assertEqual(em._suppress_enabled_state_depth, 0)
 
 
+class TestHaDisableNotifIdProperties(unittest.TestCase):
+    """ha_disable_notif_id()'s sanitize-and-truncate logic — the earlier
+    "two call sites must agree" test only exercises one short, dash-free
+    entity_id ('switch.nibe_100'), never the truncation (60-char cap) or
+    dash-replacement behavior the function's own docstring promises."""
+
+    @given(st.text(min_size=61, max_size=300))
+    def test_result_length_is_bounded_regardless_of_input_length(self, ha_entity_id):
+        """The safe_id portion is capped at 60 chars — the full
+        notification_id must never exceed that cap plus the fixed
+        'nibe_ha_disable_' prefix, no matter how long ha_entity_id is.
+        min_size=61 guarantees every generated input is long enough to
+        actually exercise the truncation (Hypothesis's default text()
+        distribution skews short enough that a broader min_size=1 range
+        could pass many runs without ever generating a long string)."""
+        em = _make_em()
+        result = em.ha_disable_notif_id(ha_entity_id)
+        self.assertLessEqual(len(result), len('nibe_ha_disable_') + 60)
+
+    @given(st.text(alphabet=st.characters(blacklist_characters='.-'),
+                   min_size=1, max_size=50))
+    def test_short_dot_dash_free_id_passes_through_unmodified(self, ha_entity_id):
+        """For any entity_id short enough to avoid truncation and already
+        free of '.'/'-', the safe_id portion must equal the input exactly
+        — no unexpected extra sanitization beyond what the docstring
+        promises."""
+        em = _make_em()
+        result = em.ha_disable_notif_id(ha_entity_id)
+        self.assertEqual(result, f'nibe_ha_disable_{ha_entity_id}')
+
+    @given(st.text(min_size=1, max_size=300))
+    @example('switch.living_room-thermostat.setpoint-2')  # guarantees both '.' and '-' present
+    def test_result_never_contains_a_literal_dot_or_dash(self, ha_entity_id):
+        """'.' and '-' are both replaced with '_' — the notification_id is
+        used as an HA notification identifier, where these characters are
+        used as this function's own domain-separator convention, so any
+        that leak through would be a real correctness bug, not cosmetic."""
+        em = _make_em()
+        result = em.ha_disable_notif_id(ha_entity_id)
+        safe_id_part = result[len('nibe_ha_disable_'):]
+        self.assertNotIn('.', safe_id_part)
+        self.assertNotIn('-', safe_id_part)
+
+
 class TestBuildDisableNotification(unittest.TestCase):
     """Builds the (title, message, notification_id) tuple shown to the user
     when an entity is disabled/re-enabled via HA's own entity settings
@@ -1359,6 +1433,104 @@ class TestBuildDisableNotification(unittest.TestCase):
             'activates it is no longer active.'
         )
         self.assertEqual(message, expected)
+
+
+class TestDeindexPoint(unittest.TestCase):
+    """_deindex_point removes a point from all_points_by_id and
+    _point_string_cache — never directly tested, always mocked in callers."""
+
+    def test_removes_correct_point_id_from_all_points_by_id(self):
+        """A wrong key (e.g. None) would leave the real point_id still
+        indexed forever, while popping an unrelated no-op entry."""
+        em = _make_em()
+        em.all_points_by_id[100] = {'variableId': 100}
+        em.all_points_by_id[200] = {'variableId': 200}
+        em._deindex_point(100)
+        self.assertNotIn(100, em.all_points_by_id)
+        self.assertIn(200, em.all_points_by_id)
+
+    def test_absent_point_id_does_not_raise(self):
+        """Deindexing a point_id not currently indexed must be a no-op,
+        not a KeyError — a missing .pop() default would crash here."""
+        em = _make_em()
+        em._deindex_point(999999)  # must not raise
+
+
+class TestDecrementStats(unittest.TestCase):
+    """_decrement_stats mirrors _increment_stats, clamped at 0 — covers
+    the actual decrement amount and the writable-count clamp floor, which
+    had zero prior test coverage."""
+
+    def test_type_count_decrements_by_exactly_one(self):
+        """A wrong decrement amount (e.g. -2) would only be visible when
+        the starting count is above 1, since both -1 and -2 clamp to the
+        same 0 from a starting count of 1."""
+        em = _make_em()
+        em._stats_type_counts['sensor'] = 3
+        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
+        self.assertEqual(em._stats_type_counts['sensor'], 2)
+
+    def test_writable_count_default_false_when_key_absent(self):
+        """A point dict missing 'is_writable' entirely must not decrement
+        the writable count — a wrong default (True) would silently
+        under-count writable entities on every point lacking the key."""
+        em = _make_em()
+        em._stats_writable_count = 5
+        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
+        self.assertEqual(em._stats_writable_count, 5)
+
+    def test_writable_count_clamped_at_zero_not_one(self):
+        """Decrementing from 1 must clamp to 0, not 1 — a mutated floor of
+        max(1, ...) would leave a phantom writable entity counted forever."""
+        em = _make_em()
+        em._stats_writable_count = 1
+        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic',
+                             'is_writable': True})
+        self.assertEqual(em._stats_writable_count, 0)
+
+    @given(st.integers(min_value=0, max_value=1000))
+    def test_writable_count_decrement_is_exactly_max_0_count_minus_1(self, count):
+        """For any non-negative starting count, one decrement must equal
+        exactly max(0, count - 1) — generalizes the two hand-picked
+        boundary examples above (3->2, 1->0) to the whole space, including
+        count=0 itself (already-clamped, must stay 0)."""
+        em = _make_em()
+        em._stats_writable_count = count
+        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic',
+                             'is_writable': True})
+        self.assertEqual(em._stats_writable_count, max(0, count - 1))
+
+    @given(st.integers(min_value=0, max_value=1000))
+    def test_type_count_decrement_is_exactly_max_0_count_minus_1(self, count):
+        em = _make_em()
+        em._stats_type_counts['sensor'] = count
+        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
+        self.assertEqual(em._stats_type_counts['sensor'], max(0, count - 1))
+
+    def test_missing_entity_type_key_decrements_the_unknown_bucket(self):
+        """_increment_stats and _decrement_stats must agree on the exact
+        same fallback key ('unknown') for a point dict missing
+        'entity_type' entirely, since _increment_stats is what created
+        that dict entry in the first place. A default-value or key-name
+        drift between the two functions (e.g. 'unknown' vs 'UNKNOWN', or
+        None) makes the `if entity_type_key in self._stats_type_counts`
+        lookup miss, silently leaving that counter stuck too high forever
+        — every prior test always supplied 'entity_type' explicitly, so
+        this fallback path had zero coverage."""
+        em = _make_em()
+        em._increment_stats({'entity_category': 'diagnostic'})
+        self.assertEqual(em._stats_type_counts.get('unknown'), 1)
+        em._decrement_stats({'entity_category': 'diagnostic'})
+        self.assertEqual(em._stats_type_counts.get('unknown'), 0)
+
+    def test_missing_entity_category_key_decrements_the_none_bucket(self):
+        """Same symmetry requirement as the entity_type case above, but
+        for 'entity_category' and its 'none' fallback key."""
+        em = _make_em()
+        em._increment_stats({'entity_type': 'sensor'})
+        self.assertEqual(em._stats_category_counts.get('none'), 1)
+        em._decrement_stats({'entity_type': 'sensor'})
+        self.assertEqual(em._stats_category_counts.get('none'), 0)
 
 
 class TestAppliedModePersistence(unittest.TestCase):
@@ -1808,6 +1980,138 @@ class TestApplyMode(unittest.TestCase):
         published = {c.args[0]: c.args[1] for c in em.mqtt.publish.call_args_list}
         self.assertEqual(published.get(BrowserTopic.APPLIED_MODE), 'essential')
 
+    def test_enabled_points_are_marked_wanted(self):
+        """Points apply_mode enables must join _wanted_points so they're
+        automatically re-enabled if they later disappear from bulk data
+        outside the dynamic-tracking mechanism and reappear."""
+        em = _make_em()
+        em.all_points_by_id = self._all_points([1, 2])
+        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
+            em.apply_mode('essential')
+        self.assertEqual(em._wanted_points, {1, 2})
+
+    def test_mode_driven_disable_removes_from_wanted(self):
+        """A point dropped by a mode switch is an intentional override, not
+        a firmware-absence artifact — it must be removed from
+        _wanted_points so _reconcile_wanted_points doesn't fight the
+        mode change by re-enabling it the next time it's seen in bulk data."""
+        em = _make_em()
+        em.all_points_by_id = self._all_points([1, 2, 3])
+        em.mqtt_enabled_points = {3}
+        em._wanted_points = {3}
+        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
+            em.apply_mode('essential')
+        self.assertNotIn(3, em._wanted_points)
+        self.assertEqual(em._wanted_points, {1, 2})
+
+
+class TestWantedPointsPersistence(unittest.TestCase):
+    """Covers _persist_wanted_points()/_mark_wanted()/_unmark_wanted() and
+    the MQTT-restore/file-fallback loading paths for _wanted_points — the
+    catch-all safety net that re-enables a user-enabled point if it ever
+    disappears from bulk data (e.g. via the generic "absent from bulk
+    data" fallback, not the dynamic-tracking mechanism) and later reappears."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        self._tmp_dir = tempfile.mkdtemp()
+        self._tmp_path = os.path.join(self._tmp_dir, 'wanted_points.json')
+
+    def test_persist_writes_file_then_mqtt(self):
+        """Write-ahead: file first, then the retained MQTT topic."""
+        from nibe_mqtt_publisher import BrowserTopic
+        em = _make_em()
+        em._wanted_points = {3, 1, 2}
+        em._persist_wanted_points(path=self._tmp_path)
+        with open(self._tmp_path) as f:
+            self.assertEqual(json.loads(f.read()), [1, 2, 3])
+        em.mqtt.publish.assert_called_once_with(
+            BrowserTopic.WANTED_POINTS, '[1, 2, 3]', retain=True
+        )
+
+    def test_persist_tolerates_unwritable_file(self):
+        """A failed file write (e.g. /data/ not present) must not prevent
+        the MQTT publish — the broker is the primary store."""
+        from nibe_mqtt_publisher import BrowserTopic
+        em = _make_em()
+        em._wanted_points = {5}
+        em._persist_wanted_points(path='/nonexistent-dir/wanted_points.json')
+        em.mqtt.publish.assert_called_once_with(
+            BrowserTopic.WANTED_POINTS, '[5]', retain=True
+        )
+
+    def test_mark_wanted_adds_and_persists_once(self):
+        em = _make_em()
+        em._mark_wanted(7)
+        self.assertEqual(em._wanted_points, {7})
+        self.assertEqual(em.mqtt.publish.call_count, 1)
+        # Marking an already-wanted point again must be a no-op — no
+        # redundant persist.
+        em._mark_wanted(7)
+        self.assertEqual(em.mqtt.publish.call_count, 1)
+
+    def test_unmark_wanted_removes_and_persists_once(self):
+        em = _make_em()
+        em._wanted_points = {7}
+        em._unmark_wanted(7)
+        self.assertEqual(em._wanted_points, set())
+        self.assertEqual(em.mqtt.publish.call_count, 1)
+        # Unmarking a point that isn't wanted must be a no-op.
+        em._unmark_wanted(7)
+        self.assertEqual(em.mqtt.publish.call_count, 1)
+
+    def test_enable_entity_marks_wanted(self):
+        em = _make_em()
+        em.all_points_by_id = {1: {'variableId': 1, 'title': 'Point 1'}}
+        with patch.object(em, '_enable_entity_locked', return_value=True):
+            em.enable_entity(1)
+        self.assertIn(1, em._wanted_points)
+
+    def test_enable_entity_failure_does_not_mark_wanted(self):
+        em = _make_em()
+        with patch.object(em, '_enable_entity_locked', return_value=False):
+            em.enable_entity(99)
+        self.assertNotIn(99, em._wanted_points)
+
+    def test_disable_entity_default_removes_wanted(self):
+        em = _make_em()
+        em._wanted_points = {1}
+        with patch.object(em, '_disable_entity_locked', return_value=True):
+            em.disable_entity(1)
+        self.assertNotIn(1, em._wanted_points)
+
+    def test_disable_entity_remove_from_wanted_false_keeps_wanted(self):
+        em = _make_em()
+        em._wanted_points = {1}
+        with patch.object(em, '_disable_entity_locked', return_value=True):
+            em.disable_entity(1, remove_from_wanted=False)
+        self.assertIn(1, em._wanted_points)
+
+    def test_reconcile_wanted_points_reenables_reappeared_point(self):
+        em = _make_em()
+        em._wanted_points = {1, 2}
+        em.mqtt_enabled_points = set()
+        with patch.object(em, '_enable_entity_locked', return_value=True) as mock_enable:
+            em._reconcile_wanted_points({1})
+        mock_enable.assert_called_once_with(1)
+
+    def test_reconcile_wanted_points_skips_already_enabled(self):
+        em = _make_em()
+        em._wanted_points = {1}
+        em.mqtt_enabled_points = {1}
+        with patch.object(em, '_enable_entity_locked') as mock_enable:
+            em._reconcile_wanted_points({1})
+        mock_enable.assert_not_called()
+
+    def test_reconcile_wanted_points_skips_still_absent(self):
+        em = _make_em()
+        em._wanted_points = {1}
+        em.mqtt_enabled_points = set()
+        with patch.object(em, '_enable_entity_locked') as mock_enable:
+            em._reconcile_wanted_points(set())
+        mock_enable.assert_not_called()
+
 
 class TestApplyModeNone(unittest.TestCase):
     """Test apply_mode with 'none' mode."""
@@ -1982,6 +2286,21 @@ class TestPublishEnabledStateCallback(unittest.TestCase):
         em.publish_enabled_state()
         callback.assert_not_called()
 
+    def test_else_branch_also_updates_last_published_enabled_not_none(self):
+        """The else branch (taken when the set is already unchanged) must
+        also set _last_published_enabled to the real current set, not
+        None — otherwise a THIRD call would see current != None and
+        incorrectly fire the callback even though nothing ever changed."""
+        em = _make_em()
+        callback = MagicMock()
+        em.set_on_enabled_state_change(callback)
+        em.mqtt_enabled_points = {1, 2}
+        em._last_published_enabled = frozenset({1, 2})  # already matches -> else branch
+        em.publish_enabled_state()
+        callback.assert_not_called()
+        em.publish_enabled_state()  # still unchanged -> must still not fire
+        callback.assert_not_called()
+
 
 class TestSetOnEnabledStateChange(unittest.TestCase):
     """set_on_enabled_state_change stores the callback."""
@@ -2093,6 +2412,15 @@ class TestResubscribeAll(unittest.TestCase):
         handler = MagicMock()
         em.register_mgmt_subscription('nibe/mgmt/force_poll', handler, qos=2)
         self.assertEqual(em._mgmt_subscriptions, [('nibe/mgmt/force_poll', handler, 2)])
+
+    def test_register_mgmt_subscription_default_qos_is_one(self):
+        """When qos is omitted, register_mgmt_subscription must default to
+        QoS 1, not some other value."""
+        em = self._make_em_with_resubscribe()
+        em._mgmt_subscriptions = []
+        handler = MagicMock()
+        em.register_mgmt_subscription('nibe/mgmt/force_poll', handler)
+        self.assertEqual(em._mgmt_subscriptions, [('nibe/mgmt/force_poll', handler, 1)])
 
     def test_resubscribes_management_topics(self):
         em = self._make_em_with_resubscribe()

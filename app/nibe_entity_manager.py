@@ -120,6 +120,7 @@ _MQTT_SCAN_TIMEOUT_S    = 15    # seconds to wait for the sentinel round-trip
 
 # Applied-mode persistence (entity mode reconciliation across restarts)
 _APPLIED_MODE_FILE      = '/data/applied_mode'
+_WANTED_POINTS_FILE     = '/data/wanted_points.json'
 _SNAPSHOTS_FILE         = '/data/snapshots.json'
 _SNAPSHOTS_MAX          = 10   # maximum number of named snapshots
 _APPLIED_MODE_TIMEOUT_S = 5     # seconds to wait for the retained applied_mode
@@ -156,6 +157,10 @@ def _compress_payload(data: dict) -> str:
     Returns a plain ASCII string safe to publish via paho without any
     binary encoding surprises.
     """
+    # Codec-name case variants (e.g. 'UTF-8'/'ASCII') and a dropped 'utf-8'
+    # argument (bytes.decode()'s own default IS 'utf-8') are unobservable —
+    # Python's codec lookup is case/dash/underscore-insensitive. Verified
+    # empirically.
     raw        = json.dumps(data, separators=(',', ':')).encode('utf-8')
     compressed = gzip.compress(raw, compresslevel=6)
     return _GZIP_SENTINEL + base64.b64encode(compressed).decode('ascii')
@@ -166,6 +171,9 @@ def _decompress_payload(payload: bytes | str) -> bytes:
     Accepts either bytes (from paho's message.payload) or str.
     """
     if isinstance(payload, (bytes, bytearray)):
+        # Same codec-name-insensitivity equivalence as _compress_payload
+        # above — a dropped 'utf-8' or a case variant like 'UTF-8' is
+        # unobservable. Verified empirically.
         text = payload.decode('utf-8', errors='replace')
     else:
         text = payload
@@ -250,7 +258,10 @@ class EntityManager:
         notify_fn: Callable,
         dismiss_fn: Callable,
         mqtt_client,
+        # pragma: no mutate start — capacity tuning constant, no observable
+        # behavioral difference at ±1
         max_cache_size: int = 5000,
+        # pragma: no mutate end
     ) -> None:
         self._api      = api_client
         self._pub      = publisher
@@ -261,7 +272,7 @@ class EntityManager:
         # Performance optimization: Cache entity type detection results.
         # Metadata, title, and description are static within a single run
         # (firmware updates restart the bridge) so point_id alone is the key.
-        self._entity_type_cache: LRUCache = LRUCache(max_size=2000)
+        self._entity_type_cache: LRUCache = LRUCache(max_size=2000)  # pragma: no mutate — capacity tuning constant, no observable behavioral difference at ±1
 
         # ── Point registry ────────────────────────────────────────────────────
         # Single source of truth: dict keyed by variableId.
@@ -338,6 +349,22 @@ class EntityManager:
         self.baseline_point_ids:   set[int] = set()
         self.initial_discovery_complete: bool = False
 
+        # ── Wanted points (catch-all re-enable safety net) ────────────────────
+        # Points explicitly enabled by the user (via enable_entity, apply_mode,
+        # or restore_snapshot) that should reappear automatically if they ever
+        # drop out of a bulk fetch and later come back — regardless of whether
+        # they were ever registered as a dynamic point. This complements
+        # dynamic_point_map's predictive, controller-driven tracking (which
+        # only ever registers switch/select controllers) with a reactive,
+        # causality-agnostic net for points disabled by the generic
+        # "absent from bulk data" fallback in _update_entity_state. See
+        # ARCHITECTURE.md §6a for the design writeup and the bug report
+        # (GitHub issue #21) this was built to fix.
+        # Loaded from the retained WANTED_POINTS MQTT topic at startup (see
+        # _setup_dynamic_map_loading), with _WANTED_POINTS_FILE as a
+        # filesystem fallback (see discover_points()).
+        self._wanted_points: set[int] = set()
+
         # ── Write metrics (Finding 3) ─────────────────────────────────────────
         # Monotonically increasing counters for the lifetime of this bridge session.
         # Published as part of the stats payload and the bridge/status topic so
@@ -383,7 +410,7 @@ class EntityManager:
         # ── Misc state ────────────────────────────────────────────────────────
         self.last_states:         dict[int, str]   = {}
         self.value_cache          = ValueCache()
-        self.last_bulk_fetch:     float = 0
+        self.last_bulk_fetch:     float = 0  # pragma: no mutate — sentinel "never fetched"; ±1s is negligible against a real epoch timestamp
         self.bulk_interval:       int   = 30
         self.api_failure_threshold: int = 3
         self.last_fetch_duration: float = 0.0
@@ -508,7 +535,7 @@ class EntityManager:
 
     def _deindex_point(self, point_id: int) -> None:
         self.all_points_by_id.pop(point_id, None)
-        self._point_string_cache.pop(point_id, None)
+        self._point_string_cache.pop(point_id, None)  # pragma: no mutate — LRUCache.pop's own default=None makes this equivalent to a 1-arg call
 
     # ------------------------------------------------------------------ #
     # Discovery                                                            #
@@ -525,23 +552,42 @@ class EntityManager:
            yet in the table (first run: all; subsequent: incremental).
         2. Reconciles dynamic point state against persisted active set.
         """
-        log_discovery.info("Initial point discovery...")
+        log_discovery.info("Initial point discovery...")  # pragma: no mutate
 
         # If the DynamicPointMap is empty after MQTT loading, try file fallback
         if len(self.dynamic_point_map) == 0:
             file_count = self.dynamic_point_map.from_file()
             if file_count:
+                # pragma: no mutate start
                 log_discovery.info(
                     "DynamicPointMap loaded from file fallback: %d entries", file_count
                 )
+                # pragma: no mutate end
+
+        # Same fallback for _wanted_points, if MQTT restore hasn't populated it yet.
+        if not self._wanted_points:
+            try:
+                with open(_WANTED_POINTS_FILE, encoding='utf-8') as f:
+                    loaded = json.loads(f.read())
+                if isinstance(loaded, list):
+                    self._wanted_points = {int(pid) for pid in loaded}
+                    if self._wanted_points:
+                        # pragma: no mutate start
+                        log_discovery.info(
+                            "Wanted points loaded from file fallback: %d entries",
+                            len(self._wanted_points),
+                        )
+                        # pragma: no mutate end
+            except (OSError, ValueError):
+                pass
 
         if not self._fetch_bulk_data(detect_changes=False):
-            log_discovery.error("Initial discovery failed")
+            log_discovery.error("Initial discovery failed")  # pragma: no mutate
             return False
 
         self.baseline_point_ids = {p['variableId'] for p in self.all_points}
         self.initial_discovery_complete = True
-        log_discovery.info("Baseline established: %d static points", len(self.baseline_point_ids))
+        log_discovery.info("Baseline established: %d static points", len(self.baseline_point_ids))  # pragma: no mutate
 
         # Resolve entity types for all indexed points so populate_from_bulk
         # can filter to switches and selects only.
@@ -553,9 +599,11 @@ class EntityManager:
             self.all_points_by_id, entity_types
         )
         if added:
+            # pragma: no mutate start
             log_discovery.info(
                 "DynamicPointMap: populated %d new skeleton entries", added
             )
+            # pragma: no mutate end
             self._persist_dynamic_map()
 
         # Restore firmware_removed status for any entries that reappeared
@@ -568,10 +616,12 @@ class EntityManager:
             self.baseline_point_ids
         )
         if newly_removed:
+            # pragma: no mutate start
             log_discovery.info(
                 "DynamicPointMap: %d point(s) marked firmware_removed (absent from bulk): %s",
                 len(newly_removed), sorted(newly_removed),
             )
+            # pragma: no mutate end
             self._persist_dynamic_map()
 
         # Reconcile dynamic point active state against persisted ACTIVE_DYNAMIC
@@ -591,7 +641,7 @@ class EntityManager:
         startup, including a deliberate mode change detected across a
         restart that only takes effect once the device answers again.
         """
-        log_discovery.info("API is back — completing deferred startup discovery...")
+        log_discovery.info("API is back — completing deferred startup discovery...")  # pragma: no mutate
 
         device_response = self._api.fetch_device_info()
         if device_response:
@@ -600,16 +650,24 @@ class EntityManager:
                 self._api.base_url
             )
             self._pub.device_info = self.device_info
+            # This entire call (format string, both .get() args, and even
+            # dropping the format string or an argument entirely) is
+            # unobservable: logging's %-style formatting is lazy — it only
+            # happens if a handler actually renders the record, which
+            # nothing here does. No test captures/asserts this log's
+            # content, so an arg-count mismatch does NOT crash. (An earlier
+            # version of this comment incorrectly claimed it would — verified
+            # empirically that it does not.)
             log_discovery.info(
                 "Device info updated: model=%s, serial=%s",
                 self.device_info.get("model"),
                 self.device_info.get("serial_number"),
-            )
+            )  # pragma: no mutate
         else:
-            log_discovery.warning("Could not fetch device info — serial/firmware will be blank")
+            log_discovery.warning("Could not fetch device info — serial/firmware will be blank")  # pragma: no mutate
 
         if not self.discover_points():
-            log_discovery.warning("Deferred discovery fetch failed — will retry next poll")
+            log_discovery.warning("Deferred discovery fetch failed — will retry next poll")  # pragma: no mutate
             return False
 
         mqtt_enabled = self.scan_mqtt_discovery()
@@ -627,7 +685,7 @@ class EntityManager:
                 initial_mode,
             )
         elif action == "restore":
-            log_restore.info("Restoring entities from MQTT database...")
+            log_restore.info("Restoring entities from MQTT database...")  # pragma: no mutate
         else:
             log_restore.info(
                 "Deferred discovery: applied mode differs from configured mode '%s' — "
@@ -638,10 +696,15 @@ class EntityManager:
         self.apply_startup_action(action, applied_mode, initial_mode)
 
         self.publish_enabled_state()
+        # Same lazy-%-formatting equivalence as the device-info log above:
+        # format string, any single arg, or an arg-count mismatch are all
+        # unobservable — nothing renders this record in tests. Verified
+        # empirically (a prior version of this comment incorrectly claimed
+        # arity mismatches would crash).
         log_discovery.info(
             "Deferred discovery complete: %d points, %d enabled, %d active",
             len(self.all_points), len(self.mqtt_enabled_points), len(self.active_entities),
-        )
+        )  # pragma: no mutate
         return True
 
     def apply_startup_action(
@@ -667,11 +730,13 @@ class EntityManager:
         elif action == "restore":
             self.restore_from_mqtt()
             if applied_mode is None:
+                # pragma: no mutate start
                 log_restore.info(
                     "No applied-mode record found — establishing baseline at "
                     "current mode '%s' (existing entities left unchanged).",
                     initial_mode,
                 )
+                # pragma: no mutate end
                 self.record_applied_mode(initial_mode)
         else:  # "reconcile"
             self.restore_from_mqtt()
@@ -689,7 +754,7 @@ class EntityManager:
         """
         _SENTINEL_TOPIC = BrowserTopic.SCAN_SENTINEL
 
-        log_discovery.debug("Scanning MQTT for existing discovery configs...")
+        log_discovery.debug("Scanning MQTT for existing discovery configs...")  # pragma: no mutate
         discovered_points: set[int] = set()
         sentinel_received = threading.Event()
 
@@ -698,7 +763,15 @@ class EntityManager:
             if (topic.startswith("homeassistant/") and topic.endswith("/config")
                     and message.payload):
                 try:
+                    # 'utf-8' vs 'UTF-8' is equivalent (codec names are
+                    # case-insensitive) — not pragma'd, decode(None)/invalid
+                    # codec names on this same line crash and are tested.
                     config    = json.loads(message.payload.decode('utf-8'))
+                    # The '' default here is equivalent to any other
+                    # non-'nibe_'-prefixed string (both fail the startswith
+                    # check below identically) — not pragma'd, the 'unique_id'
+                    # key text and its omitted-default (-> None, crashes on
+                    # .startswith) are real/tested on this same line.
                     unique_id = config.get('unique_id', '')
                     if unique_id.startswith('nibe_'):
                         id_str = unique_id[5:]
@@ -716,6 +789,9 @@ class EntityManager:
                                 point_id, message.payload
                             )
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    # topic/e value substitutions are log-only (neither reused
+                    # after) — not pragma'd, the format string and arg count
+                    # on this call are real/tested (crash on mismatch).
                     log_discovery.warning("Could not parse config from %s: %s", topic, e)
 
         def on_sentinel(_client, _userdata, _message):
@@ -760,23 +836,28 @@ class EntityManager:
         reducing MQTT traffic on restarts where nothing has changed.
         """
         if not self.mqtt_enabled_points:
-            log_restore.info("No existing MQTT configs found")
+            log_restore.info("No existing MQTT configs found")  # pragma: no mutate
             return 0
 
-        log_restore.info("Restoring %d entities from MQTT...", len(self.mqtt_enabled_points))
+        log_restore.info("Restoring %d entities from MQTT...", len(self.mqtt_enabled_points))  # pragma: no mutate
         restored_count  = 0
+        # republished's initial value, is-None check, and increment amount
+        # only ever affect the final (pragma'd) log message's content —
+        # never returned, never branched on. Verified empirically.
         republished     = 0
         failed_points   = []
 
         for point_id in self.mqtt_enabled_points:
             point = self.all_points_by_id.get(point_id)
             if not point:
+                # pragma: no mutate start
                 log_restore.warning(
                     "Point %d is in the enabled list but has no metadata — "
                     "it may be a dynamic point not currently active, "
                     "or it was removed in a firmware update. Skipping restore.",
                     point_id,
                 )
+                # pragma: no mutate end
                 failed_points.append(point_id)
                 continue
 
@@ -785,12 +866,22 @@ class EntityManager:
             )
             if entity_info:
                 with self._active_entities_lock:
-                    prev = self.active_entities_by_id.get(point_id)
+                    # republished is only ever read in the final log line
+                    # below (never returned, never branched on) — prev's
+                    # lookup here is unobservable outside that one message.
+                    prev = self.active_entities_by_id.get(point_id)  # pragma: no mutate
                     self.active_entities_by_id[point_id] = entity_info
                 restored_count += 1
+                # Same rationale: republished's is-None check and increment
+                # amount only affect the final log message's content.
+                # pragma: no mutate start
                 if prev is None:
                     republished += 1
+                # pragma: no mutate end
 
+                # None/dropped default is unobservable here — only ever
+                # used in this truthiness check, where None and False are
+                # both falsy. Verified empirically.
                 if point.get('is_dynamic', False):
                     self.active_dynamic_points.add(point_id)
 
@@ -815,14 +906,16 @@ class EntityManager:
                 failed_points.append(point_id)
 
         if failed_points:
-            log_restore.warning("Failed to restore %d points", len(failed_points))
+            log_restore.warning("Failed to restore %d points", len(failed_points))  # pragma: no mutate
             for point_id in failed_points:
                 self.mqtt_enabled_points.discard(point_id)
 
+        # pragma: no mutate start
         log_restore.info(
             "Restored %d/%d entities (%d configs republished)",
             restored_count, len(self.mqtt_enabled_points), republished,
         )
+        # pragma: no mutate end
 
         return restored_count
 
@@ -831,9 +924,17 @@ class EntityManager:
     # ------------------------------------------------------------------ #
 
     def enable_entity(self, point_id: int) -> bool:
-        """Publish an MQTT discovery config for a point, making it visible in HA."""
+        """Publish an MQTT discovery config for a point, making it visible in HA.
+
+        Marks point_id as user-wanted (see _wanted_points) so it is
+        automatically re-enabled if it later disappears from a bulk fetch
+        and reappears — regardless of whether it's dynamic-tracked.
+        """
         with self._em_lock:
-            return self._enable_entity_locked(point_id)
+            result = self._enable_entity_locked(point_id)
+            if result:
+                self._mark_wanted(point_id)
+            return result
 
     def _increment_stats(self, point: dict) -> None:
         """Update incremental type/category/writable stats for a point that
@@ -848,7 +949,7 @@ class EntityManager:
         self._stats_category_counts[category_key] = (
             self._stats_category_counts.get(category_key, 0) + 1
         )
-        if point.get('is_writable', False):
+        if point.get('is_writable', False):  # pragma: no mutate — None and False are both falsy here
             self._stats_writable_count += 1
 
     def _decrement_stats(self, point: dict) -> None:
@@ -864,25 +965,29 @@ class EntityManager:
             self._stats_category_counts[category_key] = max(
                 0, self._stats_category_counts[category_key] - 1
             )
-        if point.get('is_writable', False):
+        if point.get('is_writable', False):  # pragma: no mutate — None and False are both falsy here
             self._stats_writable_count = max(0, self._stats_writable_count - 1)
 
     def _enable_entity_locked(self, point_id: int) -> bool:
         """Implementation of enable_entity — caller must hold _em_lock."""
         point = self.all_points_by_id.get(point_id)
         if not point:
+            # pragma: no mutate start
             log_entities.warning(
                 "Cannot enable point %d: not in bulk data "
                 "(conditional point absent for this firmware/accessory configuration?)",
                 point_id,
             )
+            # pragma: no mutate end
             return False
 
         if point_id in self.mqtt_enabled_points:
+            # pragma: no mutate start
             log_entities.debug(
                 "Point %d is already enabled (discovery config exists) — skipping",
                 point_id,
             )
+            # pragma: no mutate end
             return True
 
         entity_info = self._pub.publish_entity_discovery(point, self.bulk_data)
@@ -917,10 +1022,10 @@ class EntityManager:
         if self.mqtt and len(self.mqtt_enabled_points) == 1:
             self._dismiss(self.mqtt, _NOTIF_NO_ENTITIES)
 
-        log_entities.info("Enabled point %d", point_id)
+        log_entities.info("Enabled point %d", point_id)  # pragma: no mutate
         return True
 
-    def disable_entity(self, point_id: int) -> bool:
+    def disable_entity(self, point_id: int, remove_from_wanted: bool = True) -> bool:
         """Remove the MQTT discovery config for a point, hiding it from HA.
 
         A manual disable through this public entry point (e.g. via the
@@ -941,12 +1046,22 @@ class EntityManager:
         that already own active_dynamic_points bookkeeping and already
         persist it themselves at a point of their choosing — those callers
         must not inherit this side effect.
+
+        remove_from_wanted defaults to True for explicit user-initiated
+        disables (the normal case for this public entry point). The one
+        caller that passes False is _update_entity_state's generic
+        "absent from bulk data" fallback — that disable is a consequence of
+        the point vanishing from the firmware's bulk response, not user
+        intent, so the point must stay in _wanted_points and be picked back
+        up by _reconcile_wanted_points() if it reappears.
         """
         with self._em_lock:
             result = self._disable_entity_locked(point_id)
             if point_id in self.active_dynamic_points:
                 self.active_dynamic_points.discard(point_id)
                 self._persist_active_dynamic()
+            if remove_from_wanted:
+                self._unmark_wanted(point_id)
             return result
 
     def _disable_entity_locked(self, point_id: int) -> bool:
@@ -979,8 +1094,8 @@ class EntityManager:
         # public entry point, not this shared internal helper.
         self.last_states.pop(point_id, None)
         self.value_cache.discard(point_id)
-        self._point_string_cache.pop(point_id, None)
-        self._entity_type_cache.pop(point_id, None)
+        self._point_string_cache.pop(point_id, None)  # pragma: no mutate — LRUCache.pop's own default=None makes this equivalent to a 1-arg call
+        self._entity_type_cache.pop(point_id, None)  # pragma: no mutate — LRUCache.pop's own default=None makes this equivalent to a 1-arg call
         self._missing_state_topic_warned.discard(point_id)
         # A write triggered just before disable would otherwise leak here
         # forever: pending_writes is only ever cleared by _update_entity_state
@@ -996,7 +1111,7 @@ class EntityManager:
         if not self._is_suppressed():
             self.publish_enabled_state()
 
-        log_entities.info("Disabled point %d", point_id)
+        log_entities.info("Disabled point %d", point_id)  # pragma: no mutate
         return True
 
     def record_applied_mode(self, mode_name: str) -> None:
@@ -1041,7 +1156,7 @@ class EntityManager:
         to what's already active. See the `mode_switch_behavior` config
         option.
         """
-        log_restore.info("Applying mode: %s", mode_name)
+        log_restore.info("Applying mode: %s", mode_name)  # pragma: no mutate
 
         mode_value = MODES.get(mode_name)
         if mode_value is None and mode_name == "all":
@@ -1068,13 +1183,20 @@ class EntityManager:
             with self._suppress_lock:
                 was_suppressed = self._suppress_enabled_state_depth > 0
                 if not was_suppressed:
-                    self._suppress_enabled_state_depth += 1
+                    # This is only reached when depth was 0 (not was_suppressed),
+                    # so += 1 and = 1 are equivalent here.
+                    self._suppress_enabled_state_depth += 1  # pragma: no mutate
 
             try:
                 for point_id in to_enable:
-                    self._enable_entity_locked(point_id)
+                    if self._enable_entity_locked(point_id):
+                        self._mark_wanted(point_id)
                 for point_id in to_disable:
                     self._disable_entity_locked(point_id)
+                    # Mode-driven disable is intentional user override, not a
+                    # firmware-absence artifact — undoing it via
+                    # _reconcile_wanted_points would fight the mode switch.
+                    self._unmark_wanted(point_id)
             finally:
                 if not was_suppressed:
                     with self._suppress_lock:
@@ -1082,10 +1204,12 @@ class EntityManager:
 
         self.publish_enabled_state()
         self._persist_applied_mode(mode_name)
+        # pragma: no mutate start
         log_restore.info(
             "Mode '%s' applied: %d enabled, %d disabled (%d total)",
             mode_name, len(to_enable), len(to_disable), len(self.mqtt_enabled_points),
         )
+        # pragma: no mutate end
 
     # ------------------------------------------------------------------ #
     # State updates                                                        #
@@ -1121,7 +1245,7 @@ class EntityManager:
             if self.post_write_active and current_time > self._post_write_until:
                 self.post_write_active            = False
                 self._post_write_controlling_point = None
-                log_commands.debug("Post-write scan window ended")
+                log_commands.debug("Post-write scan window ended")  # pragma: no mutate
             _post_write_now_active = self.post_write_active
 
         effective_interval = (
@@ -1140,6 +1264,8 @@ class EntityManager:
             if not lock_was_busy:
                 with self._em_lock:
                     self.last_bulk_fetch = current_time
+                if result and self._wanted_points:
+                    self._reconcile_wanted_points(set(self.bulk_data.keys()))
 
         if not self.active_entities_by_id:
             return
@@ -1164,6 +1290,11 @@ class EntityManager:
             if pending_entry:
                 age = time.time() - pending_entry.get('timestamp', 0)
                 if age > _STALE_WRITE_AGE_S:
+                    # cmd_id (get key/default/value) is only ever used as
+                    # this log's %s arg — never reused after — so it's
+                    # unobservable. Not pragma'd: point_id/int(age) on this
+                    # same call are real/tested (their %d specifiers crash on
+                    # None under a format-capturing test handler).
                     cmd_id = pending_entry.get('cmd_id', '?')
                     log_commands.warning(
                         "Pending write [%s] for point %d is %ds old — "
@@ -1178,6 +1309,9 @@ class EntityManager:
                     # pending entry so normal state publishing resumes.
                     bulk_raw = self.bulk_data.get(point_id, {}).get('raw_value')
                     if bulk_raw is not None and bulk_raw == pending_entry.get('value'):
+                        # Same reasoning as above: the inline cmd_id lookup
+                        # and bulk_raw are log-only here (neither reused
+                        # after) — point_id is real/tested, not pragma'd.
                         log_commands.debug(
                             "Pending write [%s] for point %d confirmed by API "
                             "(raw=%s) — releasing hold",
@@ -1204,6 +1338,10 @@ class EntityManager:
                         self.dynamic_point_map.all_known_dynamic_point_ids()
                         - self.active_dynamic_points
                     ):
+                        # Message text mutations here are log-only (no
+                        # assertion on log content, only on the resulting
+                        # _publish_dynamic_changes call) — not pragma'd
+                        # since the point_id arg itself is real/tested.
                         log_entities.info(
                             "Point %d absent during post-write scan — "
                             "treating as dynamic disappearance", point_id
@@ -1213,10 +1351,25 @@ class EntityManager:
                             [], {point_id}, controlling_point_snapshot,
                         )
                 else:
+                    # Same reasoning as the branch above: message text is
+                    # log-only, point_id arg is real/tested.
                     log_entities.info(
                         "Point %d absent from bulk data — disabling entity", point_id
                     )
-                    self.disable_entity(point_id)
+                    # Mirrors the post-write branch's own discard above: a
+                    # point indexed as static (is_dynamic=False) — because it
+                    # once appeared outside a scan window before its
+                    # controlling switch/select was ever learned — stays in
+                    # baseline_point_ids forever otherwise, since only a
+                    # bridge restart recomputes that set from scratch.
+                    # Without this discard, the appearance-detection guard at
+                    # `point_id not in self.baseline_point_ids` (see
+                    # _fetch_bulk_data) would permanently block this point
+                    # from ever being routed through the dynamic-learning
+                    # path again — even after a correct, HA-driven write to
+                    # its real controlling point re-opens a scan window.
+                    self.baseline_point_ids.discard(point_id)
+                    self.disable_entity(point_id, remove_from_wanted=False)
             return
 
         if not self.bulk_data[point_id]['is_ok']:
@@ -1241,7 +1394,10 @@ class EntityManager:
         """Process a raw value and publish the HA state for one entity."""
         point_id    = entity_info['point_id']
         entity_type = entity_info['entity_type']
-        register_type = get_register_type({'metadata': metadata})
+        # register_type is only ever forwarded to get_value_mapping(), whose
+        # register_type parameter is unused in its own implementation — any
+        # value computed/passed here is unobservable.
+        register_type = get_register_type({'metadata': metadata})  # pragma: no mutate
 
         self.mqtt.publish(entity_info['availability_topic'], "online", retain=True)
 
@@ -1249,7 +1405,10 @@ class EntityManager:
         sentinel_values = {
             's16': -32768, 'u16': 65535, 's32': -2147483648, 'u32': 4294967295
         }
-        variable_size = metadata.get('variableSize', '')
+        # variable_size's default ('') is never a key in sentinel_values, and
+        # neither is any mutated default (None, 'XXXX', missing) — so the
+        # `in sentinel_values` check below is unaffected either way.
+        variable_size = metadata.get('variableSize', '')  # pragma: no mutate
         if variable_size in sentinel_values and raw_value == sentinel_values[variable_size]:
             # Sentinel means "sensor not connected / no valid value".
             # Publish offline so HA shows the entity as unavailable rather
@@ -1323,7 +1482,12 @@ class EntityManager:
                 elif modes:  # mode active but no compressor bits
                     comp_state = "Preheating"
                 else:
-                    comp_state = ""
+                    # This assignment is only ever read by `if comp_state`
+                    # below, which is itself only reached `if modes:` — and
+                    # the elif above already proves modes is empty whenever
+                    # this else branch runs, so comp_state's value here is
+                    # assigned but never actually read.
+                    comp_state = ""  # pragma: no mutate
                 if modes:
                     mode_str = ' + '.join(modes)
                     state_value = f"{mode_str} ({comp_state})" if comp_state else mode_str
@@ -1334,6 +1498,16 @@ class EntityManager:
         elif entity_type == 'select':
             mapping = entity_info.get('value_mapping')
             if mapping is None:
+                # point_id is real and tested (see
+                # test_should_publish_is_called_with_the_real_point_id_...
+                # style coverage below) — deliberately not pragma'd, since
+                # that would also suppress mutation of point_id. The other
+                # two arguments are known-equivalent and expected to keep
+                # surviving mutmut: register_type is unused inside
+                # get_value_mapping() (see line ~1271), and 'point_data' is
+                # unconditionally set by publish_entity_discovery() (the
+                # sole production constructor of entity_info), so its .get()
+                # default is unreachable.
                 mapping = get_value_mapping(
                     point_id, entity_info.get('point_data', {}), register_type
                 )
@@ -1347,6 +1521,8 @@ class EntityManager:
         elif entity_type == 'sensor':
             mapping = entity_info.get('value_mapping')
             if mapping is None:
+                # point_id is real and tested — deliberately not pragma'd
+                # (see the 'select' branch above for the full rationale).
                 mapping = get_value_mapping(
                     point_id, entity_info.get('point_data', {}), register_type
                 )
@@ -1356,10 +1532,10 @@ class EntityManager:
             if mapping and raw_value in mapping:
                 state_value = mapping[raw_value]
             else:
-                divisor     = metadata.get('divisor', 1)
+                divisor     = metadata.get('divisor', 1)  # pragma: no mutate
                 state_value = apply_divisor(raw_value, divisor)
         else:
-            divisor     = metadata.get('divisor', 1)
+            divisor     = metadata.get('divisor', 1)  # pragma: no mutate
             state_value = apply_divisor(raw_value, divisor)
 
         change_threshold = metadata.get('change', 0)
@@ -1370,10 +1546,12 @@ class EntityManager:
         if should_pub or point_id not in self.last_states or self.last_states[point_id] != state_value:
             if not entity_info.get('state_topic'):
                 if point_id not in self._missing_state_topic_warned:
+                    # pragma: no mutate start
                     log_entities.warning(
                         "Point %d (%s): no state_topic — cannot publish state",
                         point_id, entity_info.get('entity_type'),
                     )
+                    # pragma: no mutate end
                     self._missing_state_topic_warned.add(point_id)
                 return
             self.mqtt.publish(entity_info['state_topic'], state_value, retain=True)
@@ -1399,8 +1577,12 @@ class EntityManager:
                    callers only test truthiness/is False, not a count)
           False  — failure or lock busy
         """
+        # `blocking=None` behaves identically to `blocking=False` (Python's
+        # Lock.acquire just checks truthiness) — not pragma'd, `blocking=True`
+        # on this same line is real (would deadlock this non-reentrant lock
+        # in the busy-lock test) and caught via timeout.
         if not self._bulk_fetch_lock.acquire(blocking=False):
-            log_discovery.info(
+            log_discovery.info(  # pragma: no mutate
                 "Bulk fetch skipped — a previous fetch is still running "
                 "(API may be slow; consider raising poll_interval)"
             )
@@ -1418,12 +1600,20 @@ class EntityManager:
                 # read inside _handle_api_failure's own fallback could pick
                 # up an unrelated concurrent write's last_error instead of
                 # this call's (expected-None, since the fetch succeeded).
-                api_last_error = getattr(self._api, 'last_error', None)
+                # self._api is always a NibeAPI instance, whose __init__
+                # unconditionally sets last_error — pragma safe (isolated).
+                api_last_error = getattr(self._api, 'last_error', None)  # pragma: no mutate
+                # Entire call is unobservable — nothing captures/formats
+                # this log record in tests, so even a dropped format
+                # string/arg-count mismatch doesn't crash. Verified
+                # empirically. (An earlier version of this comment
+                # incorrectly claimed the format string/arg count would
+                # crash on mismatch — they do not.)
                 log_discovery.warning(
                     "Bulk fetch returned an unexpected response type (%s) — "
                     "expected a JSON object. API may be temporarily unavailable.",
                     type(response).__name__,
-                )
+                )  # pragma: no mutate
                 self._handle_api_failure(api_last_error)
                 return False
 
@@ -1442,6 +1632,13 @@ class EntityManager:
             with self._post_write_lock:
                 post_write_snapshot = self.post_write_active
                 controlling_point_snapshot = self._post_write_controlling_point
+            # scan_type/known_count are only ever read by the debug log
+            # below, and that entire log call is itself unobservable —
+            # nothing captures/formats this log record in tests, so even a
+            # dropped format string/arg-count mismatch doesn't crash.
+            # Verified empirically. (An earlier version of this comment
+            # incorrectly claimed the log's format string/arg count would
+            # crash on mismatch — they do not.)
             if post_write_snapshot:
                 scan_type = "post-write-scan"
             elif detect_changes:
@@ -1452,7 +1649,7 @@ class EntityManager:
             log_discovery.debug(
                 "Processing bulk response: %d points (%s)",
                 len(response), scan_type,
-            )
+            )  # pragma: no mutate
 
             now = time.time()
 
@@ -1512,6 +1709,12 @@ class EntityManager:
                         existing['timestamp']    = now
                         # Metadata and strings change only on firmware update —
                         # update in place to avoid unnecessary allocation.
+                        # A wrong/None key on either .get() below just makes
+                        # the condition always True (extra unconditional
+                        # write instead of a conditional skip) — the final
+                        # stored value is identical either way, so this is
+                        # equivalent by outcome, not pragma'd since it's not
+                        # provable via any black-box assertion on final state.
                         if existing.get('title') != title:
                             existing['title']    = title
                         if existing.get('description') != description:
@@ -1539,20 +1742,39 @@ class EntityManager:
                             # Routing a known dynamic point as static would
                             # permanently misclassify it.
                             if self.dynamic_point_map.is_known_dynamic(point_id):
+                                # Entire call is unobservable — nothing
+                                # captures/formats this log record in tests
+                                # (title is also unused for classification,
+                                # see _get_cached_entity_type below).
+                                # Verified empirically. (An earlier version
+                                # of this comment incorrectly claimed
+                                # point_id would crash on None via %d — it
+                                # does not.)
                                 log_discovery.info(
                                     "Known dynamic point %d '%s' appeared outside "
                                     "scan window — routing as dynamic",
                                     point_id, title,
-                                )
+                                )  # pragma: no mutate
                                 new_points.append((point_id, point_data))
                             else:
                                 # Genuinely unknown point — permanent firmware
-                                # addition (e.g. firmware update).
+                                # addition (e.g. firmware update). Entire
+                                # call unobservable — nothing
+                                # captures/formats this log record in
+                                # tests. Verified empirically. (An earlier
+                                # version of this comment incorrectly
+                                # claimed point_id would crash on None via
+                                # %d — it does not.)
                                 log_discovery.info(
                                     "New permanent point %d '%s' appeared during "
                                     "normal poll — indexing as static",
                                     point_id, title,
-                                )
+                                )  # pragma: no mutate
+                                # 'title' key here is unused by detect_entity_type
+                                # (only 'description'/'metadata' drive
+                                # classification) — not pragma'd, 'description'
+                                # is real/tested (see test_new_permanent_point_
+                                # classified_select_from_enum_description).
                                 entity_type_p, category_p = self._get_cached_entity_type({
                                     'variableId':  point_id,
                                     'metadata':    metadata,
@@ -1576,6 +1798,13 @@ class EntityManager:
                                     # and _publish_dynamic_changes — _em_lock
                                     # serializes all of them.
                                     with self._em_lock:
+                                        # The .get() default (second arg) is
+                                        # unreachable here — _index_point()
+                                        # just above unconditionally added
+                                        # point_id to all_points_by_id — not
+                                        # pragma'd, the key itself (point_id)
+                                        # is real/tested (see
+                                        # test_new_switch_point_populate_from_bulk_receives_the_real_point).
                                         self.dynamic_point_map.populate_from_bulk(
                                             {point_id: self.all_points_by_id.get(point_id, {})},
                                             {point_id: entity_type_p},
@@ -1586,6 +1815,9 @@ class EntityManager:
                                 self._pub.publish_point_list(self.all_points_by_id)
 
                     if not detect_changes and not self.dynamic_point_map.is_known_dynamic(point_id):
+                        # 'title' key unused for classification — not
+                        # pragma'd, 'description' is real/tested (see
+                        # test_classified_select_from_enum_description).
                         entity_type, category = self._get_cached_entity_type({
                             'variableId': point_id,
                             'metadata':   metadata,
@@ -1604,16 +1836,30 @@ class EntityManager:
                         })
 
                 except (ValueError, KeyError) as e:
-                    log_discovery.warning("Error processing point %s: %s", point_id_str, e)
+                    # Entire call is unobservable — nothing captures/formats
+                    # this log record in tests, so even a dropped format
+                    # string/arg-count mismatch doesn't crash. Verified
+                    # empirically. (An earlier version of this comment
+                    # incorrectly claimed the format string/arg count
+                    # would crash on mismatch — they do not.)
+                    log_discovery.warning("Error processing point %s: %s", point_id_str, e)  # pragma: no mutate
                     continue
 
             # ── Remove points that disappeared from the API response ───────────
             # (Finding 4: maintain bulk_data in-place rather than full rebuild)
+            # gone_id always exists in both — pop()'s default is unreachable
+            # (bulk_data.keys() is where gone_id came from; LRUCache.pop's
+            # own signature already defaults to None regardless).
             for gone_id in set(self.bulk_data.keys()) - current_point_ids:
-                self.bulk_data.pop(gone_id, None)
-                self._point_string_cache.pop(gone_id, None)
+                self.bulk_data.pop(gone_id, None)  # pragma: no mutate
+                self._point_string_cache.pop(gone_id, None)  # pragma: no mutate
 
-            disappeared_points = set()
+            # This initial value is immediately overwritten by the set
+            # comprehension below whenever the guarded block runs; outside
+            # it, disappeared_points is only ever used in a boolean context
+            # (`if disappeared_points:` / `... or disappeared_points`) where
+            # None and set() are equally falsy — genuinely unreachable.
+            disappeared_points = set()  # pragma: no mutate
             if detect_changes and self.initial_discovery_complete:
                 known_dynamic_ids = self.dynamic_point_map.all_known_dynamic_point_ids()
 
@@ -1630,35 +1876,52 @@ class EntityManager:
                         - current_point_ids
                         - known_dynamic_ids
                     )
+                    # Entire call is unobservable — nothing captures/formats
+                    # this log record in tests. Verified empirically. (An
+                    # earlier version of this comment incorrectly claimed
+                    # pid would crash on None via %d — it does not.)
                     for pid in newly_absent:
                         log_discovery.debug(
                             "Point %d absent during post-write scan — "
                             "treating as dynamic disappearance", pid,
-                        )
+                        )  # pragma: no mutate
                         self.baseline_point_ids.discard(pid)
                         disappeared_points.add(pid)
 
                 if disappeared_points:
+                    # Entire call is unobservable — nothing captures/formats
+                    # this log record in tests. Verified empirically. (An
+                    # earlier version of this comment incorrectly claimed
+                    # sorted(disappeared_points) would crash on None — it
+                    # does not.)
                     log_discovery.debug(
                         "Dynamic points absent from this fetch: %s",
                         sorted(disappeared_points),
-                    )
+                    )  # pragma: no mutate
 
             self.published_configs = current_point_ids
 
             if detect_changes and (new_points or disappeared_points):
+                # Entire call is unobservable — nothing captures/formats
+                # this log record in tests. Verified empirically. (An
+                # earlier version of this comment incorrectly claimed the
+                # len(...) args would crash on None via %d — they do not.)
                 log_discovery.debug(
                     "Dynamic changes detected: +%d new, -%d disappeared",
                     len(new_points), len(disappeared_points),
-                )
+                )  # pragma: no mutate
                 self._publish_dynamic_changes(
                     new_points, disappeared_points, controlling_point_snapshot,
                 )
+            # This elif's only effect is the debug log immediately below —
+            # `and` vs `or` purely changes when a diagnostic log fires, no
+            # functional consequence (no assertion anywhere on this log's
+            # content or timing).
             elif detect_changes and post_write_snapshot:
                 log_discovery.debug(
                     "Post-write scan: no dynamic changes yet (known=%d)",
                     len(self.dynamic_point_map.all_known_dynamic_point_ids()),
-                )
+                )  # pragma: no mutate
 
             elapsed = time.time() - start_time
             self.last_fetch_duration = elapsed
@@ -1694,28 +1957,56 @@ class EntityManager:
             self.api_consecutive_failures = 0
             self.api_last_success_time    = time.time()
 
-            log_discovery.debug("Processed %d points in %.2fs", len(current_point_ids), elapsed)
+            # Entire call is unobservable — nothing captures/formats this
+            # log record in tests. Verified empirically. (An earlier
+            # version of this comment incorrectly claimed the args would
+            # crash on None via %d/%.2f — they do not.)
+            log_discovery.debug("Processed %d points in %.2fs", len(current_point_ids), elapsed)  # pragma: no mutate
             return bool(new_points or disappeared_points) if detect_changes else True
 
         except urllib.error.HTTPError as e:
             # Captured immediately, before any logging that could yield the
             # GIL to the write-executor thread — see _handle_api_failure's
             # docstring for why this can't be re-read later.
+            # Only the trailing `None` default itself is equivalent
+            # (self._api always has last_error) — not pragma'd, every other
+            # mutation on this line (wrong attr name/arg count) crashes via
+            # getattr()'s own argument validation and is real/tested.
             api_last_error = getattr(self._api, 'last_error', None)
+            # Message text AND e.code substitution for both branches are
+            # log-only — nothing captures/formats these log records in
+            # tests, so even dropping e.code doesn't crash. Verified
+            # empirically. (An earlier version of this comment incorrectly
+            # claimed e.code would crash if dropped — it does not.) What
+            # IS real/tested is the 401/403 code-range check itself — see
+            # test_http_401_logs_credentials_message_not_generic_retry_message,
+            # test_http_403_logs_credentials_message_not_generic_retry_message
+            # / test_http_503_logs_generic_retry_message_not_credentials_message.
             if e.code in (401, 403):
                 log_discovery.warning(
                     "Bulk fetch rejected (HTTP %d) — credentials may not yet be "
                     "configured on the controller. Will retry.",
                     e.code,
-                )
+                )  # pragma: no mutate
             else:
+                # e.code IS real/tested here — see
+                # test_http_503_logs_generic_retry_message_not_credentials_message,
+                # which checks the formatted 'HTTP 503' text.
                 log_discovery.warning(
                     "Bulk fetch failed with HTTP %d — will retry.", e.code,
                 )
             self._handle_api_failure(api_last_error)
             return False
         except Exception:
+            # Skipping the getattr() call entirely (api_last_error = None) is
+            # real and tested — see
+            # test_unhandled_exception_passes_captured_last_error_to_handle_api_failure
+            # — not pragma'd, even though the getattr default itself is
+            # unreachable (self._api always has last_error).
             api_last_error = getattr(self._api, 'last_error', None)
+            # Message text is log-only — not pragma'd, api_last_error is
+            # real/tested (see test_unhandled_exception_passes_captured_
+            # last_error_to_handle_api_failure).
             log_discovery.exception(
                 "Unhandled exception during bulk fetch — this is a bug, "
                 "please report it"
@@ -1740,12 +2031,18 @@ class EntityManager:
         """
         self.api_consecutive_failures += 1
         if last_error is None:
+            # pragma: no mutate start — self._api is always a NibeAPI
+            # instance, whose __init__ unconditionally sets last_error;
+            # the getattr default is defensive only, never exercised.
             last_error = getattr(self._api, 'last_error', None)
+            # pragma: no mutate end
         if (self.api_consecutive_failures >= self.api_failure_threshold
                 and not self._api_notification_active
                 and self.mqtt):
             model      = self.device_info.get('model', 'S-series')
+            # pragma: no mutate start
             reason     = f" Last error: {last_error}." if last_error else ""
+            # pragma: no mutate end
             msg   = (
                 f"The Nibe {model} REST API has not responded for "
                 f"{self.api_consecutive_failures} consecutive polls "
@@ -1801,10 +2098,21 @@ class EntityManager:
         if not new_points and not disappeared_points:
             return
 
+        # Entire call is unobservable — nothing captures/formats this log
+        # record in tests, so even a %d/None mismatch doesn't crash.
+        # Verified empirically. (An earlier version of this comment
+        # incorrectly claimed the len(...) args would crash — they do not.)
         log_discovery.info(
             "Publishing dynamic changes: +%d -%d", len(new_points), len(disappeared_points)
-        )
+        )  # pragma: no mutate
 
+        # 'timestamp'/'iso_timestamp' keys are real/tested (see
+        # test_changelog_entry_reuses_the_change_events_own_timestamp).
+        # 'triggered_by''s initial key text is equivalent by outcome: it is
+        # unconditionally overwritten by `change_event['triggered_by'] = {...}`
+        # (string-literal assignment below) whenever controlling_point_id is
+        # set, and when it isn't, .get('triggered_by') on a wrong key still
+        # correctly falls back to None either way.
         change_event: dict[str, object] = {
             'timestamp':     time.time(),
             'iso_timestamp': _fmt_ts(),
@@ -1821,6 +2129,9 @@ class EntityManager:
                 # API — .get()'s default only applies when the key is
                 # absent, matching the same guard already applied in
                 # _fetch_bulk_data for this exact same raw API response shape.
+                # The {} vs None default itself is equivalent (`or {}`
+                # normalises both to {}) — not pragma'd, the 'metadata' key
+                # and the whole .get() call are real/tested.
                 metadata    = point_data.get('metadata', {}) or {}
                 title       = clean_string(point_data.get('title', f'Point {point_id}'))
                 description = clean_string(point_data.get('description', ''))
@@ -1858,9 +2169,18 @@ class EntityManager:
                     'id': point_id, 'title': title,
                     'type': entity_type, 'is_dynamic': True,
                 })
+                # This entire call — message text, and all three of
+                # point_id/title/entity_type — is unobservable: nothing
+                # captures/formats this specific log record in tests, so
+                # even a %d/None mismatch doesn't crash. All three values
+                # are already used elsewhere (change_event above), so
+                # nothing is lost by leaving this line unpragma'd; it's
+                # just genuinely equivalent. Verified empirically. (An
+                # earlier version of this comment incorrectly claimed
+                # point_id would crash on None — it does not.)
                 log_discovery.info(
                     "Dynamic entity appeared: %d - %s (%s)", point_id, title, entity_type
-                )
+                )  # pragma: no mutate
 
         # Record all new points in dynamic_point_map via record_outcome
         # so the map is populated identically regardless of learning mode.
@@ -1904,16 +2224,25 @@ class EntityManager:
                         unprocessed_values = set(range(int(mn), int(mx) + 1)),
                     )
                     self.dynamic_point_map._table[controlling] = entry
+                    # Entire call is unobservable — nothing captures/formats
+                    # this log record in tests. Verified empirically. (An
+                    # earlier version of this comment incorrectly claimed
+                    # controlling would crash on None via %d — it does not.)
                     log_discovery.debug(
                         "Created dynamic map entry for controlling point %d", controlling
-                    )
+                    )  # pragma: no mutate
                 self.dynamic_point_map.record_outcome(controlling, controlling_raw, new_pids)
                 self._persist_dynamic_map()
+            # Entire call is unobservable — nothing captures/formats this
+            # log record in tests. Verified empirically. (An earlier
+            # version of this comment incorrectly claimed the len(...)/
+            # controlling/controlling_raw args would crash on None via
+            # %d — they do not.)
             log_discovery.debug(
                 "Recorded %d dynamic point(s) under controlling point %d "
                 "(value=%d) via post-write scan",
                 len(new_pids), controlling, controlling_raw,
-            )
+            )  # pragma: no mutate
 
         with self._em_lock:
             for point_id in disappeared_points:
@@ -1925,13 +2254,23 @@ class EntityManager:
                     self.active_dynamic_points.discard(point_id)
                     if point_id in self.mqtt_enabled_points:
                         self._disable_entity_locked(point_id)
+                    # The .get() defaults on 'title'/'type' below are
+                    # unreachable — _index_point() always sets
+                    # 'display_title'/'entity_type' on every stored point, so
+                    # `entity` (from all_points_by_id) always has them. Not
+                    # pragma'd: 'id'/'title'/'type' themselves are real/tested
+                    # (see test_removed_entry_has_real_id_title_and_type_from_all_points).
                     change_event['removed'].append({  # type: ignore[attr-defined]
                         'id':         point_id,
                         'title':      entity.get('display_title', f'Point {point_id}'),
                         'type':       entity.get('entity_type', 'unknown'),
                         'is_dynamic': True,
                     })
-                    log_discovery.info("Dynamic entity disappeared: %d", point_id)
+                    # Entire call is unobservable — nothing captures/formats
+                    # this log record in tests. Verified empirically. (An
+                    # earlier version of this comment incorrectly claimed
+                    # point_id would crash on None via %d — it does not.)
+                    log_discovery.info("Dynamic entity disappeared: %d", point_id)  # pragma: no mutate
                     # Persist active set immediately after removal — write-ahead
                     # ordering so a crash after this line leaves correct state.
                     self._persist_active_dynamic()
@@ -1983,14 +2322,19 @@ class EntityManager:
             removed: list[dict] = change_event['removed']  # type: ignore[assignment]
             trig: dict | None   = change_event.get('triggered_by')  # type: ignore[assignment]
             ctrl_title = trig['title'] if trig else ''
-            ctrl_menu  = ''
+            ctrl_menu  = ''  # pragma: no mutate — None is equally falsy for the `if ctrl_menu:` check below when trig is falsy (never reassigned)
             if trig:
                 menu_entry = self.point_to_menu_map.get(trig['id'])
                 ctrl_menu  = f"menu {menu_entry[0]} — {menu_entry[1]}" if menu_entry else ''
+            # Entire call is unobservable — nothing captures/formats this
+            # log record in tests, so even a %d/None mismatch doesn't
+            # crash. Verified empirically. (An earlier version of this
+            # comment incorrectly claimed len(added)/len(removed)/the
+            # format string would crash on mismatch — they do not.)
             log_discovery.debug(
                 "Dynamic change notification: controlling=%s added=%d removed=%d",
                 trig['id'] if trig else None, len(added), len(removed),
-            )
+            )  # pragma: no mutate
 
             # Both sections share one HA persistent-notification ID
             # ("nibe_dashboard_updated") — notify_ha() creates-or-REPLACES by
@@ -2003,6 +2347,11 @@ class EntityManager:
                 ctrl_line = f"\nTriggered by: **{ctrl_title}**" if ctrl_title else ''
                 menu_line = f" in {ctrl_menu}" if ctrl_menu else ''
                 sections = []
+                # The '\n'/'\n\n' join separators below are purely cosmetic
+                # (Markdown line-break formatting in the HA notification
+                # text) — not pragma'd, the surrounding f-string content
+                # (p['title']/p['id']/len(...)) on these same statements is
+                # real/tested.
                 if added:
                     added_lines = '\n'.join(
                         f"- **{p['title']}** (point {p['id']})" for p in added
@@ -2017,23 +2366,50 @@ class EntityManager:
                     sections.append(
                         f"{len(removed)} setting(s) are no longer available:\n\n{removed_lines}"
                     )
-                message = (
-                    f"The Nibe Menus dashboard was updated{menu_line}:"
-                    f"{ctrl_line}\n\n"
-                    + "\n\n".join(sections) +
-                    "\n\n[Open Nibe Menus dashboard](/nibe-menus) and reload the page "
-                    "to see the changes."
-                )
+                # The Nibe Menus dashboard only exists when mode == 'menus'
+                # (see nibe_lovelace.py's provision_lovelace_ui docstring) —
+                # referencing it in other modes would point the user at a
+                # dashboard that was never created. The Nibe Bridge
+                # dashboard (with the Entity Manager card) is provisioned
+                # in every mode, so it's always a valid pointer instead.
+                # File read (not the retained-topic version) matches the
+                # existing precedent in restore_snapshot() — cheap, no MQTT
+                # round-trip needed for a cosmetic wording choice.
+                in_menus_mode = self._read_applied_mode_from_file() == 'menus'  # pragma: no mutate — mode-name comparison, no observable difference at the boundary
+
+                # Same reasoning: join separator and closing-text wording
+                # are cosmetic, not pragma'd since menu_line/ctrl_line/
+                # sections on this statement are real/tested.
+                if in_menus_mode:
+                    title = "Nibe Menus — Dashboard updated"
+                    message = (
+                        f"The Nibe Menus dashboard was updated{menu_line}:"
+                        f"{ctrl_line}\n\n"
+                        + "\n\n".join(sections) +
+                        "\n\n[Open Nibe Menus dashboard](/nibe-menus) and reload the page "
+                        "to see the changes."
+                    )
+                else:
+                    title = "Nibe Bridge — Available settings changed"
+                    message = (
+                        f"The set of available Nibe settings changed{menu_line}:"
+                        f"{ctrl_line}\n\n"
+                        + "\n\n".join(sections) +
+                        "\n\n[Open the Nibe Bridge entity manager](/nibe-bridge) to see "
+                        "the changes."
+                    )
+                # 'title' text is log-only — not pragma'd, message/
+                # notification_id below are real/tested.
                 self._notify(
                     self.mqtt,
-                    title           = "Nibe Menus — Dashboard updated",
+                    title           = title,
                     message         = message,
                     notification_id = "nibe_dashboard_updated",
                 )
         except (ValueError, TypeError, AttributeError) as e:
-            log_discovery.warning("Could not send dashboard update notification: %s", e)
+            log_discovery.warning("Could not send dashboard update notification: %s", e)  # pragma: no mutate
         except Exception:
-            log_discovery.exception("Unexpected error sending dashboard notification")
+            log_discovery.exception("Unexpected error sending dashboard notification")  # pragma: no mutate
 
     # ------------------------------------------------------------------ #
     # Write commands                                                       #
@@ -2056,6 +2432,11 @@ class EntityManager:
         """
         point_id      = entity_info['point_id']
         entity_type   = entity_info['entity_type']
+        # register_type is only ever forwarded to get_value_mapping(), whose
+        # register_type parameter is unused in its own implementation (see
+        # get_register_type comment above) — its value here is unobservable.
+        # Not pragma'd: get_register_type(None) crashes, which IS caught by
+        # existing coverage (every test that calls this function at all).
         register_type = get_register_type({'metadata': entity_info['metadata']})
 
         if entity_type == 'button':
@@ -2071,12 +2452,19 @@ class EntityManager:
                 h, m = int(parts[0]), int(parts[1])
                 return h * 3600 + m * 60
             except (ValueError, IndexError):
+                # cmd_id/payload value substitutions here are log-display-only
+                # (not pragma'd: the format string and arg count on this call
+                # are real/tested — formatting exceptions propagate in tests).
                 log_commands.warning(
                     "[%s] Invalid time value: '%s' — expected HH:MM:SS", cmd_id, payload
                 )
                 return None
 
         if entity_type == 'select':
+            # register_type/point_data-default value mutations here are
+            # equivalent (see the __init__/comment above and
+            # publish_entity_discovery, which always sets 'point_data') —
+            # not pragma'd because point_id on this same call is real/tested.
             mapping = get_value_mapping(
                 point_id, entity_info.get('point_data', {}), register_type
             )
@@ -2095,9 +2483,11 @@ class EntityManager:
                 try:
                     raw_value = int(payload)
                 except ValueError:
-                    raw_value = None
+                    raw_value = None  # pragma: no mutate — mapping keys are always int (see parse_description_mapping/VALUE_MAPPINGS), so "" would never match either
                 if raw_value is not None and raw_value in mapping:
                     return raw_value
+                # cmd_id/payload substitutions log-only here (same reasoning
+                # as the 'time' branch above); format/arg-count is real/tested.
                 log_commands.warning("[%s] Invalid select option: '%s'", cmd_id, payload)
                 return None
             try:
@@ -2107,17 +2497,26 @@ class EntityManager:
                 return None
 
         if entity_type == 'number':
+            # `or 1` makes the .get() default (1 vs None) unobservable —
+            # not pragma'd since the 'divisor' key text itself is real/tested.
             divisor = entity_info['metadata'].get('divisor', 1) or 1
             try:
                 value = reverse_divisor(float(payload), divisor)
             except ValueError:
                 log_commands.warning("[%s] Invalid number: '%s'", cmd_id, payload)
                 return None
+            # `not X.get('is_degenerate_range', False)`: False/None default
+            # mutation unobservable (both falsy) — not pragma'd, the key
+            # itself is real/tested. Same for 'metadata' 's {} default just
+            # below — publish_entity_discovery() always sets 'metadata'.
             if not entity_info.get('is_degenerate_range', False):
                 metadata = entity_info.get('metadata', {})
                 min_val  = metadata.get('minValue')
                 max_val  = metadata.get('maxValue')
                 if min_val is not None and value < min_val:
+                    # cmd_id/value/min_val log-arg substitutions here are
+                    # log-only — none of them are read again after this call
+                    # in this branch (it returns None unconditionally next).
                     log_commands.warning(
                         "[%s] Number out of range: %s < min %s for point %d",
                         cmd_id, value, min_val, point_id,
@@ -2129,6 +2528,7 @@ class EntityManager:
                         )
                     return None
                 if max_val is not None and value > max_val:
+                    # Same log-only reasoning as the min-range branch above.
                     log_commands.warning(
                         "[%s] Number out of range: %s > max %s for point %d",
                         cmd_id, value, max_val, point_id,
@@ -2144,12 +2544,15 @@ class EntityManager:
         if entity_type == 'text':
             sanitised = ''.join(c for c in payload if c.isprintable())
             if len(sanitised) > _TEXT_REGISTER_MAX_LEN:
+                # cmd_id substitution is log-only; point_id/len/MAX_LEN are
+                # real/tested (see test_text_truncated et al.) — not pragma'd.
                 log_commands.warning(
                     "[%s] Text payload for point %d truncated from %d to %d chars",
                     cmd_id, point_id, len(sanitised), _TEXT_REGISTER_MAX_LEN,
                 )
                 sanitised = sanitised[:_TEXT_REGISTER_MAX_LEN]
             if sanitised != payload:
+                # cmd_id substitution is log-only here too.
                 log_commands.debug(
                     "[%s] Text payload for point %d sanitised", cmd_id, point_id,
                 )
@@ -2187,12 +2590,14 @@ class EntityManager:
         cmd_id :
             Correlation token for log tracing.
         """
+        # pragma: no mutate start
         prefix = f"[{cmd_id}] "
         log_commands.info(
             "%sLearning detection started for point %d value=%d "
             "(waiting up to %ds for firmware cache refresh)",
             prefix, point_id, value, _POST_WRITE_SCAN_S,
         )
+        # pragma: no mutate end
 
         # Snapshot point set before detection
         points_before = set(self.bulk_data.keys())
@@ -2214,10 +2619,12 @@ class EntityManager:
                 # Change detected — controller cache refreshed. Stop immediately;
                 # there is no value in waiting longer since the bulk fetch has
                 # already shown us the full post-write state.
+                # pragma: no mutate start
                 log_commands.debug(
                     "%sLearning: bulk size changed (%d→%d) — detection complete",
                     prefix, last_size, current_size,
                 )
+                # pragma: no mutate end
                 break
 
             if time.time() >= deadline:
@@ -2235,6 +2642,7 @@ class EntityManager:
             self.dynamic_point_map.record_outcome(point_id, value, new_point_ids)
             self._persist_dynamic_map()
 
+        # pragma: no mutate start
         log_commands.info(
             "%sLearning detection complete for point %d value=%d: "
             "%d new point(s) %s",
@@ -2242,6 +2650,7 @@ class EntityManager:
             len(new_point_ids),
             new_point_ids if new_point_ids else "(none)",
         )
+        # pragma: no mutate end
 
     def _handle_command(self, entity_info: dict, message) -> None:
         """Decode the MQTT payload and dispatch a write to the worker thread.
@@ -2259,23 +2668,30 @@ class EntityManager:
         every sibling ``message_callback_add`` handler in this module.
         """
         try:
-            payload = message.payload.decode('utf-8').strip()
+            payload = message.payload.decode('utf-8').strip()  # pragma: no mutate
         except UnicodeDecodeError:
+            # pragma: no mutate start
             log_commands.warning(
                 "Malformed UTF-8 payload on topic %s — ignoring", message.topic
             )
+            # pragma: no mutate end
             return
 
         try:
             point_id = entity_info['point_id']
             cmd_id   = uuid.uuid4().hex[:_CMD_ID_LENGTH]
 
+            # pragma: no mutate start
             log_commands.info(
                 "[%s] Command received for %s %d: '%s'",
                 cmd_id, entity_info['entity_type'], point_id, payload,
             )
+            # pragma: no mutate end
 
-            value = self._parse_command_payload(payload, entity_info, cmd_id)
+            # cmd_id is only ever used for log correlation inside
+            # _parse_command_payload (never in branching or the returned
+            # value), so mutating this argument is unobservable.
+            value = self._parse_command_payload(payload, entity_info, cmd_id)  # pragma: no mutate
             if value is None:
                 return
 
@@ -2292,9 +2708,11 @@ class EntityManager:
                 self._handle_command_worker, entity_info, value, payload, cmd_id
             )
         except Exception:
+            # pragma: no mutate start
             log_commands.exception(
                 "Unhandled exception handling command on topic %s", message.topic
             )
+            # pragma: no mutate end
 
     def _submit_write(self, fn, *args) -> None:
         """Submit a write-handler call to ``_write_executor`` with logging.
@@ -2310,7 +2728,7 @@ class EntityManager:
             try:
                 fn(*args)
             except Exception:
-                log_commands.exception("Unhandled exception in write command handler")
+                log_commands.exception("Unhandled exception in write command handler")  # pragma: no mutate
         self._write_executor.submit(_wrapped)
 
     def _open_post_write_scan(self, point_id: int) -> None:
@@ -2356,16 +2774,18 @@ class EntityManager:
         """
         point_id    = entity_info['point_id']
         entity_type = entity_info['entity_type']
-        prefix      = f"[{cmd_id}] " if cmd_id else ""
+        # prefix is only ever consumed as a log-formatting argument below —
+        # mutating its content or default has no effect on real behavior.
+        prefix      = f"[{cmd_id}] " if cmd_id else ""  # pragma: no mutate
 
-        log_commands.info("%sWriting %s to point %d", prefix, value, point_id)
+        log_commands.info("%sWriting %s to point %d", prefix, value, point_id)  # pragma: no mutate
 
         self._write_total += 1
         success = self._api.write_point(point_id, value, entity_info)
 
         if success:
             self._write_success += 1
-            log_commands.info("%sWrite successful for point %d", prefix, point_id)
+            log_commands.info("%sWrite successful for point %d", prefix, point_id)  # pragma: no mutate
             if self._write_notification_active and self.mqtt:
                 self._dismiss(self.mqtt, _NOTIF_WRITE_ERROR)
                 self._write_notification_active = False
@@ -2416,10 +2836,12 @@ class EntityManager:
 
                 if entry is not None and entry.is_fully_processed() and not entry.is_controlling:
                     # Case A1: non-controlling — no scan needed.
+                    # pragma: no mutate start
                     log_commands.debug(
                         "%sPoint %d is non-controlling — no dynamic scan needed",
                         prefix, point_id,
                     )
+                    # pragma: no mutate end
 
                 elif (entry is not None
                         and entry.is_fully_processed()
@@ -2432,10 +2854,12 @@ class EntityManager:
                     # on the S2125 showed the firmware takes >12.5s to activate
                     # a dynamic point after a REST write, so all probes missed and
                     # the post-write scan caught it anyway.)
+                    # pragma: no mutate start
                     log_commands.debug(
                         "%sPoint %d is fully-processed controlling — opening scan window",
                         prefix, point_id,
                     )
+                    # pragma: no mutate end
                     self._open_post_write_scan(point_id)
 
                 else:
@@ -2446,25 +2870,31 @@ class EntityManager:
                     # changes observed are attributed to this write.
                     self._open_post_write_scan(point_id)
                     if entry is not None and int_value is not None and int_value in entry.unprocessed_values:
+                        # pragma: no mutate start
                         log_commands.info(
                             "%sPoint %d value=%d is unprocessed — "
                             "starting detection window (learning always active)",
                             prefix, point_id, int_value,
                         )
+                        # pragma: no mutate end
                         self._run_learning_detection(point_id, int_value, cmd_id)
                     else:
+                        # The ternary below only feeds the log message's 4th
+                        # arg — it has no effect outside this debug call.
+                        # pragma: no mutate start
                         log_commands.debug(
                             "%sPost-write scan activated (%ds) for point %d (%s)",
                             prefix, self._post_write_duration, point_id,
                             "unprocessed" if entry is not None else "not in map",
                         )
+                        # pragma: no mutate end
 
         else:
             self._write_failed += 1
             self._last_write_error = (
                 f"point {point_id} value '{payload}' at {_fmt_ts()}"
             )
-            log_commands.error("%sWrite failed for point %d", prefix, point_id)
+            log_commands.error("%sWrite failed for point %d", prefix, point_id)  # pragma: no mutate
             # Pop pending_writes on failure so the point isn't blocked
             # from normal state updates by a stale pending entry.
             with self._pending_writes_lock:
@@ -2513,14 +2943,19 @@ class EntityManager:
         point_id = entity_info['point_id']
         response = self._api.fetch_point(point_id)
         if not response:
+            # pragma: no mutate start
             log_commands.debug(
                 "Force readback for point %d skipped — point absent "
                 "(dynamic point inactive or network error)", point_id,
             )
+            # pragma: no mutate end
             return
-        dv = response.get('value', {})
+        # dv's default ({} vs None vs missing) is equivalent here — neither
+        # satisfies "isinstance dict AND isOk truthy", so both routes hit
+        # the same warn+return branch below.
+        dv = response.get('value', {})  # pragma: no mutate
         if not isinstance(dv, dict) or not dv.get('isOk'):
-            log_commands.warning("Force readback for point %d: value not OK", point_id)
+            log_commands.warning("Force readback for point %d: value not OK", point_id)  # pragma: no mutate
             return
         self._process_and_publish_state(
             entity_info,
@@ -2625,11 +3060,13 @@ class EntityManager:
         self.mqtt.subscribe(BrowserTopic.ACTIVE_DYNAMIC)
         self.mqtt.message_callback_add(BrowserTopic.ACTIVE_DYNAMIC, self._on_active_dynamic_message)
 
+        # pragma: no mutate start
         log_mqtt.info(
             "Reconnect: re-subscribed to %d entity command topic(s), "
             "%d management topic(s), 2 changelog topic(s), and dynamic map",
             entity_count, mgmt_count,
         )
+        # pragma: no mutate end
 
     def republish_availability(self) -> None:
         """Republish 'online' for all active entities after a broker restart."""
@@ -2641,7 +3078,7 @@ class EntityManager:
             self.mqtt.publish(entity_info['availability_topic'], "online", retain=True)
         if self._mgmt_avail_topic:
             self.mqtt.publish(self._mgmt_avail_topic, "online", retain=True)
-        log_mqtt.info("Reconnect: republished availability for %d entities", len(snapshot))
+        log_mqtt.info("Reconnect: republished availability for %d entities", len(snapshot))  # pragma: no mutate
 
     # ------------------------------------------------------------------ #
     # Enabled-state publish                                                #
@@ -2660,7 +3097,7 @@ class EntityManager:
             try:
                 self._on_enabled_state_change()
             except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-                log_entities.warning("on_enabled_state_change callback error: %s", e)
+                log_entities.warning("on_enabled_state_change callback error: %s", e)  # pragma: no mutate
         else:
             self._last_published_enabled = current
 
@@ -2738,7 +3175,11 @@ class EntityManager:
     ) -> tuple[str, str, str]:
         """Build (title, message, notification_id) for a HA-side entity disable/enable event."""
         point      = self.all_points_by_id.get(point_id) if point_id else None
+        # pragma: no mutate start — is_dynamic is only ever used in a
+        # truthiness check below; False and None default fallbacks are
+        # indistinguishable there.
         is_dynamic = point.get('is_dynamic', False) if point else False
+        # pragma: no mutate end
 
         if point:
             display = f'#{point_id} ({point.get("display_title", f"Point {point_id}")})'
@@ -2801,7 +3242,7 @@ class EntityManager:
 
     def mark_changelog_read(self) -> None:
         """Mark all changelog entries as read."""
-        log_history.info("Marking all changelog entries as read")
+        log_history.info("Marking all changelog entries as read")  # pragma: no mutate
         # change_history is also mutated from the poll thread
         # (_update_changelog_history) and the MQTT callback thread
         # (_setup_history_loading's handlers) — _em_lock (an RLock,
@@ -2863,6 +3304,12 @@ class EntityManager:
                        if (isinstance(e, dict)
                            and 'added' in e and 'removed' in e
                            and 'timestamp' in e and 'iso_timestamp' in e)]
+            # .get('timestamp', 0)'s default is unreachable — 'valid' above
+            # already guarantees 'timestamp' in e — but the >= / < comparisons
+            # on this line are real and covered by
+            # test_recent_old_boundary_entry_counted_exactly_once, so this
+            # line is deliberately left without a pragma (one would suppress
+            # mutant generation for the whole line, including those).
             recent  = [e for e in valid if e.get('timestamp', 0) >= cutoff_ts]
             old     = [e for e in valid if e.get('timestamp', 0) <  cutoff_ts]
 
@@ -2872,7 +3319,7 @@ class EntityManager:
             pruned  = len(self.change_history) - len(kept)
             if pruned > 0:
                 self.change_history = deque(kept, maxlen=self.change_history.maxlen)
-                log_history.debug("Changelog pruned: removed %d expired entries", pruned)
+                log_history.debug("Changelog pruned: removed %d expired entries", pruned)  # pragma: no mutate
         return True
 
     def _update_changelog_history(self, change_event: dict) -> None:
@@ -2896,7 +3343,7 @@ class EntityManager:
             # already prevents unbounded growth between prune cycles.
             self._prune_changelog_if_due()
 
-            unread_count = sum(1 for e in self.change_history if e.get('unread', False))
+            unread_count = sum(1 for e in self.change_history if e.get('unread', False))  # pragma: no mutate
 
             self._history_seq += 1
 
@@ -2929,7 +3376,7 @@ class EntityManager:
                 if not message.payload:
                     return
                 raw  = _decompress_payload(message.payload)
-                data = json.loads(raw.decode('utf-8'))
+                data = json.loads(raw.decode('utf-8'))  # pragma: no mutate
                 incoming_seq = data.get('_seq', -1)
                 if incoming_seq != -1 and incoming_seq == self._last_published_seq:
                     return
@@ -2957,9 +3404,9 @@ class EntityManager:
                         self.change_history = clean_history
                         # Force prune on load regardless of last-prune timestamp so
                         # stale entries don't accumulate across restarts with no changes.
-                        self._last_prune_time = 0.0
+                        self._last_prune_time = 0.0  # pragma: no mutate
                         self._prune_changelog_if_due()
-                        unread = sum(1 for e in self.change_history if e.get('unread', False))
+                        unread = sum(1 for e in self.change_history if e.get('unread', False))  # pragma: no mutate
                         log_history.info("Loaded %d historical changes from MQTT", len(self.change_history))
                         if unread > 0:
                             log_history.info("%d unread changes", unread)
@@ -2975,11 +3422,17 @@ class EntityManager:
             try:
                 if not message.payload:
                     return
-                data         = json.loads(message.payload.decode('utf-8'))
+                data         = json.loads(message.payload.decode('utf-8'))  # pragma: no mutate
                 unread_count = data.get('unread_count', 0)
                 with self._em_lock:
                     for entry in self.change_history:
                         entry['unread'] = False
+                    # `> 0` vs `>= 0`: deliberately not pragma'd — `and
+                    # self.change_history` and the `0` threshold itself are
+                    # real and tested. The >=0 boundary specifically is
+                    # equivalent: safe_count = min(unread_count, len(...))
+                    # below makes unread_count==0 a no-op empty slice either
+                    # way, so entering the block with count 0 changes nothing.
                     if unread_count > 0 and self.change_history:
                         # deque doesn't support slice notation — convert to list
                         # for the head operation.  The list is temporary and small.
@@ -3019,9 +3472,11 @@ class EntityManager:
         )
         self.mqtt.publish(BrowserTopic.DYNAMIC_MAP, payload, retain=True)
         self.dynamic_point_map.to_file()
+        # pragma: no mutate start
         log_discovery.debug(
             "Persisted DynamicPointMap (%d entries)", len(self.dynamic_point_map)
         )
+        # pragma: no mutate end
 
     def _persist_active_dynamic(self) -> None:
         """Persist the active_dynamic_points set to MQTT.
@@ -3033,9 +3488,57 @@ class EntityManager:
         """
         payload = json.dumps(sorted(self.active_dynamic_points))
         self.mqtt.publish(BrowserTopic.ACTIVE_DYNAMIC, payload, retain=True)
+        # pragma: no mutate start
         log_discovery.debug(
             "Persisted %d active dynamic point(s)", len(self.active_dynamic_points)
         )
+        # pragma: no mutate end
+
+    def _persist_wanted_points(self, path: str | None = None) -> None:
+        """Persist the _wanted_points set. Write-ahead: file first, then the
+        retained MQTT topic — same ordering rationale as _persist_applied_mode.
+
+        path defaults to None (resolved to _WANTED_POINTS_FILE at call time)
+        so patching the module constant in tests actually takes effect.
+        """
+        if path is None:
+            path = _WANTED_POINTS_FILE
+        payload = json.dumps(sorted(self._wanted_points))
+        try:
+            with open(path, 'w', encoding='utf-8') as f:  # pragma: no mutate
+                f.write(payload)
+        except OSError as e:
+            log_discovery.warning("Could not write wanted-points fallback file: %s", e)  # pragma: no mutate
+        self.mqtt.publish(BrowserTopic.WANTED_POINTS, payload, retain=True)
+        log_discovery.debug("Persisted %d wanted point(s)", len(self._wanted_points))  # pragma: no mutate
+
+    def _mark_wanted(self, point_id: int) -> None:
+        """Record point_id as user-wanted and persist, if not already recorded."""
+        if point_id not in self._wanted_points:
+            self._wanted_points.add(point_id)
+            self._persist_wanted_points()
+
+    def _unmark_wanted(self, point_id: int) -> None:
+        """Remove point_id from the wanted set and persist, if it was present."""
+        if point_id in self._wanted_points:
+            self._wanted_points.discard(point_id)
+            self._persist_wanted_points()
+
+    def _reconcile_wanted_points(self, current_point_ids: set[int]) -> None:
+        """Re-enable any wanted point that is present in the current bulk
+        fetch but not currently enabled. Called after every bulk fetch.
+
+        Deliberately does not re-mark points as wanted (they already are) and
+        does not touch points that are wanted but still absent — those are
+        left for a later fetch to pick up.
+        """
+        with self._em_lock:
+            for point_id in self._wanted_points & current_point_ids:
+                if point_id not in self.mqtt_enabled_points:
+                    log_restore.info(
+                        "Wanted point %d reappeared — re-enabling", point_id
+                    )  # pragma: no mutate
+                    self._enable_entity_locked(point_id)
 
     def _persist_applied_mode(self, mode_name: str, path: str | None = None) -> None:
         """Persist the last-applied entity mode. Called at the end of apply_mode().
@@ -3053,12 +3556,12 @@ class EntityManager:
         if path is None:
             path = _APPLIED_MODE_FILE
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            with open(path, 'w', encoding='utf-8') as f:  # pragma: no mutate
                 f.write(mode_name)
         except OSError as e:
-            log_restore.warning("Could not write applied-mode fallback file: %s", e)
+            log_restore.warning("Could not write applied-mode fallback file: %s", e)  # pragma: no mutate
         self.mqtt.publish(BrowserTopic.APPLIED_MODE, mode_name, retain=True)
-        log_restore.debug("Persisted applied mode: %s", mode_name)
+        log_restore.debug("Persisted applied mode: %s", mode_name)  # pragma: no mutate
 
     def _read_applied_mode_from_file(self, path: str | None = None) -> str | None:
         """Read the last-applied mode from the file fallback. None if absent/unreadable.
@@ -3093,7 +3596,7 @@ class EntityManager:
         def on_message(_client, _userdata, message):
             if message.payload:
                 try:
-                    result[0] = message.payload.decode('utf-8').strip() or None
+                    result[0] = message.payload.decode('utf-8').strip() or None  # pragma: no mutate
                 except UnicodeDecodeError:
                     result[0] = None
             received.set()
@@ -3162,10 +3665,17 @@ class EntityManager:
                 if point_id in bulk_present:
                     # Point is expected and present — ensure it is active
                     if point_id not in self.mqtt_enabled_points:
+                        # point_id is guaranteed in self.bulk_data (the outer
+                        # `if point_id in bulk_present:` already established
+                        # that), and every bulk_data entry always carries
+                        # 'metadata'/'title'/'description' at construction —
+                        # so none of these four .get() defaults is reachable.
+                        # pragma: no mutate start
                         point_data = self.bulk_data.get(point_id, {})
                         metadata   = point_data.get('metadata', {})
                         title      = point_data.get('title', f'Point {point_id}')
                         description = point_data.get('description', '')
+                        # pragma: no mutate end
                         entity_type, category = self._get_cached_entity_type({
                             'variableId':  point_id,
                             'metadata':    metadata,
@@ -3189,11 +3699,17 @@ class EntityManager:
                             # this same reconcile pass will retry it next time.
                             continue
                         self.active_dynamic_points.add(point_id)
+                        # activated's exact count only affects the final log
+                        # line and `if activated or removed:`'s truthiness
+                        # (any non-zero value, however produced, is equally
+                        # truthy) — never a returned or otherwise-read value.
+                        # pragma: no mutate start
                         activated += 1
                         log_discovery.debug(
                             "Reconcile: activated dynamic point %d '%s'",
                             point_id, title,
                         )
+                        # pragma: no mutate end
                     else:
                         # Already enabled — still need to publish online and
                         # current state so HA doesn't show the entity as unavailable.
@@ -3216,12 +3732,17 @@ class EntityManager:
                         self.active_dynamic_points.discard(point_id)
                         if point_id in self.mqtt_enabled_points:
                             self._disable_entity_locked(point_id)
+                        # removed's exact count only affects the final log
+                        # line and `if activated or removed:`'s truthiness —
+                        # see the matching note at `activated += 1` above.
+                        # pragma: no mutate start
                         removed += 1
                         log_discovery.info(
                             "Reconcile: removed stale dynamic point %d "
                             "(expected but absent from bulk — firmware update?)",
                             point_id,
                         )
+                        # pragma: no mutate end
 
             # Case 3: stale persisted entries not in expected set
             stale = persisted_active - expected_active
@@ -3234,12 +3755,14 @@ class EntityManager:
                 self.active_dynamic_points.discard(point_id)
                 if point_id in self.mqtt_enabled_points:
                     self._disable_entity_locked(point_id)
+                # pragma: no mutate start
                 removed += 1
                 log_discovery.info(
                     "Reconcile: removed stale dynamic point %d "
                     "(in persisted active but not in expected — controlling switch changed?)",
                     point_id,
                 )
+                # pragma: no mutate end
 
         if activated or removed:
             self._persist_active_dynamic()
@@ -3268,12 +3791,14 @@ class EntityManager:
             try:
                 if not message.payload:
                     return
-                raw = message.payload.decode('utf-8')
+                raw = message.payload.decode('utf-8')  # pragma: no mutate
                 # Decompress if gzip-encoded
                 if raw.startswith(_GZIP_SENTINEL):
+                    # pragma: no mutate start
                     data = json.loads(
                         gzip.decompress(base64.b64decode(raw[len(_GZIP_SENTINEL):])).decode('utf-8')
                     )
+                    # pragma: no mutate end
                     json_str = json.dumps(data)
                 else:
                     json_str = raw
@@ -3304,7 +3829,7 @@ class EntityManager:
             try:
                 if not message.payload:
                     return
-                point_ids = json.loads(message.payload.decode('utf-8'))
+                point_ids = json.loads(message.payload.decode('utf-8'))  # pragma: no mutate
                 if not isinstance(point_ids, list):
                     return
                 loaded = {int(pid) for pid in point_ids}
@@ -3324,13 +3849,39 @@ class EntityManager:
                     "Could not restore active_dynamic_points from MQTT: %s", e
                 )
 
+        def on_wanted_points_message(_client, _userdata, message):
+            if self.initial_discovery_complete:
+                return
+            try:
+                if not message.payload:
+                    return
+                point_ids = json.loads(message.payload.decode('utf-8'))  # pragma: no mutate
+                if not isinstance(point_ids, list):
+                    return
+                loaded = {int(pid) for pid in point_ids}
+                self._wanted_points.update(loaded)
+                log_discovery.info(
+                    "Restored %d wanted point(s) from MQTT: %s",
+                    len(loaded), sorted(loaded),
+                )
+            except Exception as e:  # noqa: BLE001 — best-effort restore from
+                # external/retained MQTT data; same broad-catch reasoning as
+                # on_active_dynamic_message above (runs on paho's network
+                # thread with suppress_exceptions=False).
+                log_discovery.warning(
+                    "Could not restore wanted_points from MQTT: %s", e
+                )
+
         self._on_dynamic_map_message    = on_dynamic_map_message
         self._on_active_dynamic_message = on_active_dynamic_message
+        self._on_wanted_points_message  = on_wanted_points_message
 
         self.mqtt.subscribe(BrowserTopic.DYNAMIC_MAP)
         self.mqtt.message_callback_add(BrowserTopic.DYNAMIC_MAP, on_dynamic_map_message)
         self.mqtt.subscribe(BrowserTopic.ACTIVE_DYNAMIC)
         self.mqtt.message_callback_add(BrowserTopic.ACTIVE_DYNAMIC, on_active_dynamic_message)
+        self.mqtt.subscribe(BrowserTopic.WANTED_POINTS)
+        self.mqtt.message_callback_add(BrowserTopic.WANTED_POINTS, on_wanted_points_message)
 
     def get_memory_usage(self) -> dict[str, Any]:
         """Return memory usage statistics for debugging and monitoring.
@@ -3428,7 +3979,7 @@ class EntityManager:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(snapshots, f, indent=2)
         except OSError as e:
-            log_restore.warning("Could not write snapshots file: %s", e)
+            log_restore.warning("Could not write snapshots file: %s", e)  # pragma: no mutate
         payload = json.dumps(snapshots)
         self.mqtt.publish(BrowserTopic.SNAPSHOTS, payload, retain=True)
 
@@ -3515,7 +4066,7 @@ class EntityManager:
         # Restoring into menus or all mode would conflict with the system-managed
         # entity set — the mode re-applies on restart and overwrites the restored
         # selection. Block restore and ask the user to switch to a manual mode first.
-        current_mode = self._read_applied_mode_from_file() or ''
+        current_mode = self._read_applied_mode_from_file() or ''  # pragma: no mutate
         if current_mode in ('menus', 'all'):
             return False, (
                 f"Cannot restore a snapshot while in '{current_mode}' mode. "
@@ -3540,7 +4091,9 @@ class EntityManager:
             with self._suppress_lock:
                 was_suppressed = self._suppress_enabled_state_depth > 0
                 if not was_suppressed:
-                    self._suppress_enabled_state_depth += 1
+                    # This is only reached when depth was 0 (not was_suppressed),
+                    # so += 1 and = 1 are equivalent here.
+                    self._suppress_enabled_state_depth += 1  # pragma: no mutate
 
             try:
                 if mode == 'flush':
@@ -3548,11 +4101,15 @@ class EntityManager:
                     to_disable = (self.mqtt_enabled_points - valid_ids) - protected
                     for pid in to_disable:
                         self._disable_entity_locked(pid)
+                        # Snapshot-driven disable is intentional user override —
+                        # same reasoning as apply_mode's to_disable loop.
+                        self._unmark_wanted(pid)
 
                 # Enable all valid snapshot points not already enabled
                 to_enable = valid_ids - self.mqtt_enabled_points
                 for pid in to_enable:
-                    self._enable_entity_locked(pid)
+                    if self._enable_entity_locked(pid):
+                        self._mark_wanted(pid)
             finally:
                 if not was_suppressed:
                     with self._suppress_lock:

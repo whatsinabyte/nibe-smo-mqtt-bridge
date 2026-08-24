@@ -373,6 +373,28 @@ class TestRestoreSnapshot(unittest.TestCase):
         # 1, 2 stay; 3, 4 added
         self.assertEqual(em.mqtt_enabled_points, {1, 2, 3, 4})
 
+    def test_restore_marks_enabled_points_wanted(self):
+        em = self._em_with_firmware(all_pids=[1, 2, 3, 4], enabled_pids=[1, 2])
+        self._seed_snapshot(em, 'Snap', [3, 4])
+        em.restore_snapshot('Snap', mode='merge', path=self._path)
+        self.assertEqual(em._wanted_points, {3, 4})
+
+    def test_flush_restore_removes_wanted_from_disabled_points(self):
+        """A flush-mode disable is an intentional snapshot override — the
+        dropped point must leave _wanted_points, mirroring apply_mode's
+        to_disable handling, so it isn't silently re-enabled later by
+        _reconcile_wanted_points."""
+        em = self._em_with_firmware(
+            all_pids=[1, 2, 3, 4], enabled_pids=[1, 2, 3],
+        )
+        em._wanted_points = {1, 2, 3}
+        self._seed_snapshot(em, 'Snap', [2, 4])
+        em.restore_snapshot('Snap', mode='flush', path=self._path)
+        self.assertNotIn(1, em._wanted_points)
+        self.assertNotIn(3, em._wanted_points)
+        self.assertIn(2, em._wanted_points)
+        self.assertIn(4, em._wanted_points)
+
     def test_flush_does_not_disable_dynamic_points(self):
         em = self._em_with_firmware(
             all_pids=[1, 2, 10],
@@ -848,6 +870,18 @@ class TestPublishSnapshots(unittest.TestCase):
         payload = _json.loads(calls[0].args[1])
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]['name'], 'A')
+
+    def test_publish_snapshots_retains_the_message(self):
+        """The snapshot list must be published with retain=True so a
+        reconnecting browser gets the current list without a fresh publish."""
+        em = _make_em()
+        with patch('nibe_entity_manager._SNAPSHOTS_FILE', self._path):
+            em.publish_snapshots()
+        from nibe_mqtt_publisher import BrowserTopic
+        calls = [c for c in em.mqtt.publish.call_args_list
+                 if c.args[0] == BrowserTopic.SNAPSHOTS]
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0].kwargs.get('retain'), True)
 
     def test_publish_empty_when_no_file(self):
         import json as _json

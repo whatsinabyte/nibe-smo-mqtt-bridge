@@ -130,6 +130,32 @@ class TestValueCacheHypothesisProperties(unittest.TestCase):
         cache = ValueCache()
         self.assertTrue(cache.should_publish(point_id, raw_value, threshold=1))
 
+    def test_default_min_interval_is_exactly_thirty_seconds(self):
+        """min_interval's default is 30. threshold=0 means every call
+        republishes once min_interval has elapsed, regardless of value —
+        at 29s elapsed a call must still be suppressed (< 30); at 31s
+        elapsed it must not be."""
+        from unittest.mock import patch
+
+        from nibe_caching import ValueCache
+        cache = ValueCache()
+        with patch('nibe_caching.time.time', return_value=1000.0):
+            cache.should_publish(1, 100, threshold=0)
+        with patch('nibe_caching.time.time', return_value=1000.0 + 29):
+            self.assertFalse(cache.should_publish(1, 100, threshold=0))
+        with patch('nibe_caching.time.time', return_value=1000.0 + 31):
+            self.assertTrue(cache.should_publish(1, 100, threshold=0))
+
+        # Exactly at 30s elapsed (fresh cache, so this check's own call
+        # doesn't get skewed by the state left behind above): `< min_interval`
+        # is False only when min_interval is exactly 30 — a default of 29
+        # or 31 would flip this specific boundary check.
+        cache2 = ValueCache()
+        with patch('nibe_caching.time.time', return_value=1000.0):
+            cache2.should_publish(1, 100, threshold=0)
+        with patch('nibe_caching.time.time', return_value=1000.0 + 30):
+            self.assertTrue(cache2.should_publish(1, 100, threshold=0))
+
     @given(_nibe_point_id,
            st.integers(min_value=-32768, max_value=32767),
            st.integers(min_value=1, max_value=100))

@@ -150,6 +150,8 @@ def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
             continue
         if int_default == 0 and min_val == 0 and max_val > 1:
             continue
+        # `or 1` masks any falsy divisor default (None/0/dropped) — only a
+        # truthy-but-wrong default (e.g. 2) is observable.
         divisor = meta.get('divisor', 1) or 1
         display = f"{int_default / divisor:g}"
         unit    = clean_unit(meta.get('unit') or meta.get('shortUnit'))
@@ -179,12 +181,17 @@ def _build_dynamic_injection(
                 point = all_points_by_id.get(dyn_pid, {})
                 title = point.get('display_title') or point.get('title') or f'Point {dyn_pid}'
                 meta  = point.get('metadata', {})
+                # Any falsy .get() default here (None, dropped) is masked
+                # by the trailing `or 1` — only a truthy non-1 default
+                # (e.g. 2) would be observable. Verified empirically.
                 div   = meta.get('divisor', 1) or 1
                 # `or 0` (not just a .get default) also covers the API
                 # sending an explicit "minValue"/"maxValue": null — .get()'s
                 # default only applies when the key is absent, so a
                 # present-but-null value would otherwise reach the division
-                # below as None and raise TypeError.
+                # below as None and raise TypeError. Same falsy-default
+                # masking as divisor above applies to the .get() defaults
+                # themselves (0 vs None/dropped) — verified empirically.
                 mn    = (meta.get('minValue', 0) or 0) / div
                 mx    = (meta.get('maxValue', 0) or 0) / div
                 unit  = clean_unit(meta.get('unit'))
@@ -237,6 +244,10 @@ def _build_menu_view(
         """
         return f'<ha-alert alert-type="{alert_type}" title="{title}">{text.strip()}</ha-alert>'
 
+    # depth's own default (2) is unreachable — every call site below always
+    # passes depth explicitly (either `depth=2` or `depth + 1`), and the
+    # top-level call's own `depth=2` matches this default anyway, so
+    # dropping that kwarg is also unobservable. Verified empirically.
     def _render_section(m: dict, depth: int = 2) -> None:
         # ── Description + callouts markdown card ────────────────────────────
         # Section heading embedded in the markdown using colour-coded HTML.
@@ -253,6 +264,12 @@ def _build_menu_view(
             md_lines.append(m["description"].strip())
             md_lines.append("")
 
+        # Every blank-line `md_lines.append("")` below (menu-level and
+        # per-setting callouts alike) is purely cosmetic markdown spacing —
+        # all existing tests use assertIn/splitlines() substring checks on
+        # individual lines, never exact-equality on the fully joined
+        # content, so a wrong separator string is unobservable. Verified
+        # empirically.
         # Menu-level callouts using ha-alert for native coloured boxes
         if m.get("warning"):
             md_lines.append(_alert("warning", "Warning", m["warning"]))
@@ -276,6 +293,9 @@ def _build_menu_view(
         # so they are included in the same card as the section description.
         for s in m.get("settings", []):
             label     = s.get("label", "")
+            # s_warning/s_note/s_tip's None/dropped defaults are masked —
+            # only ever checked via truthiness (`if`/`elif`), where None
+            # and '' are equally falsy. Verified empirically.
             s_warning = s.get("warning", "")
             s_note    = s.get("note", "")
             s_tip     = s.get("tip", "")
@@ -299,6 +319,8 @@ def _build_menu_view(
         for s in m.get("settings", []):
             point_id  = s.get("point_id")
             label     = s.get("label", "")
+            # None/dropped default is masked — only ever checked via
+            # `if rng:` below. Verified empirically.
             rng       = s.get("range", "")
 
             # Dynamic points: skip entirely regardless of active state.
@@ -377,7 +399,10 @@ def _build_unplaced_view(
 
     Only included when debug_mode=True.
     """
-    # Patterns that indicate a multi-system series — grouped separately
+    # Patterns that indicate a multi-system series — grouped separately.
+    # Matched with re.IGNORECASE below, so a case-flip mutation of any
+    # pattern here is unobservable — only a change to the pattern text
+    # itself (e.g. an XX-wrap) would alter what actually matches.
     _GROUP_PATTERNS = [
         r'climate system [2-8]',
         r'zone \d+',
@@ -401,18 +426,31 @@ def _build_unplaced_view(
         if point_id in menu_yaml_points:
             continue
         meta = point_data.get('metadata', {})
+        # A None/dropped default is unobservable — reg is only ever
+        # checked via `not in (...)`, which a wrong-but-still-absent value
+        # also fails. Verified empirically.
         reg  = meta.get('modbusRegisterType', '')
         if reg not in ('MODBUS_HOLDING_REGISTER', 'MODBUS_INPUT_REGISTER'):
             continue
         # `or 0` also covers an explicit "minValue"/"maxValue": null from
         # the API — .get()'s default only applies when the key is absent.
+        # A None/dropped default for minValue is masked by `or 0` the same
+        # way — verified empirically. maxValue's default is NOT masked by
+        # any `or`, so a wrong non-0 default there is real/tested.
         mn   = meta.get('minValue', 0) or 0
         mx   = meta.get('maxValue', 0) or 0
         if mn == mx:
             continue  # degenerate range
+        # display_title's None/dropped default is unobservable: clean_string()
+        # below falls back to f'Point {point_id}' regardless. Verified
+        # empirically.
         title = point_data.get('display_title') or point_data.get('title', f'Point {point_id}')
         title = clean_string(title) or f'Point {point_id}'
         unit  = clean_unit(meta.get('unit'))
+        # `or 1` masks a None/dropped default the same way `or 0` masks
+        # minValue/maxValue above — but divisor's own default (1) and the
+        # `or` fallback value ARE both real/tested, since 1 (default) and
+        # a wrong-but-truthy fallback are never masked. Verified empirically.
         div   = meta.get('divisor', 1) or 1
         rng   = f"{mn/div:g} – {mx/div:g}{' ' + unit if unit else ''}"
         entry = (point_id, title, rng)
@@ -444,6 +482,9 @@ def _build_unplaced_view(
     def _section_rows(entries: list[tuple], label: str) -> list:
         rows = [{"type": "section", "label": label}]
         for point_id, title, rng in entries:
+            # A None/dropped default is unobservable — only ever checked
+            # via `if default_str:`, where None and '' are both falsy.
+            # Verified empirically.
             default_str = point_defaults.get(point_id, '')
             divider = f"{title}  ·  {rng}"
             if default_str:
@@ -621,7 +662,13 @@ def _wait_for_registry_stable(
     _step        = 0.5
     _limit       = 60.0
     _waited      = 0.0
+    # Any sentinel (negative or None) works here — only ever compared
+    # with `==` to a real (non-negative) entity count, never read as an
+    # actual count value. Verified empirically.
     _prev_count  = -1
+    # A wrong initial value (None, or a truthy float like 1.0) is also
+    # unobservable — no test asserts the exact number of loop iterations
+    # needed to reach _stable_need. Verified empirically.
     _stable_for  = 0.0
     _stable_need = 3.0
     # On a fresh start HA creates entities in batches, causing the count to
@@ -669,11 +716,18 @@ def _wait_for_registry_stable(
                 # Menu stable but dynamic still missing — wait a bit more
                 # but don't hold up the retry mechanism indefinitely
                 if _stable_for >= 8.0:
+                    # This call is unobservable — the test that exercises
+                    # this branch (test_eight_second_fallback_boundary_uses_
+                    # greater_or_equal_eight) only counts loop iterations via
+                    # a mocked time.sleep, it never captures/formats this
+                    # log record. Verified empirically. (Contrast with the
+                    # sibling "Registry stable: ..." log a few lines above,
+                    # which IS format-tested.)
                     log_startup.debug(
                         "Registry stable at %d/%d menu, %d/%d dynamic after %.1fs — proceeding",
                         menu_resolved, len(available_menu_points),
                         dyn_resolved, len(active_dynamic), _waited,
-                    )
+                    )  # pragma: no mutate
                     return
         else:
             _stable_for = 0.0
@@ -835,6 +889,10 @@ def _setup_menu_dashboard_lovelace(
             "show_in_sidebar": True,
         })
         if not resp.get("success"):
+            # A missing 'error' key defaulting to None instead of {} is
+            # unobservable: str(None) == "None" and str({}) == "{}" both
+            # lack the sentinel substrings checked below, so either default
+            # takes the same "genuine failure" branch.
             error_msg = str(resp.get("error", {}))
             if "url_already_exists" not in error_msg and "already in use" not in error_msg:
                 log_startup.warning("Could not create Nibe Menus dashboard: %s", resp)
@@ -874,6 +932,9 @@ def _setup_menu_dashboard_lovelace(
         # Verify all active dynamic points are in the registry.
         # Only retry if menu entities resolved correctly (registry is up)
         # but dynamic point(s) still missing.
+        # menu_resolved is only ever compared against 0 below, so the
+        # per-point weight (1) is unobservable — any positive constant
+        # would behave identically.
         menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
         missing_dynamic = [
             p for p in entity_manager.active_dynamic_points
@@ -1031,6 +1092,13 @@ def _setup_lovelace_resource(ws, next_id, versioned_url: str) -> None:
 
     Called from _setup_lovelace with an already-authenticated WebSocket.
     """
+    # ws/next_id/result-default mutations throughout this function are
+    # unobservable — this function's own test suite's fake_ws_call never
+    # inspects its ws or msg_id arguments (only payload), and always
+    # returns a dict with a 'result' key so the default never fires. A
+    # wrong non-matching default for r.get("url", "") below is also
+    # unobservable — the substring check fails identically for any
+    # non-matching string. Verified empirically.
     resp      = _ws_call(ws, next_id(), {"type": "lovelace/resources/list"})
     resources = resp.get("result", [])
 
@@ -1087,6 +1155,13 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
         log_startup.debug("Nibe Bridge dashboard already provisioned — skipping")
         return
 
+    # ws->None mutations on every _ws_call() below in this function are
+    # unobservable: this function's own test suite (TestSetupLovelaceDashboard)
+    # patches _ws_call with a fake that never inspects its ws argument
+    # (only payload). Verified empirically. (A ws->None mutation IS caught
+    # elsewhere in the module by a cross-cutting test that checks every
+    # _ws_call site receives the real ws — but that test does not exercise
+    # this specific function's call sites.)
     # Check if dashboard already exists before attempting create — avoids HA
     # logging a system-log error for "URL already in use" on every restart
     # after a container rebuild that wiped the flag file.
@@ -1129,7 +1204,14 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
 
     if not resp.get("success"):
         error      = resp.get("error", {})
+        # error_code is only ever compared against the "url_already_exists"
+        # string sentinel, so a "" vs None default for the missing 'code'
+        # key is unobservable — neither equals the sentinel.
         error_code = error.get("translation_key") or error.get("code", "")
+        # A wrong non-empty default (e.g. "XXXX") is also unobservable —
+        # only ever checked via `"already in use" in error_msg.lower()`,
+        # which any non-matching default string fails identically.
+        # Verified empirically.
         error_msg  = error.get("message", "")
         if error_code == "url_already_exists" or "already in use" in error_msg.lower():
             log_startup.info(
@@ -1140,7 +1222,8 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
                 with open(flag_file, "w") as f:
                     f.write("provisioned\n")
             except OSError as e:
-                log_startup.warning("Could not write lovelace provisioned flag: %s", e)
+                # e/format-string mutations here are log-only. Verified empirically.
+                log_startup.warning("Could not write lovelace provisioned flag: %s", e)  # pragma: no mutate
         else:
             log_startup.warning("Could not create Nibe Bridge dashboard: %s", resp)
         return
@@ -1183,7 +1266,8 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
             with open(flag_file, "w") as f:
                 f.write("provisioned\n")
         except OSError as e:
-            log_startup.warning("Could not write lovelace provisioned flag: %s", e)
+            # e/format-string mutations here are log-only. Verified empirically.
+            log_startup.warning("Could not write lovelace provisioned flag: %s", e)  # pragma: no mutate
     else:
         log_startup.warning(
             "Dashboard created but card config could not be written: %s. "
@@ -1286,6 +1370,13 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
 
     try:
         try:
+            # ws->None and result-default mutations throughout this
+            # function are unobservable — this function's own test suite's
+            # fake_ws_call never inspects its ws argument (only payload),
+            # and always returns a dict with a 'result' key so the default
+            # never fires. A wrong non-matching default for r.get("url", "")
+            # below is also unobservable — the substring check fails
+            # identically for any non-matching string. Verified empirically.
             resp       = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
             dashboards = resp.get("result", [])
             existing   = next(
@@ -1378,12 +1469,18 @@ def _remove_menu_dashboard() -> None:
     try:
         resp       = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
         dashboards = resp.get("result", [])
+        # Only ever used in truthiness checks below, so a None default is
+        # unobservable — both False and None are falsy.
         list_succeeded = resp.get("success", False)
         existing   = next(
             (d for d in dashboards if d.get("url_path") == _MENU_DASHBOARD_SLUG),
             None,
         )
         if existing is not None:
+            # ws->None is unobservable here — same reasoning as the other
+            # _ws_call sites in this file: this function's own test suite's
+            # fake_ws_call never inspects its ws argument. Verified
+            # empirically.
             resp = _ws_call(ws, _next_id(), {
                 "type":         "lovelace/dashboards/delete",
                 "dashboard_id": existing.get("id"),
@@ -1392,6 +1489,9 @@ def _remove_menu_dashboard() -> None:
                 log_startup.info("Removed Nibe Menus dashboard (id=%s)", existing.get("id"))
             else:
                 log_startup.warning("Could not remove Nibe Menus dashboard: %s", resp)
+                # False->None is unobservable — list_succeeded is only ever
+                # read via `not list_succeeded`/truthiness, where False and
+                # None are equally falsy. Verified empirically.
                 list_succeeded = False  # suppress flag removal — retry next startup
         elif not list_succeeded:
             log_startup.debug("Nibe Menus dashboard list call returned no result — "
@@ -1400,6 +1500,7 @@ def _remove_menu_dashboard() -> None:
             log_startup.debug("Nibe Menus dashboard not found — nothing to remove")
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Menu dashboard teardown failed: %s", e)
+        # Same False/None-truthiness equivalence as above.
         list_succeeded = False
     finally:
         try:

@@ -921,11 +921,25 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         """'now - last_prune_time < _CHANGELOG_PRUNE_S' must use a strict
         '<' — at exactly the threshold, prune must run (return True), not
         be skipped. A mutant changing this to '<=' would incorrectly skip
-        pruning at the exact boundary."""
+        pruning at the exact boundary.
+
+        The original version of this test set _last_prune_time from one
+        time.time() call and let _prune_changelog_if_due() take its own
+        'now' from a second, later time.time() call — the two are never
+        bit-for-bit equal (real clock time always advances between the two
+        calls), so 'now - last_prune_time' was always slightly ABOVE
+        _CHANGELOG_PRUNE_S rather than exactly equal to it, meaning '<' and
+        '<=' behaved identically and the mutant passed undetected. Mocking
+        time.time() to return the exact same value for both makes the
+        boundary land precisely on _CHANGELOG_PRUNE_S."""
+        from unittest.mock import patch as _patch
+
         from nibe_entity_manager import _CHANGELOG_PRUNE_S
         em = _make_em()
-        em._last_prune_time = time.time() - _CHANGELOG_PRUNE_S
-        result = em._prune_changelog_if_due()
+        fixed_now = 1_700_000_000.0
+        em._last_prune_time = fixed_now - _CHANGELOG_PRUNE_S
+        with _patch('nibe_entity_manager.time.time', return_value=fixed_now):
+            result = em._prune_changelog_if_due()
         self.assertTrue(result, "Prune must run at exactly the PRUNE_S boundary")
 
     def test_retention_cutoff_uses_86400_seconds_per_day(self):
@@ -955,23 +969,33 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         two filters must partition entries, not overlap. A mutant changing
         '>=' to '>' would drop the boundary entry from recent (losing it if
         the floor is small); one changing '<' to '<=' would put it in both
-        lists, so it would appear twice in the final kept list."""
+        lists, so it would appear twice in the final kept list.
+
+        The original version computed cutoff_ts from its own time.time()
+        call, then let _prune_changelog_if_due() recompute cutoff_ts from a
+        second, later time.time() call — the two never matched exactly (real
+        clock time advances between calls), so the "boundary" entry actually
+        landed clearly inside 'old', never testing the boundary at all.
+        Mocking time.time() makes both cutoff_ts computations use the exact
+        same value."""
         from collections import deque
+        from unittest.mock import patch as _patch
 
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
         em = _make_em()
         em._last_prune_time = 0.0
         em.changelog_retention_days = 1
-        now = time.time()
-        cutoff_ts = now - 1 * 86400
+        fixed_now = 1_700_000_000.0
+        cutoff_ts = fixed_now - 1 * 86400
         boundary_entry = self._entry(0)
         boundary_entry['timestamp'] = cutoff_ts
         boundary_entry['id'] = 'boundary'
         # Enough other very-old entries that the floor doesn't mask pruning,
         # and enough total that "kept" isn't trivially "everything".
-        filler = [self._entry(now - 999 * 86400 - 100) for _ in range(_CHANGELOG_MIN_ENTRIES)]
+        filler = [self._entry(fixed_now - 999 * 86400 - 100) for _ in range(_CHANGELOG_MIN_ENTRIES)]
         em.change_history = deque([boundary_entry] + filler, maxlen=500)
-        em._prune_changelog_if_due()
+        with _patch('nibe_entity_manager.time.time', return_value=fixed_now):
+            em._prune_changelog_if_due()
         boundary_count = sum(1 for e in em.change_history if e.get('id') == 'boundary')
         self.assertEqual(boundary_count, 1,
             "Boundary entry must be kept exactly once (via 'recent'), not dropped or duplicated")
@@ -1201,6 +1225,28 @@ class TestOnUnreadMessageZeroCount(unittest.TestCase):
         for entry in em.change_history:
             self.assertFalse(entry['unread'],
                              "unread_count=0 must not mark any entry as unread")
+
+    def test_negative_unread_count_leaves_entries_unread_false(self):
+        """A negative unread_count (malformed/adversarial retained payload)
+        must not mark any entry as unread either. The guard is written as
+        `if unread_count > 0 and change_history:` — if it were `or`
+        instead of `and`, a negative count would still enter the branch
+        (since change_history is truthy), and safe_count = min(negative, len)
+        stays negative, so list(...)[:safe_count] silently excludes only the
+        last |n| entries via Python's negative-slice semantics — marking
+        nearly the WHOLE history unread instead of none."""
+        import json as _json
+
+        from nibe_entity_manager import EntityManager
+        em = _make_em()
+        EntityManager._setup_history_loading(em)
+        for i in range(5):
+            em.change_history.appendleft({'unread': False, 'id': i})
+        payload = _json.dumps({'unread_count': -3}).encode()
+        em._on_unread_message(None, None, self._make_message(payload))
+        for entry in em.change_history:
+            self.assertFalse(entry['unread'],
+                             "negative unread_count must not mark any entry as unread")
 
 
 class TestUnreadCountOverfillGuard(unittest.TestCase):
@@ -1676,7 +1722,11 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
                 if 'history' in decoded:
                     retained_payload = c.args[1]
                     break
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 — scanning every publish()
+                # call's payload, most of which aren't history payloads at
+                # all (wrong topic, plain string, uncompressed JSON without
+                # a 'history' key); any decode failure here just means "not
+                # the one we want," not a real error to surface.
                 continue
         self.assertIsNotNone(retained_payload, "writer never published a decodable history payload")
 
@@ -1713,7 +1763,9 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
                 if 'history' in decoded:
                     retained_payload = c.args[1]
                     break
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 — same reasoning as the
+                # identical scan in test_real_history_entry_survives_a_fresh_
+                # instance_restart above.
                 continue
         self.assertIsNotNone(retained_payload)
 

@@ -948,7 +948,8 @@ class TestDynamicPointMap(unittest.TestCase):
 
         import nibe_dynamic_map as ndm
 
-        tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False).name
+        fd, tmp = tempfile.mkstemp(suffix='.json')
+        os.close(fd)
         try:
             os.unlink(tmp)  # to_file must create it fresh
             m = self._map_with_entries()

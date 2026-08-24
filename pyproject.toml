@@ -1,23 +1,12 @@
-# pyproject.toml — mutmut phase 4 (remaining modules with no prior
-# mutation coverage: nibe_ha_integration.py, nibe_lovelace.py,
-# nibe_caching.py, nibe_test_runner.py, nibe_utils.py, generate_nibe_mqtt.py)
-# Written by run-mutmut.sh — do not edit manually during a run.
-
 [tool.mutmut]
-source_paths = [
-    "nibe_ha_integration.py",
-    "nibe_lovelace.py",
-    "nibe_caching.py",
-    "nibe_test_runner.py",
-    "nibe_utils.py",
-    "generate_nibe_mqtt.py",
-]
+source_paths = ["nibe_entity_manager.py"]
 also_copy = [
     "tests",
     "pytest.ini",
     "app",
     "config.yaml",
     "menu_structure.yaml",
+    "translations",
 ]
 pytest_add_cli_args = [
     "--timeout=600",
@@ -25,11 +14,18 @@ pytest_add_cli_args = [
     "-p", "no:randomly",
 ]
 pytest_add_cli_args_test_selection = [
+    "tests/test_entity_manager.py",
+    "tests/test_entity_manager_changelog.py",
+    "tests/test_entity_manager_commands.py",
+    "tests/test_entity_manager_discovery.py",
+    "tests/test_entity_manager_dynamic.py",
+    "tests/test_entity_manager_lifecycle.py",
+    "tests/test_entity_manager_polling.py",
+    "tests/test_entity_manager_snapshots.py",
+    "tests/test_entity_manager_state.py",
     "tests/test_ha_integration.py",
-    "tests/test_lovelace.py",
-    "tests/test_caching.py",
-    "tests/test_utils.py",
     "tests/test_generate.py",
+    "tests/test_lovelace.py",
 ]
 mutate_only_covered_lines = false
 timeout_multiplier = 5.0

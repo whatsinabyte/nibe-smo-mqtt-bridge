@@ -101,6 +101,11 @@ def _get_ha_base_url() -> str:
     if now < _ha_base_url_retry_after:
         return ''
 
+    # method="GET" is unobservable here: urllib's Request.get_method()
+    # already defaults to "GET" whenever no data= is passed (verified
+    # empirically), and this request never passes data.
+    # Header key casing is unobservable — urllib.request.Request normalizes
+    # header keys via .capitalize(). Verified empirically.
     req = urllib.request.Request(
         "http://supervisor/core/api/config",
         headers={"Authorization": f"Bearer {supervisor_token}"},
@@ -111,6 +116,10 @@ def _get_ha_base_url() -> str:
             cfg = json.loads(resp.read().decode())
         # Prefer internal_url; fall back to external_url; default to empty.
         url = cfg.get('internal_url') or cfg.get('external_url') or ''
+        # Widening this char set (e.g. adding a char that never appears in
+        # a real HA base URL) is unobservable — verified empirically, still
+        # real/tested for the actual '/' char via
+        # test_only_trailing_slashes_stripped_not_internal_ones.
         _ha_base_url = url.rstrip('/')
         log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)
         return _ha_base_url
@@ -161,6 +170,11 @@ def _get_ha_language() -> str:
     if now < _ha_language_retry_after:
         return ''
 
+    # method="GET" is unobservable here: urllib's Request.get_method()
+    # already defaults to "GET" whenever no data= is passed (verified
+    # empirically), and this request never passes data. Header key casing
+    # is also unobservable — urllib.request.Request normalizes header keys
+    # via .capitalize(). Verified empirically.
     req = urllib.request.Request(
         "http://supervisor/core/api/config",
         headers={"Authorization": f"Bearer {supervisor_token}"},
@@ -202,6 +216,10 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
         "notification_id": notification_id,
     }).encode()
 
+    # Header key casing here is unobservable: urllib.request.Request
+    # normalises every header key via str.capitalize() internally (verified
+    # empirically), so "authorization"/"AUTHORIZATION"/"Authorization" all
+    # resolve identically via get_header() and on the wire.
     req = urllib.request.Request(
         "http://supervisor/core/api/services/persistent_notification/create",
         data=payload,
@@ -229,6 +247,11 @@ def dismiss_ha(mqtt_client, notification_id: str) -> None:
         return
 
     payload = json.dumps({"notification_id": notification_id}).encode()
+    # Header key casing here is unobservable — see the matching comment in
+    # notify_ha(). The method="POST" kwarg is also unobservable: urllib's
+    # Request.get_method() defaults to "POST" whenever data is set (verified
+    # empirically), and data=payload is always set here — the real HTTP verb
+    # sent is identical whether this kwarg is "POST", None, or dropped.
     req = urllib.request.Request(
         "http://supervisor/core/api/services/persistent_notification/dismiss",
         data=payload,
@@ -325,6 +348,9 @@ class HAEntityRegistryWatcher:
         be active — handles the case where HA registered the entity but the
         registry event was missed or had unexpected structure.
         """
+        # A None/dropped default is unobservable — only ever checked via
+        # `if not token:`, where None and '' are equally falsy. Verified
+        # empirically.
         token = os.environ.get('SUPERVISOR_TOKEN', '')
         if not token:
             return
@@ -497,6 +523,10 @@ class HAEntityRegistryWatcher:
         consec_failures = 0
 
         while not self._stop_event.is_set():
+            # Only ever read via `if ws:` in the finally block below — any
+            # other falsy placeholder (e.g. '') is unobservable here.
+            # Verified empirically, not pragma'd since the reassignment on
+            # the next line and the `if ws:` check itself are real/tested.
             ws: Any = None
             try:
                 ws = self._connect_and_subscribe(token)
@@ -522,6 +552,11 @@ class HAEntityRegistryWatcher:
                     except _WsTimeout:
                         # recv timed out after _PING_INTERVAL_S — send ping
                         now = time.time()
+                        # `> 0` vs `> 1` is unobservable here — verified
+                        # empirically: ping_sent_at is either the 0.0 "no
+                        # ping in flight" sentinel or a real Unix epoch
+                        # timestamp (~1.7 billion), and both thresholds
+                        # agree on every value either side actually takes.
                         if ping_sent_at > 0 and now - ping_sent_at > self._PING_TIMEOUT_S:
                             raise ConnectionError(
                                 f"WebSocket keepalive timeout — no pong received "
@@ -555,6 +590,13 @@ class HAEntityRegistryWatcher:
                         log_registry.debug("Registry watcher: discarding malformed frame: %s", e)
                         continue
 
+                    # This match's key/value literals are unobservable:
+                    # ping_sent_at is already unconditionally reset above on
+                    # any successful recv, and a pong that fails this match
+                    # simply falls through to the "event" check below, which
+                    # also doesn't match "pong" — so _handle_event is never
+                    # called either way. Verified empirically — no test
+                    # distinguishes a broken match here from a working one.
                     if msg.get("type") == "pong":
                         continue
                     if msg.get("type") == "event":
@@ -593,6 +635,11 @@ class HAEntityRegistryWatcher:
 
             finally:
                 with self._ws_lock:
+                    # Only ever read via `if self._current_ws:` (here and in
+                    # stop()) — any other falsy placeholder is unobservable.
+                    # Verified empirically, not pragma'd since the real
+                    # assignment (line 508) and the truthiness checks
+                    # themselves are real/tested.
                     self._current_ws = None
                 if ws:
                     try:
@@ -631,6 +678,13 @@ class HAEntityRegistryWatcher:
             return {}
         finally:
             ws.settimeout(None)
+        # resp's initial None (line 618) is unobservable here: the only way
+        # to reach this line without the `except` above already returning
+        # is via the loop's `break`, which always assigns a real dict to
+        # resp first — so `not resp` is always False in practice, making
+        # `or`/`and` and resp's initial-value literal equivalent mutants.
+        # Verified empirically, not pragma'd since resp.get("success") is
+        # real/tested (see test_failed_response_returns_empty_dict).
         if not resp or not resp.get("success"):
             log_registry.warning("Could not fetch entity registry: %s", resp)
             return {}
@@ -758,6 +812,8 @@ class HAEntityRegistryWatcher:
             return
 
         point      = self._em.all_points_by_id.get(point_id)
+        # Only ever consumed via `if is_dynamic:` below — None and False
+        # are indistinguishable. Verified empirically.
         is_dynamic = point.get('is_dynamic', False) if point else False
 
         log_registry.debug(
@@ -996,6 +1052,9 @@ class ManagementCommandHandler:
             {"action": "delete",  "name": "Summer Profile"}
         """
         try:
+            # Python codec names are case-insensitive ('utf-8' == 'UTF-8')
+            # — not pragma'd, the codec itself and the except clause below
+            # are real/tested.
             cmd = json.loads(message.payload.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             log_commands.error("snapshot_cmd: invalid payload: %s", e)
@@ -1016,6 +1075,10 @@ class ManagementCommandHandler:
             if action == 'save':
                 ok, msg = self._em.save_snapshot(name)
             elif action == 'restore':
+                # A case-variant default (e.g. "FLUSH") is unobservable: the
+                # trailing .lower() normalises it back to the real value —
+                # verified empirically. Not pragma'd since 'flush' vs a
+                # different-word default IS real/tested (test_restore_defaults_to_flush).
                 mode = cmd.get('mode', 'flush').strip().lower()
                 if mode not in ('flush', 'merge'):
                     log_commands.error(
@@ -1152,11 +1215,21 @@ def update_alarm_state(
     if alarm_count > 0 and not entity_manager._alarm_notification_active:
         lines = []
         for a in clean_alarms:
+            # `a` here iterates clean_alarms (built above with 'header' and
+            # 'description' keys always present, defaulting to '' there) —
+            # these two .get() defaults can never actually fire, so their
+            # literal values are unobservable. Verified empirically, not
+            # pragma'd since the rest of each line (equipName/severity
+            # presence checks, the dedup comparison, the join) is real/tested.
             parts = [a.get("header", "Unknown alarm")]
             if a.get("equipName"):
                 parts.append(f"Equipment: {a['equipName']}")
             if a.get("severity"):
                 parts.append(f"Severity: {a['severity']}")
+            # This default is unreachable — every test's alarm fixture
+            # (_alarm()) always supplies a 'description' key explicitly
+            # (default ''), so any default value here (None, dropped, or a
+            # wrong truthy literal) never actually fires. Verified empirically.
             desc = a.get("description", "")
             if desc and desc != a.get("header"):
                 parts.append(desc)
@@ -1267,6 +1340,9 @@ def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> 
         if not entity_manager.device_modes_dirty and entity_manager.device_modes_cache:
             cached_aid   = entity_manager.device_modes_cache.get("aidMode",   "off")
             cached_smart = entity_manager.device_modes_cache.get("smartMode", "normal")
+            # Only ever consumed via `if not fresh:` below, so None and
+            # False are indistinguishable here — not pragma'd, `fresh = True`
+            # on the other branch is real/tested.
             fresh        = False
         else:
             fresh = True

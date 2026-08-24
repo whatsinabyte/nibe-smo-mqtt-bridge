@@ -7,7 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-08-24
+
+### Added
+- **Wanted-points re-enable safety net** — fixes [GitHub issue #21](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/21):
+  a point you explicitly enabled could permanently stop coming back if it
+  ever disappeared from a bulk fetch outside the predictive dynamic-point
+  tracking mechanism (most commonly: a setting changed directly on the
+  controller itself rather than through Home Assistant). The bridge now
+  remembers every point you've explicitly enabled (via the Entity Manager
+  card, applying a mode, or restoring a snapshot) independently of *why* it
+  might later get disabled, and automatically re-enables it the moment it
+  reappears in a bulk fetch — regardless of whether it was ever tracked as
+  a dynamic point. This runs alongside the existing dynamic-point-map
+  learning mechanism, not in place of it; a mode change or snapshot flush
+  still correctly overrides a point's wanted status, since those are
+  intentional user actions. Verified end-to-end on real hardware. See
+  `ARCHITECTURE.md` §4.4 for the full design.
+
+### Fixed
+- A point that first appeared outside a post-write scan window — before its
+  real controlling switch/select had ever been learned — could get
+  permanently stuck unable to ever be linked to that controller again, even
+  after correctly toggling it via Home Assistant afterward. Fixed by
+  clearing the point's "static baseline" bookkeeping whenever it's
+  auto-disabled, mirroring what already happened on the dynamic-specific
+  disappearance path.
+- The dashboard-update notification sent whenever a dynamic point
+  appears/disappears always referenced the "Nibe Menus" dashboard and told
+  you to open it — but that dashboard only exists when the entity mode is
+  set to `menus`. In any other mode the notification now points at the
+  Nibe Bridge dashboard (provisioned in every mode) instead of a dashboard
+  that was never created.
+- Firmware `description` fields encoding dropdown/enum options weren't
+  parsed correctly for every register family: some use `':'` as the
+  key/value separator instead of `'='`, and at least one register mixes
+  both separators within the same string. Affected points showed a raw
+  number field instead of the correct dropdown, or lost some of their
+  option labels. Both value-parsing and entity-type classification
+  (`select` vs `number`) now handle every separator convention found
+  across all 4 shipped translation dumps.
+- `menu_structure.yaml`: point 3281 ("Affect hot water") had the wrong
+  option range documented (`off/on`) — corrected to the real firmware
+  values (`Small / Medium / Large / Medium / Mini`).
+
+### Changed
+- Completed the mutation-testing hardening pass (mutmut) across every
+  remaining module — `nibe_entity_manager.py`, `nibe_lovelace.py`,
+  `nibe_ha_integration.py`, `nibe_test_runner.py`, `generate_nibe_mqtt.py`,
+  `nibe_api.py`, `nibe_connectivity_check.py`, `nibe_caching.py`,
+  `nibe_discovery_config.py`, `nibe_dynamic_map.py`, `nibe_mqtt_publisher.py`.
+  Coverage-only; no behavioural changes. See `ARCHITECTURE.md` §6 for current
+  status and the tooling reliability caveats discovered along the way.
+  Includes a new dedicated `tests/test_discovery_config.py` for
+  `nibe_discovery_config.py`'s pure config builders, previously only
+  covered indirectly through other modules' test files.
+- Merged Dependabot's dev/test dependency bump (hypothesis, ruff, mypy,
+  types-PyYAML) and fixed the ruff/mypy findings it surfaced once the local
+  toolchain actually matched the bumped versions.
+- `Dockerfile` now copies `translations/` into the built image so the
+  translations-vs-`config.yaml` parity test can run for real inside the
+  deployed container, not just from a development checkout.
+- Documentation: absolute GitHub links in `README.md` (relative links to
+  `DOCS.md`/`SECURITY.md` didn't resolve when the README is rendered
+  outside the repository, e.g. on the Home Assistant add-on store);
+  `DOCS.md` clarifies that snapshots survive app updates and host reboots
+  and are only ever removed by a full uninstall, notes how long the "Run
+  Test Suite" button takes on an ODROID-M1, and adds a newly-confirmed root
+  cause for intermittent REST API connection drops on some controllers —
+  network-discovery integrations (nmap Tracker, UniFi's device tracker)
+  port-scanning the controller's limited embedded TCP stack.
 
 ---
 

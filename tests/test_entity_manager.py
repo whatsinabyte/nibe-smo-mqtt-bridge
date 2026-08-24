@@ -118,7 +118,14 @@ class TestCompressDecompressProperties(unittest.TestCase):
         'strict' handler and not some other/garbled handler name — so a
         single bad byte becomes U+FFFD rather than raising UnicodeDecodeError.
         Constructed directly at the byte level since _compress_payload never
-        itself produces invalid UTF-8 (base64 output is always ASCII)."""
+        itself produces invalid UTF-8 (base64 output is always ASCII).
+
+        The original version of this test only distinguished 'strict' from
+        'replace' (via UnicodeDecodeError), not a garbled/misspelled handler
+        name — a mutation to e.g. errors='XXreplaceXX' raises LookupError,
+        which fell straight through the generic `except Exception: pass`
+        below and made the test pass despite the docstring's claim to cover
+        exactly this case. The explicit `except LookupError` closes that."""
         import nibe_entity_manager as _nem
         from nibe_entity_manager import _GZIP_SENTINEL
 
@@ -138,6 +145,11 @@ class TestCompressDecompressProperties(unittest.TestCase):
             self.fail(
                 "decode() raised UnicodeDecodeError — errors='replace' should have "
                 "substituted U+FFFD instead of raising at the decode step"
+            )
+        except LookupError as e:
+            self.fail(
+                f"decode() raised LookupError ({e}) — the errors= handler name "
+                "must be the literal string 'replace', not a garbled variant"
             )
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any non-UnicodeDecodeError failure downstream is expected
@@ -1510,15 +1522,20 @@ class TestGetMemoryUsage(unittest.TestCase):
         self.assertEqual(stats['estimated_memory_mb'], two_places)
 
     def test_actual_object_size_mb_uses_getsizeof_of_self_not_none(self):
-        """actual_object_size_mb must be computed from sys.getsizeof(self) —
-        patch it to a known, distinctive return value and confirm that exact
-        value (converted via the real /(1024*1024) and round(_, 2) formula)
-        appears in the result, ruling out a mutant that discards the call
-        result entirely (e.g. hardcodes None on the success path)."""
+        """actual_object_size_mb must be computed from sys.getsizeof(self),
+        divided by exactly 1024*1024, and rounded to exactly 2 decimals.
+        Uses a non-power-of-1024 byte count (10,000,000) so a wrong divisor
+        (1025*1024) or wrong rounding precision (3dp, or round(_, None)
+        which returns an int) produces a numerically different result —
+        an exact-power-of-1024 value would make those mutations coincide
+        with the correct answer after rounding, hiding the bug."""
         em = _make_em()
-        with patch('nibe_entity_manager.sys.getsizeof', return_value=5_242_880):  # exactly 5 MiB
+        with patch('nibe_entity_manager.sys.getsizeof',
+                  return_value=10_000_000) as mock_getsizeof:
             stats = em.get_memory_usage()
-        self.assertEqual(stats['actual_object_size_mb'], 5.0)
+        mock_getsizeof.assert_called_once_with(em)
+        self.assertEqual(stats['actual_object_size_mb'], 9.54)
+        self.assertIsInstance(stats['actual_object_size_mb'], float)
 
     def test_actual_object_size_mb_key_name_is_exact(self):
         """The result key must be literally 'actual_object_size_mb' —
@@ -1689,8 +1706,18 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         availability_topic, with payload 'online' and retain=True — a
         substring check on the call log isn't enough to catch retain
         flipping to False, which would break HA's availability tracking
-        across broker restarts."""
-        self.em.enable_entity(self.point_id)
+        across broker restarts.
+
+        _update_entity_state (called later in the same _enable_entity_locked
+        flow, since this test's setUp populates bulk_data for the point)
+        independently makes the exact same (availability_topic, 'online',
+        retain=True) call via _process_and_publish_state's own sentinel-value
+        handling — so assert_any_call was satisfied by THAT call regardless
+        of what _enable_entity_locked's own publish line did, letting 4
+        mutations of that line survive. Patching out _update_entity_state
+        isolates the call this test actually means to verify."""
+        with patch.object(self.em, '_update_entity_state'):
+            self.em.enable_entity(self.point_id)
         self.em.mqtt.publish.assert_any_call(
             self.mock_entity_info['availability_topic'], 'online', retain=True
         )
@@ -1824,6 +1851,22 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         self.assertIsNone(self.em._entity_type_cache.get(self.point_id))
         self.assertIsNotNone(self.em._entity_type_cache.get(other_pid))
 
+    def test_deindex_point_pops_only_the_given_point_id(self):
+        """_deindex_point must remove only the given point_id's entries from
+        all_points_by_id and _point_string_cache — a different point's
+        entries must survive. Distinguishes the real point_id key from a
+        None-key mutant that would pop nothing."""
+        other_pid = self.point_id + 100
+        self.em.all_points_by_id[self.point_id] = {'variableId': self.point_id}
+        self.em.all_points_by_id[other_pid] = {'variableId': other_pid}
+        self.em._point_string_cache.put(self.point_id, ('sensor', 'diagnostic'))
+        self.em._point_string_cache.put(other_pid, ('sensor', 'diagnostic'))
+        self.em._deindex_point(self.point_id)
+        self.assertNotIn(self.point_id, self.em.all_points_by_id)
+        self.assertIn(other_pid, self.em.all_points_by_id)
+        self.assertIsNone(self.em._point_string_cache.get(self.point_id))
+        self.assertIsNotNone(self.em._point_string_cache.get(other_pid))
+
     def test_disable_decrements_category_stat_by_exactly_one(self):
         """Category stat decrement must reduce the pre-seeded count by
         exactly 1, not 2 and not increment — verified against an
@@ -1871,3 +1914,179 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
 
 
 
+
+
+class TestInitAttributeDefaults(unittest.TestCase):
+    """Pin the exact initial values of write-tracking and post-write-scan
+    attributes set in __init__ — assertFalse/assertTrue elsewhere don't
+    distinguish False from None, and nothing previously asserted the
+    write counters start at exactly 0 rather than 1."""
+
+    def test_initial_discovery_complete_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em.initial_discovery_complete, False)
+
+    def test_write_counters_start_at_exactly_zero(self):
+        em = _make_em()
+        self.assertEqual(em._write_total, 0)
+        self.assertEqual(em._write_success, 0)
+        self.assertEqual(em._write_failed, 0)
+
+    def test_last_write_error_starts_as_none_not_empty_string(self):
+        em = _make_em()
+        self.assertIsNone(em._last_write_error)
+
+    def test_post_write_active_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em.post_write_active, False)
+
+    def test_post_write_until_starts_at_exactly_zero(self):
+        em = _make_em()
+        self.assertEqual(em._post_write_until, 0.0)
+
+    def test_post_write_interval_is_five(self):
+        em = _make_em()
+        self.assertEqual(em.post_write_interval, 5)
+
+    def test_post_write_controlling_point_starts_none(self):
+        em = _make_em()
+        self.assertIsNone(em._post_write_controlling_point)
+
+    def test_api_failure_threshold_is_three(self):
+        em = _make_em()
+        self.assertEqual(em.api_failure_threshold, 3)
+
+    def test_last_fetch_duration_starts_at_exactly_zero(self):
+        em = _make_em()
+        self.assertEqual(em.last_fetch_duration, 0.0)
+
+    def test_on_enabled_state_change_starts_none(self):
+        em = _make_em()
+        self.assertIsNone(em._on_enabled_state_change)
+
+    def test_last_published_enabled_starts_empty_frozenset(self):
+        em = _make_em()
+        self.assertEqual(em._last_published_enabled, frozenset())
+
+    def test_device_modes_cache_starts_empty_dict(self):
+        em = _make_em()
+        self.assertEqual(em.device_modes_cache, {})
+
+    def test_device_modes_dirty_starts_true_not_none_or_false(self):
+        em = _make_em()
+        self.assertIs(em.device_modes_dirty, True)
+
+    def test_device_modes_write_seq_starts_at_zero(self):
+        em = _make_em()
+        self.assertEqual(em.device_modes_write_seq, 0)
+
+    def test_api_notification_active_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em._api_notification_active, False)
+
+    def test_alarm_notification_active_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em._alarm_notification_active, False)
+
+    def test_last_alarm_count_is_exactly_negative_one(self):
+        """-1 is a deliberate sentinel forcing the first alarm log — 0, +1,
+        or -2 would all break the 'force first log' behavior."""
+        em = _make_em()
+        self.assertEqual(em._last_alarm_count, -1)
+
+    def test_last_stats_key_starts_none(self):
+        em = _make_em()
+        self.assertIsNone(em._last_stats_key)
+
+    def test_write_notification_active_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em._write_notification_active, False)
+
+    def test_discovery_notification_active_is_false_not_none(self):
+        em = _make_em()
+        self.assertIs(em._discovery_notification_active, False)
+
+    def test_range_warnings_issued_starts_empty_set(self):
+        em = _make_em()
+        self.assertEqual(em._range_warnings_issued, set())
+
+    def test_changelog_retention_days_is_ninety(self):
+        em = _make_em()
+        self.assertEqual(em.changelog_retention_days, 90)
+
+    def test_history_seq_starts_at_zero(self):
+        em = _make_em()
+        self.assertEqual(em._history_seq, 0)
+
+    def test_last_prune_time_starts_at_exactly_zero(self):
+        em = _make_em()
+        self.assertEqual(em._last_prune_time, 0.0)
+
+    def test_device_info_starts_empty_dict(self):
+        em = _make_em()
+        self.assertEqual(em.device_info, {})
+
+    def test_device_info_constructor_default_is_empty_dict_not_none(self):
+        """The test above is vacuous against the constructor's own default:
+        _make_em() always overrides em.device_info = {} right after
+        construction (conftest.py), so it passes no matter what __init__
+        actually set device_info to. Construct EntityManager directly,
+        without that override, to check __init__'s real default — a
+        mutation to None would crash the first .get('model', ...) call
+        (line ~1753) if anything reads device_info before main() populates
+        it via _build_device_info()."""
+        with patch('nibe_entity_manager.EntityManager.resubscribe_all'), \
+             patch('nibe_entity_manager.EntityManager._setup_history_loading'), \
+             patch('nibe_entity_manager.EntityManager._setup_dynamic_map_loading'):
+            from nibe_entity_manager import EntityManager
+            em = EntityManager(
+                api_client  = MagicMock(),
+                publisher   = MagicMock(),
+                notify_fn   = MagicMock(),
+                dismiss_fn  = MagicMock(),
+                mqtt_client = MagicMock(),
+            )
+        self.assertEqual(em.device_info, {})
+
+    def test_mgmt_avail_topic_starts_none(self):
+        em = _make_em()
+        self.assertIsNone(em._mgmt_avail_topic)
+
+    def test_bulk_interval_constructor_default_is_thirty(self):
+        """Every test file that cares about bulk_interval explicitly
+        overrides it (em.bulk_interval = ...) before use, so the
+        constructor's own default of 30 seconds has never been pinned."""
+        em = _make_em()
+        self.assertEqual(em.bulk_interval, 30)
+
+    def test_bridge_start_time_defaults_to_a_real_timestamp_not_none(self):
+        """publish_uptime does `int(time.time() - bridge_start_time)` —
+        a None default would raise TypeError on the very first poll,
+        not just produce a wrong value."""
+        em = _make_em()
+        self.assertIsInstance(em.bridge_start_time, float)
+        self.assertGreater(em.bridge_start_time, 0)
+
+    def test_api_last_success_time_defaults_to_a_real_timestamp_not_none(self):
+        """nibe_mqtt_publisher does `api_last_success_time > 0` — a None
+        default would raise TypeError, not just read as falsy."""
+        em = _make_em()
+        self.assertIsInstance(em.api_last_success_time, float)
+        self.assertGreater(em.api_last_success_time, 0)
+
+    def test_write_executor_uses_exactly_one_worker(self):
+        """_write_executor's max_workers must be exactly 1 — the class's
+        own comment says writes to unprocessed switches/selects 'are
+        serialised', which this constant is what actually enforces. Every
+        test that touches _write_executor patches it out entirely
+        (patch.object(em, '_write_executor')), so nothing previously
+        asserted the real ThreadPoolExecutor's worker count."""
+        em = _make_em()
+        self.assertEqual(em._write_executor._max_workers, 1)
+
+    def test_write_executor_thread_name_prefix(self):
+        """Thread name prefix aids debugging (identifying nibe_write-N
+        threads in a stack dump) — pin its exact content too, since it
+        shares a source line with max_workers and is otherwise untested."""
+        em = _make_em()
+        self.assertEqual(em._write_executor._thread_name_prefix, "nibe_write")

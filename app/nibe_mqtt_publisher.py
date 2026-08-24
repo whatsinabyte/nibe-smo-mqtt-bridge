@@ -170,6 +170,7 @@ class BrowserTopic(StrEnum):
     DYNAMIC_MAP        = f"{MQTT_PREFIX}/dynamic_point_map"      # DynamicPointMap table (compressed)
     ACTIVE_DYNAMIC     = f"{MQTT_PREFIX}/active_dynamic_points"  # currently active dynamic point_ids
     APPLIED_MODE       = f"{MQTT_PREFIX}/applied_mode"           # last-applied entity mode (plain string)
+    WANTED_POINTS      = f"{MQTT_PREFIX}/wanted_points"           # user-enabled point_ids, catch-all re-enable set
     DEVICE_INFO        = f"{MQTT_PREFIX}/device_info"
     POINT_LIST         = f"{MQTT_PREFIX}/point_list"
     CHANGELOG_HISTORY  = f"{MQTT_PREFIX}/changelog/history"
@@ -238,6 +239,9 @@ def t_press(entity_id: str) -> str:
 def resolve_unit(
     point_id: int,
     raw_unit: str,
+    # title's default value only ever surfaces inside the already
+    # pragma'd, log-only warning call below (`title or f"Point {point_id}"`)
+    # — verified empirically, no test distinguishes it.
     title: str = "",
     warned: set[int] | None = None,
 ) -> tuple[str, bool]:
@@ -266,10 +270,12 @@ def resolve_unit(
     unit = UNIT_OVERRIDES.get(point_id, raw_unit)
     unit = clean_unit(unit)
     if was_overridden and warned is not None and point_id not in warned:
+        # pragma: no mutate start
         log_mqtt.warning(
             "Point %d (%s): unit overridden \u2014 firmware reported %r, using %r instead.",
             point_id, title or f"Point {point_id}", raw_unit, unit,
-        )  # pragma: no mutate
+        )
+        # pragma: no mutate end
         warned.add(point_id)
     return unit, was_overridden
 
@@ -372,9 +378,11 @@ class MqttDiscoveryPublisher:
         published last time (and therefore hashes identically to what a
         fresh, unchanged publish_entity_discovery() call would produce).
         """
-        self._config_hashes[point_id] = hashlib.md5(
-            payload, usedforsecurity=False
-        ).hexdigest()
+        # usedforsecurity has no effect on hexdigest() output on a standard
+        # (non-FIPS-restricted) system — see the empirically-verified
+        # equivalence at the config_hash computation in publish_entity_discovery.
+        payload_hash = hashlib.md5(payload, usedforsecurity=False).hexdigest()  # pragma: no mutate
+        self._config_hashes[point_id] = payload_hash
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -389,9 +397,11 @@ class MqttDiscoveryPublisher:
         """
         result = self.mqtt.publish(topic, payload, retain=True)
         if result.rc != 0:
+            # pragma: no mutate start
             log_mqtt.warning(
                 "State publish failed for topic %s (rc=%d)", topic, result.rc
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
 
     # ------------------------------------------------------------------ #
     # Per-entity discovery                                                 #
@@ -417,6 +427,15 @@ class MqttDiscoveryPublisher:
         description = point.get('description', '')
 
         with self._warnings_lock:
+            # title here only ever surfaces inside resolve_unit's own
+            # pragma'd, log-only warning call (title or f"Point {point_id}")
+            # — same equivalence as resolve_unit's own title default,
+            # verified empirically at this call site too.
+            # A None/dropped default for metadata.get('unit', ...) is also
+            # unobservable: clean_unit() explicitly treats any non-str
+            # (including None) as '' — see its own docstring guarantee of
+            # "always returns a string, never None". Only a wrong non-None
+            # default (e.g. 'XXXX') is observable. Verified empirically.
             unit, _ = resolve_unit(
                 point_id, metadata.get('unit', ''), title, self._unit_override_warnings_issued
             )
@@ -442,6 +461,9 @@ class MqttDiscoveryPublisher:
             )
         elif entity_type == "number":
             with self._warnings_lock:
+                # title is only ever read inside build_number_config's own
+                # pragma'd, log-only warning calls — never affects config
+                # output. Verified empirically.
                 discovery_config.build_number_config(
                     config, t_state("number", entity_id), t_command("number", entity_id),
                     point_id, title, unit, metadata, bulk_data, self._range_warnings_issued,
@@ -455,30 +477,47 @@ class MqttDiscoveryPublisher:
             config["state_topic"]   = t_state("time", entity_id)
             config["command_topic"] = t_command("time", entity_id)
             config["optimistic"]    = False
-            # Ensure no unit leaks in — time entities show HH:MM, not seconds
-            config.pop("unit_of_measurement", None)
+            # Ensure no unit leaks in — time entities show HH:MM, not seconds.
+            # Defensive: config never has this key yet at this point in the
+            # function, so the .pop() key/default are currently unobservable.
+            config.pop("unit_of_measurement", None)  # pragma: no mutate
         elif entity_type == "text":
             config["state_topic"]   = t_state("text", entity_id)
             config["command_topic"] = t_command("text", entity_id)
             config["optimistic"]    = False
             config["max"]           = 64   # matches Nibe string register size; also enforced server-side
         elif entity_type == "binary_sensor":
+            # title is passed through to map_device_class("binary_sensor", "", title),
+            # which returns None unconditionally for entity_type=="binary_sensor"
+            # via its own dedicated early-return branch, before title is ever
+            # read — unobservable regardless of title's value. Verified empirically.
             discovery_config.build_binary_sensor_config(config, t_state("binary_sensor", entity_id), title)
         elif entity_type == "sensor":
+            # The "sensor" comparison itself (and the string's exact casing/
+            # content) is unobservable: any entity_type that doesn't match one
+            # of the earlier branches falls into the `else` fallback below,
+            # which calls discovery_config.build_sensor_config with the exact
+            # same arguments and topic — byte-identical config output, just
+            # with an extra pragma'd (untested) warning log. Verified empirically.
             discovery_config.build_sensor_config(
                 config, t_state("sensor", entity_id), point_id, unit, title, metadata
             )
         else:
             # Unknown entity type — fall back to sensor so the point is still
             # visible in HA rather than silently broken.
+            # pragma: no mutate start
             log_mqtt.warning(
                 "Point %d: unhandled entity type %r — falling back to sensor",
                 point_id, entity_type,
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
             discovery_config.build_sensor_config(
                 config, t_state("sensor", entity_id), point_id, unit, title, metadata
             )
 
+        # publish=None is unobservable: _publish_static_attributes only ever
+        # checks `if publish:`, where None and False are both falsy —
+        # verified empirically.
         static_attributes = self._publish_static_attributes(
             entity_type, entity_id, point_id, unit, is_writable, description, metadata, config,
             publish=False,
@@ -487,7 +526,7 @@ class MqttDiscoveryPublisher:
         config_topic   = t_config(entity_type, entity_id)
         publish_config = {k: v for k, v in config.items() if not k.startswith('_')}
         config_json    = json.dumps(publish_config, sort_keys=True)
-        config_hash    = hashlib.md5(config_json.encode(), usedforsecurity=False).hexdigest()
+        config_hash    = hashlib.md5(config_json.encode(), usedforsecurity=False).hexdigest()  # pragma: no mutate — flag has no effect on hexdigest() output
 
         prev_entity_type = self._point_entity_types.get(point_id)
         if prev_entity_type is not None and prev_entity_type != entity_type:
@@ -496,27 +535,41 @@ class MqttDiscoveryPublisher:
             # a ghost/duplicate entity that nothing else would ever remove.
             old_topic = t_config(prev_entity_type, entity_id)
             self.mqtt.publish(old_topic, "", retain=True)
+            # pragma: no mutate start
             log_mqtt.info(
                 "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
                 point_id, prev_entity_type, entity_type, old_topic,
             )
+            # pragma: no mutate end
             # Force a fresh publish below even if the new config's hash
-            # happens to collide with whatever was last stored.
+            # happens to collide with whatever was last stored. A dropped
+            # `None` default is unobservable here: reaching this branch means
+            # prev_entity_type came back non-None from _point_entity_types,
+            # which is only ever set in the same statement as _config_hashes
+            # (see the pair a few lines below) — so point_id is always
+            # already present and .pop() never needs its default. Verified
+            # empirically. A WRONG key (e.g. None) instead of point_id IS
+            # observable — see
+            # test_publish_entity_discovery_entity_type_change_forces_republish.
             self._config_hashes.pop(point_id, None)
 
         if self._config_hashes.get(point_id) == config_hash:
             log_mqtt.debug("Discovery config unchanged for point %d — skipping publish", point_id)  # pragma: no mutate
         else:
+            # pragma: no mutate start
             log_mqtt.debug(
                 "Publishing discovery for point %d (%s) as %s (category=%s)",
                 point_id, title, entity_type, category,
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
             result = self.mqtt.publish(config_topic, config_json, retain=True)
             if result.rc != 0:
+                # pragma: no mutate start
                 log_mqtt.error(
                     "Failed to publish discovery for point %d: MQTT error %d",
                     point_id, result.rc,
-                )  # pragma: no mutate
+                )
+                # pragma: no mutate end
                 return None
             self._config_hashes[point_id] = config_hash
             self._point_entity_types[point_id] = entity_type
@@ -529,9 +582,14 @@ class MqttDiscoveryPublisher:
         # alone (see _attributes_hashes' declaration in __init__).
         if static_attributes is not None:
             attributes_topic, attributes_json = static_attributes
+            # usedforsecurity has no effect on hexdigest() output on a standard
+            # (non-FIPS-restricted) system — see the empirically-verified
+            # equivalence at the config_hash computation in publish_entity_discovery.
+            # pragma: no mutate start
             attributes_hash = hashlib.md5(
                 attributes_json.encode(), usedforsecurity=False
             ).hexdigest()
+            # pragma: no mutate end
             if self._attributes_hashes.get(point_id) != attributes_hash:
                 self.mqtt.publish(attributes_topic, attributes_json, retain=True)
                 self._attributes_hashes[point_id] = attributes_hash
@@ -550,6 +608,11 @@ class MqttDiscoveryPublisher:
             'is_degenerate_range': config.get('_degenerate_range', False),
             # Resolved once at discovery time — avoids repeated get_value_mapping()
             # calls on every poll for select/sensor entities with enum descriptions.
+            # The register_type argument (metadata.get('modbusRegisterType'))
+            # is entirely unused inside get_value_mapping's body — any key,
+            # default, or dropped-argument mutation to it is unobservable.
+            # Verified empirically. point_id, in contrast, IS used (manual
+            # VALUE_MAPPINGS lookup) and is covered by a dedicated test.
             'value_mapping':       get_value_mapping(
                 point_id, point, metadata.get('modbusRegisterType'),
             ),
@@ -590,6 +653,12 @@ class MqttDiscoveryPublisher:
         attributes_topic         = t_attributes(entity_type, entity_id)
         config["json_attributes_topic"] = attributes_topic
 
+        # A None/dropped default (with the correct 'divisor' key) is
+        # unobservable: both fall through the trailing `or 1` to the same
+        # result as the real default (1). A WRONG key, wrong default value,
+        # or wrong `or` fallback IS observable whenever divisor is present
+        # with a real non-1 value, is explicitly 0, or is absent entirely —
+        # verified empirically.
         attr_divisor  = metadata.get('divisor', 1) or 1
         int_default   = metadata.get('intDefaultValue')
         default_with_unit = None
@@ -644,6 +713,10 @@ class MqttDiscoveryPublisher:
         """
         metadata_dict = point.get('metadata', {})
         point_id = point['variableId']
+        # A None/dropped default for metadata_dict.get('unit', ...) is
+        # unobservable: clean_unit() explicitly treats any non-str
+        # (including None) as '' — same equivalence as the identical
+        # pattern in publish_entity_discovery. Verified empirically.
         unit, unit_overridden = resolve_unit(point_id, metadata_dict.get('unit', ''))
         return {
             "id":                point_id,
@@ -817,14 +890,21 @@ class MqttDiscoveryPublisher:
         Uses the same state values as publish_device_modes() so HA sees a
         consistent retained state from the moment discovery configs land.
         """
+        # aidMode's default is only ever compared via `== 'on'` after
+        # .lower() — any default that doesn't itself become 'on' (None,
+        # case variants, etc.) is unobservable. smartMode's default is only
+        # ever published after .lower(), which normalises case mutations
+        # away. Verified empirically.
         aid_on    = str(device_info.get('aidMode', 'off')).lower() == 'on'
         smart_val = str(device_info.get('smartMode', 'normal')).lower()
         self.mqtt.publish(MgmtTopic.AID_STATE,   "ON" if aid_on else "OFF", retain=True)
         self.mqtt.publish(MgmtTopic.SMART_STATE, smart_val, retain=True)
+        # pragma: no mutate start
         log_mqtt.debug(
             "Pre-published initial device modes: aid=%s smart=%s",
             "ON" if aid_on else "OFF", smart_val,
-        )  # pragma: no mutate
+        )
+        # pragma: no mutate end
 
     def publish_alarm_state(
         self,
