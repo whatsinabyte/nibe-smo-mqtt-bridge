@@ -1501,6 +1501,7 @@ class TestScanMqttPartialWarning(unittest.TestCase):
         pass if extra junk text is prepended/appended around either half of
         the message, so they don't fully verify the format string."""
         import logging
+
         from nibe_entity_manager import _MQTT_SCAN_TIMEOUT_S
 
         records = []
