@@ -10,6 +10,7 @@ import json
 import os
 import ssl
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -19,7 +20,7 @@ from conftest import (
     _nibe_point_id,
 )
 from freezegun import freeze_time
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 # menu_structure.yaml cache reset — see conftest.py's global autouse
@@ -355,6 +356,39 @@ class TestLoadConfig(unittest.TestCase):
         self.assertIn(cfg.poll_interval, {15, 30, 60, 120, 300})
         self.assertEqual(cfg.poll_interval, 30)  # nearest to 45 is 30 or 60; tie goes to 30
 
+    @given(st.integers(min_value=1, max_value=10_000))
+    @example(value=45)    # exact tie between 30 and 60 (both 15 away)
+    @example(value=1)     # far below the smallest valid value (15)
+    @example(value=10_000)  # far above the largest valid value (300)
+    def test_invalid_poll_interval_always_snaps_to_the_nearest_valid_value(self, value):
+        """_validated_poll's clip must always land on a member of
+        _VALID_POLL_INTERVALS whose distance to the input is <= every other
+        member's distance — generalizes the single hardcoded tie-break
+        example above (45 -> 30) to the full input space, including values
+        far outside the valid set's range."""
+        valid = {15, 30, 60, 120, 300}
+        cfg = self._load(options={'poll_interval': str(value)})
+        self.assertIn(cfg.poll_interval, valid)
+        chosen_distance = abs(cfg.poll_interval - value)
+        for candidate in valid:
+            self.assertLessEqual(chosen_distance, abs(candidate - value))
+
+    def test_options_json_invalid_poll_interval_warning_names_options_json_source(self):
+        """_validated_poll's warning must identify 'options.json' as the
+        source (not e.g. a None passed by mistake) — this is the only
+        signal telling the user WHICH config source supplied the invalid
+        value when multiple sources are in play."""
+        cfg = self._load(options={'poll_interval': '45'})
+        self.assertTrue(any(w.startswith('options.json: poll_interval=45') for w in cfg.warnings))
+
+    def test_options_json_sets_debug_mode_true(self):
+        cfg = self._load(options={'debug_mode': True})
+        self.assertIs(cfg.debug_mode, True)
+
+    def test_options_json_sets_debug_mode_false(self):
+        cfg = self._load(options={'debug_mode': False})
+        self.assertIs(cfg.debug_mode, False)
+
     def test_options_json_sets_mode(self):
         cfg = self._load(options={'mode': 'all'})
         self.assertEqual(cfg.mode, 'all')
@@ -371,6 +405,20 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(options={'mode_switch_behavior': 'bogus'})
         self.assertEqual(cfg.mode_switch_behavior, 'replace')
         self.assertTrue(any('mode_switch_behavior' in w for w in cfg.warnings))
+
+    def test_invalid_mode_from_env_falls_back_to_essential_with_warning(self):
+        """load_config's own mode-validation fallback (distinct from
+        parse_arguments' argparse choices=, which rejects invalid CLI
+        values before load_config ever runs) — reachable via NIBE_MODE,
+        which bypasses the CLI schema entirely."""
+        cfg = self._load(env={'NIBE_MODE': 'bogus'})
+        self.assertEqual(cfg.mode, 'essential')
+        self.assertTrue(any('mode=' in w and 'bogus' in w for w in cfg.warnings))
+
+    def test_invalid_log_level_from_env_falls_back_to_info_with_warning(self):
+        cfg = self._load(env={'NIBE_LOG_LEVEL': 'bogus'})
+        self.assertEqual(cfg.log_level, 'info')
+        self.assertTrue(any('log_level=' in w and 'bogus' in w for w in cfg.warnings))
 
     def test_options_json_sets_log_level(self):
         cfg = self._load(options={'log_level': 'debug'})
@@ -399,6 +447,40 @@ class TestLoadConfig(unittest.TestCase):
     def test_options_json_sets_changelog_retention(self):
         cfg = self._load(options={'changelog_retention_days': 30})
         self.assertEqual(cfg.changelog_retention_days, 30)
+
+    @given(st.integers(min_value=-1000, max_value=10_000))
+    @example(-5)     # below the lower bound
+    @example(0)      # exact lower-bound-minus-one
+    @example(1)      # exact lower bound
+    @example(100)    # exact upper bound
+    @example(101)    # exact upper-bound-plus-one
+    @example(9999)   # well above the upper bound
+    def test_options_json_api_failure_threshold_always_clamped_to_1_100(self, raw):
+        """config.yaml's schema promises int(1,100) — a hand-edited
+        options.json (which bypasses that schema) must still be clamped
+        into range for any integer, not just the couple of in-range
+        values the example-based tests above use."""
+        cfg = self._load(options={'api_failure_threshold': raw})
+        self.assertGreaterEqual(cfg.api_failure_threshold, 1)
+        self.assertLessEqual(cfg.api_failure_threshold, 100)
+        if 1 <= raw <= 100:
+            self.assertEqual(cfg.api_failure_threshold, raw)
+
+    @given(st.integers(min_value=-1000, max_value=10_000))
+    @example(-5)
+    @example(0)
+    @example(1)
+    @example(3650)
+    @example(3651)
+    @example(9999)
+    def test_options_json_changelog_retention_days_always_clamped_to_1_3650(self, raw):
+        """config.yaml's schema promises int(1,3650) — same clamping
+        contract as api_failure_threshold above, for the same reason."""
+        cfg = self._load(options={'changelog_retention_days': raw})
+        self.assertGreaterEqual(cfg.changelog_retention_days, 1)
+        self.assertLessEqual(cfg.changelog_retention_days, 3650)
+        if 1 <= raw <= 3650:
+            self.assertEqual(cfg.changelog_retention_days, raw)
 
     def test_options_json_parse_error_adds_warning(self):
         import generate_nibe_mqtt as gn
@@ -464,6 +546,16 @@ class TestLoadConfig(unittest.TestCase):
     def test_env_sets_language(self):
         cfg = self._load(env={'NIBE_LANGUAGE': 'de'})
         self.assertEqual(cfg.language, 'de')
+
+    def test_env_sets_remove_frontend_true_when_value_is_one(self):
+        cfg = self._load(env={'NIBE_REMOVE_FRONTEND': '1'})
+        self.assertIs(cfg.remove_frontend, True)
+
+    def test_env_remove_frontend_false_when_value_is_not_one(self):
+        """Any value other than the literal '1' must leave remove_frontend
+        at its default (False) — not any other truthy-string check."""
+        cfg = self._load(env={'NIBE_REMOVE_FRONTEND': 'true'})
+        self.assertIs(cfg.remove_frontend, False)
 
     def test_env_sets_log_level(self):
         cfg = self._load(env={'NIBE_LOG_LEVEL': 'debug'})
@@ -1036,6 +1128,23 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
         cfg = self._load(env={'NIBE_API_FAILURE_THRESHOLD': '7'})
         self.assertEqual(cfg.api_failure_threshold, 7)
 
+    @given(st.integers(min_value=-1000, max_value=10_000))
+    @example(-5)
+    @example(1)
+    @example(100)
+    @example(101)
+    @example(9999)
+    def test_env_api_failure_threshold_always_clamped_to_1_100(self, raw):
+        """NIBE_API_FAILURE_THRESHOLD bypasses the add-on UI's schema
+        entirely (dev/Docker-only path) — the clamp here is the only
+        thing keeping an out-of-range value from reaching the rest of
+        the bridge, so it must hold for any integer, not just '7'."""
+        cfg = self._load(env={'NIBE_API_FAILURE_THRESHOLD': str(raw)})
+        self.assertGreaterEqual(cfg.api_failure_threshold, 1)
+        self.assertLessEqual(cfg.api_failure_threshold, 100)
+        if 1 <= raw <= 100:
+            self.assertEqual(cfg.api_failure_threshold, raw)
+
     def test_build_logging_adds_handler_on_fresh_logger(self):
         import logging
 
@@ -1048,6 +1157,51 @@ class TestLoadConfigRemainingPaths(unittest.TestCase):
             gn._build_logging('debug')
             self.assertTrue(len(root.handlers) > 0)
             self.assertEqual(root.level, logging.DEBUG)
+        finally:
+            root.handlers.clear()
+            root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
+
+    def test_build_logging_default_level_is_info(self):
+        """No caller in this codebase relies on the default (every real
+        call site passes level= explicitly) — but the default value
+        itself is still observable if _build_logging() is ever called
+        bare, so it must resolve to INFO, not some other level."""
+        import logging
+
+        import generate_nibe_mqtt as gn
+        root = logging.getLogger('nibe')
+        original_handlers = root.handlers[:]
+        original_level = root.level
+        root.handlers.clear()
+        try:
+            gn._build_logging()  # no level argument
+            self.assertEqual(root.level, logging.INFO)
+        finally:
+            root.handlers.clear()
+            root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
+
+    def test_build_logging_formatter_milliseconds_are_correct(self):
+        """The formatter's millisecond field is microsecond // 1000 — a
+        wrong divisor (e.g. 1001) would give a subtly-off value for most
+        timestamps."""
+        import logging
+
+        import generate_nibe_mqtt as gn
+        root = logging.getLogger('nibe')
+        original_handlers = root.handlers[:]
+        original_level = root.level
+        root.handlers.clear()
+        try:
+            gn._build_logging('info')
+            formatter = root.handlers[0].formatter
+            record = logging.LogRecord(
+                'nibe', logging.INFO, __file__, 1, 'msg', None, None,
+            )
+            record.created = 1_700_000_000.500000
+            formatted = formatter.format(record)
+            self.assertIn('.500', formatted)
         finally:
             root.handlers.clear()
             root.handlers.extend(original_handlers)
@@ -1132,14 +1286,96 @@ class TestCleanupMqttRetained(unittest.TestCase):
             return MagicMock()
         client.publish.side_effect = fake_publish
 
+    def test_subscribes_to_both_real_wildcards(self):
+        client, cleanup = self._make_client()
+        self._simulate_sentinel_immediately(client)
+        cleanup(client)
+        subscribed = [c.args[0] for c in client.subscribe.call_args_list]
+        self.assertIn("homeassistant/+/+/+", subscribed)
+        self.assertIn("nibe/browser/#", subscribed)
+
+    def test_sentinel_publish_uses_real_payload_and_not_retained(self):
+        client, cleanup = self._make_client()
+        seen = []
+
+        def spy_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                seen.append((payload, retain))
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+            return MagicMock()
+
+        client.publish.side_effect = spy_publish
+        cleanup(client)
+        self.assertIn(("cleanup", False), seen)
+
+    def test_clear_publish_uses_payload_none_and_retain_true(self):
+        """Each clear-publish must use payload=None (the standard MQTT
+        mechanism for deleting a retained message) and retain=True (so the
+        empty message is itself retained, actually clearing the broker's
+        stored value) — not e.g. a missing/wrong payload kwarg."""
+        client, cleanup = self._make_client()
+
+        def fake_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                ha_cb = self._get_callback(client, "homeassistant/+/+/+")
+                ha_cb(client, None, MagicMock(
+                    topic="homeassistant/sensor/nibe_test/state",
+                    payload=b"22.5", retain=True,
+                ))
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+            return MagicMock()
+
+        client.publish.side_effect = fake_publish
+        cleanup(client)
+        clear_call = next(
+            c for c in client.publish.call_args_list
+            if c.args and c.args[0] == "homeassistant/sensor/nibe_test/state"
+        )
+        self.assertIsNone(clear_call.kwargs.get('payload'))
+        self.assertTrue(clear_call.kwargs.get('retain'))
+
+    def test_wait_for_publish_uses_2_second_timeout(self):
+        client, cleanup = self._make_client()
+        clear_result = MagicMock()
+
+        def fake_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                ha_cb = self._get_callback(client, "homeassistant/+/+/+")
+                ha_cb(client, None, MagicMock(
+                    topic="homeassistant/sensor/nibe_test/state",
+                    payload=b"22.5", retain=True,
+                ))
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+                return MagicMock()
+            return clear_result
+
+        client.publish.side_effect = fake_publish
+        cleanup(client)
+        clear_result.wait_for_publish.assert_called_once_with(timeout=2.0)
+
     def test_no_retained_topics_found(self):
         """When no retained messages exist, the function logs and returns
         without attempting any clear-publishes."""
         client, cleanup = self._make_client()
         self._simulate_sentinel_immediately(client)
-        cleanup(client)
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            cleanup(client)
         # Only the sentinel publish should have happened — no clear-publishes
         self.assertEqual(client.publish.call_count, 1)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('No retained MQTT messages found to clean up')
+            for msg in cm.output
+        ))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Collecting retained MQTT topics for cleanup...')
+            for msg in cm.output
+        ))
 
     def test_collects_ha_topic_for_this_bridge(self):
         """A retained homeassistant/.../nibe_<id>/... topic must be
@@ -1175,6 +1411,34 @@ class TestCleanupMqttRetained(unittest.TestCase):
             or (len(call.args) > 2 and call.args[2] is True)
         ]
         self.assertIn("homeassistant/sensor/nibe_test/state", cleared_topics)
+
+    def test_collects_three_segment_ha_topic_for_this_bridge(self):
+        """A retained HA topic with exactly 3 segments (e.g. no trailing
+        suffix) whose 3rd segment starts with 'nibe_' must still be
+        collected — pins `len(parts) < 3` against `<= 3`/`< 4` off-by-one
+        mutants, which this 4-segment-topic-only test suite otherwise
+        can't distinguish (3 < 3, 3 <= 3, and 3 < 4 don't all agree)."""
+        client, cleanup = self._make_client()
+
+        def fake_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                ha_cb = self._get_callback(client, "homeassistant/+/+/+")
+                msg = MagicMock(
+                    topic="homeassistant/sensor/nibe_test",
+                    payload=b"22.5", retain=True,
+                )
+                ha_cb(client, None, msg)
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+            return MagicMock()
+
+        client.publish.side_effect = fake_publish
+        cleanup(client)
+
+        clear_calls = [c for c in client.publish.call_args_list if c.kwargs.get('retain') is True]
+        cleared_topics = [c.args[0] for c in clear_calls]
+        self.assertIn("homeassistant/sensor/nibe_test", cleared_topics)
 
     def test_filters_out_ha_topic_not_belonging_to_bridge(self):
         """A retained homeassistant/... topic whose unique_id segment does
@@ -1286,6 +1550,26 @@ class TestCleanupMqttRetained(unittest.TestCase):
                 any('Sentinel timeout' in str(call) for call in mock_log.warning.call_args_list)
             )
 
+    def test_sentinel_wait_uses_15_second_timeout(self):
+        client, cleanup = self._make_client()
+        with patch('threading.Event.wait', return_value=False) as mock_wait, \
+             patch('generate_nibe_mqtt.log_startup'):
+            cleanup(client)
+        mock_wait.assert_called_once_with(timeout=15)
+
+    def test_sentinel_timeout_warning_reports_the_real_timeout_value(self):
+        client, cleanup = self._make_client()
+        with patch('threading.Event.wait', return_value=False), \
+             self.assertLogs('nibe.startup', level='WARNING') as cm:
+            cleanup(client)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Sentinel timeout after 15s during MQTT cleanup — some retained '
+                'messages may not have been collected'
+            )
+            for msg in cm.output
+        ))
+
     def test_subscribes_to_the_real_sentinel_topic(self):
         """subscribe() must be called with the real _SENTINEL topic string —
         not None. subscribe() is never verified for its arguments by any
@@ -1323,6 +1607,16 @@ class TestCleanupMqttRetained(unittest.TestCase):
         ]
         self.assertEqual(len(complete_calls), 1)
         self.assertEqual(complete_calls[0].args[1:], (2, 2))
+        self.assertEqual(
+            complete_calls[0].args[0],
+            'MQTT cleanup complete — cleared %d/%d retained topics',
+        )
+        clearing_calls = [
+            c for c in mock_log.info.call_args_list
+            if c.args and c.args[0] == 'Clearing %d retained MQTT topics...'
+        ]
+        self.assertEqual(len(clearing_calls), 1)
+        self.assertEqual(clearing_calls[0].args[1], 2)
 
     def test_unsubscribes_and_removes_callbacks_after_collection(self):
         """Subscriptions and callbacks must be torn down after the sentinel
@@ -1366,6 +1660,55 @@ class TestCleanupMqttRetained(unittest.TestCase):
             self.fail("_cleanup_mqtt_retained must catch publish-confirmation "
                       "exceptions, not propagate them")
 
+    def test_publish_confirmation_failure_logs_warning_with_exact_text(self):
+        client, cleanup = self._make_client()
+
+        def fake_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                browser_cb = self._get_callback(client, "nibe/browser/#")
+                browser_cb(client, None, MagicMock(
+                    topic="nibe/browser/point_list", payload=b"[]", retain=True))
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+                return MagicMock()
+            result = MagicMock()
+            result.wait_for_publish.side_effect = RuntimeError("disconnected")
+            return result
+
+        client.publish.side_effect = fake_publish
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            cleanup(client)
+        self.assertTrue(any(
+            msg.splitlines()[0] ==
+            'WARNING:nibe.startup:Could not confirm clear for nibe/browser/point_list: '
+            'disconnected'
+            for msg in cm.output
+        ))
+
+    def test_successful_confirmation_logs_debug_with_exact_topic(self):
+        client, cleanup = self._make_client()
+
+        def fake_publish(topic, payload=None, retain=False):
+            if topic == "nibe/browser/scan_sentinel" and not retain:
+                browser_cb = self._get_callback(client, "nibe/browser/#")
+                browser_cb(client, None, MagicMock(
+                    topic="nibe/browser/point_list", payload=b"[]", retain=True))
+                sentinel_cb = self._get_callback(client, "nibe/browser/scan_sentinel")
+                sentinel_cb(client, None, MagicMock(
+                    topic=topic, payload=b"cleanup", retain=False))
+            return MagicMock()
+
+        client.publish.side_effect = fake_publish
+        with self.assertLogs('nibe.startup', level='DEBUG') as cm:
+            cleanup(client)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Cleared retained topic: nibe/browser/point_list'
+            )
+            for msg in cm.output
+        ))
+
 
 # ===========================================================================
 # generate_nibe_mqtt.py — extracted startup helpers
@@ -1408,6 +1751,18 @@ class TestBuildSslContext(unittest.TestCase):
         ctx = _build_ssl_context(None)
         self.assertEqual(ctx.minimum_version, ssl.TLSVersion.MINIMUM_SUPPORTED)
 
+    def test_no_ca_cert_logs_warning_with_exact_text(self):
+        from generate_nibe_mqtt import _build_ssl_context
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            _build_ssl_context(None)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "TLS: Certificate verification disabled (self-signed cert). "
+                "Enable verification by setting 'nibe_ca_cert' in add-on options."
+            )
+            for msg in cm.output
+        ))
+
     def test_no_ca_cert_sets_compat_cipher_string(self):
         """set_ciphers() must actually be called with the shared
         TLS_COMPAT_CIPHERS constant — SSLContext exposes no getter for the
@@ -1434,6 +1789,20 @@ class TestBuildSslContext(unittest.TestCase):
         ctx = _build_ssl_context(cafile)
         self.assertTrue(ctx.check_hostname)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_valid_ca_cert_logs_info_with_the_real_path(self):
+        from generate_nibe_mqtt import _build_ssl_context
+        cafile = ssl.get_default_verify_paths().cafile
+        if not cafile or not os.path.exists(cafile):
+            self.skipTest("No system CA bundle available")
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            _build_ssl_context(cafile)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                f'Nibe API TLS: verification enabled using CA cert {cafile}'
+            )
+            for msg in cm.output
+        ))
 
     def test_never_raises_for_none_or_nonexistent_path(self):
         from generate_nibe_mqtt import _build_ssl_context
@@ -1497,6 +1866,37 @@ class TestDeriveDeviceId(unittest.TestCase):
         result = self.fn({'product': {'serialNumber': 'AB_12'}}, 'fallback', self.persist_path)
         self.assertEqual(result, 'nibe_ab_12')
 
+    @given(st.text(min_size=1, max_size=100))
+    def test_result_only_contains_alnum_or_underscore_chars_after_prefix(self, serial):
+        """For ANY serial string (arbitrary unicode, not just the
+        hand-picked 'AB-12 CD.EF' example), every character surviving
+        into the safe_id must be alphanumeric or '_' — the exact same
+        predicate the source uses (`c.isalnum() or c == "_"`), computed
+        independently here rather than read back from the result.
+
+        Note: `str.isalnum()` is Unicode-aware, so a non-ASCII
+        alphanumeric character (e.g. 'ä') is NOT stripped by this
+        filter — only non-alnum/non-underscore characters (spaces,
+        dashes, punctuation) are. This property reflects that real
+        behavior rather than assuming an ASCII-only output."""
+        from hypothesis import assume
+        assume(serial.strip())  # a whitespace-only serial takes the fallback path instead
+        result = self.fn({'product': {'serialNumber': serial}}, 'fallback', self.persist_path)
+        self.assertTrue(result.startswith('nibe_'))
+        safe_id = result[len('nibe_'):]
+        for c in safe_id:
+            self.assertTrue(c.isalnum() or c == '_', f'unexpected character {c!r} in {safe_id!r}')
+
+    @given(st.text(alphabet=st.characters(whitelist_categories=('Ll', 'Nd'),
+                                          whitelist_characters='_'),
+                   min_size=1, max_size=50))
+    def test_already_safe_serial_passes_through_unmodified(self, serial):
+        """For any serial already composed entirely of lowercase
+        letters/digits/underscores, the filter must be a true no-op —
+        every character survives, none get silently dropped."""
+        result = self.fn({'product': {'serialNumber': serial}}, 'fallback', self.persist_path)
+        self.assertEqual(result, f'nibe_{serial}')
+
     def test_serial_absent_no_persisted_id_returns_fallback(self):
         result = self.fn({}, 'my_fallback', self.persist_path)
         self.assertEqual(result, 'my_fallback')
@@ -1524,6 +1924,45 @@ class TestDeriveDeviceId(unittest.TestCase):
         with open(self.persist_path, encoding='utf-8') as f:
             self.assertEqual(f.read(), 'nibe_abc123')
 
+    def test_successful_derivation_logs_info_with_exact_text(self):
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', self.persist_path)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Device ID derived from serial number: nibe_abc123'
+            )
+            for msg in cm.output
+        ))
+
+    def test_persist_write_uses_utf8_encoding(self):
+        """Real-file round-trip tests can't distinguish encoding='utf-8'
+        from encoding=None, since both resolve to UTF-8 on this machine's
+        locale — mock open() directly to pin the actual kwarg passed."""
+        seen_kwargs = []
+
+        def fake_open(_path, mode='r', **kw):
+            seen_kwargs.append(kw)
+            raise OSError('mocked — no real write')
+
+        with patch('builtins.open', side_effect=fake_open):
+            self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', self.persist_path)
+        self.assertEqual(seen_kwargs[0].get('encoding'), 'utf-8')
+
+    def test_persisted_id_read_uses_utf8_encoding(self):
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('nibe_previously_learned')
+        seen_kwargs = []
+        real_open = open
+
+        def fake_open(path, *a, **kw):
+            if str(path) == self.persist_path:
+                seen_kwargs.append(kw)
+            return real_open(path, *a, **kw)
+
+        with patch('builtins.open', side_effect=fake_open):
+            self.fn({}, 'fallback', self.persist_path)
+        self.assertEqual(seen_kwargs[0].get('encoding'), 'utf-8')
+
     def test_persist_write_failure_does_not_raise_and_still_returns_id(self):
         """A read-only or missing parent directory must not crash startup
         over a best-effort persistence write."""
@@ -1532,6 +1971,22 @@ class TestDeriveDeviceId(unittest.TestCase):
             {'product': {'serialNumber': 'ABC123'}}, 'fallback', unwritable_path,
         )
         self.assertEqual(result, 'nibe_abc123')
+
+    def test_persist_write_failure_logs_warning_with_real_path_and_error(self):
+        unwritable_path = self._tmpdir + '/nonexistent_subdir/device_id'
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self.fn({'product': {'serialNumber': 'ABC123'}}, 'fallback', unwritable_path)
+        [warning_msg] = cm.output
+        prefix, _, suffix = warning_msg.partition(
+            f'WARNING:nibe.startup:Could not persist device_id to {unwritable_path}: '
+        )
+        self.assertEqual(prefix, '')
+        self.assertTrue(suffix.startswith('['))  # the real OSError text, e.g. '[Errno 2] ...'
+        self.assertIn(
+            "a future startup during a transient outage may fall back to the "
+            "generic default instead.",
+            warning_msg,
+        )
 
     # ── reuse-on-failure (the actual bug fix) ───────────────────────────────
 
@@ -1547,6 +2002,32 @@ class TestDeriveDeviceId(unittest.TestCase):
         result = self.fn({}, 'generic_fallback', self.persist_path)
         self.assertEqual(result, 'nibe_abc123')
         self.assertNotEqual(result, 'generic_fallback')
+
+    def test_reuses_persisted_id_logs_warning_with_exact_text(self):
+        with open(self.persist_path, 'w', encoding='utf-8') as f:
+            f.write('nibe_abc123')
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self.fn({}, 'generic_fallback', self.persist_path)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "Serial number not available this startup (device unreachable?) — "
+                "reusing the previously learned device_id 'nibe_abc123' instead of "
+                "the generic default, to avoid creating a duplicate HA device."
+            )
+            for msg in cm.output
+        ))
+
+    def test_no_persisted_id_logs_fallback_warning_with_exact_text(self):
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self.fn({}, 'my_fallback', self.persist_path)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "Serial number not available — using default device_id "
+                "'my_fallback'. Running two bridges without serial numbers "
+                "may cause HA device collisions."
+            )
+            for msg in cm.output
+        ))
 
     def test_persisted_id_preferred_over_generic_fallback_for_empty_serial(self):
         with open(self.persist_path, 'w', encoding='utf-8') as f:
@@ -1726,6 +2207,43 @@ class TestConfigureMqttTls(unittest.TestCase):
             self.fn(self.mqtt, self._cfg(tls=False, username=username))
             self.mqtt.tls_set.assert_not_called()
 
+    def test_tls_enabled_no_ca_logs_system_ca_store_text(self):
+        with self.assertLogs('nibe.mqtt', level='INFO') as cm:
+            self.fn(self.mqtt, self._cfg(tls=True, ca=None))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('MQTT TLS enabled (system CA store)')
+            for msg in cm.output
+        ))
+
+    def test_tls_enabled_with_ca_logs_the_real_ca_path(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.crt', delete=False) as f:
+            ca_path = f.name
+        try:
+            with self.assertLogs('nibe.mqtt', level='INFO') as cm:
+                self.fn(self.mqtt, self._cfg(tls=True, ca=ca_path))
+            self.assertTrue(any(
+                msg.splitlines()[0].endswith(f'MQTT TLS enabled (CA: {ca_path})')
+                for msg in cm.output
+            ))
+        finally:
+            os.unlink(ca_path)
+
+    def test_tls_disabled_with_credentials_logs_warning_with_exact_text(self):
+        with self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            self.fn(self.mqtt, self._cfg(tls=False, username='user'))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "MQTT TLS disabled — credentials sent in plaintext. "
+                "Enable with 'mqtt_tls: true' in add-on options."
+            )
+            for msg in cm.output
+        ))
+
+    def test_tls_disabled_no_credentials_logs_nothing(self):
+        with self.assertNoLogs('nibe.mqtt', level='WARNING'):
+            self.fn(self.mqtt, self._cfg(tls=False, username=None))
+
 
 
 class TestRunScanWithRetry(unittest.TestCase):
@@ -1778,6 +2296,30 @@ class TestRunScanWithRetry(unittest.TestCase):
         with patch('time.sleep') as mock_sleep:
             self.fn(em, retries=3, backoffs=[3, 6, 12])
         mock_sleep.assert_called_once_with(3)
+
+    def test_retry_warning_logged_with_exact_text(self):
+        em = self._em([set(), {1}])
+        with patch('time.sleep'), \
+             self.assertLogs('nibe.restore', level='WARNING') as cm:
+            self.fn(em, retries=3, backoffs=[3, 6, 12])
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Scan returned 0 configs (attempt 1/3) — broker may still be '
+                'loading. Retrying in 3s...'
+            )
+            for msg in cm.output
+        ))
+
+    def test_default_backoffs_are_3_6_12(self):
+        """No caller passes backoffs= explicitly in production — the
+        default [3, 6, 12] list itself must be exactly right, not e.g.
+        [3, 6, 13]."""
+        em = self._em([set(), set(), set(), set()])
+        with patch('time.sleep') as mock_sleep:
+            self.fn(em, retries=4)  # backoffs= omitted — uses the default
+        mock_sleep.assert_any_call(3)
+        mock_sleep.assert_any_call(6)
+        mock_sleep.assert_any_call(12)
 
     def test_default_backoffs_used_when_none(self):
         em = self._em([{1}])
@@ -1858,6 +2400,11 @@ class TestExecuteStartupAction(unittest.TestCase):
         mock_notify.assert_called_once()
         args = mock_notify.call_args
         self.assertIn('nibe_no_entities', str(args))
+        # assertIn on str(args) can't distinguish 'nibe_no_entities' from an
+        # XX-wrapped mutant ('nibe_no_entities' is still a substring of
+        # 'XXnibe_no_entitiesXX') — an exact-equality check on the kwarg
+        # itself closes that gap.
+        self.assertEqual(args.kwargs['notification_id'], 'nibe_no_entities')
 
     def test_apply_none_mode_notification_has_real_title(self):
         """The notification's title must be the real 'No Entities Enabled'
@@ -1873,6 +2420,14 @@ class TestExecuteStartupAction(unittest.TestCase):
             mock_notify.call_args.kwargs['title'],
             'Nibe Bridge: No Entities Enabled',
         )
+
+    def test_apply_none_mode_notification_receives_real_mqtt_client(self):
+        with patch.object(self.em, 'apply_mode'), \
+             patch.object(self.em, 'restore_from_mqtt'), \
+             patch.object(self.em, 'record_applied_mode'), \
+             patch('generate_nibe_mqtt.notify_ha') as mock_notify:
+            self.fn(self.em, 'apply', None, 'none', self.mqtt, 'Test Device')
+        self.assertIs(mock_notify.call_args.args[0], self.mqtt)
 
     def test_apply_non_none_mode_no_notification(self):
         with patch.object(self.em, 'apply_mode'), \
@@ -1919,6 +2474,75 @@ class TestExecuteStartupAction(unittest.TestCase):
 
     def test_unknown_action_does_not_raise(self):
         self._run('unknown_action')  # must not raise
+
+    def test_apply_logs_info_with_exact_text(self):
+        with self.assertLogs('nibe.restore', level='INFO') as cm:
+            self._run('apply', applied_mode=None, initial_mode='monitoring')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'No existing MQTT configs — applying initial mode: monitoring'
+            )
+            for msg in cm.output
+        ))
+
+    def test_restore_does_not_log_the_reconcile_message(self):
+        """The 'restore' branch is a deliberate no-op at this level — if
+        the 'restore' condition were mutated to fall through to the
+        `else` branch, the 'Entity mode changed ...' reconcile message
+        would wrongly fire for a same-mode restart."""
+        import logging
+        with self.assertLogs('nibe.restore', level='INFO') as cm:
+            logging.getLogger('nibe.restore').info('sentinel')  # assertLogs needs >=1 record
+            self._run('restore', applied_mode='essential', initial_mode='essential')
+        self.assertFalse(any('Entity mode changed' in msg for msg in cm.output))
+
+    def test_reconcile_logs_info_with_exact_text(self):
+        with patch.object(self.em, 'restore_from_mqtt'), \
+             patch.object(self.em, 'apply_mode'), \
+             patch.object(self.em, 'record_applied_mode'), \
+             self.assertLogs('nibe.restore', level='INFO') as cm:
+            self.fn(self.em, 'reconcile', 'essential', 'monitoring', self.mqtt, 'Test')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "Entity mode changed from 'essential' to 'monitoring' — restoring "
+                "then reconciling the enabled set to the new mode."
+            )
+            for msg in cm.output
+        ))
+
+    def test_apply_none_mode_logs_info_with_exact_text(self):
+        with patch.object(self.em, 'apply_mode'), \
+             patch.object(self.em, 'restore_from_mqtt'), \
+             patch.object(self.em, 'record_applied_mode'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             self.assertLogs('nibe.restore', level='INFO') as cm:
+            self.fn(self.em, 'apply', None, 'none', self.mqtt, 'Test Device')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "Mode 'none' selected — no entities enabled by default. "
+                "Use the Entity Manager card to enable entities."
+            )
+            for msg in cm.output
+        ))
+
+    def test_apply_none_mode_notification_has_real_message(self):
+        """The notification message must contain the real point count and
+        device name — not None, which the existing str(args) check
+        wouldn't catch since it only greps for 'nibe_no_entities'."""
+        self.em.all_points_by_id = {1: {}, 2: {}, 3: {}}
+        with patch.object(self.em, 'apply_mode'), \
+             patch.object(self.em, 'restore_from_mqtt'), \
+             patch.object(self.em, 'record_applied_mode'), \
+             patch('generate_nibe_mqtt.notify_ha') as mock_notify:
+            self.fn(self.em, 'apply', None, 'none', self.mqtt, 'My Device')
+        message = mock_notify.call_args.kwargs['message']
+        self.assertIn('3 data points were discovered on My Device', message)
+        self.assertIn(
+            "'none'. No entities will appear in Home Assistant until you enable "
+            "some. Use the Entity Manager card on the Nibe Bridge dashboard to "
+            "enable a set of entities.",
+            message,
+        )
 
 
 
@@ -2044,6 +2668,69 @@ class TestFetchApiResponse(unittest.TestCase):
             self.fn(api)
         self.assertTrue(any('offline' in m.lower() for m in log.output))
 
+    def test_truthy_response_missing_product_key_does_not_raise(self):
+        """response.get('product', {}) must default to {}, not None — a
+        truthy response lacking a 'product' key (e.g. a partial/odd API
+        reply) must still let product.get(...) run instead of raising
+        AttributeError on None."""
+        api = self._api({'other_key': 'present'})
+        result = self.fn(api)  # must not raise
+        self.assertEqual(result, {'other_key': 'present'})
+
+    def test_testing_connection_log_has_exact_text(self):
+        api = self._api({})
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn(api)
+        self.assertEqual(mock_log.info.call_args_list[0].args[0],
+                          "Testing Nibe API connection...")
+
+    def test_offline_warning_has_exact_text(self):
+        api = self._api(None)
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn(api)
+        mock_log.warning.assert_called_once_with(
+            "Cannot reach Nibe API at startup — device may be offline. "
+            "The bridge will start and keep retrying."
+        )
+
+    def test_connected_log_has_exact_format_string_and_real_field_values(self):
+        """Every %s placeholder must be filled from the real product dict
+        via the real keys — not a wrong/missing key or a hardcoded
+        default masking the actual value."""
+        api = self._api({'product': {
+            'manufacturer': 'RealMfr', 'name': 'RealName',
+            'serialNumber': 'RealSerial', 'firmwareId': 'RealFw',
+        }})
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn(api)
+        mock_log.info.assert_called_with(
+            "Connected to %s %s (serial: %s, firmware: %s)",
+            'RealMfr', 'RealName', 'RealSerial', 'RealFw',
+        )
+
+    def test_connected_log_defaults_when_product_fields_missing(self):
+        """When product fields are absent, the real defaults ('NIBE',
+        'S-series', 'unknown', 'unknown') must be used — not None or a
+        different placeholder string."""
+        api = self._api({'product': {}})
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn(api)
+        mock_log.info.assert_called_with(
+            "Connected to %s %s (serial: %s, firmware: %s)",
+            'NIBE', 'S-series', 'unknown', 'unknown',
+        )
+
+    def test_connected_log_name_falsy_falls_back_to_s_series(self):
+        """An explicitly empty product['name'] must still fall back to
+        'S-series' via the `or` — not pass through as ''."""
+        api = self._api({'product': {'name': ''}})
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn(api)
+        mock_log.info.assert_called_with(
+            "Connected to %s %s (serial: %s, firmware: %s)",
+            'NIBE', 'S-series', 'unknown', 'unknown',
+        )
+
 
 
 class TestLoadMenuStructure(unittest.TestCase):
@@ -2067,6 +2754,47 @@ class TestLoadMenuStructure(unittest.TestCase):
         point_to_menu, menu_points = self.fn('/nonexistent/path')
         self.assertEqual(point_to_menu, {})
         self.assertEqual(menu_points, frozenset())
+
+    def test_missing_dir_logs_warning_with_exact_text(self):
+        with self.assertLogs('nibe.startup', level='WARNING') as cm:
+            self.fn('/nonexistent/path')
+        [warning_msg] = cm.output
+        prefix, _, suffix = warning_msg.partition(
+            "WARNING:nibe.startup:Could not build point→menu map / MODES['menus']: "
+        )
+        self.assertEqual(prefix, '')
+        self.assertTrue(suffix, "the real exception text must appear, not e.g. 'None'")
+        self.assertNotEqual(suffix.strip(), 'None')
+
+    def test_missing_dir_warning_call_has_the_exception_as_a_real_arg(self):
+        """A dropped second arg (log_startup.warning('...%s',) with no
+        value) doesn't raise or show up as 'None' text via assertLogs —
+        logging's lazy %-formatting only errors when a handler actually
+        formats the record, which the default assertLogs capture handler
+        doesn't trigger the same way. Asserting on the mocked call's own
+        args directly is the reliable way to pin this."""
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self.fn('/nonexistent/path')
+        mock_log.warning.assert_called_once()
+        self.assertEqual(len(mock_log.warning.call_args.args), 2)
+        self.assertIsInstance(mock_log.warning.call_args.args[1], Exception)
+
+    def test_valid_dir_logs_debug_with_exact_counts(self):
+        point_to_menu, menu_points = self.fn(_APP_DIR)
+        with self.assertLogs('nibe.startup', level='DEBUG') as cm:
+            self.fn(_APP_DIR)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                f'Built point→menu map: {len(point_to_menu)} entries'
+            )
+            for msg in cm.output
+        ))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                f"MODES['menus'] populated: {len(menu_points)} points"
+            )
+            for msg in cm.output
+        ))
 
     def test_missing_dir_does_not_raise(self):
         self.fn('/nonexistent/path')  # must not raise
@@ -2374,6 +3102,52 @@ class TestLoadBridgeVersionAllPathsFail(unittest.TestCase):
         ):
             gn._load_bridge_version()
         self.assertIn('config.yaml', str(ctx.exception))
+
+    def test_open_called_with_utf8_encoding_kwarg(self):
+        import generate_nibe_mqtt as gn
+
+        def fake_open(_path, *_a, **kw):
+            self.assertEqual(kw.get('encoding'), 'utf-8')
+            raise FileNotFoundError
+
+        with patch('builtins.open', side_effect=fake_open), \
+             self.assertRaises(RuntimeError):
+            gn._load_bridge_version()
+
+    def test_candidate_paths_are_exactly_the_three_expected_ones(self):
+        """Pins the exact literal candidate paths (not just that *some*
+        path is tried) — /config.yaml and /mnt/project/config.yaml in
+        particular have no other test coverage since neither exists on a
+        dev machine."""
+        import generate_nibe_mqtt as gn
+        attempted = []
+
+        def fake_open(path, *a, **kw):
+            attempted.append(path)
+            raise FileNotFoundError
+
+        with patch('builtins.open', side_effect=fake_open), \
+             self.assertRaises(RuntimeError):
+            gn._load_bridge_version()
+        repo_relative = os.path.join(
+            os.path.dirname(os.path.abspath(gn.__file__)), '..', 'config.yaml',
+        )
+        self.assertEqual(
+            attempted,
+            ['/config.yaml', repo_relative, '/mnt/project/config.yaml'],
+        )
+
+    def test_runtime_error_has_exact_message(self):
+        import generate_nibe_mqtt as gn
+        with (
+            patch('builtins.open', side_effect=FileNotFoundError),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            gn._load_bridge_version()
+        self.assertEqual(
+            str(ctx.exception),
+            'Could not determine BRIDGE_VERSION: config.yaml not found at any known path',
+        )
 
     def test_fresh_call_resolves_real_candidate_path_and_matches_config_yaml(self):
         """Calling _load_bridge_version() directly (not relying on the
@@ -2757,6 +3531,19 @@ class TestGenerateNibeMqttSmallPaths(unittest.TestCase):
         # Clear handlers first so it doesn't early-return.
         nibe_log = logging.getLogger('nibe')
         original_handlers = nibe_log.handlers[:]
+        # _build_logging() unconditionally calls root.setLevel(numeric) —
+        # level='debug' below leaves the shared 'nibe' logger at DEBUG for
+        # the rest of the pytest-xdist worker's session unless restored
+        # here. Same root cause as the historical "root logger level leak
+        # in _build_logging tests" fix (commit 063d16d) — that fix covered
+        # three other tests but not this one, which reintroduced the exact
+        # same leak. Every nibe.* child logger with no level of its own
+        # inherits from this one, so leaving it at DEBUG makes unrelated
+        # log calls elsewhere fire (and, via LogRecord creation calling
+        # time.time()/consuming mocked side_effect sequences, can produce
+        # confusing failures — or real HA notifications — in whichever
+        # test happens to run next in the same worker).
+        original_level = nibe_log.level
         nibe_log.handlers.clear()
         try:
             gnm._build_logging(level='debug')
@@ -2776,6 +3563,7 @@ class TestGenerateNibeMqttSmallPaths(unittest.TestCase):
         finally:
             nibe_log.handlers.clear()
             nibe_log.handlers.extend(original_handlers)
+            nibe_log.setLevel(original_level)
 
 
 # ===========================================================================
@@ -2807,6 +3595,21 @@ class TestBuildInfrastructure(unittest.TestCase):
         from generate_nibe_mqtt import _build_infrastructure
         cfg = self._cfg(nibe_auth=None)
         with self.assertRaises(SystemExit) as ctx:
+            _build_infrastructure(cfg)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_exits_when_ssl_context_build_fails(self):
+        """A ssl.SSLError while building the Nibe API TLS context (e.g. a
+        malformed CA cert file) must call sys.exit(1) before any network
+        call is attempted — previously never exercised, since every other
+        test here mocks _build_ssl_context out to a working context."""
+        import ssl
+
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg()
+        with patch('generate_nibe_mqtt._build_ssl_context',
+                   side_effect=ssl.SSLError('bad CA cert')), \
+             self.assertRaises(SystemExit) as ctx:
             _build_infrastructure(cfg)
         self.assertEqual(ctx.exception.code, 1)
 
@@ -3004,6 +3807,23 @@ class TestBuildInfrastructure(unittest.TestCase):
             _build_infrastructure(cfg)
         mock_mc.username_pw_set.assert_not_called()
 
+    def test_username_pw_not_set_when_only_username_present(self):
+        """Both mqtt_username AND mqtt_password must be present —
+        username_pw_set must NOT be called with just one of them. An `or`
+        in place of `and` here would pass a None password to paho."""
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg(mqtt_username='bob', mqtt_password=None)
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            _build_infrastructure(cfg)
+        mock_mc.username_pw_set.assert_not_called()
+
     def test_on_connect_uses_int_reason_code_without_value_attr(self):
         """on_connect must derive rc_value correctly when reason_code is a
         plain int (no .value attribute) — the hasattr(...'value') branch.
@@ -3028,6 +3848,16 @@ class TestBuildInfrastructure(unittest.TestCase):
         mock_log.error.assert_called_once()
         self.assertIn('check mqtt_username and mqtt_password',
                       mock_log.error.call_args.args[0])
+
+    def test_on_connect_rc_5_is_fatal(self):
+        """rc=5 (not authorised) must also be treated as fatal — pins the
+        _FATAL_RC set's exact membership {4, 5} against a mutation like
+        {4, 6}, which existing tests (using rc=4, already in both sets)
+        can't distinguish."""
+        mc, _, _ = self._call_infrastructure()
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            mc.on_connect(mc, None, None, 5, None)
+        self.assertIn('refused', str(mock_log.error.call_args))
 
     def _call_infrastructure(self, cfg=None):
         """Helper: run _build_infrastructure and return (mqtt_client, set_em, shutting_down)."""
@@ -3166,7 +3996,7 @@ class TestConfigPropagatesToInfrastructure(unittest.TestCase):
             _build_infrastructure(cfg)
         return mock_mc, MockApiClient, mock_build_ssl, mock_ssl_ctx
 
-    _BASE_OPTIONS = {
+    _BASE_OPTIONS: ClassVar[dict] = {
         'nibe_username': 'nibeuser',
         'nibe_password': 'nibepass',
     }
@@ -3329,6 +4159,12 @@ class TestShutdown(unittest.TestCase):
 
         return mc, watcher, mgmt_exec, test_exec, shutting_down, atexit_fn
 
+    def test_abort_test_suite_called_with_exact_reason_text(self):
+        em = _make_em()
+        with patch('generate_nibe_mqtt.abort_test_suite') as mock_abort:
+            self._run_shutdown(em)
+        mock_abort.assert_called_once_with("add-on shutting down")
+
     def test_publishes_offline_for_all_active_entities(self):
         """_shutdown must publish 'offline' to every active entity's avail topic."""
         from generate_nibe_mqtt import MGMT_AVAIL_TOPIC
@@ -3475,6 +4311,59 @@ class TestShutdown(unittest.TestCase):
 
         mock_cleanup.assert_called_once_with(mc)
 
+    def test_default_remove_frontend_is_false(self):
+        """remove_frontend's default is False — omitting it must NOT wipe
+        the Entity Manager card's retained MQTT topics on every ordinary
+        shutdown."""
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt._cleanup_mqtt_retained') as mock_cleanup:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())  # remove_frontend omitted
+        mock_cleanup.assert_not_called()
+
+    def test_teardown_lovelace_receives_the_real_remove_frontend_flag(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace') as mock_teardown:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock(), remove_frontend=True)
+        mock_teardown.assert_called_once_with(True)
+
+    def test_thread_target_is_executor_shutdown_method(self):
+        """Each Thread's target must be the executor's own .shutdown method
+        — not None or a dropped kwarg. A missing target would make the
+        Thread do nothing, so the executor would never actually drain."""
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        mgmt_exec = MagicMock()
+        with patch('generate_nibe_mqtt.threading.Thread') as MockThread, \
+             patch('generate_nibe_mqtt.teardown_lovelace'):
+            instance = MockThread.return_value
+            instance.is_alive.return_value = False
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), mgmt_exec, MagicMock(),
+                      [False], MagicMock())
+        targets = [call.kwargs['target'] for call in MockThread.call_args_list]
+        self.assertIn(mgmt_exec.shutdown, targets)
+
+    def test_offline_publishes_use_retain_true(self):
+        """Entity and management availability publishes on shutdown must be
+        retained — a subscriber connecting after the bridge has already
+        gone offline still needs to see the last-known 'offline' state."""
+        from generate_nibe_mqtt import MGMT_AVAIL_TOPIC, _shutdown
+        em = self._make_em_with_entities(['nibe/avail/100'])
+        mc = MagicMock()
+        with patch('generate_nibe_mqtt.teardown_lovelace'):
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+        offline_calls = {
+            call.args[0]: call.kwargs.get('retain')
+            for call in mc.publish.call_args_list if call.args[1] == 'offline'
+        }
+        self.assertTrue(offline_calls['nibe/avail/100'])
+        self.assertTrue(offline_calls[MGMT_AVAIL_TOPIC])
+
     def test_wait_for_publish_exception_logged_not_raised(self):
         """If wait_for_publish() raises, the exception must be logged as a
         warning and shutdown must continue — not propagate (branch 1250→1251)."""
@@ -3530,6 +4419,148 @@ class TestShutdown(unittest.TestCase):
         self.assertNotIn('nibe/state/99', offline_topics,
                          "Entity without availability_topic must not get an offline publish")
 
+    def test_shutting_down_log_has_exact_text(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+        first_call_msg = mock_log.info.call_args_list[0].args[0]
+        self.assertEqual(first_call_msg, "Shutting down...")
+
+    def test_waiting_for_commands_log_has_exact_text(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+        second_call_msg = mock_log.info.call_args_list[1].args[0]
+        self.assertEqual(second_call_msg, "Waiting for in-flight commands to complete...")
+
+    def test_publishing_offline_availability_log_has_exact_text(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+        info_msgs = [c.args[0] for c in mock_log.info.call_args_list]
+        self.assertIn("Publishing offline availability...", info_msgs)
+
+    def test_mqtt_discovery_retained_log_has_exact_text(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock(), remove_frontend=False)
+        info_msgs = [c.args[0] for c in mock_log.info.call_args_list]
+        self.assertIn("MQTT discovery configs retained for next startup", info_msgs)
+
+    def test_service_stopped_cleanly_log_has_exact_text(self):
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+        info_msgs = [c.args[0] for c in mock_log.info.call_args_list]
+        self.assertIn("Service stopped cleanly", info_msgs)
+        # Must be the last info call, made after loop_stop/disconnect.
+        self.assertEqual(info_msgs[-1], "Service stopped cleanly")
+
+    def test_executor_timeout_warning_has_exact_name_and_timeout_args(self):
+        """The warning's (name, _SHUTDOWN_TIMEOUT) args must be the real
+        executor label and real timeout value — not dropped/nulled."""
+        from generate_nibe_mqtt import _SHUTDOWN_TIMEOUT, _shutdown
+        em = _make_em()
+
+        with patch('generate_nibe_mqtt.threading.Thread') as MockThread, \
+             patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            instance = MockThread.return_value
+            instance.is_alive.return_value = True
+            _shutdown(em, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+
+        names_seen = [c.args[1] for c in mock_log.warning.call_args_list]
+        self.assertEqual(names_seen, ["write", "management", "test suite"])
+        for c in mock_log.warning.call_args_list:
+            self.assertEqual(
+                c.args[0],
+                "%s executor did not finish within the shared %ds shutdown "
+                "budget — proceeding with shutdown",
+            )
+            self.assertEqual(c.args[2], _SHUTDOWN_TIMEOUT)
+
+    def test_offline_publish_confirm_warning_has_exact_exception_object(self):
+        """log_mqtt.warning's %s arg must be the real caught exception —
+        not None or a dropped arg."""
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        mc = MagicMock()
+        real_error = RuntimeError("broker gone")
+        bad_pub = MagicMock()
+        bad_pub.wait_for_publish.side_effect = real_error
+        mc.publish.return_value = bad_pub
+
+        with patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch.dict('os.environ', {}, clear=False), \
+             patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            os.environ.pop('NIBE_REMOVE_FRONTEND', None)
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+
+        self.assertEqual(
+            mock_log.warning.call_args.args[0],
+            "Offline publish did not confirm: %s",
+        )
+        self.assertEqual(mock_log.warning.call_args.args[1], real_error)
+
+    def test_remaining_join_budget_floors_at_zero_not_one(self):
+        """max(0.0, ...) must floor the remaining join timeout at 0.0 — a
+        mutated max(1.0, ...) would give an already-expired deadline a full
+        extra second of join budget on every executor instead of none."""
+        import time as time_module
+
+        from generate_nibe_mqtt import _shutdown
+        em = _make_em()
+        mc = MagicMock()
+        join_timeouts = []
+
+        class FakeThread:
+            def __init__(self, target=None, kwargs=None):
+                pass
+            def start(self):
+                pass
+            def join(self, timeout=None):
+                join_timeouts.append(timeout)
+            def is_alive(self):
+                return False
+
+        # Make time.monotonic() jump far past the deadline after it is
+        # computed, so `remaining` would be negative without the floor.
+        real_monotonic = time_module.monotonic
+        call_count = [0]
+
+        def fake_monotonic():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return real_monotonic()
+            return real_monotonic() + 10_000.0
+
+        with patch('generate_nibe_mqtt.threading.Thread', FakeThread), \
+             patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch('generate_nibe_mqtt.time.monotonic', side_effect=fake_monotonic), \
+             patch('generate_nibe_mqtt.log_startup'):
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+
+        for t in join_timeouts:
+            self.assertEqual(t, 0.0)
+
 
 
 class TestPollLoop(unittest.TestCase):
@@ -3573,6 +4604,43 @@ class TestPollLoop(unittest.TestCase):
         self._run_loop_iterations(em, pub, iterations=3)
         self.assertGreaterEqual(em.update_all_states.call_count, 1)
 
+    def test_per_cycle_helpers_receive_real_entity_manager_and_publisher(self):
+        """update_stats_and_health/update_device_modes/update_alarm_state
+        must each be called with the real (entity_manager, publisher) pair
+        in that order — not None or a dropped/swapped argument."""
+        em  = _make_em()
+        pub = MagicMock()
+        from generate_nibe_mqtt import _poll_loop
+        tick = [0]
+
+        def _fake_time():
+            return 100.0  # comfortably past bulk_interval=30 and _ALARM_POLL_INTERVAL
+
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 1:
+                raise KeyboardInterrupt
+
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health') as mock_stats,
+            patch('generate_nibe_mqtt.update_device_modes') as mock_modes,
+            patch('generate_nibe_mqtt.update_alarm_state') as mock_alarm,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
+
+        mock_stats.assert_called_once_with(em, pub)
+        mock_modes.assert_called_once_with(em, pub)
+        mock_alarm.assert_called_once_with(em, pub)
+
     def test_calls_update_all_states_exactly_once_per_tick_no_silent_errors(self):
         """last_update must be advanced to the real current_time after each
         successful cycle — not left stale/corrupted. A bug here (e.g.
@@ -3596,6 +4664,69 @@ class TestPollLoop(unittest.TestCase):
             self._run_loop_iterations(em, pub, iterations=3)
         self.assertEqual(em.update_all_states.call_count, 2)
         mock_log.error.assert_not_called()
+
+    def test_update_fires_at_exact_bulk_interval_boundary(self):
+        """current_time - last_update >= effective_outer must fire when the
+        elapsed time equals the interval EXACTLY (not just when it
+        exceeds it) — pins `>=` against `>` and against `+` in place of
+        `-`."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        def _fake_time():
+            return 30.0  # last_update starts at 0.0 — elapsed == bulk_interval exactly
+
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        em.update_all_states.assert_called_once()
+
+    def test_alarm_check_fires_at_exact_interval_boundary(self):
+        """current_time - last_alarm_check >= _ALARM_POLL_INTERVAL must
+        fire when elapsed equals the interval EXACTLY — pins `>=` against
+        `>` and against `+` in place of `-`, mirroring the bulk_interval
+        boundary test above for the alarm-check branch."""
+        from generate_nibe_mqtt import _ALARM_POLL_INTERVAL
+        em = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 999999  # keep the bulk-update branch from firing
+        em._post_write_interval = 5
+
+        def _fake_time():
+            return float(_ALARM_POLL_INTERVAL)  # last_alarm_check starts at 0.0
+
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_alarm_state') as mock_alarm,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_alarm.assert_called_once()
 
     def test_keyboard_interrupt_propagates(self):
         """_poll_loop must re-raise KeyboardInterrupt immediately."""
@@ -3778,6 +4909,11 @@ class TestPollLoop(unittest.TestCase):
         pub.publish_bridge_alert.assert_called()
         call_kwargs = pub.publish_bridge_alert.call_args.kwargs
         self.assertEqual(call_kwargs.get('alert_type'), 'main_loop_error')
+        self.assertEqual(call_kwargs.get('severity'), 'error')
+        self.assertIn('consecutive_errors', call_kwargs.get('context', {}))
+        self.assertIn('error', call_kwargs.get('context', {}))
+        self.assertEqual(call_kwargs['context']['error'], 'crash')
+        self.assertIn('crash', call_kwargs.get('message', ''))
 
     def test_deferred_discovery_runs_when_initial_discovery_incomplete(self):
         """When initial_discovery_complete=False and api_consecutive_failures=0,
@@ -3859,6 +4995,547 @@ class TestPollLoop(unittest.TestCase):
         self.assertTrue(error_calls,
                         "Memory logging error must be caught and logged")
 
+    def test_memory_log_boundary_and_initial_value_and_addition_mutant(self):
+        """Pins four mutants in one shot on the current_time - last_memory_log
+        >= 600 check:
+        - last_memory_log must initialize to 0.0, not 1.0 (mutant: initial=1.0)
+        - the comparison must be `>=`, not `>` (mutant: >600) or an off-by-one
+          `>= 601` (mutant: 601)
+        - the comparison must use subtraction, not addition (mutant: +)
+
+        Tick 1: current_time=600.0, last_memory_log starts at 0.0 (or 1.0 under
+        the init mutant) — 600-0=600>=600 fires for real code but 600-1=599
+        does not fire under the init mutant, and 600>600 is False under the
+        `>` mutant, and 600>=601 is False under the 601 mutant.
+        Tick 2: current_time=650.0, last_memory_log=600.0 (set after tick 1) —
+        650-600=50<600 does NOT fire for real code, but the addition mutant
+        (650+600=1250>=600) WOULD fire again. bulk_interval=1 keeps the outer
+        branch firing on both ticks regardless."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.get_memory_usage = MagicMock(return_value={})
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 1
+        em._post_write_interval = 5
+
+        times = [600.0, 650.0]
+        _time_idx = [0]
+        def _fake_time():
+            # Clamp to the last scheduled value instead of raising
+            # StopIteration: an incidental extra time.time() call (e.g.
+            # from a DEBUG-level log record's timestamp, if some other
+            # test left that logger's level elevated) must not blow up
+            # this test — order-dependent flake, fixed by tolerating it.
+            idx = min(_time_idx[0], len(times) - 1)
+            _time_idx[0] += 1
+            return times[idx]
+
+        tick = [0]
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        em.get_memory_usage.assert_called_once()
+
+    def test_error_counter_initializes_to_zero_not_one(self):
+        """_loop_consecutive_errors must initialize to 0, not 1 — the first
+        error's backoff (5 * _loop_consecutive_errors after incrementing)
+        must be exactly 5s, not 10s."""
+        from generate_nibe_mqtt import _poll_loop
+        em  = _make_em()
+        pub = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        em.update_all_states = MagicMock(side_effect=RuntimeError("boom"))
+
+        sleeps = []
+        def _fake_sleep(s):
+            sleeps.append(s)
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', return_value=100.0),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.log_startup'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
+
+        self.assertEqual(sleeps, [5])
+
+    def test_update_not_retriggered_before_bulk_interval_elapses(self):
+        """The bulk-update branch must compare with subtraction
+        (current_time - last_update), not addition — pins `+` in place of
+        `-`. Tick 1 sets last_update=100; tick 2 at current_time=110 with
+        bulk_interval=30 must NOT refire (110-100=10<30), but the addition
+        mutant (110+100=210>=30) would refire."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        times = [100.0, 110.0]
+        _time_idx = [0]
+        def _fake_time():
+            # Clamp to the last scheduled value instead of raising
+            # StopIteration: an incidental extra time.time() call (e.g.
+            # from a DEBUG-level log record's timestamp, if some other
+            # test left that logger's level elevated) must not blow up
+            # this test — order-dependent flake, fixed by tolerating it.
+            idx = min(_time_idx[0], len(times) - 1)
+            _time_idx[0] += 1
+            return times[idx]
+
+        tick = [0]
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        em.update_all_states.assert_called_once()
+
+    def test_periodic_update_debug_log_exact_message(self):
+        """log_entities.debug() must log the exact text 'Periodic state
+        update' — pins case, XX-wrap, and None-arg mutations of the log
+        call."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        def _fake_time():
+            return 100.0
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertLogs('nibe.entities', level='DEBUG') as cm,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        self.assertIn('DEBUG:nibe.entities:Periodic state update', cm.output)
+
+    def test_last_bulk_fetch_set_to_real_time_on_deferred_discovery(self):
+        """When complete_deferred_discovery() returns True, last_bulk_fetch
+        must be set to the real current time (time.time()), not None."""
+        from generate_nibe_mqtt import _poll_loop
+        em  = _make_em()
+        pub = MagicMock()
+        em.initial_discovery_complete = False
+        em.api_consecutive_failures   = 0
+        em.post_write_active         = False
+        em.bulk_interval              = 30
+        em._post_write_interval       = 5
+        em.complete_deferred_discovery = MagicMock(return_value=True)
+        em.update_all_states           = MagicMock()
+        em.last_bulk_fetch = None
+
+        def _fake_time():
+            return 555.0
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
+
+        self.assertEqual(em.last_bulk_fetch, 555.0)
+
+    def test_error_counter_resets_to_zero_after_clean_cycle(self):
+        """A clean cycle must reset _loop_consecutive_errors to 0 (not 1) —
+        confirmed by observing that the backoff after a SUBSEQUENT error is
+        5s (first-error backoff), not 10s (which would result if the
+        counter had been left at 1 after the clean cycle)."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        call_count = [0]
+        def _update(*a, **kw):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise RuntimeError("boom")
+        em.update_all_states = MagicMock(side_effect=_update)
+
+        times = [100.0, 200.0]
+        _time_idx = [0]
+        def _fake_time():
+            # Clamp to the last scheduled value instead of raising
+            # StopIteration: an incidental extra time.time() call (e.g.
+            # from a DEBUG-level log record's timestamp, if some other
+            # test left that logger's level elevated) must not blow up
+            # this test — order-dependent flake, fixed by tolerating it.
+            idx = min(_time_idx[0], len(times) - 1)
+            _time_idx[0] += 1
+            return times[idx]
+
+        sleeps = []
+        def _fake_sleep(s):
+            sleeps.append(s)
+            if len(sleeps) >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        # sleeps[0] is the normal time.sleep(1) after cycle 1 (clean),
+        # sleeps[1] is the backoff after cycle 2's error — must be 5, not 10.
+        self.assertEqual(sleeps, [1, 5])
+
+    def test_memory_log_call_uses_exact_stats_keys_and_message(self):
+        """log_startup.debug for the periodic memory-usage log must be
+        called with the exact format string and the exact keys pulled from
+        memory_stats, in the exact positions — pins swapped keys, swapped
+        positions, and text mutations across the whole call."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        em.get_memory_usage = MagicMock(return_value={
+            'total_points': 11,
+            'active_entities': 22,
+            'estimated_memory_mb': 3.5,
+            'value_cache_size': 44,
+            'last_states_size': 55,
+            'point_string_cache_size': 66,
+        })
+
+        def _fake_time():
+            return 600.0
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_log.debug.assert_called_once_with(
+            "Memory usage: %d points, %d active entities, ~%.2f MB "
+            "(cache sizes: value=%d, states=%d, strings=%d)",
+            11, 22, 3.5, 44, 55, 66,
+        )
+
+    def test_memory_log_call_defaults_to_zero_when_stats_missing(self):
+        """When memory_stats is missing keys, every field must default to
+        0 (not 1, None, or an omitted argument) — pins default-value
+        mutations that a dict WITH all keys present (the test above) cannot
+        catch, since a present key always overrides its .get() default."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        em.get_memory_usage = MagicMock(return_value={})
+
+        def _fake_time():
+            return 600.0
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_log.debug.assert_called_once_with(
+            "Memory usage: %d points, %d active entities, ~%.2f MB "
+            "(cache sizes: value=%d, states=%d, strings=%d)",
+            0, 0, 0, 0, 0, 0,
+        )
+
+    def test_memory_log_error_uses_exact_message_and_exception(self):
+        """The except-branch around memory logging must call
+        log_startup.error with the exact text and the actual exception
+        instance — pins text-case/None-arg/missing-arg mutations."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        boom = RuntimeError("oom")
+        em.get_memory_usage = MagicMock(side_effect=boom)
+
+        def _fake_time():
+            return 600.0
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_log.error.assert_called_once_with("Memory logging error: %s", boom)
+
+    def test_last_memory_log_advances_to_current_time(self):
+        """last_memory_log must be set to current_time after logging, not
+        None — verified by a second tick 1s later NOT raising: with the
+        None mutant, the next iteration's `current_time - last_memory_log`
+        raises TypeError, which is caught by the outer except and logged
+        via log_startup.exception (which must NOT happen for real code)."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.get_memory_usage = MagicMock(return_value={})
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 1
+        em._post_write_interval = 5
+
+        times = [600.0, 601.0]
+        _time_idx = [0]
+        def _fake_time():
+            # Clamp to the last scheduled value instead of raising
+            # StopIteration: an incidental extra time.time() call (e.g.
+            # from a DEBUG-level log record's timestamp, if some other
+            # test left that logger's level elevated) must not blow up
+            # this test — order-dependent flake, fixed by tolerating it.
+            idx = min(_time_idx[0], len(times) - 1)
+            _time_idx[0] += 1
+            return times[idx]
+
+        tick = [0]
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_log.exception.assert_not_called()
+
+    def test_alarm_check_not_retriggered_before_interval_elapses(self):
+        """The alarm-check branch must compare with subtraction
+        (current_time - last_alarm_check), not addition, against
+        _ALARM_POLL_INTERVAL."""
+        from generate_nibe_mqtt import _ALARM_POLL_INTERVAL
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 999999  # keep the bulk-update branch from firing
+        em._post_write_interval = 5
+
+        times = [float(_ALARM_POLL_INTERVAL), float(_ALARM_POLL_INTERVAL) + 1]
+        _time_idx = [0]
+        def _fake_time():
+            # Clamp to the last scheduled value instead of raising
+            # StopIteration: an incidental extra time.time() call (e.g.
+            # from a DEBUG-level log record's timestamp, if some other
+            # test left that logger's level elevated) must not blow up
+            # this test — order-dependent flake, fixed by tolerating it.
+            idx = min(_time_idx[0], len(times) - 1)
+            _time_idx[0] += 1
+            return times[idx]
+
+        tick = [0]
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_alarm_state') as mock_alarm,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_alarm.assert_called_once()
+
+    def test_sleep_duration_is_exactly_one_second_per_cycle(self):
+        """The per-cycle time.sleep() call at the end of a clean iteration
+        must sleep for exactly 1 second."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.update_all_states = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+
+        sleeps = []
+        def _fake_sleep(s):
+            sleeps.append(s)
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', return_value=100.0),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.update_stats_and_health'),
+            patch('generate_nibe_mqtt.update_device_modes'),
+            patch('generate_nibe_mqtt.update_alarm_state'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        self.assertEqual(sleeps, [1])
+
+    def test_unexpected_error_log_exact_message(self):
+        """log_startup.exception() for an unexpected loop error must use
+        the exact text 'Unexpected error in main loop (occurrence %d,
+        backing off %ds)' with the exact args — pins case/wording
+        mutations."""
+        em  = _make_em()
+        pub = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        em.update_all_states = MagicMock(side_effect=RuntimeError("boom"))
+
+        def _fake_sleep(_s):
+            raise KeyboardInterrupt
+
+        with (
+            patch('generate_nibe_mqtt.time.time', return_value=100.0),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            from generate_nibe_mqtt import _poll_loop
+            _poll_loop(em, pub, 'essential')
+
+        mock_log.exception.assert_called_once_with(
+            "Unexpected error in main loop (occurrence %d, backing off %ds)",
+            1, 5,
+        )
+
+    def test_alert_published_at_exactly_five_consecutive_errors(self):
+        """publish_bridge_alert must fire exactly when
+        _loop_consecutive_errors reaches 5 — pins the >=5 boundary against
+        >5 (which would require 6 errors) and against >=6."""
+        from generate_nibe_mqtt import _poll_loop
+        em  = _make_em()
+        pub = MagicMock()
+        em.initial_discovery_complete = True
+        em.post_write_active = False
+        em.bulk_interval = 30
+        em._post_write_interval = 5
+        em.update_all_states = MagicMock(side_effect=RuntimeError("crash"))
+
+        tick = [0]
+        def _fake_sleep(_s):
+            tick[0] += 1
+            if tick[0] >= 5:
+                raise KeyboardInterrupt
+
+        _t = [0.0]
+        def _fake_time():
+            _t[0] += 60.0
+            return _t[0]
+
+        with (
+            patch('generate_nibe_mqtt.time.time', side_effect=_fake_time),
+            patch('generate_nibe_mqtt.time.sleep', side_effect=_fake_sleep),
+            patch('generate_nibe_mqtt.log_startup'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _poll_loop(em, pub, 'essential')
+
+        pub.publish_bridge_alert.assert_called_once()
 
 
 class TestRunStartupSequence(unittest.TestCase):
@@ -3936,6 +5613,156 @@ class TestRunStartupSequence(unittest.TestCase):
         self.assertEqual(em.bulk_interval, 60)
         self.assertEqual(em.api_failure_threshold, 5)
         self.assertEqual(em.changelog_retention_days, 30)
+
+    def test_entity_manager_mode_switch_behavior_set_from_cfg(self):
+        cfg = self._cfg()
+        cfg.mode_switch_behavior = 'merge'
+        _, em, *_ = self._run(cfg=cfg)
+        self.assertEqual(em.mode_switch_behavior, 'merge')
+
+    def _run_capturing(self, cfg, patched_extra=None):
+        """Like _run() but also captures ManagementCommandHandler,
+        decide_startup_action, and _execute_startup_action call args for
+        inspection — the plain _run() only checks return values."""
+        from generate_nibe_mqtt import _run_startup_sequence
+        mc = MagicMock()
+        with patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())), \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler') as MockMgmtHandler, \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value={1, 2}), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply') as mock_decide, \
+             patch('generate_nibe_mqtt._execute_startup_action') as mock_execute, \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            em_instance = MockEM.return_value
+            em_instance.discover_points.return_value = True
+            em_instance.mqtt_enabled_points = {1, 2}
+            em_instance.all_points = []
+            em_instance.active_entities = []
+            em_instance.bulk_interval = 30
+            em_instance.read_applied_mode.return_value = 'essential'
+            MockPub.return_value.mqtt = MagicMock()
+            _run_startup_sequence(cfg, MagicMock(), mc, {}, 'nibe_test001', 'essential', MagicMock())
+        return MockMgmtHandler, mock_decide, mock_execute, mc, MockPub.return_value
+
+    def test_ca_cert_path_passed_when_file_exists(self):
+        """ManagementCommandHandler's ca_cert_path kwarg must be the real
+        nibe_ca_cert path when it's set AND exists on disk — not
+        hardcoded None."""
+        cfg = self._cfg()
+        cfg.nibe_ca_cert = '/ssl/nibe-ca.pem'
+        with patch('os.path.exists', return_value=True):
+            MockMgmtHandler, *_ = self._run_capturing(cfg)
+        self.assertEqual(
+            MockMgmtHandler.call_args.kwargs['ca_cert_path'], '/ssl/nibe-ca.pem',
+        )
+
+    def test_decide_startup_action_receives_real_args(self):
+        cfg = self._cfg()
+        _, mock_decide, mock_execute, *_ = self._run_capturing(cfg)
+        self.assertEqual(mock_decide.call_args.kwargs, {
+            'has_existing_entities': True,
+            'applied_mode': 'essential',
+            'config_mode': 'essential',
+        })
+        mock_execute.assert_called_once_with(
+            mock_execute.call_args.args[0], 'apply', 'essential', 'essential',
+            mock_execute.call_args.args[4], cfg.device_name,
+        )
+
+    def test_stats_state_published_with_retain_true(self):
+        cfg = self._cfg()
+        _, _, _, _mc, pub = self._run_capturing(cfg)
+        from generate_nibe_mqtt import MgmtTopic
+        stats_calls = [c for c in pub.mqtt.publish.call_args_list
+                       if c.args and c.args[0] == MgmtTopic.STATS_STATE]
+        self.assertEqual(len(stats_calls), 1)
+        self.assertEqual(stats_calls[0].args[1], '2')
+        self.assertTrue(stats_calls[0].kwargs.get('retain'))
+
+    def test_initial_stats_and_device_modes_receive_real_args(self):
+        """The final update_stats_and_health/update_device_modes calls at
+        the end of startup must receive the real (entity_manager,
+        publisher) pair — not None or a dropped argument."""
+        from generate_nibe_mqtt import _run_startup_sequence
+        cfg = self._cfg()
+        mc = MagicMock()
+        with patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())), \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler'), \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=set()), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action'), \
+             patch('generate_nibe_mqtt.update_stats_and_health') as mock_stats, \
+             patch('generate_nibe_mqtt.update_device_modes') as mock_modes, \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            em_instance = MockEM.return_value
+            em_instance.discover_points.return_value = True
+            em_instance.mqtt_enabled_points = set()
+            em_instance.all_points = []
+            em_instance.active_entities = []
+            em_instance.bulk_interval = 30
+            MockPub.return_value.mqtt = MagicMock()
+            _run_startup_sequence(cfg, MagicMock(), mc, {}, 'nibe_test001', 'essential', MagicMock())
+
+        mock_stats.assert_called_once_with(em_instance, MockPub.return_value)
+        mock_modes.assert_called_once_with(em_instance, MockPub.return_value)
+
+    def test_load_menu_structure_log_if_mode_true_only_in_menus_mode(self):
+        """log_if_mode must be True exactly when initial_mode == 'menus' —
+        not the inverse, and not merely truthy for any non-empty mode
+        string."""
+        from generate_nibe_mqtt import _run_startup_sequence
+        cfg = self._cfg()
+        mc = MagicMock()
+        with patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())) as mock_load, \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler'), \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=set()), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action'), \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.schedule_menu_dashboard_regen'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            em_instance = MockEM.return_value
+            em_instance.discover_points.return_value = True
+            em_instance.mqtt_enabled_points = set()
+            em_instance.all_points = []
+            em_instance.active_entities = []
+            em_instance.bulk_interval = 30
+            MockPub.return_value.mqtt = MagicMock()
+
+            _run_startup_sequence(cfg, MagicMock(), mc, {}, 'nibe_test001', 'essential', MagicMock())
+            self.assertIs(mock_load.call_args.kwargs['log_if_mode'], False)
+
+            _run_startup_sequence(cfg, MagicMock(), mc, {}, 'nibe_test001', 'menus', MagicMock())
+            self.assertIs(mock_load.call_args.kwargs['log_if_mode'], True)
 
     def test_notify_ha_called_when_discovery_fails(self):
         """When discover_points() returns False, notify_ha must be called."""
@@ -4509,6 +6336,361 @@ class TestRunStartupSequenceMenusMode(unittest.TestCase):
         mock_sched.assert_not_called()
 
 
+class TestRunStartupSequenceFullWiringGaps(unittest.TestCase):
+    """_run_startup_sequence: targeted coverage for mutmut survivors not
+    caught by TestRunStartupSequence — collaborator constructor kwargs,
+    attribute assignments, exact log/message text, executor sizing, and
+    the several downstream calls whose *argument values* (not just
+    call-count) were not previously pinned."""
+
+    def _cfg(self, **kw):
+        from generate_nibe_mqtt import BridgeConfig
+        cfg = BridgeConfig(
+            api_base_url='https://10.0.0.1:8443/api/v1/devices/0',
+            nibe_auth='Basic dXNlcjpwYXNz',
+            mqtt_broker='localhost',
+            mqtt_port=1883,
+            device_name='Test Device',
+            device_id='nibe_test001',
+            poll_interval=30,
+            api_failure_threshold=3,
+            changelog_retention_days=90,
+            mode='essential',
+        )
+        for k, v in kw.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    def _run_full(self, cfg=None, initial_mode='essential', response=None,
+                   discover_ok=True, mqtt_enabled_points=None):
+        """Runs _run_startup_sequence with everything patched, but returns
+        every mock so callers can inspect exact call arguments."""
+        from generate_nibe_mqtt import _run_startup_sequence
+        cfg = cfg or self._cfg()
+        response = response if response is not None else {}
+        mc = MagicMock()
+        mqtt_enabled_points = mqtt_enabled_points if mqtt_enabled_points is not None else set()
+
+        mocks = {}
+        # _run_startup_sequence does `MODES['menus'] = _load_menu_structure(...)`
+        # against the REAL, process-wide MODES dict (imported from
+        # nibe_entity_detection.py). With _load_menu_structure mocked to
+        # return a test fixture value below, that line would otherwise
+        # permanently corrupt the shared dict for every other test in the
+        # suite that runs afterward — order-dependent pollution caught by
+        # TestModesStructuralProperties in test_entity_detection.py.
+        # patch.dict saves and restores MODES's real contents automatically.
+        with patch.dict('generate_nibe_mqtt.MODES', {}, clear=False), \
+             patch('generate_nibe_mqtt._build_device_info', return_value={'model': 'S40'}) as mocks_bdi, \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({'p': 'm'}, {'menu1'})) as mock_load, \
+             patch('generate_nibe_mqtt.dismiss_ha') as mock_dismiss, \
+             patch('generate_nibe_mqtt.notify_ha') as mock_notify, \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher') as MockWatcher, \
+             patch('generate_nibe_mqtt.threading.Thread') as MockThread, \
+             patch('generate_nibe_mqtt.ManagementCommandHandler') as MockMgmt, \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=mqtt_enabled_points) as mock_scan, \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action') as mock_execute, \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.schedule_menu_dashboard_regen') as mock_sched, \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor') as MockExec, \
+             patch('generate_nibe_mqtt.time.sleep') as mock_sleep:
+
+            em_instance = MockEM.return_value
+            em_instance.discover_points.return_value = discover_ok
+            em_instance.mqtt_enabled_points = mqtt_enabled_points
+            em_instance.all_points          = []
+            em_instance.active_entities     = []
+            em_instance.bulk_interval       = 30
+            em_instance.read_applied_mode.return_value = 'essential'
+
+            pub_instance = MockPub.return_value
+            pub_instance.mqtt = MagicMock()
+
+            _run_startup_sequence(
+                cfg, MagicMock(), mc, response, 'nibe_test001',
+                initial_mode, MagicMock(),
+            )
+
+            # Captured inside the patch.dict scope, before MODES is restored
+            # to its real contents on exit — see the patch.dict comment above.
+            from generate_nibe_mqtt import MODES as _modes_snapshot_src
+            mocks['modes_menus'] = _modes_snapshot_src['menus']
+
+        mocks.update({
+            'MockPub': MockPub, 'MockEM': MockEM, 'mock_load': mock_load,
+            'mock_dismiss': mock_dismiss, 'mock_notify': mock_notify,
+            'MockWatcher': MockWatcher, 'MockThread': MockThread, 'MockMgmt': MockMgmt,
+            'mock_scan': mock_scan, 'mock_execute': mock_execute, 'mock_sched': mock_sched,
+            'MockExec': MockExec, 'mock_sleep': mock_sleep, 'mc': mc,
+            'em_instance': em_instance, 'pub_instance': pub_instance,
+            'mocks_bdi': mocks_bdi,
+        })
+        return mocks
+
+    # -- EntityManager / MqttDiscoveryPublisher constructor kwargs ---------
+
+    def test_entity_manager_constructed_with_publisher_notify_dismiss_kwargs(self):
+        m = self._run_full()
+        _, kwargs = m['MockEM'].call_args
+        self.assertIs(kwargs['publisher'], m['pub_instance'])
+        self.assertIs(kwargs['notify_fn'], m['mock_notify'])
+        self.assertIs(kwargs['dismiss_fn'], m['mock_dismiss'])
+
+    def test_publisher_constructed_with_device_info_kwarg(self):
+        m = self._run_full()
+        _, kwargs = m['MockPub'].call_args
+        self.assertEqual(kwargs['device_info'], {'model': 'S40'})
+
+    def test_entity_manager_device_info_attribute_set(self):
+        m = self._run_full()
+        self.assertEqual(m['em_instance'].device_info, {'model': 'S40'})
+
+    # -- menu structure loading ---------------------------------------------
+
+    def test_load_menu_structure_called_with_app_dir_positional(self):
+        import generate_nibe_mqtt as gn
+        m = self._run_full()
+        real_app_dir = os.path.dirname(gn.__file__)
+        self.assertEqual(m['mock_load'].call_args.args, (real_app_dir,))
+
+    def test_point_to_menu_map_and_modes_menus_assigned_from_load_result(self):
+        m = self._run_full()
+        self.assertEqual(m['em_instance'].point_to_menu_map, {'p': 'm'})
+        self.assertEqual(m['modes_menus'], {'menu1'})
+
+    # -- device-info debug log -----------------------------------------------
+
+    def test_device_info_debug_log_exact_message_and_args(self):
+        import generate_nibe_mqtt as gn
+        with self.assertLogs(gn.log_startup, level='DEBUG') as cm:
+            self._run_full()
+        joined = '\n'.join(cm.output)
+        self.assertIn('Device info: model=S40, serial=None, firmware=None', joined)
+
+    def test_device_info_debug_log_uses_real_serial_and_model_id_when_present(self):
+        """The sibling test above uses a device_info fixture missing
+        'serial_number'/'model_id' entirely, so .get() legitimately
+        returns None either way — it can't distinguish a hardcoded None,
+        a wrong/dropped key, or a case-mutated key from the real .get()
+        call, since all of them coincidentally produce the same 'None'
+        text against that fixture. A device_info with real, distinct
+        values for every field closes that gap."""
+        from generate_nibe_mqtt import BridgeConfig, _run_startup_sequence
+        cfg = BridgeConfig(
+            api_base_url='https://10.0.0.1:8443/api/v1/devices/0',
+            nibe_auth='Basic dXNlcjpwYXNz',
+            mqtt_broker='localhost',
+            mqtt_port=1883,
+            device_name='Test Device',
+            device_id='nibe_test001',
+            poll_interval=30,
+            api_failure_threshold=3,
+            changelog_retention_days=90,
+        )
+        rich_device_info = {
+            'model': 'S2125-12', 'serial_number': 'REALSERIAL42', 'model_id': 'REALMODELID7',
+        }
+        with patch('generate_nibe_mqtt._build_device_info', return_value=rich_device_info), \
+             patch('generate_nibe_mqtt.MqttDiscoveryPublisher') as MockPub, \
+             patch('generate_nibe_mqtt.EntityManager') as MockEM, \
+             patch('generate_nibe_mqtt._load_menu_structure', return_value=({}, frozenset())), \
+             patch('generate_nibe_mqtt.dismiss_ha'), \
+             patch('generate_nibe_mqtt.notify_ha'), \
+             patch('generate_nibe_mqtt.HAEntityRegistryWatcher'), \
+             patch('generate_nibe_mqtt.threading.Thread'), \
+             patch('generate_nibe_mqtt.ManagementCommandHandler'), \
+             patch('generate_nibe_mqtt._run_scan_with_retry', return_value=set()), \
+             patch('generate_nibe_mqtt.decide_startup_action', return_value='apply'), \
+             patch('generate_nibe_mqtt._execute_startup_action'), \
+             patch('generate_nibe_mqtt.update_stats_and_health'), \
+             patch('generate_nibe_mqtt.update_device_modes'), \
+             patch('generate_nibe_mqtt.remove_menu_dashboard'), \
+             patch('generate_nibe_mqtt.concurrent.futures.ThreadPoolExecutor'), \
+             patch('generate_nibe_mqtt.time.sleep'), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log:
+            em = MockEM.return_value
+            em.discover_points.return_value = True
+            em.mqtt_enabled_points = set()
+            em.all_points          = []
+            em.active_entities     = []
+            em.bulk_interval       = 30
+            MockPub.return_value.mqtt = MagicMock()
+            _run_startup_sequence(
+                cfg, MagicMock(), MagicMock(), {}, 'nibe_test001', 'essential', MagicMock(),
+            )
+        mock_log.debug.assert_called_once_with(
+            "Device info: model=%s, serial=%s, firmware=%s",
+            'S2125-12', 'REALSERIAL42', 'REALMODELID7',
+        )
+
+    # -- discovery-failure warning + notify_ha ------------------------------
+
+    def test_discovery_failure_warning_exact_text(self):
+        import generate_nibe_mqtt as gn
+        with self.assertLogs(gn.log_startup, level='WARNING') as cm:
+            self._run_full(discover_ok=False)
+        joined = '\n'.join(cm.output)
+        self.assertIn(
+            "Initial point discovery failed — device unreachable. "
+            "The bridge will keep retrying in the polling loop.",
+            joined,
+        )
+
+    def test_notify_ha_called_with_real_mqtt_client_and_exact_title(self):
+        m = self._run_full(discover_ok=False)
+        args, kwargs = m['mock_notify'].call_args
+        self.assertIs(args[0], m['mc'])
+        self.assertEqual(kwargs['title'], 'Nibe Bridge: Started Without Device')
+
+    def test_notify_ha_message_exact_text(self):
+        cfg = self._cfg()
+        m = self._run_full(cfg=cfg, discover_ok=False)
+        message = m['mock_notify'].call_args.kwargs['message']
+        expected = (
+            f"The {cfg.device_name} was unreachable at startup so no entities "
+            "could be loaded. The bridge is running and will restore all "
+            "entities automatically when the device comes back online. "
+            "For a detailed diagnostic (network, TLS, and credentials checked "
+            "independently), enable 'Debug mode' in the add-on configuration, "
+            "restart, and use the 'Test API Connection' button on the "
+            "Management device."
+        )
+        self.assertEqual(message, expected)
+
+    def test_sleep_called_with_one_second_on_discovery_failure(self):
+        m = self._run_full(discover_ok=False)
+        m['mock_sleep'].assert_called_once_with(1)
+
+    # -- management interface publishing -------------------------------------
+
+    def test_publish_management_discovery_exact_args(self):
+        m = self._run_full(initial_mode='menus')
+        m['pub_instance'].publish_management_discovery.assert_called_once_with(
+            'menus', debug_mode=False,
+        )
+
+    def test_publish_initial_device_modes_exact_arg(self):
+        response = {'some': 'device', 'response': True}
+        m = self._run_full(response=response)
+        m['pub_instance'].publish_initial_device_modes.assert_called_once_with(response)
+
+    # -- debug-mode RUN_TESTS_ATTRS payload -----------------------------------
+
+    def test_run_tests_attrs_payload_exact_and_retain_true(self):
+        cfg = self._cfg(debug_mode=True)
+        m = self._run_full(cfg=cfg)
+        from generate_nibe_mqtt import MgmtTopic
+        calls = [c for c in m['mc'].publish.call_args_list
+                 if c.args[0] == MgmtTopic.RUN_TESTS_ATTRS]
+        self.assertEqual(len(calls), 1)
+        payload = json.loads(calls[0].args[1])
+        self.assertEqual(payload, {
+            "status": "ready",
+            "summary": "No test run since last restart.",
+        })
+        self.assertTrue(calls[0].kwargs.get('retain'))
+
+    # -- executor sizing -------------------------------------------------------
+
+    def test_thread_pool_executors_sized_and_named_correctly(self):
+        m = self._run_full()
+        calls = m['MockExec'].call_args_list
+        self.assertEqual(len(calls), 2)
+        mgmt_kwargs = calls[0].kwargs
+        test_kwargs = calls[1].kwargs
+        self.assertEqual(mgmt_kwargs, {'max_workers': 2, 'thread_name_prefix': 'nibe_mgmt'})
+        self.assertEqual(test_kwargs, {'max_workers': 1, 'thread_name_prefix': 'nibe_test_runner'})
+
+    # -- ManagementCommandHandler wiring ---------------------------------------
+
+    def test_management_command_handler_positional_executors(self):
+        m = self._run_full()
+        args = m['MockMgmt'].call_args.args
+        mgmt_executor_arg, test_executor_arg = args[3], args[4]
+        # Both must be the same ThreadPoolExecutor mock instance (MockExec
+        # is a single class-level mock shared across both constructions).
+        self.assertIs(mgmt_executor_arg, m['MockExec'].return_value)
+        self.assertIs(test_executor_arg, m['MockExec'].return_value)
+
+    def test_ca_cert_path_none_when_file_does_not_exist(self):
+        cfg = self._cfg(nibe_ca_cert='/ssl/nibe-ca.pem')
+        with patch('os.path.exists', return_value=False) as mock_exists:
+            m = self._run_full(cfg=cfg)
+        mock_exists.assert_any_call('/ssl/nibe-ca.pem')
+        self.assertIsNone(m['MockMgmt'].call_args.kwargs['ca_cert_path'])
+
+    def test_mgmt_avail_topic_assigned(self):
+        m = self._run_full()
+        from generate_nibe_mqtt import MGMT_AVAIL_TOPIC
+        self.assertEqual(m['em_instance']._mgmt_avail_topic, MGMT_AVAIL_TOPIC)
+
+    # -- scan / decide / execute wiring -----------------------------------------
+
+    def test_run_scan_with_retry_called_with_entity_manager(self):
+        m = self._run_full()
+        m['mock_scan'].assert_called_once_with(m['em_instance'])
+
+    def test_execute_startup_action_called_with_real_entity_manager_and_mqtt_client(self):
+        """Regression: the pre-existing test compared call_args back to
+        itself (tautological) and would not catch entity_manager or
+        mqtt_client being replaced with None — assert against the actual
+        instances captured independently."""
+        cfg = self._cfg()
+        m = self._run_full(cfg=cfg, mqtt_enabled_points={1, 2})
+        m['mock_execute'].assert_called_once_with(
+            m['em_instance'], 'apply', 'essential', 'essential',
+            m['mc'], cfg.device_name,
+        )
+
+    # -- Lovelace thread + menu dashboard scheduling -----------------------------
+
+    def test_lovelace_thread_name_kwarg(self):
+        m = self._run_full()
+        _, kwargs = m['MockThread'].call_args
+        self.assertEqual(kwargs['name'], 'nibe_lovelace_setup')
+
+    def test_schedule_menu_dashboard_regen_exact_args(self):
+        m = self._run_full(initial_mode='menus')
+        m['mock_sched'].assert_called_once_with(
+            m['em_instance'], m['MockWatcher'].return_value, False,
+            lovelace_thread=m['MockThread'].return_value,
+        )
+
+    # -- final "Bridge ready" log ------------------------------------------------
+
+    def test_bridge_ready_log_exact_format_string(self):
+        import generate_nibe_mqtt as gn
+        with self.assertLogs(gn.log_startup, level='INFO') as cm:
+            self._run_full()
+        joined = '\n'.join(cm.output)
+        self.assertIn('Bridge ready —', joined)
+        self.assertIn('points,', joined)
+        self.assertIn('enabled,', joined)
+        self.assertIn('active | poll=', joined)
+        self.assertIn('alarm=', joined)
+
+    def test_bridge_ready_log_call_has_the_exact_format_string(self):
+        """The sibling test's piecewise assertIn checks all still match an
+        XX-wrapped mutant, since every substring they check is still
+        present inside 'XX...XX' — the mocked call's own args[0] is the
+        only way to pin the exact, unwrapped format string."""
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self._run_full()
+        info_call = next(
+            c for c in mock_log.info.call_args_list
+            if c.args and c.args[0].startswith('Bridge ready')
+        )
+        self.assertEqual(
+            info_call.args[0],
+            "Bridge ready — %d points, %d enabled, %d active | poll=%ds alarm=%ds",
+        )
+
+
 class TestPollLoopAlertPublishException(unittest.TestCase):
     """When publish_bridge_alert itself raises after ≥5 consecutive errors,
     the inner 'except Exception: pass' (lines 1188–1189) must suppress it
@@ -4625,6 +6807,39 @@ class TestShutdownExecutorTimeout(unittest.TestCase):
         # Non-increasing: each subsequent join must not get a fresh full budget.
         self.assertEqual(join_timeouts, sorted(join_timeouts, reverse=True))
 
+    def test_shutdown_deadline_is_now_plus_timeout_not_minus(self):
+        """shutdown_deadline must be time.monotonic() + _SHUTDOWN_TIMEOUT —
+        a `-` in place of `+` would put the deadline in the past, making
+        every executor join's `remaining` budget collapse to 0 instead of
+        the real shutdown budget."""
+        from generate_nibe_mqtt import _SHUTDOWN_TIMEOUT, _shutdown
+        em = _make_em()
+        mc = MagicMock()
+        join_timeouts = []
+
+        class FakeThread:
+            def __init__(self, target=None, kwargs=None):
+                pass
+            def start(self):
+                pass
+            def join(self, timeout=None):
+                join_timeouts.append(timeout)
+            def is_alive(self):
+                return False
+
+        with patch('generate_nibe_mqtt.threading.Thread', FakeThread), \
+             patch('generate_nibe_mqtt.teardown_lovelace'), \
+             patch.dict('os.environ', {}, clear=False), \
+             patch('generate_nibe_mqtt.log_startup'):
+            os.environ.pop('NIBE_REMOVE_FRONTEND', None)
+            _shutdown(em, MagicMock(), mc, MagicMock(), MagicMock(), MagicMock(),
+                      [False], MagicMock())
+
+        # With a correctly-future deadline, the first join gets nearly the
+        # full budget (well above half of it) — a past deadline would
+        # instead floor every join at 0.0.
+        self.assertGreater(join_timeouts[0], _SHUTDOWN_TIMEOUT / 2)
+
 
 # ===========================================================================
 # Branch coverage: targeted gaps from --cov-branch audit
@@ -4652,6 +6867,428 @@ class TestLoadMenuStructureLogIfModeFalse(unittest.TestCase):
     def test_log_if_mode_false_does_not_raise(self):
         from generate_nibe_mqtt import _load_menu_structure
         _load_menu_structure(_APP_DIR, log_if_mode=False)   # must not raise
+
+
+class TestBuildInfrastructureExactLogsAndArgs(unittest.TestCase):
+    """_build_infrastructure: exact log text and exact constructor/call args
+    for the credential-check, TLS, MQTT-client-construction, and
+    connecting-log statements — the existing classes only assert on
+    control flow (sys.exit paths), not on the literal text/args."""
+
+    def _cfg(self, **kw):
+        from generate_nibe_mqtt import BridgeConfig
+        cfg = BridgeConfig(
+            api_base_url='https://10.0.0.1:8443/api/v1/devices/0',
+            nibe_auth='Basic dXNlcjpwYXNz',
+            mqtt_broker='localhost',
+            mqtt_port=1883,
+            device_name='Test Device',
+            device_id='nibe_test',
+            poll_interval=30,
+        )
+        for k, v in kw.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    def _run_infra(self, cfg, mock_mc=None):
+        from generate_nibe_mqtt import _build_infrastructure
+        mock_mc = mock_mc or MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc) as mock_client_cls, \
+             patch('generate_nibe_mqtt.time.sleep'):
+            _build_infrastructure(cfg)
+            return mock_client_cls, mock_mc
+
+    def test_missing_credentials_logs_exact_three_lines(self):
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg(nibe_auth=None)
+        with patch('generate_nibe_mqtt.log_api') as mock_log, self.assertRaises(SystemExit):
+            _build_infrastructure(cfg)
+        calls = [c.args[0] for c in mock_log.error.call_args_list]
+        self.assertEqual(calls, [
+            "Could not find Nibe API credentials in any source.",
+            "  Add-on: set nibe_username + nibe_password in the add-on options UI",
+            "  secrets.yaml: add  nibe_basic_auth: <base64token>",
+        ])
+
+    def test_ssl_context_built_from_real_cfg_ca_cert(self):
+        """_build_ssl_context must receive the real cfg.nibe_ca_cert — not
+        None or a dropped arg."""
+        import ssl
+
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg(nibe_ca_cert='/data/ca.pem')
+        with patch('generate_nibe_mqtt._build_ssl_context',
+                   side_effect=ssl.SSLError('boom')) as mock_ssl, \
+             self.assertRaises(SystemExit):
+            _build_infrastructure(cfg)
+        mock_ssl.assert_called_once_with('/data/ca.pem')
+
+    def test_ssl_error_logs_exact_text_and_real_exception(self):
+        import ssl
+
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg()
+        real_err = ssl.SSLError('bad CA cert')
+        with patch('generate_nibe_mqtt._build_ssl_context', side_effect=real_err), \
+             patch('generate_nibe_mqtt.log_startup') as mock_log, \
+             self.assertRaises(SystemExit):
+            _build_infrastructure(cfg)
+        mock_log.error.assert_called_once_with(
+            "Could not build TLS context for the Nibe API connection: %s", real_err
+        )
+
+    def test_bridge_version_log_has_exact_text_and_real_value(self):
+        from generate_nibe_mqtt import BRIDGE_VERSION
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self._run_infra(self._cfg())
+        mock_log.info.assert_any_call("Bridge version: %s", BRIDGE_VERSION)
+
+    def test_config_log_has_exact_text_and_real_field_values(self):
+        cfg = self._cfg(api_base_url='https://real-host/api', mqtt_broker='real-broker',
+                         mqtt_port=1884, device_name='Real Device')
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self._run_infra(cfg)
+        mock_log.info.assert_any_call(
+            "Config: API=%s  MQTT=%s:%d  device='%s'",
+            'https://real-host/api', 'real-broker', 1884, 'Real Device',
+        )
+
+    def test_api_auth_error_log_has_exact_text_and_real_exception(self):
+        from generate_nibe_mqtt import _ApiAuthError, _build_infrastructure
+        cfg = self._cfg()
+        real_err = _ApiAuthError(401)
+        with (
+            patch('generate_nibe_mqtt._fetch_api_response', side_effect=real_err),
+            patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()),
+            patch('generate_nibe_mqtt.NibeApiClient'),
+            patch('generate_nibe_mqtt.copy_card_file'),
+            patch('generate_nibe_mqtt.log_startup') as mock_log,
+            self.assertRaises(SystemExit),
+        ):
+            _build_infrastructure(cfg)
+        mock_log.error.assert_called_once_with(
+            "Nibe API authentication failed (HTTP %s) — check credentials.", real_err
+        )
+
+    def test_mqtt_client_id_derived_from_real_device_id_not_none(self):
+        """mqtt_client_id must come from _build_mqtt_client_id(device_id) —
+        not None or a dropped call. device_id feeds the client_id kwarg on
+        mqtt.Client(); with device_id='nibe_test' the real derived id must
+        be non-None and within MQTT 3.1's 23-char client-id limit."""
+        mock_client_cls, _mc = self._run_infra(self._cfg(device_id='nibe_test'))
+        client_id = mock_client_cls.call_args.kwargs.get('client_id')
+        self.assertIsNotNone(client_id)
+        self.assertLessEqual(len(client_id), 23)
+
+    def test_connecting_log_has_exact_text(self):
+        with patch('generate_nibe_mqtt.log_startup') as mock_log:
+            self._run_infra(self._cfg())
+        mock_log.info.assert_any_call("Connecting to MQTT broker...")
+
+    def test_mqtt_client_constructed_with_real_callback_api_version(self):
+        import paho.mqtt.client as mqtt
+        mock_client_cls, _mc = self._run_infra(self._cfg())
+        self.assertEqual(
+            mock_client_cls.call_args.args[0], mqtt.CallbackAPIVersion.VERSION2
+        )
+
+    def test_mqtt_client_constructed_with_real_client_id_kwarg(self):
+        mock_client_cls, _mc = self._run_infra(self._cfg())
+        self.assertIn('client_id', mock_client_cls.call_args.kwargs)
+        self.assertIsNotNone(mock_client_cls.call_args.kwargs['client_id'])
+
+    def test_no_credentials_warning_has_exact_text(self):
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            self._run_infra(self._cfg(mqtt_username=None, mqtt_password=None))
+        mock_log.warning.assert_called_once_with(
+            "MQTT broker connected without credentials — ensure broker ACLs "
+            "restrict write access to nibe/ and homeassistant/ topics. "
+            "Set mqtt_username and mqtt_password in the add-on options."
+        )
+
+    def test_configure_mqtt_tls_called_with_the_real_client(self):
+        cfg = self._cfg()
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt._configure_mqtt_tls') as mock_tls, \
+             patch('generate_nibe_mqtt.time.sleep'):
+            from generate_nibe_mqtt import _build_infrastructure
+            _build_infrastructure(cfg)
+        mock_tls.assert_called_once_with(mock_mc, cfg)
+
+    def _fire_on_connect(self, cfg, rc, mock_mc=None):
+        """Build infra, capture the real on_connect callback, then fire it
+        with the given reason_code — returns the mocked log_mqtt."""
+        _mock_client_cls, mc = self._run_infra(cfg, mock_mc)
+        on_connect = mc.on_connect
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            on_connect(mc, None, None, rc, None)
+        return mock_log
+
+    def test_on_connect_success_log_has_exact_text_and_real_broker_port_keepalive(self):
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884, poll_interval=30)
+        import types
+        rc = types.SimpleNamespace(value=0)
+        mock_log = self._fire_on_connect(cfg, rc)
+        from generate_nibe_mqtt import _keepalive_from_config
+        mock_log.info.assert_called_once_with(
+            "MQTT connected to %s:%d (keepalive %ds)",
+            'real-broker', 1884, _keepalive_from_config(30),
+        )
+
+    def test_on_connect_fatal_rc_logs_exact_text_and_real_broker_port_rc(self):
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        import types
+        rc = types.SimpleNamespace(value=4)
+        mock_log = self._fire_on_connect(cfg, rc)
+        mock_log.error.assert_called_once_with(
+            "MQTT broker %s:%d refused the connection (reason %d) — "
+            "check mqtt_username and mqtt_password in the add-on options.",
+            'real-broker', 1884, 4,
+        )
+
+    def test_on_connect_other_failure_logs_exact_text_and_real_args(self):
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        import types
+        rc = types.SimpleNamespace(value=3)
+        mock_log = self._fire_on_connect(cfg, rc)
+        mock_log.error.assert_called_once_with(
+            "MQTT connection to %s:%d failed: %s", 'real-broker', 1884, rc,
+        )
+
+    def test_reason_code_without_value_attr_falls_back_to_int(self):
+        """A plain int reason_code (no .value attribute) must hit the
+        int(reason_code) fallback, not crash or silently misread rc_value.
+        A MagicMock can't test this branch — it auto-vivifies any attribute
+        name, so hasattr(mock, 'anything') is always True."""
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_connect(cfg, 4)  # bare int, in _FATAL_RC
+        mock_log.error.assert_called_once_with(
+            "MQTT broker %s:%d refused the connection (reason %d) — "
+            "check mqtt_username and mqtt_password in the add-on options.",
+            'real-broker', 1884, 4,
+        )
+
+    def test_on_connect_generic_failure_log_has_exact_text_and_real_args(self):
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        import types
+        rc = types.SimpleNamespace(value=3)  # not in _FATAL_RC, not 0
+        mock_log = self._fire_on_connect(cfg, rc)
+        mock_log.error.assert_called_once_with(
+            "MQTT connection to %s:%d failed: %s", 'real-broker', 1884, rc,
+        )
+
+    def _fire_on_disconnect(self, cfg, rc, shutting_down_flag=False, mock_mc=None):
+        from generate_nibe_mqtt import _build_infrastructure
+        mock_mc = mock_mc or MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'):
+            _, mc, _, _, shutting_down, _set_em = _build_infrastructure(cfg)
+        shutting_down[0] = shutting_down_flag
+        on_disconnect = mc.on_disconnect
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            on_disconnect(mc, None, None, rc, None)
+        return mock_log
+
+    def test_on_disconnect_reason_code_without_value_attr_falls_back_to_int(self):
+        """Same hasattr/int() fallback logic as on_connect, duplicated in
+        on_disconnect — must be independently pinned."""
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, 0)  # bare int
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "clean disconnect or connection lost",
+        )
+
+    def test_on_disconnect_label_0_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=0))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "clean disconnect or connection lost",
+        )
+
+    def test_on_disconnect_label_1_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=1))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — wrong protocol version",
+        )
+
+    def test_on_disconnect_label_2_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=2))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — client ID rejected",
+        )
+
+    def test_on_disconnect_label_3_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=3))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — broker unavailable",
+        )
+
+    def test_on_disconnect_label_4_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=4))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — wrong credentials",
+        )
+
+    def test_on_disconnect_label_5_exact_text(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=5))
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — not authorised",
+        )
+
+    def test_on_disconnect_unknown_label_uses_str_reason_code_not_none(self):
+        """label must fall back to str(reason_code) for an unmapped rc —
+        not None (which would print 'None' and hide the real reason)."""
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        rc = types.SimpleNamespace(value=42)
+        mock_log = self._fire_on_disconnect(cfg, rc)
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, str(rc),
+        )
+
+    def test_on_disconnect_get_uses_rc_value_as_real_lookup_key(self):
+        """_DISCONNECT_LABELS.get(rc_value, ...) must key off the real
+        rc_value, not None — an unmapped key (None) would always miss and
+        silently fall back to str(reason_code) even for a known rc."""
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        rc = types.SimpleNamespace(value=1)  # a KNOWN key
+        mock_log = self._fire_on_disconnect(cfg, rc)
+        # Must be the mapped label, not str(rc) (which .get(None, ...) would produce)
+        mock_log.warning.assert_called_once_with(
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+            'real-broker', 1884, "connection refused — wrong protocol version",
+        )
+
+    def test_on_disconnect_default_is_real_str_reason_code_not_none(self):
+        """The .get() default must be str(reason_code), not None — an
+        unmapped rc must show the real reason_code text, not 'None'.
+        types.SimpleNamespace can't override __str__ via an instance
+        attribute (dunder lookups go through the type, not the instance),
+        so a tiny real class is used instead."""
+        class _Rc:
+            value = 99
+            def __str__(self):
+                return 'distinctive-rc-99'
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, _Rc())
+        self.assertEqual(
+            mock_log.warning.call_args.args[3], 'distinctive-rc-99',
+        )
+
+    def test_disconnect_warning_has_exact_text_and_real_broker_port(self):
+        import types
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_log = self._fire_on_disconnect(cfg, types.SimpleNamespace(value=0))
+        self.assertEqual(
+            mock_log.warning.call_args.args[0],
+            "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
+        )
+        self.assertEqual(mock_log.warning.call_args.args[1], 'real-broker')
+        self.assertEqual(mock_log.warning.call_args.args[2], 1884)
+
+    def test_loop_start_followed_by_exactly_two_second_sleep(self):
+        cfg = self._cfg()
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep') as mock_sleep:
+            from generate_nibe_mqtt import _build_infrastructure
+            _build_infrastructure(cfg)
+        mock_sleep.assert_called_once_with(2)
+
+    def test_not_yet_connected_log_has_exact_text(self):
+        """_run_infra always forces is_connected=True, so this test builds
+        the mock and calls _build_infrastructure directly instead."""
+        from generate_nibe_mqtt import _build_infrastructure
+        cfg = self._cfg()
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = False
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.time.sleep'), \
+             patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            _build_infrastructure(cfg)
+        mock_log.info.assert_any_call(
+            "MQTT not yet connected after 2s — broker may be slow, continuing"
+        )
+
+    def test_connection_verified_log_has_exact_text(self):
+        cfg = self._cfg()
+        mock_mc = MagicMock()
+        mock_mc.is_connected.return_value = True
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            self._run_infra(cfg, mock_mc)
+        mock_log.info.assert_any_call("MQTT client connection verified")
+
+    def test_availability_precleared_log_has_exact_text(self):
+        with patch('generate_nibe_mqtt.log_mqtt') as mock_log:
+            self._run_infra(self._cfg())
+        mock_log.info.assert_any_call("Availability topic pre-cleared to 'online'")
+
+    def test_mqtt_connect_exception_logs_exact_text_and_real_args(self):
+        cfg = self._cfg(mqtt_broker='real-broker', mqtt_port=1884)
+        mock_mc = MagicMock()
+        real_err = OSError('connection refused')
+        mock_mc.connect.side_effect = real_err
+        with patch('generate_nibe_mqtt._fetch_api_response', return_value={}), \
+             patch('generate_nibe_mqtt._build_ssl_context', return_value=MagicMock()), \
+             patch('generate_nibe_mqtt.NibeApiClient'), \
+             patch('generate_nibe_mqtt.copy_card_file'), \
+             patch('generate_nibe_mqtt.mqtt.Client', return_value=mock_mc), \
+             patch('generate_nibe_mqtt.log_mqtt') as mock_log, \
+             self.assertRaises(SystemExit):
+            from generate_nibe_mqtt import _build_infrastructure
+            _build_infrastructure(cfg)
+        mock_log.error.assert_called_once_with(
+            "Cannot connect to MQTT broker at %s:%d — %s. "
+            "Check that the broker is running and that 'mqtt_host' and 'mqtt_port' "
+            "are correctly set in the add-on configuration. "
+            "If using the Mosquitto add-on, the default host is 'core-mosquitto'.",
+            'real-broker', 1884, real_err,
+        )
 
 
 class TestBuildInfrastructureOnConnectEmptyEm(unittest.TestCase):
@@ -4880,6 +7517,7 @@ class TestConfigTranslationsParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import pathlib
+
         import yaml as _yaml
         repo_root = pathlib.Path(__file__).resolve().parent.parent
         with open(repo_root / 'config.yaml') as f:

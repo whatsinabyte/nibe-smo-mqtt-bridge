@@ -481,6 +481,52 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, 1, '', self._metadata())
         self.assertEqual(em.last_states[224], '1')
 
+    def test_should_publish_is_called_with_the_real_point_id_not_a_shared_key(self):
+        """value_cache.should_publish(point_id, ...) must be called with
+        THIS entity's own point_id — if all points shared one cache key
+        (e.g. a mutation to None), two unrelated points would corrupt each
+        other's suppression state.
+
+        A naive two-point test doesn't catch this: any point's *first ever*
+        call always publishes regardless of should_publish's result, via
+        the separate `point_id not in self.last_states` OR-fallback in the
+        caller — so the mutation hides behind that fallback on a fresh
+        point_id. The corruption only becomes observable on a *repeated*,
+        unchanged call for a point whose value happens to have been
+        clobbered, under the shared key, by a different point's call in
+        between:
+          1. B publishes 50 (its own first call — always succeeds either way).
+          2. A publishes 999. Under a shared cache key this overwrites what
+             was cached for B's key too.
+          3. B publishes 50 again (same value, no time has passed). Correctly
+             suppressed by the real per-point cache (nothing changed for B).
+             But if the cache is shared, the value now on file under B's
+             key is A's 999, not B's own last 50 — so the mutant sees a
+             949-unit 'change' that never happened and republishes."""
+        em = _make_em()
+        info_a = self._entity_info(point_id=301, entity_type='sensor')
+        info_b = self._entity_info(point_id=302, entity_type='sensor')
+        meta = self._metadata(divisor=1, change=1)
+
+        # Each call must be >= min_interval (self.bulk_interval, 30s) apart —
+        # otherwise ValueCache.should_publish's own time-gate suppresses the
+        # call before it ever reaches the value-diff check, regardless of
+        # which cache key it used, masking the mutation just as thoroughly
+        # as the near-simultaneous-calls version of this test did.
+        with patch('nibe_caching.time.time') as mock_time:
+            mock_time.return_value = 1_000_000.0
+            em._process_and_publish_state(info_b, 50, '', meta)
+            mock_time.return_value = 1_000_100.0
+            em._process_and_publish_state(info_a, 999, '', meta)
+            mock_time.return_value = 1_000_200.0
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info_b, 50, '', meta)
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == 'nibe/state/302']
+        self.assertEqual(state_calls, [],
+            "Unchanged value for point 302 must not republish its state — "
+            "a shared/wrong cache key would make this look like a change")
+
 
 class TestProcessAndPublishStateProperties(unittest.TestCase):
     """Hypothesis property tests for _process_and_publish_state.
@@ -789,6 +835,30 @@ class TestUpdateEntityStateNoValueMappingsDivisorPath(unittest.TestCase):
         self.assertTrue(state_calls)
         self.assertEqual(state_calls[0].args[1], '25')
 
+    def test_divisor_key_absent_defaults_to_one(self):
+        """metadata entirely missing 'divisor' must default to 1 (raw value
+        unscaled) — a wrong default (e.g. 2) would silently halve every
+        number/sensor state value for firmware that omits the field."""
+        em = _make_em()
+        entity_info = {
+            'point_id': 201, 'entity_type': 'number',
+            'availability_topic': 'nibe/avail/201',
+            'state_topic': 'nibe/state/201',
+            'command_topic': None,
+            'point_data': {},
+        }
+        em.bulk_data[201] = {
+            'raw_value': 250, 'string_value': '', 'is_ok': True,
+            'metadata': {'variableSize': 's16'},
+            'title': 'Test',
+        }
+        with self._active_entity(em, entity_info):
+            em._update_entity_state(entity_info)
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == 'nibe/state/201']
+        self.assertTrue(state_calls)
+        self.assertEqual(state_calls[0].args[1], '250')
+
     def _active_entity(self, em, entity_info):
         from contextlib import contextmanager
         @contextmanager
@@ -801,6 +871,50 @@ class TestUpdateEntityStateNoValueMappingsDivisorPath(unittest.TestCase):
                 em.active_entities_by_id.pop(entity_info['point_id'], None)
                 em.mqtt_enabled_points.discard(entity_info['point_id'])
         return ctx()
+
+
+class TestUpdateEntityStateMissingStateTopicWarningDedup(unittest.TestCase):
+    """A point with no state_topic must warn once (not on every poll) —
+    dedup tracked via self._missing_state_topic_warned."""
+
+    def _entity_info(self, point_id):
+        return {
+            'point_id': point_id, 'entity_type': 'sensor',
+            'availability_topic': f'nibe/avail/{point_id}',
+            'state_topic': None,  # deliberately missing
+            'command_topic': None,
+            'point_data': {},
+        }
+
+    def _bulk(self, point_id):
+        return {
+            'raw_value': 5, 'string_value': '', 'is_ok': True,
+            'metadata': {'variableSize': 's16', 'divisor': 1},
+            'title': 'Test',
+        }
+
+    def test_first_occurrence_warns_and_is_recorded(self):
+        em = _make_em()
+        point_id = 500
+        entity_info = self._entity_info(point_id)
+        em.bulk_data[point_id] = self._bulk(point_id)
+        with self.assertLogs('nibe.entities', level='WARNING') as cm:
+            em.active_entities_by_id[point_id] = entity_info
+            em.mqtt_enabled_points.add(point_id)
+            em._update_entity_state(entity_info)
+        self.assertTrue(any('no state_topic' in m for m in cm.output))
+        self.assertIn(point_id, em._missing_state_topic_warned)
+
+    def test_second_occurrence_does_not_re_warn(self):
+        em = _make_em()
+        point_id = 501
+        entity_info = self._entity_info(point_id)
+        em.bulk_data[point_id] = self._bulk(point_id)
+        em.active_entities_by_id[point_id] = entity_info
+        em.mqtt_enabled_points.add(point_id)
+        em._update_entity_state(entity_info)  # first call: warns
+        with self.assertNoLogs('nibe.entities', level='WARNING'):
+            em._update_entity_state(entity_info)  # second call: must not re-warn
 
 
 class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
@@ -819,7 +933,56 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         }
         with patch.object(em, 'disable_entity') as mock_disable:
             em._update_entity_state(entity_info)
-        mock_disable.assert_called_once_with(point_id)
+        mock_disable.assert_called_once_with(point_id, remove_from_wanted=False)
+
+    def test_absent_point_is_discarded_from_baseline_point_ids(self):
+        """A point that disappears outside a post-write scan must be removed
+        from baseline_point_ids — otherwise, if it was ever indexed as a
+        static point (e.g. it first appeared before its real controlling
+        switch/select was learned), it would permanently fail the
+        `point_id not in self.baseline_point_ids` appearance-detection guard
+        in _fetch_bulk_data and could never be routed through the dynamic-
+        learning path again, even after a correct HA-driven write to its
+        controlling point re-opens a scan window."""
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        em.mqtt_enabled_points.add(point_id)
+        em.baseline_point_ids.add(point_id)
+        entity_info = {
+            'point_id': point_id,
+            'entity_type': 'sensor',
+            'availability_topic': 'nibe/avail/9999',
+            'state_topic': 'nibe/state/9999',
+        }
+        with patch.object(em, 'disable_entity'):
+            em._update_entity_state(entity_info)
+        self.assertNotIn(point_id, em.baseline_point_ids)
+
+    def test_absent_point_stays_wanted_and_reappears_on_next_fetch(self):
+        """Regression test for GitHub issue #21: a user-enabled point that
+        disappears from bulk data outside a post-write scan (e.g. flipped by
+        the controller itself, not tracked as a dynamic child) must stay in
+        _wanted_points across the automatic disable, then be re-enabled the
+        moment it reappears in a later bulk fetch."""
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        em.mqtt_enabled_points.add(point_id)
+        em._wanted_points.add(point_id)
+        entity_info = {
+            'point_id': point_id,
+            'entity_type': 'sensor',
+            'availability_topic': 'nibe/avail/9999',
+            'state_topic': 'nibe/state/9999',
+        }
+        em._update_entity_state(entity_info)
+        self.assertIn(point_id, em._wanted_points)
+        self.assertNotIn(point_id, em.mqtt_enabled_points)
+
+        with patch.object(em, '_enable_entity_locked', return_value=True) as mock_enable:
+            em._reconcile_wanted_points({point_id})
+        mock_enable.assert_called_once_with(point_id)
 
 
 class TestUpdateEntityStateValueMappingSelfHealing(unittest.TestCase):
@@ -872,6 +1035,107 @@ class TestUpdateEntityStateValueMappingSelfHealing(unittest.TestCase):
                        if c.args[0] == 'nibe/state/3745']
         self.assertTrue(state_calls)
         self.assertEqual(state_calls[0].args[1], 'Nederlands')
+
+    def test_select_uses_real_point_data_not_default_for_description_mapping(self):
+        """When no manual mapping exists for the point, get_value_mapping()
+        must fall back to parsing entity_info['point_data']['description']
+        — using the empty-dict .get() default instead of the real point_data
+        would silently lose the description and the enum label."""
+        em = _make_em()
+        point_id = 77771  # not in the manual mapping table
+        entity_info = {
+            'point_id': point_id, 'entity_type': 'select',
+            'availability_topic': f'nibe/avail/{point_id}',
+            'state_topic': f'nibe/state/{point_id}',
+            'command_topic': f'nibe/cmd/{point_id}',
+            'point_data': {'description': '0 = Off, 1 = Auto'},
+        }
+        em.bulk_data[point_id] = {
+            'raw_value': 1, 'string_value': '', 'is_ok': True,
+            'metadata': {
+                'variableSize': 'u8', 'divisor': 1, 'decimal': 0, 'unit': '',
+                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+                'modbusRegisterID': point_id, 'isWritable': True,
+                'minValue': 0, 'maxValue': 1,
+            },
+            'title': 'Test select',
+        }
+        with self._active_entity(em, entity_info):
+            em._update_entity_state(entity_info)
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == f'nibe/state/{point_id}']
+        self.assertTrue(state_calls)
+        self.assertEqual(state_calls[0].args[1], 'Auto')
+
+    def test_sensor_uses_real_point_data_not_default_for_description_mapping(self):
+        """Same guarantee as the select case, for the 'sensor' entity_type
+        branch's own get_value_mapping() call and value_mapping cache
+        write-back."""
+        em = _make_em()
+        point_id = 77772  # not in the manual mapping table
+        entity_info = {
+            'point_id': point_id, 'entity_type': 'sensor',
+            'availability_topic': f'nibe/avail/{point_id}',
+            'state_topic': f'nibe/state/{point_id}',
+            'command_topic': None,
+            'point_data': {'description': '0 = Off, 1 = Auto'},
+        }
+        em.bulk_data[point_id] = {
+            'raw_value': 1, 'string_value': '', 'is_ok': True,
+            'metadata': {
+                'variableSize': 'u8', 'divisor': 1, 'decimal': 0, 'unit': '',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'modbusRegisterID': point_id, 'isWritable': False,
+                'minValue': 0, 'maxValue': 1,
+            },
+            'title': 'Test sensor',
+        }
+        self.assertNotIn('value_mapping', entity_info)
+        with self._active_entity(em, entity_info):
+            em._update_entity_state(entity_info)
+        self.assertIn('value_mapping', entity_info)
+        self.assertEqual(entity_info['value_mapping'], {0: 'Off', 1: 'Auto'})
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == f'nibe/state/{point_id}']
+        self.assertTrue(state_calls)
+        self.assertEqual(state_calls[0].args[1], 'Auto')
+
+    def test_sensor_uses_the_real_point_id_for_the_manual_mapping_lookup(self):
+        """The 'sensor' branch's get_value_mapping(point_id, ...) call must
+        use this entity's own point_id — a mutation to that argument (e.g.
+        None) would make _lookup_manual_mapping miss point 1762's real
+        manual VALUE_MAPPINGS entry, silently falling back to
+        parse_description_mapping instead. The existing 'sensor' coverage
+        (test_sensor_uses_real_point_data_not_default_for_description_
+        mapping) deliberately uses a point_id NOT in the manual table, so a
+        None point_id there misses the manual lookup exactly the same way
+        the real point_id does — it can't distinguish this mutation. Point
+        1762 IS in VALUE_MAPPINGS['input'], mirroring how the 'select'
+        branch's equivalent test above (point 3745) is structured."""
+        em = _make_em()
+        entity_info = {
+            'point_id': 1762, 'entity_type': 'sensor',
+            'availability_topic': 'nibe/avail/1762',
+            'state_topic': 'nibe/state/1762',
+            'point_data': {},
+        }
+        em.bulk_data[1762] = {
+            'raw_value': 20, 'string_value': '', 'is_ok': True,
+            'metadata': {
+                'variableSize': 'u8', 'divisor': 1, 'decimal': 0, 'unit': '',
+                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+                'modbusRegisterID': 1762, 'isWritable': False,
+                'minValue': 0, 'maxValue': 30,
+            },
+            'title': 'Test sensor',
+        }
+        with self._active_entity(em, entity_info):
+            em._update_entity_state(entity_info)
+        self.assertEqual(entity_info.get('value_mapping'), {10: 'Off', 20: 'Opening', 30: 'Closing'})
+        state_calls = [c for c in em.mqtt.publish.call_args_list
+                       if c.args[0] == 'nibe/state/1762']
+        self.assertTrue(state_calls)
+        self.assertEqual(state_calls[0].args[1], 'Opening')
 
     def test_select_no_mapping_falls_through_to_raw_str(self):
         """select where get_value_mapping() returns None falls through to

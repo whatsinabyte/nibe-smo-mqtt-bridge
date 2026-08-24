@@ -289,6 +289,10 @@ class DynamicPointMap:
             all_vals: set[int] = set(range(min_val, max_val + 1))
             if not all_vals:
                 all_vals = {0, 1}
+            # processed_values/is_controlling/firmware_removed here are
+            # explicitly passed but identical to DynamicPointEntry's own
+            # field defaults (set(), None, False respectively) — dropping
+            # any of them entirely is unobservable.
             entry = DynamicPointEntry(
                 point_id           = point_id,
                 title              = point.get('display_title', f'Point {point_id}'),
@@ -367,9 +371,11 @@ class DynamicPointMap:
         """
         entry = self._table.get(point_id)
         if entry is None:
+            # pragma: no mutate start
             log.warning(
                 "DynamicPointMap.record_outcome: point %d not in table", point_id
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
             return
 
         entry.processed_values.add(value)
@@ -378,10 +384,12 @@ class DynamicPointMap:
 
         if new_point_ids:
             entry.is_controlling = True
+            # pragma: no mutate start
             log.debug(
                 "DynamicPointMap: recorded %d dynamic point(s) for controlling point %d (%s) value=%d",
                 len(new_point_ids), point_id, entry.title, value,
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
         else:
             # Non-controlling for this value — update is_controlling only
             # when the point is now fully processed and no value was controlling.
@@ -392,10 +400,12 @@ class DynamicPointMap:
                 )
                 if all_empty:
                     entry.is_controlling = False
+            # pragma: no mutate start
             log.debug(
                 "DynamicPointMap: value %d for point %d (%s) produced no dynamic points",
                 value, point_id, entry.title,
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
 
         # For switches (exactly 2 values), the inverse value is implied:
         # the dynamic points present when value=A are absent when value=B
@@ -409,11 +419,13 @@ class DynamicPointMap:
                 entry.processed_values.add(inverse_value)
                 entry.unprocessed_values.discard(inverse_value)
                 entry.dynamic_points_by_value[inverse_value] = []
+                # pragma: no mutate start
                 log.debug(
                     "Learning: %s (point %d) value=%d inferred as inverse "
                     "(no dynamic points — 2-value switch)",
                     entry.title, point_id, inverse_value,
-                )  # pragma: no mutate
+                )
+                # pragma: no mutate end
             # Update is_controlling now that all values are processed
             if entry.is_controlling is None:
                 entry.is_controlling = False
@@ -486,9 +498,11 @@ class DynamicPointMap:
                     # entry_dict isn't a dict (e.g. a bare string/int/list
                     # from malformed JSON), so .get()/.items() don't exist.
                     # One malformed entry must not abort the rest of the table.
+                    # pragma: no mutate start
                     log.warning(
                         "DynamicPointMap: could not deserialise entry %s: %s", pid_str, e
-                    )  # pragma: no mutate
+                    )
+                    # pragma: no mutate end
             log.debug("DynamicPointMap: loaded %d entries from JSON", loaded)  # pragma: no mutate
             return loaded
         except json.JSONDecodeError as e:

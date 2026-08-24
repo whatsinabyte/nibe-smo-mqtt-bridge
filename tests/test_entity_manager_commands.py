@@ -264,8 +264,29 @@ class TestParseCommandPayload(unittest.TestCase):
         self.assertEqual(len(self.em._parse_command_payload(exact, self._ei('text'), "t")),
                          _TEXT_REGISTER_MAX_LEN)
 
+    def test_text_exact_max_does_not_fire_truncation_warning(self):
+        """A payload at exactly the max length must take the 'no truncation
+        needed' path (len(sanitised) > MAX, not >=) — an off-by-one boundary
+        here would wrongly log a truncation warning for a payload that was
+        never actually shortened."""
+        from nibe_entity_manager import _TEXT_REGISTER_MAX_LEN
+        exact = "A" * _TEXT_REGISTER_MAX_LEN
+        with self.assertNoLogs('nibe.commands', level='WARNING'):
+            self.em._parse_command_payload(exact, self._ei('text'), "t")
+
     def test_text_empty(self):
         self.assertEqual(self.em._parse_command_payload("", self._ei('text'), "t"), "")
+
+    def test_text_sanitised_differs_from_payload_logs_debug(self):
+        """The sanitisation debug log must fire exactly when the payload was
+        actually changed (`sanitised != payload`, not `==`)."""
+        with self.assertLogs('nibe.commands', level='DEBUG') as cm:
+            self.em._parse_command_payload("He\x00llo", self._ei('text'), "t")
+        self.assertTrue(any('sanitised' in m for m in cm.output))
+
+    def test_text_sanitised_equals_payload_does_not_log_debug(self):
+        with self.assertNoLogs('nibe.commands', level='DEBUG'):
+            self.em._parse_command_payload("Hello", self._ei('text'), "t")
 
     # time
     def test_time_hhmmss_to_seconds(self):
@@ -678,6 +699,32 @@ class TestHandleCommand(unittest.TestCase):
             info, 1, 'ON', mock_worker.call_args[0][3],
         )
 
+    def test_unexpected_exception_in_handle_command_is_caught_and_logged(self):
+        """An unexpected exception anywhere in the try block (e.g. a
+        missing 'point_id' key on a malformed entity_info) must be caught
+        and logged — not propagate and crash the MQTT callback thread."""
+        em = _make_em()
+        msg = self._message(b'ON')
+        broken_info = {'entity_type': 'switch'}  # no 'point_id' key -> KeyError
+        with self.assertLogs('nibe.commands', level='ERROR') as cm:
+            em._handle_command(broken_info, msg)  # must not raise
+        self.assertTrue(any(
+            'Unhandled exception handling command' in msg for msg in cm.output
+        ))
+
+    def test_submit_write_worker_exception_is_caught_and_logged(self):
+        """_submit_write's own wrapped closure must catch and log an
+        exception raised by the worker function it submits — otherwise a
+        bug in the write handler fails invisibly (nothing awaits the
+        executor Future's result)."""
+        em = _make_em()
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
+        with self.assertLogs('nibe.commands', level='ERROR') as cm:
+            em._submit_write(lambda: (_ for _ in ()).throw(RuntimeError('boom')))
+        self.assertTrue(any(
+            'Unhandled exception in write command handler' in msg for msg in cm.output
+        ))
+
     def test_submitted_cmd_id_matches_the_generated_correlation_token(self):
         """The cmd_id forwarded to the write executor must be the *same*
         correlation token that was generated for this command (and stored in
@@ -836,6 +883,20 @@ class TestHandleCommandWorkerFailurePath(unittest.TestCase):
         self.assertIn('Permit heating', msg)
         self.assertIn("'ON'", msg)
         self.assertIn('point 100', msg)
+
+    def test_notification_falls_back_to_point_id_when_display_title_absent(self):
+        """entity_info missing 'display_title' entirely must fall back to
+        f'point {point_id}' in the failure notification — not None/blank."""
+        em = _make_em()
+        em._api.write_point.return_value = False
+        em._api.fetch_point.return_value = None
+        entity_info = {
+            'point_id': 101, 'entity_type': 'switch',
+            'state_topic': 'nibe/state/101',
+        }
+        em._handle_command_worker(entity_info, 1, 'ON', 'cmd1')
+        msg = em._notify.call_args.kwargs['message']
+        self.assertIn("to point 101 (point 101)", msg)
 
     def test_repeated_failure_does_not_re_notify(self):
         """The edge-trigger guard: once a write-failure notification is
@@ -1230,6 +1291,18 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
             'metadata': metadata,
         }
 
+    def test_switch_optimistic_state_is_1_or_0_not_str_of_value(self):
+        """For 'switch' entities, state_value must be the literal string
+        '1' (truthy value) — not str(value) (e.g. 'True'), which HA's
+        switch entity would not recognize as an on-state. A mutation to
+        the 'switch' string comparison (e.g. case-flip or XX-wrapping)
+        would make this fall through to the generic str(value) branch."""
+        em = _make_em()
+        em._api.write_point.return_value = True
+        info = self._entity_info(406, 'switch')
+        em._handle_command_worker(info, True, '1', 'cmd-id')
+        em.mqtt.publish.assert_any_call('nibe/state/406', '1', retain=True)
+
     def test_select_optimistic_state_uses_the_raw_payload(self):
         """For select/number entities, the optimistic state must be the raw
         MQTT payload string, not None or the numeric 'value'."""
@@ -1238,6 +1311,17 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         info = self._entity_info(400, 'select')
         em._handle_command_worker(info, 3, 'Heating', 'cmd-id')
         em.mqtt.publish.assert_any_call('nibe/state/400', 'Heating', retain=True)
+
+    def test_number_optimistic_state_uses_the_raw_payload(self):
+        """For 'number' entities the optimistic state must be the raw MQTT
+        payload string, not str(value) — a mutation excluding 'number' from
+        this branch would fall through to str(value), which can genuinely
+        differ from the payload (e.g. trailing-zero formatting)."""
+        em = _make_em()
+        em._api.write_point.return_value = True
+        info = self._entity_info(405, 'number')
+        em._handle_command_worker(info, 23.5, '23.50', 'cmd-id')
+        em.mqtt.publish.assert_any_call('nibe/state/405', '23.50', retain=True)
 
     def test_else_branch_optimistic_state_is_str_of_value(self):
         """For entity types outside switch/time/select/number (e.g. a plain
@@ -1314,9 +1398,18 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         firmware_removed must open the post-write scan window with the
         correct point_id — a mutation flipping `not entry.firmware_removed`
         to `entry.firmware_removed` would route this case (firmware_removed
-        =False) into the fallthrough 'else' branch instead, which still
-        opens a scan but via different code (and would attempt learning
-        detection lookups this branch is specifically meant to skip)."""
+        =False) into the fallthrough Case A3/B 'else' branch instead.
+
+        The original version of this test asserted only mock_scan.assert_
+        called_once_with(410) and mock_detect.assert_not_called() — but
+        Case A3/B ALSO calls _open_post_write_scan(point_id) unconditionally
+        and, with unprocessed_values=set() as configured here, ALSO never
+        calls _run_learning_detection (int_value can't be "in" an empty
+        set). So both assertions passed identically whether Case A2 or the
+        mutant's Case A3/B fallthrough actually ran — the two branches were
+        never actually distinguished. Case A2 and Case A3/B log different,
+        specific debug messages; asserting on that message is what actually
+        proves which branch fired."""
         from nibe_dynamic_map import DynamicPointEntry
         em = _make_em()
         em._api.write_point.return_value = True
@@ -1327,10 +1420,15 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         )
         info = self._entity_info(410, 'switch')
         with patch.object(em, '_open_post_write_scan') as mock_scan, \
-             patch.object(em, '_run_learning_detection') as mock_detect:
+             patch.object(em, '_run_learning_detection') as mock_detect, \
+             self.assertLogs('nibe.commands', level='DEBUG') as cm:
             em._handle_command_worker(info, 1, '1', 'cmd-id')
         mock_scan.assert_called_once_with(410)
         mock_detect.assert_not_called()
+        joined = '\n'.join(cm.output)
+        self.assertIn('fully-processed controlling', joined,
+            "Case A2's specific log message must fire — its absence means "
+            "the Case A3/B fallthrough ran instead")
 
     def test_learning_detection_started_when_written_value_is_unprocessed(self):
         """When the point has a DynamicPointMap entry whose unprocessed_values
@@ -1633,3 +1731,23 @@ class TestCardCommandToRealApiWriteFullChain(unittest.TestCase):
         with patch('urllib.request.urlopen') as mock_urlopen:
             em._handle_command(entity_info, self._message('999'))
         mock_urlopen.assert_not_called()
+
+
+class TestRunLearningDetectionActivatesPostWriteScan(unittest.TestCase):
+    """_run_learning_detection must actually activate post-write scan mode
+    before entering its wait loop — the loop itself is made to exit
+    immediately by having the mocked time.sleep() add a point to bulk_data,
+    triggering the 'size changed' early-exit on the first iteration."""
+
+    def test_post_write_active_set_true_before_loop(self):
+        em = _make_em()
+        point_id = 700
+        em.bulk_data = {point_id: {'raw_value': 1}}
+
+        def fake_sleep(_seconds):
+            # Simulate the bulk fetch picking up a new dynamic point.
+            em.bulk_data[999999] = {'raw_value': 0}
+
+        with patch('time.sleep', side_effect=fake_sleep):
+            em._run_learning_detection(point_id, 1, 'cmd1')
+        self.assertIs(em.post_write_active, True)

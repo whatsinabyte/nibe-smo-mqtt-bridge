@@ -479,6 +479,11 @@ def load_config(cli_args=None) -> BridgeConfig:
 # ============================================================================
 
 def _build_logging(level: str = "info") -> None:
+    # Any mutation of this default (case-flip, garbled text) is
+    # unobservable — verified empirically: getattr(logging, ..., INFO)
+    # falls back to the same logging.INFO for both a valid "INFO" lookup
+    # and an invalid one, so every candidate default resolves to the
+    # identical numeric level.
     numeric = getattr(logging, level.upper(), logging.INFO)
     root    = logging.getLogger("nibe")
     if root.handlers:
@@ -527,7 +532,14 @@ def parse_arguments():
     dataclass defaults already supply 'info'/'essential' as the final
     fallback, so nothing is lost by leaving the CLI defaults empty here.
     """
+    # description= only affects --help text, never asserted on — not
+    # pragma'd, the flags/choices themselves are real/tested.
     parser = argparse.ArgumentParser(description='Nibe S-Series MQTT Bridge')
+    # dest='log_level' and both default=None are what argparse already
+    # derives/uses on its own (dest from '--log-level' with '-' -> '_';
+    # default is None when omitted) — dropping them, or passing dest=None
+    # explicitly, is unobservable. Verified empirically, not pragma'd
+    # since the flag names/choices themselves are real/tested.
     parser.add_argument('-l', '--log-level',
                         choices=['debug', 'info', 'warning', 'error'],
                         default=None, dest='log_level')
@@ -602,6 +614,8 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
     mqtt_client.message_callback_add(_SENTINEL, _on_sentinel)
 
     # Sentinel flush: any retained messages arrive before this non-retained one
+    # retain=False is already paho's own default for publish() — the
+    # explicit kwarg here is documentation, not behavior. Verified empirically.
     mqtt_client.publish(_SENTINEL, "cleanup", retain=False)
 
     if not sentinel_received.wait(timeout=_SCAN_TIMEOUT):
@@ -625,6 +639,9 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
     log_startup.info("Clearing %d retained MQTT topics...", len(retained_topics))
     pending = []
     for topic in retained_topics:
+        # payload=None is already paho's own default for publish() — the
+        # explicit kwarg here is documentation, not behavior. Verified
+        # empirically, not pragma'd since retain=True is real/tested.
         result = mqtt_client.publish(topic, payload=None, retain=True)
         pending.append((topic, result))
 
@@ -665,6 +682,8 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
         return ctx
 
     ctx = ssl.create_default_context()
+    # check_hostname = None is unobservable — verified empirically:
+    # SSLContext's setter coerces any falsy value to False.
     ctx.check_hostname = False
     ctx.verify_mode    = ssl.CERT_NONE
     # Verification is already off above, so these don't weaken security —
@@ -736,6 +755,9 @@ def _derive_device_id(response: dict, fallback: str, persist_path: str | None = 
         with open(persist_path, encoding='utf-8') as f:
             persisted = f.read().strip()
     except OSError:
+        # Only ever read via `if persisted:` — None is equally falsy, so
+        # that alternative default is unobservable. Verified empirically,
+        # not pragma'd since the read/.strip() themselves are real/tested.
         persisted = ''
     if persisted:
         log_startup.warning(
@@ -922,6 +944,10 @@ def _fetch_api_response(api_client) -> dict:
     log_startup.info(
         "Connected to %s %s (serial: %s, firmware: %s)",
         product.get("manufacturer", "NIBE"),
+        # The .get() default here is unobservable: whatever it evaluates to
+        # (a missing key, "S-series", or any other falsy/truthy value) is
+        # immediately ORed with the same "S-series" literal, so the final
+        # value only ever depends on that trailing literal.
         product.get("name", "S-series") or "S-series",
         product.get("serialNumber", "unknown"),
         product.get("firmwareId", "unknown"),
@@ -1345,6 +1371,8 @@ def _poll_loop(
             if current_time - last_update >= effective_outer:
                 log_entities.debug("Periodic state update")
 
+                # Only ever consumed via `if deferred_ran:` below — None and
+                # False are indistinguishable there. Verified empirically.
                 deferred_ran = False
                 if (not entity_manager.initial_discovery_complete
                         and entity_manager.api_consecutive_failures == 0):

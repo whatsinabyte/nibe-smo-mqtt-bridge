@@ -148,6 +148,9 @@ class LRUCache:
                 self._cache.pop(key)
             elif len(self._cache) >= self.max_size:
                 # Remove least recently used item
+                # last=None behaves identically to last=False (OrderedDict
+                # checks truthiness) — not pragma'd, last=True on this same
+                # line evicts from the wrong end and is real/tested.
                 self._cache.popitem(last=False)
 
             self._cache[key] = value

@@ -32,7 +32,7 @@ On a typical installation the bridge creates 900–1,200 entities. A representat
 | Mode switches | Smart Mode (Normal/Away), Aid Mode, holiday function |
 | Alarms | Active alarm count and detail — updated every 10 seconds |
 
-Accessories connected to the controller's internal bus appear automatically — zone modules, ventilation units, PV sensors, room sensors, pool heating, solar thermal, and more. See [Compatible Hardware](DOCS.md#compatible-hardware) and [Supported Accessories](DOCS.md#supported-accessories) for the full list.
+Accessories connected to the controller's internal bus appear automatically — zone modules, ventilation units, PV sensors, room sensors, pool heating, solar thermal, and more. See [Compatible Hardware](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md#compatible-hardware) and [Supported Accessories](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md#supported-accessories) for the full list.
 
 ## Features
 
@@ -49,7 +49,7 @@ Accessories connected to the controller's internal bus appear automatically — 
 
 ## Compatible hardware
 
-Works with any Nibe S-series controller running **minimum firmware 4.5.7** with the local REST API enabled (Menu 7.5.15). Full compatibility table in [Documentation](DOCS.md#compatible-hardware).
+Works with any Nibe S-series controller running **minimum firmware 4.5.7** with the local REST API enabled (Menu 7.5.15). Full compatibility table in [Documentation](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md#compatible-hardware).
 
 **Not supported:** older Nibe controllers (SMO 20, SMO 40) and all F-series indoor units (VVM 225, VVM 310/320/325/500). Those systems use an ebus architecture with no REST API.
 
@@ -68,7 +68,7 @@ Works with any Nibe S-series controller running **minimum firmware 4.5.7** with 
 4. Configure the app with your controller's IP address and API credentials
 5. Start the app
 
-On first start the bridge automatically copies the companion card to `/config/www/`, registers it as a Lovelace resource, and creates the **Nibe Bridge** dashboard. Full installation instructions are in the [Documentation](DOCS.md) tab.
+On first start the bridge automatically copies the companion card to `/config/www/`, registers it as a Lovelace resource, and creates the **Nibe Bridge** dashboard. Full installation instructions are in the [Documentation](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md) tab.
 
 ## Good to know before installing
 
@@ -79,8 +79,8 @@ On first start the bridge automatically copies the companion card to `/config/ww
 
 ## Links
 
-- [Documentation](DOCS.md)
-- [Security policy](SECURITY.md)
+- [Documentation](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md)
+- [Security policy](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/SECURITY.md)
 
 ## Developer documentation
 

@@ -1622,7 +1622,7 @@ menus:
         point_id: 4796
         tip: How strongly electricity price influences cooling.
       - label: Affect hot water
-        range: off/on
+        range: Small / Medium / Large / Medium / Mini
         point_id: 3281
         note: 'Currently read-only on this installation (min=max=0 in firmware) — per the manual, this only becomes active
           when hot water demand mode is set to "Smart control" in menu 2.2. With Smart control off, SPA cannot shift hot water

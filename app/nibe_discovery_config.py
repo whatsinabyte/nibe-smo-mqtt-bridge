@@ -65,12 +65,14 @@ def build_number_config(
 
     min_val     = metadata.get('minValue')
     max_val     = metadata.get('maxValue')
+    # `or 1` masks any falsy divisor default (None/0/dropped) — only a
+    # truthy-but-wrong default is observable.
     divisor     = metadata.get('divisor', 1) or 1
     cached      = bulk_data.get(point_id, {})
     current_raw = cached.get('raw_value')
 
     if min_val is not None and max_val is not None:
-        unit_str = f" {unit}" if unit else ""
+        unit_str = f" {unit}" if unit else ""  # pragma: no mutate — only used in the pragma'd warning log below
 
         if min_val == max_val:
             # Degenerate range: firmware reports min==max for this register.
@@ -80,11 +82,13 @@ def build_number_config(
             # range enforcement, which is correct: we cannot know the valid
             # range so we pass the value through and let the controller decide.
             if point_id not in range_warnings_issued:
+                # pragma: no mutate start
                 log_entities.warning(
                     "Point %d (%s): degenerate range %g–%g (min==max) "
                     "— write-side range checks bypassed.",
                     point_id, title, min_val, max_val,
-                )  # pragma: no mutate
+                )
+                # pragma: no mutate end
                 range_warnings_issued.add(point_id)
             if current_raw is not None:
                 anchor       = current_raw / divisor
@@ -102,13 +106,15 @@ def build_number_config(
             if (current_raw is not None
                     and point_id not in range_warnings_issued
                     and (current_raw < min_val or current_raw > max_val)):
+                # pragma: no mutate start
                 log_entities.warning(
                     "Point %d (%s): current value %g%s outside firmware range "
                     "%g–%g%s — writes restricted to firmware range.",
                     point_id, title,
                     current_raw / divisor, unit_str,
                     min_val / divisor, max_val / divisor, unit_str,
-                )  # pragma: no mutate
+                )
+                # pragma: no mutate end
                 range_warnings_issued.add(point_id)
     if unit:
         config["unit_of_measurement"] = unit
@@ -142,6 +148,11 @@ def build_binary_sensor_config(config: dict, state_topic: str, title: str) -> No
     config["state_topic"] = state_topic
     config["payload_on"]  = "ON"
     config["payload_off"] = "OFF"
+    # map_device_class always returns None when entity_type == "binary_sensor"
+    # (dedicated early-return branch), and any mutation of this call's
+    # arguments — including entity_type itself, since a mismatched value
+    # falls into the *other* early "not in (...)" return-None branch instead
+    # — still yields None. Unobservable regardless of unit/title.
     device_class = map_device_class("binary_sensor", "", title)
     if device_class:
         config["device_class"] = device_class
@@ -184,6 +195,12 @@ def build_sensor_config(
     if device_class in _ACCUMULATING_CLASSES and not is_instant:
         config["device_class"] = device_class
         config["state_class"]  = "total_increasing"
+    # `and`->`or` here is unobservable: is_instant requires unit == "kWh"
+    # and point_id not in DEVICE_CLASS_OVERRIDES, and "kWh" always maps to
+    # device_class "energy" (an accumulating class) via map_device_class's
+    # unit lookup when not overridden — so is_instant == True always
+    # implies device_class is already in _ACCUMULATING_CLASSES, making the
+    # two operators equivalent on every reachable input.
     elif device_class in _ACCUMULATING_CLASSES and is_instant:
         config["state_class"] = "measurement"
     elif device_class:

@@ -5,6 +5,9 @@ import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 
+from hypothesis import example, given
+from hypothesis import strategies as st
+
 
 class TestRunPing(unittest.TestCase):
     def test_success_returncode_0(self):
@@ -52,6 +55,85 @@ class TestRunPing(unittest.TestCase):
             _run_ping('192.0.2.9', count=5, timeout=3)
         cmd = mock_run.call_args.args[0]
         self.assertEqual(cmd, ['ping', '-c', '5', '-W', '3', '192.0.2.9'])
+
+    def test_default_count_and_timeout(self):
+        """Pins the default count=3/timeout=5 signature — a mutant that
+        changes either default would silently alter both the ping command
+        and the subprocess timeout for every caller that doesn't override
+        them."""
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_run:
+            _run_ping('192.0.2.9')
+        self.assertEqual(mock_run.call_args.args[0], ['ping', '-c', '3', '-W', '5', '192.0.2.9'])
+        self.assertEqual(mock_run.call_args.kwargs['timeout'], 20)
+
+    def test_subprocess_run_invoked_with_exact_kwargs(self):
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_run:
+            _run_ping('192.0.2.9', count=5, timeout=3)
+        self.assertEqual(mock_run.call_args.kwargs, {
+            'capture_output': True,
+            'text': True,
+            'timeout': 20,
+            'check': False,
+        })
+
+    def test_ping_not_installed_exact_dict(self):
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run', side_effect=FileNotFoundError):
+            result = _run_ping('192.0.2.1')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': 'ping is not installed in this container.',
+        })
+
+    def test_ping_timeout_expired_exact_dict(self):
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run',
+                   side_effect=subprocess.TimeoutExpired(cmd='ping', timeout=20)):
+            result = _run_ping('192.0.2.1')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': 'ping did not exit within the expected time.',
+        })
+
+    def test_other_returncode_with_no_detail_ends_in_bare_period(self):
+        """When ping produces no stderr/stdout detail on an unexpected
+        return code, the summary must end in a bare '.' — not silently
+        drop the period."""
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run', return_value=MagicMock(returncode=2, stdout='', stderr='')):
+            result = _run_ping('not-a-host')
+        self.assertEqual(result['summary'], 'Could not ping not-a-host.')
+
+
+class TestRunPingProperties(unittest.TestCase):
+    """Hypothesis properties for _run_ping: the cmd construction and the
+    subprocess timeout budget must hold for any count/timeout, not just
+    the specific values the example-based tests happen to use."""
+
+    @given(count=st.integers(min_value=1, max_value=20),
+           timeout=st.integers(min_value=1, max_value=60))
+    @example(count=5, timeout=3)   # the exact values test_uses_count_and_host_in_command pins
+    @example(count=3, timeout=5)   # the real default values
+    def test_cmd_reflects_real_count_and_timeout(self, count, timeout):
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run',
+                   return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_run:
+            _run_ping('192.0.2.9', count=count, timeout=timeout)
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd, ['ping', '-c', str(count), '-W', str(timeout), '192.0.2.9'])
+
+    @given(count=st.integers(min_value=1, max_value=20),
+           timeout=st.integers(min_value=1, max_value=60))
+    @example(count=5, timeout=3)
+    @example(count=3, timeout=5)
+    def test_subprocess_timeout_is_timeout_times_count_plus_five(self, count, timeout):
+        from nibe_connectivity_check import _run_ping
+        with patch('subprocess.run',
+                   return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_run:
+            _run_ping('192.0.2.9', count=count, timeout=timeout)
+        self.assertEqual(mock_run.call_args.kwargs['timeout'], timeout * count + 5)
 
 
 class TestRunCurl(unittest.TestCase):
@@ -101,6 +183,43 @@ class TestRunCurl(unittest.TestCase):
         self.assertIn('--cacert', cmd)
         self.assertIn('/ssl/nibe-ca.pem', cmd)
         self.assertNotIn('-k', cmd)
+
+    def test_exact_cmd_no_ca_no_auth(self):
+        """Pin the full curl command line for the no-CA, no-auth path — a
+        mistyped flag (-w vs -W, -o vs -O), constant (HTTP_CODE:%{http_code}
+        vs a mistyped variant), or a `cmd = [...]` overwrite instead of
+        `cmd += [...]` in the CA branch could all slip past `assertIn`
+        checks elsewhere in this file."""
+        from nibe_utils import TLS_COMPAT_CIPHERS
+
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, timeout=10)
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd, [
+            'curl', '-sS', '--max-time', '10', '-o', '/dev/null',
+            '-w', 'HTTP_CODE:%{http_code}',
+            '-k', '--tlsv1.0', '--ciphers', TLS_COMPAT_CIPHERS,
+            'https://192.0.2.1:8443/api/v1/devices/0/points',
+        ])
+
+    def test_exact_cmd_with_ca_and_auth(self):
+        """Pin the full curl command line for the CA-verified, authenticated
+        path — the `cmd += ['--cacert', ...]` line must extend the base
+        command, not replace it (a `cmd = [...]` mutation would silently
+        drop 'curl' itself and every prior flag)."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem',
+                      auth_header='Basic dGVzdA==', timeout=10)
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd, [
+            'curl', '-sS', '--max-time', '10', '-o', '/dev/null',
+            '-w', 'HTTP_CODE:%{http_code}',
+            '--cacert', '/ssl/nibe-ca.pem',
+            '-H', 'Authorization: Basic dGVzdA==',
+            'https://192.0.2.1:8443/api/v1/devices/0/points',
+        ])
 
     def test_url_targets_points_endpoint(self):
         from nibe_connectivity_check import _run_curl
@@ -153,6 +272,171 @@ class TestRunCurl(unittest.TestCase):
             result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
         self.assertTrue(result['ok'])
         self.assertIsNone(result['http_code'])
+
+    def test_tls_verified_true_when_ca_cert_path_given(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem')
+        self.assertIs(result['tls_verified'], True)
+
+    def test_tls_verified_false_when_no_ca_cert_path(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        self.assertIs(result['tls_verified'], False)
+
+    def test_subprocess_run_invoked_with_exact_kwargs(self):
+        """Pins the subprocess.run keyword arguments: capture_output/text
+        must be True (else stdout/stderr aren't captured as strings),
+        timeout must be the curl --max-time plus a 5s grace period (else a
+        hung curl process outlives the intended timeout), and check must be
+        False (curl's own non-zero exit codes are handled explicitly, not
+        raised as CalledProcessError)."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, timeout=10)
+        self.assertEqual(mock_run.call_args.kwargs, {
+            'capture_output': True,
+            'text': True,
+            'timeout': 15,
+            'check': False,
+        })
+
+    def test_default_timeout_is_exactly_ten(self):
+        """Pins the default timeout=10 — a wrong default would silently
+        change both curl's --max-time and the subprocess timeout for every
+        caller that doesn't override it (run_connectivity_check doesn't)."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        self.assertIn('10', mock_run.call_args.args[0])
+        self.assertEqual(mock_run.call_args.kwargs['timeout'], 15)
+
+    def test_curl_not_installed_summary_exact_text(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', side_effect=FileNotFoundError):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': 'curl is not installed in this container.',
+            'http_code': None,
+            'tls_verified': False,
+        })
+
+    def test_curl_hangs_summary_exact_text_and_keys(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run',
+                   side_effect=subprocess.TimeoutExpired(cmd='curl', timeout=15)):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': 'curl did not exit within the expected time — treating as a hang.',
+            'http_code': None,
+            'tls_verified': True,
+        })
+
+    def test_verified_note_mentions_ca_when_ca_cert_configured(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem')
+        self.assertIn('(TLS verified against configured CA)', result['summary'])
+        self.assertNotIn('self-signed', result['summary'])
+
+    def test_verified_note_mentions_self_signed_when_no_ca_cert(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        self.assertIn('(TLS verification skipped — self-signed cert)', result['summary'])
+        self.assertNotIn('verified against configured CA', result['summary'])
+
+    def test_nonzero_exit_detail_appended_when_not_duplicate_of_reason(self):
+        """The exit-code reason ('Could not connect...') and curl's own
+        stderr text are distinct strings here, so stderr must be appended
+        in parentheses rather than silently dropped."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run',
+                   return_value=self._curl_result(returncode=7, stderr='connection refused by peer')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': (
+                'Could not connect — device unreachable at this address/port '
+                '(network/firewall/VLAN block, or the device is offline). '
+                '(connection refused by peer)'
+            ),
+            'http_code': None,
+            'tls_verified': True,
+        })
+
+    def test_nonzero_exit_detail_omitted_when_already_part_of_reason(self):
+        """If curl's stderr text is already contained in the canned exit-code
+        reason, it must not be duplicated in parentheses."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run',
+                   return_value=self._curl_result(returncode=7, stderr='Could not connect')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
+        self.assertEqual(
+            result['summary'],
+            'Could not connect — device unreachable at this address/port '
+            '(network/firewall/VLAN block, or the device is offline).',
+        )
+
+    def test_http_300_with_auth_is_not_ok(self):
+        """The success range is [200, 300) — 300 itself must NOT count as
+        success, distinguishing `< 300` from `<= 300` or `< 301`."""
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:300')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, 'Basic dGVzdA==')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['http_code'], 300)
+
+    def test_reachable_no_auth_exact_dict(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem')
+        self.assertEqual(result, {
+            'ok': True,
+            'summary': 'Reachable — HTTP 200 from the device (TLS verified against configured CA).',
+            'http_code': 200,
+            'tls_verified': True,
+        })
+
+    def test_reachable_and_authenticated_exact_dict(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, 'Basic dGVzdA==')
+        self.assertEqual(result, {
+            'ok': True,
+            'summary': 'Reachable and authenticated — HTTP 200 (TLS verification skipped — self-signed cert).',
+            'http_code': 200,
+            'tls_verified': False,
+        })
+
+    def test_credentials_rejected_exact_dict(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:401')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', '/ssl/nibe-ca.pem', 'Basic wrong=')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': (
+                'Reachable (TLS verified against configured CA), but credentials were rejected '
+                '(HTTP 401) — check nibe_username/nibe_password in add-on options, '
+                'or nibe_basic_auth in secrets.yaml.'
+            ),
+            'http_code': 401,
+            'tls_verified': True,
+        })
+
+    def test_unexpected_status_with_auth_exact_dict(self):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:500')):
+            result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, 'Basic dGVzdA==')
+        self.assertEqual(result, {
+            'ok': False,
+            'summary': 'Reachable (TLS verification skipped — self-signed cert), but got an unexpected HTTP 500.',
+            'http_code': 500,
+            'tls_verified': False,
+        })
 
     # ── auth_header — real-credential mode ──────────────────────────────────
 
@@ -211,6 +495,57 @@ class TestRunCurl(unittest.TestCase):
         with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:401')):
             result = _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None)
         self.assertTrue(result['ok'])
+
+
+class TestRunCurlProperties(unittest.TestCase):
+    """Hypothesis properties for _run_curl: the --max-time/subprocess
+    timeout relationship and the HTTP-code success classification must
+    hold for any value, not just the specific ones checked by example."""
+
+    def _curl_result(self, returncode=0, stdout='', stderr=''):
+        return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    @given(timeout=st.integers(min_value=1, max_value=120))
+    @example(timeout=10)   # the real default
+    def test_max_time_flag_matches_timeout_argument(self, timeout):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, timeout=timeout)
+        cmd = mock_run.call_args.args[0]
+        idx = cmd.index('--max-time')
+        self.assertEqual(cmd[idx + 1], str(timeout))
+
+    @given(timeout=st.integers(min_value=1, max_value=120))
+    @example(timeout=10)
+    def test_subprocess_timeout_is_max_time_plus_five(self, timeout):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
+            _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, timeout=timeout)
+        self.assertEqual(mock_run.call_args.kwargs['timeout'], timeout + 5)
+
+    @given(http_code=st.integers(min_value=200, max_value=299))
+    @example(http_code=200)
+    def test_any_2xx_with_auth_header_is_ok(self, http_code):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout=f'HTTP_CODE:{http_code}')):
+            result = _run_curl(
+                'https://192.0.2.1:8443/api/v1/devices/0', None, 'Basic dGVzdA==',
+            )
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['http_code'], http_code)
+
+    @given(http_code=st.integers(min_value=300, max_value=999).filter(
+        lambda c: c not in (401, 403)))
+    @example(http_code=300)   # the exact upper-bound-exclusive boundary
+    @example(http_code=500)
+    def test_non_2xx_non_credential_code_with_auth_header_is_not_ok(self, http_code):
+        from nibe_connectivity_check import _run_curl
+        with patch('subprocess.run', return_value=self._curl_result(stdout=f'HTTP_CODE:{http_code}')):
+            result = _run_curl(
+                'https://192.0.2.1:8443/api/v1/devices/0', None, 'Basic dGVzdA==',
+            )
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['http_code'], http_code)
 
 
 class TestRunConnectivityCheck(unittest.TestCase):
@@ -308,6 +643,96 @@ class TestRunConnectivityCheck(unittest.TestCase):
             result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
         self.assertEqual(result['ping']['summary'], 'ping result')
         self.assertEqual(result['curl']['summary'], 'curl result')
+
+    def test_ping_invoked_with_the_real_host(self):
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': True, 'summary': 'x'}) as mock_ping, \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={'ok': True, 'http_code': 200, 'summary': 'y'}):
+            run_connectivity_check('192.0.2.9', 'https://192.0.2.9:8443/api/v1/devices/0')
+        mock_ping.assert_called_once_with('192.0.2.9')
+
+    def test_both_succeed_exact_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(True, True)
+        with p1, p2:
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(result['summary'], 'Reachable — both ping and the REST API responded.')
+
+    def test_both_fail_exact_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(False, False)
+        with p1, p2:
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(
+            result['summary'],
+            'Unreachable — no response to ping or the REST API. Likely a network/firewall/VLAN block.',
+        )
+
+    def test_ping_fails_curl_succeeds_exact_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(False, True)
+        with p1, p2:
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(
+            result['summary'],
+            'REST API responded but ping did not — ICMP may be blocked while HTTPS is allowed; '
+            'not necessarily a problem.',
+        )
+
+    def test_ping_succeeds_curl_fails_no_response_exact_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(True, False)
+        with p1, p2:
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(
+            result['summary'],
+            'Host responds to ping but the REST API did not — check the port/service/firewall '
+            'for that specific port.',
+        )
+
+    def test_auth_rejected_401_with_ping_ok_uses_curl_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': True, 'summary': 'ping result'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={'ok': False, 'http_code': 401, 'summary': 'credentials rejected'}):
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(result['summary'], 'credentials rejected')
+
+    def test_auth_rejected_403_with_ping_ok_uses_curl_summary(self):
+        """Both 401 and 403 must be treated as credential rejection — a
+        mutant narrowing the membership check to only one code would miss
+        the other."""
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': True, 'summary': 'ping result'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={'ok': False, 'http_code': 403, 'summary': 'credentials rejected 403'}):
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(result['summary'], 'credentials rejected 403')
+
+    def test_auth_rejected_with_ping_also_failed_appends_ping_note(self):
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': False, 'summary': 'ping result'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={'ok': False, 'http_code': 401, 'summary': 'credentials rejected'}):
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(result['summary'], 'credentials rejected Also, ping did not respond.')
+
+    def test_http_code_402_is_not_treated_as_auth_rejected(self):
+        """402 is adjacent to 401 but is not one of the two real
+        credential-rejection codes (401/403) — it must fall through to the
+        generic unexpected-status path, not the auth-rejected summary."""
+        from nibe_connectivity_check import run_connectivity_check
+        with patch('nibe_connectivity_check._run_ping',
+                   return_value={'ok': True, 'summary': 'x'}), \
+             patch('nibe_connectivity_check._run_curl',
+                   return_value={'ok': False, 'http_code': 402, 'summary': 'unexpected HTTP 402'}):
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        self.assertEqual(result['summary'], 'unexpected HTTP 402')
 
     def test_ca_cert_path_and_auth_header_forwarded_to_curl(self):
         from nibe_connectivity_check import run_connectivity_check

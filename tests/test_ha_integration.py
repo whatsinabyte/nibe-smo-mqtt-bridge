@@ -11,6 +11,7 @@ import re
 import signal
 import subprocess
 import unittest
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
@@ -18,7 +19,7 @@ from conftest import (
     _make_em,
     _nibe_point_id,
 )
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 
@@ -175,6 +176,72 @@ class TestSubProperties(unittest.TestCase):
         h._sub(topic, MagicMock())  # must not raise
 
 
+class TestSubmitLogsUnhandledException(unittest.TestCase):
+    """_submit()'s wrapped function must log the handler's exception —
+    otherwise a bug in a management command handler fails invisibly since
+    nothing awaits the executor Future."""
+
+    def test_handler_exception_is_logged_verbatim(self):
+        import concurrent.futures
+
+        from nibe_ha_integration import ManagementCommandHandler
+        em = _make_em()
+        pub = MagicMock()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exe:
+            handler = ManagementCommandHandler(em.mqtt, em, pub, exe)
+
+            def _boom():
+                raise RuntimeError('handler bug')
+
+            with self.assertLogs('nibe.commands', level='ERROR') as cm:
+                handler._submit(_boom)
+                exe.shutdown(wait=True)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Unhandled exception in management command handler'
+            )
+            for msg in cm.output
+        ))
+
+
+class TestDefaultTestExecutorConstruction(unittest.TestCase):
+    """When no test_executor is passed in, ManagementCommandHandler must
+    build its own dedicated single-worker ThreadPoolExecutor with a
+    recognisable thread name — not share mgmt_executor's pool (a 25-30
+    minute test run could then starve or be starved by other management
+    commands) and not spawn an unbounded number of worker threads."""
+
+    def test_default_test_executor_has_one_worker_and_named_threads(self):
+        import threading
+
+        from nibe_ha_integration import ManagementCommandHandler
+        em = _make_em()
+        pub = MagicMock()
+        exe = MagicMock()
+        handler = ManagementCommandHandler(em.mqtt, em, pub, exe, test_executor=None)
+        try:
+            seen_names = []
+            done = threading.Event()
+
+            def _record_name():
+                seen_names.append(threading.current_thread().name)
+                done.set()
+
+            handler._test_executor.submit(_record_name)
+            done.wait(timeout=5)
+            self.assertTrue(seen_names, "worker never ran")
+            # startswith, not assertIn: ThreadPoolExecutor names threads
+            # "<prefix>_<n>", so a real prefix always starts the name —
+            # assertIn would also pass for a mutated 'XXnibe_test_runnerXX'
+            # prefix, since the real text is still a substring of that.
+            self.assertTrue(seen_names[0].startswith('nibe_test_runner'))
+            # A second concurrent submission must NOT get its own thread —
+            # max_workers=1 means it queues behind the first.
+            self.assertEqual(handler._test_executor._max_workers, 1)
+        finally:
+            handler._test_executor.shutdown(wait=True)
+
+
 class TestRegisterAllRecordsEveryTopic(unittest.TestCase):
     """register_all() must route every management topic — including
     BrowserTopic.SNAPSHOTS_CMD — through _sub(), not a raw
@@ -204,6 +271,11 @@ class TestRegisterAllRecordsEveryTopic(unittest.TestCase):
 
         registered_topics = [call.args[0] for call in mock_register.call_args_list]
         self.assertIn(BrowserTopic.SNAPSHOTS_CMD, registered_topics)
+        snapshots_call = next(
+            call for call in mock_register.call_args_list
+            if call.args[0] == BrowserTopic.SNAPSHOTS_CMD
+        )
+        self.assertEqual(snapshots_call.args[1], handler._handle_snapshot_cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +390,40 @@ class TestNextIdProperties(unittest.TestCase):
         w = HAEntityRegistryWatcher(MagicMock(), MagicMock())
         ids = [w._next_id() for _ in range(n)]
         self.assertEqual(ids, sorted(ids))
+
+    def test_first_id_is_exactly_one(self):
+        """_msg_id starts at 0 so the first _next_id() call returns 1 —
+        pins the exact starting value, not just monotonicity/uniqueness."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = HAEntityRegistryWatcher(MagicMock(), MagicMock())
+        self.assertEqual(w._next_id(), 1)
+
+
+class TestRegistryWatcherInitConstructsRealPrimitives(unittest.TestCase):
+    """__init__ must construct real threading primitives — a None/empty
+    default instead of a real Lock/Event would raise the first time
+    another method actually uses it (with self._ws_lock:, self._stop_event
+    .set()/.is_set()), while self._thread/self._current_ws being None
+    (not just falsy) is relied on by `is None` checks elsewhere."""
+
+    def test_ws_lock_is_a_real_lock_usable_as_context_manager(self):
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = HAEntityRegistryWatcher(MagicMock(), MagicMock())
+        with w._ws_lock:
+            pass  # must not raise
+
+    def test_stop_event_is_a_real_event(self):
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = HAEntityRegistryWatcher(MagicMock(), MagicMock())
+        self.assertFalse(w._stop_event.is_set())
+        w._stop_event.set()
+        self.assertTrue(w._stop_event.is_set())
+
+    def test_thread_and_current_ws_start_as_none(self):
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = HAEntityRegistryWatcher(MagicMock(), MagicMock())
+        self.assertIsNone(w._thread)
+        self.assertIsNone(w._current_ws)
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +580,40 @@ class TestNotifyHaProperties(unittest.TestCase):
         self.assertEqual(req.get_header('Content-type'), 'application/json')
         self.assertEqual(req.get_method(), 'POST')
 
+    def test_notify_ha_without_token_logs_warning_verbatim(self):
+        from nibe_ha_integration import notify_ha
+        with patch.dict('os.environ', {}, clear=True), \
+             self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            notify_ha(MagicMock(), 'My Title', 'My Message', 'notif_1')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'HA notification (no supervisor token): [notif_1] My Title'
+            )
+            for msg in cm.output
+        ))
+
+    def test_notify_ha_success_logs_warning_verbatim(self):
+        from nibe_ha_integration import notify_ha
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', return_value=MagicMock()), \
+             self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            notify_ha(MagicMock(), 'My Title', 'My Message', 'notif_1')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('HA notification sent: [notif_1] My Title')
+            for msg in cm.output
+        ))
+
+    def test_notify_ha_failure_logs_error_verbatim(self):
+        from nibe_ha_integration import notify_ha
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError('refused')), \
+             self.assertLogs('nibe.mqtt', level='ERROR') as cm:
+            notify_ha(MagicMock(), 'My Title', 'My Message', 'notif_1')  # must not raise
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'ERROR:nibe.mqtt:Failed to send HA notification: refused'
+            for msg in cm.output
+        ))
+
     def test_dismiss_ha_request_url_headers_payload_method(self):
         """dismiss_ha must target the real persistent_notification/dismiss
         endpoint, with the real notification_id in the JSON payload, a
@@ -499,6 +639,38 @@ class TestNotifyHaProperties(unittest.TestCase):
         self.assertEqual(req.get_method(), 'POST')
         self.assertEqual(_json.loads(req.data), {'notification_id': 'notif_to_dismiss'})
 
+    def test_dismiss_ha_without_token_logs_info_verbatim(self):
+        from nibe_ha_integration import dismiss_ha
+        with patch.dict('os.environ', {}, clear=True), \
+             self.assertLogs('nibe.mqtt', level='INFO') as cm:
+            dismiss_ha(MagicMock(), 'notif_1')
+        self.assertTrue(any(
+            msg.splitlines()[0] ==
+            'INFO:nibe.mqtt:HA notification dismiss (no supervisor token): [notif_1]'
+            for msg in cm.output
+        ))
+
+    def test_dismiss_ha_success_logs_debug_verbatim(self):
+        from nibe_ha_integration import dismiss_ha
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', return_value=MagicMock()), \
+             self.assertLogs('nibe.mqtt', level='DEBUG') as cm:
+            dismiss_ha(MagicMock(), 'notif_1')
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'DEBUG:nibe.mqtt:HA notification dismissed: [notif_1]'
+            for msg in cm.output
+        ))
+
+    def test_dismiss_ha_failure_logs_error_verbatim(self):
+        from nibe_ha_integration import dismiss_ha
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError('refused')), \
+             self.assertLogs('nibe.mqtt', level='ERROR') as cm:
+            dismiss_ha(MagicMock(), 'notif_1')  # must not raise
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'ERROR:nibe.mqtt:Failed to dismiss HA notification: refused'
+            for msg in cm.output
+        ))
 
 
 class TestEntityIdForProperties(unittest.TestCase):
@@ -626,6 +798,13 @@ class TestManagementHandlers(unittest.TestCase):
         self._run('AID_SET', 'ON')
         self.em._api.write_device_mode.assert_called_with('aidmode', 'on')
 
+    def test_aid_mode_lowercase_on_payload(self):
+        """Lowercase 'on' specifically — the docstring above claims this
+        is covered but only 'ON' was ever actually exercised."""
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'on')
+        self.em._api.write_device_mode.assert_called_with('aidmode', 'on')
+
     def test_aid_mode_on_payload_numeric(self):
         self.em._api.write_device_mode = MagicMock(return_value=True)
         self._run('AID_SET', '1')
@@ -636,12 +815,46 @@ class TestManagementHandlers(unittest.TestCase):
         self._run('AID_SET', 'OFF')
         self.em._api.write_device_mode.assert_called_with('aidmode', 'off')
 
+    def test_aid_mode_lowercase_true_payload(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'true')
+        self.em._api.write_device_mode.assert_called_with('aidmode', 'on')
+
+    def test_aid_mode_titlecase_true_payload(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'True')
+        self.em._api.write_device_mode.assert_called_with('aidmode', 'on')
+
+    def test_aid_mode_uppercase_true_payload_maps_to_off(self):
+        """'TRUE' (all caps) is NOT one of the five recognised on-payloads
+        — pins the exact accepted set rather than any case of 'true'."""
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'TRUE')
+        self.em._api.write_device_mode.assert_called_with('aidmode', 'off')
+
     def test_aid_mode_publishes_state_on_success(self):
         self.em._api.write_device_mode = MagicMock(return_value=True)
         self._run('AID_SET', 'ON')
         from nibe_mqtt_publisher import MgmtTopic
         topics = [c.args[0] for c in self.mqtt.publish.call_args_list]
         self.assertIn(MgmtTopic.AID_STATE, topics)
+
+    def test_aid_mode_publishes_exact_state_value_retained(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'ON')
+        from nibe_mqtt_publisher import MgmtTopic
+        call = next(c for c in self.mqtt.publish.call_args_list
+                    if c.args[0] == MgmtTopic.AID_STATE)
+        self.assertEqual(call.args[1], 'ON')
+        self.assertTrue(call.kwargs.get('retain'))
+
+    def test_aid_mode_off_publishes_off_state(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('AID_SET', 'OFF')
+        from nibe_mqtt_publisher import MgmtTopic
+        call = next(c for c in self.mqtt.publish.call_args_list
+                    if c.args[0] == MgmtTopic.AID_STATE)
+        self.assertEqual(call.args[1], 'OFF')
 
     def test_aid_mode_does_not_publish_state_on_failure(self):
         self.em._api.write_device_mode = MagicMock(return_value=False)
@@ -660,6 +873,20 @@ class TestManagementHandlers(unittest.TestCase):
         before = self.em.device_modes_write_seq
         self._run('AID_SET', 'ON')
         self.assertEqual(self.em.device_modes_write_seq, before + 1)
+
+    def test_aid_mode_write_seq_increments_not_resets_on_repeated_writes(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        handler = self._get_handler('AID_SET')
+        handler(None, None, self._msg('ON'))
+        handler(None, None, self._msg('OFF'))
+        self.executor.shutdown(wait=True)
+        self.assertEqual(self.em.device_modes_write_seq, 2)
+
+    def test_aid_mode_success_marks_device_modes_dirty(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self.em.device_modes_dirty = False
+        self._run('AID_SET', 'ON')
+        self.assertIs(self.em.device_modes_dirty, True)
 
     def test_aid_mode_failure_does_not_bump_write_seq(self):
         self.em._api.write_device_mode = MagicMock(return_value=False)
@@ -681,8 +908,15 @@ class TestManagementHandlers(unittest.TestCase):
 
     def test_smart_mode_invalid_value_ignored(self):
         self.em._api.write_device_mode = MagicMock(return_value=True)
-        self._run('SMART_SET', 'holiday')
+        with self.assertLogs('nibe.commands', level='ERROR') as cm:
+            self._run('SMART_SET', 'holiday')
         self.em._api.write_device_mode.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "Invalid smart mode value: 'holiday' — expected 'normal' or 'away'"
+            )
+            for msg in cm.output
+        ))
 
     def test_smart_mode_does_not_publish_state_on_failure(self):
         self.em._api.write_device_mode = MagicMock(return_value=False)
@@ -691,11 +925,38 @@ class TestManagementHandlers(unittest.TestCase):
         topics = [c.args[0] for c in self.mqtt.publish.call_args_list]
         self.assertNotIn(MgmtTopic.SMART_STATE, topics)
 
+    def test_smart_mode_publishes_exact_value_retained(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self._run('SMART_SET', 'away')
+        from nibe_mqtt_publisher import MgmtTopic
+        call = next(c for c in self.mqtt.publish.call_args_list
+                    if c.args[0] == MgmtTopic.SMART_STATE)
+        self.assertEqual(call.args[1], 'away')
+        self.assertTrue(call.kwargs.get('retain'))
+
     def test_smart_mode_success_bumps_write_seq(self):
         self.em._api.write_device_mode = MagicMock(return_value=True)
         before = self.em.device_modes_write_seq
         self._run('SMART_SET', 'away')
         self.assertEqual(self.em.device_modes_write_seq, before + 1)
+
+    def test_smart_mode_write_seq_increments_not_resets_on_repeated_writes(self):
+        """A second successful write must increment write_seq again (2), not
+        reset it back to a fixed value — `= 1` in place of `+= 1` would
+        pass a single-call before/after check but corrupt every write after
+        the first."""
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        handler = self._get_handler('SMART_SET')
+        handler(None, None, self._msg('away'))
+        handler(None, None, self._msg('normal'))
+        self.executor.shutdown(wait=True)
+        self.assertEqual(self.em.device_modes_write_seq, 2)
+
+    def test_smart_mode_success_marks_device_modes_dirty(self):
+        self.em._api.write_device_mode = MagicMock(return_value=True)
+        self.em.device_modes_dirty = False
+        self._run('SMART_SET', 'away')
+        self.assertIs(self.em.device_modes_dirty, True)
 
     def test_smart_mode_failure_does_not_bump_write_seq(self):
         self.em._api.write_device_mode = MagicMock(return_value=False)
@@ -717,6 +978,16 @@ class TestManagementHandlers(unittest.TestCase):
         publish_calls = {c.args[0]: c.args[1]
                          for c in self.mqtt.publish.call_args_list}
         self.assertEqual(publish_calls.get(MgmtTopic.ALARM_STATE), '0')
+        state_call = next(c for c in self.mqtt.publish.call_args_list
+                           if c.args[0] == MgmtTopic.ALARM_STATE)
+        self.assertTrue(state_call.kwargs.get('retain'))
+        attrs_call = next(c for c in self.mqtt.publish.call_args_list
+                           if c.args[0] == MgmtTopic.ALARM_ATTRS)
+        import json as _json
+        payload = _json.loads(attrs_call.args[1])
+        self.assertEqual(payload['alarms'], [])
+        self.assertIn('last_updated', payload)
+        self.assertTrue(attrs_call.kwargs.get('retain'))
 
     def test_reset_alarms_no_publish_on_failure(self):
         self.em._api.reset_notifications = MagicMock(return_value=False)
@@ -738,9 +1009,24 @@ class TestManagementHandlers(unittest.TestCase):
     # ── force poll handler ────────────────────────────────────────────────────
 
     def test_force_poll_calls_update_all_states(self):
-        with patch.object(self.em, 'update_all_states') as mock_update:
+        with patch.object(self.em, 'update_all_states') as mock_update, \
+             self.assertLogs('nibe.startup', level='INFO') as cm:
             self._run('FORCE_POLL_PRESS', '')
         mock_update.assert_called_once_with(force=True)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Force poll triggered from HA')
+            for msg in cm.output
+        ))
+
+    def test_force_poll_calls_update_stats_and_health_with_em_and_pub(self):
+        with patch('nibe_ha_integration.update_stats_and_health') as mock_stats:
+            self._run('FORCE_POLL_PRESS', '')
+        mock_stats.assert_called_once_with(self.em, self.publisher)
+
+    def test_force_poll_calls_publish_device_modes_with_em_and_pub(self):
+        with patch('nibe_ha_integration._publish_device_modes') as mock_modes:
+            self._run('FORCE_POLL_PRESS', '')
+        mock_modes.assert_called_once_with(self.em, self.publisher)
 
     # ── enable / disable handlers ─────────────────────────────────────────────
 
@@ -750,9 +1036,16 @@ class TestManagementHandlers(unittest.TestCase):
         mock_en.assert_called_once_with(1234)
 
     def test_enable_invalid_payload_does_not_raise(self):
-        with patch.object(self.em, 'enable_entity') as mock_en:
+        with patch.object(self.em, 'enable_entity') as mock_en, \
+             self.assertLogs('nibe.commands', level='WARNING') as cm:
             self._run('ENABLE_SET', 'notanumber')
         mock_en.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "handle_enable: invalid point id 'notanumber'"
+            )
+            for msg in cm.output
+        ))
 
     def test_enable_returning_false_does_not_publish_stats(self):
         with patch.object(self.em, 'enable_entity', return_value=False), \
@@ -760,21 +1053,38 @@ class TestManagementHandlers(unittest.TestCase):
             self._run('ENABLE_SET', '1234')
         mock_stats.assert_not_called()
 
+    def test_enable_returning_true_publishes_stats_with_em_and_pub(self):
+        with patch.object(self.em, 'enable_entity', return_value=True), \
+             patch('nibe_ha_integration._publish_stats') as mock_stats:
+            self._run('ENABLE_SET', '1234')
+        mock_stats.assert_called_once_with(self.em, self.publisher)
+
     def test_disable_valid_point_id_calls_disable_entity(self):
         with patch.object(self.em, 'disable_entity', return_value=True) as mock_dis:
             self._run('DISABLE_SET', '5678')
         mock_dis.assert_called_once_with(5678)
 
     def test_disable_invalid_payload_does_not_raise(self):
-        with patch.object(self.em, 'disable_entity') as mock_dis:
+        with patch.object(self.em, 'disable_entity') as mock_dis, \
+             self.assertLogs('nibe.commands', level='WARNING') as cm:
             self._run('DISABLE_SET', 'bad')
         mock_dis.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith("handle_disable: invalid point id 'bad'")
+            for msg in cm.output
+        ))
 
     def test_disable_returning_false_does_not_publish_stats(self):
         with patch.object(self.em, 'disable_entity', return_value=False), \
              patch('nibe_ha_integration._publish_stats') as mock_stats:
             self._run('DISABLE_SET', '5678')
         mock_stats.assert_not_called()
+
+    def test_disable_returning_true_publishes_stats_with_em_and_pub(self):
+        with patch.object(self.em, 'disable_entity', return_value=True), \
+             patch('nibe_ha_integration._publish_stats') as mock_stats:
+            self._run('DISABLE_SET', '5678')
+        mock_stats.assert_called_once_with(self.em, self.publisher)
 
     # ── changelog reset handler ───────────────────────────────────────────────
 
@@ -785,27 +1095,46 @@ class TestManagementHandlers(unittest.TestCase):
         safety net instead of silently vanishing into paho's own message-
         dispatch exception handling — so this must wait for the executor via
         _run(), not call the handler synchronously and assert immediately."""
-        with patch.object(self.em, 'mark_changelog_read') as mock_read:
+        with patch.object(self.em, 'mark_changelog_read') as mock_read, \
+             self.assertLogs('nibe.history', level='INFO') as cm:
             self._run('CHANGELOG_READ_PRESS', '')
         mock_read.assert_called_once()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Changelog reset requested by user')
+            for msg in cm.output
+        ))
 
     # ── flush dynamic map handler ───────────────────────────────────────────
 
     def test_flush_dynamic_map_calls_flush_with_current_points(self):
         self.em.all_points_by_id = {100: {'entity_type': 'switch'}}
-        with patch.object(self.em.dynamic_point_map, 'flush') as mock_flush:
+        with patch.object(self.em.dynamic_point_map, 'flush') as mock_flush, \
+             self.assertLogs('nibe.commands', level='INFO') as cm:
             self._run('FLUSH_MAP_PRESS', '')
         mock_flush.assert_called_once_with(
             self.em.all_points_by_id, {100: 'switch'},
         )
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Flush Dynamic Map triggered from HA (debug action)'
+            )
+            for msg in cm.output
+        ))
 
     def test_flush_dynamic_map_persists_after_flush(self):
         """The flush must be persisted to disk immediately — otherwise a
         restart before the next natural save would silently undo the flush."""
         with patch.object(self.em.dynamic_point_map, 'flush'), \
-             patch.object(self.em, '_persist_dynamic_map') as mock_persist:
+             patch.object(self.em, '_persist_dynamic_map') as mock_persist, \
+             self.assertLogs('nibe.commands', level='INFO') as cm:
             self._run('FLUSH_MAP_PRESS', '')
         mock_persist.assert_called_once()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Dynamic map flushed — all entries reset to unprocessed'
+            )
+            for msg in cm.output
+        ))
 
     def test_flush_dynamic_map_entity_types_default_to_empty_string(self):
         """A point missing the entity_type key must not crash the flush —
@@ -946,7 +1275,7 @@ class TestManagementHandlers(unittest.TestCase):
             mock_run.return_value.communicate.return_value = ('1 failed', '')
             self._run('RUN_TESTS_PRESS', '')
         _, kwargs = mock_notify.call_args
-        self.assertIn('FAILED', kwargs.get('title', ''))
+        self.assertEqual(kwargs.get('title', ''), 'Nibe Test Suite — ❌ FAILED')
 
     def test_run_tests_subprocess_timeout_handled_gracefully(self):
         """subprocess.TimeoutExpired must not propagate — state becomes 'timed_out'."""
@@ -984,8 +1313,150 @@ class TestManagementHandlers(unittest.TestCase):
             self._run('RUN_TESTS_PRESS', '')
         if mock_notify.called:
             kwargs = mock_notify.call_args.kwargs
-            self.assertIn('TIMED OUT', kwargs.get('title', ''))
-            self.assertNotIn('FAILED', kwargs.get('title', ''))
+            self.assertEqual(kwargs.get('title', ''), 'Nibe Test Suite — ⏱ TIMED OUT')
+
+    def test_run_tests_timeout_no_output_captured_summary(self):
+        """When the killed process's drain produces no output at all, the
+        published summary must say so explicitly, verbatim — this is the
+        exact text surfaced on the sensor's attributes tab."""
+        import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'):
+            self._run('RUN_TESTS_PRESS', '')
+        attrs_calls = [p for t, p in self._run_tests_call_args()
+                       if t == MgmtTopic.RUN_TESTS_ATTRS]
+        final = _json.loads(attrs_calls[-1])
+        self.assertEqual(
+            final['summary'],
+            'No output was captured before the process was killed — '
+            'check the add-on log for the exact kill time.',
+        )
+
+    def test_run_tests_timeout_with_long_captured_output_truncates_to_2000(self):
+        """The composed 'output' string embeds partial_output[-2000:] — a
+        single-line drained output longer than that becomes the published
+        summary verbatim (via the counts_line fallback), so an off-by-one
+        slice bound here is observable through the exact published text."""
+        import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
+        long_output = 'y' * 2500 + 'TAIL_MARKER'
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            (long_output, ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'):
+            self._run('RUN_TESTS_PRESS', '')
+        attrs_calls = [p for t, p in self._run_tests_call_args()
+                       if t == MgmtTopic.RUN_TESTS_ATTRS]
+        final = _json.loads(attrs_calls[-1])
+        self.assertEqual(final['summary'], long_output[-2000:])
+
+    def test_run_tests_timeout_with_captured_output_summary(self):
+        """When the killed process's drain does produce output, the
+        published summary must be exactly that drained text (the tail line
+        of the composed message), not an empty placeholder."""
+        import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('partial pytest output here', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'):
+            self._run('RUN_TESTS_PRESS', '')
+        attrs_calls = [p for t, p in self._run_tests_call_args()
+                       if t == MgmtTopic.RUN_TESTS_ATTRS]
+        final = _json.loads(attrs_calls[-1])
+        self.assertEqual(final['summary'], 'partial pytest output here')
+
+    def test_run_tests_timeout_diagnostic_error_log_has_exact_text_and_real_args(self):
+        """The kill-time diagnostic log_commands.error() call — text, real
+        pid, real byte count, and the real drained output — is otherwise
+        untested (it only reaches the add-on log, not the published
+        summary/notification checked by the sibling tests above)."""
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('partial pytest output here', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'), \
+             patch('nibe_test_runner.log_commands') as mock_log:
+            self._run('RUN_TESTS_PRESS', '')
+        error_call = next(
+            c for c in mock_log.error.call_args_list
+            if c.args[0].startswith('Test suite subprocess did not finish')
+        )
+        self.assertEqual(
+            error_call.args[0],
+            'Test suite subprocess did not finish within the 14400s hard '
+            'limit — killed process group (pid %d) after %.1fs elapsed. '
+            'Captured output (%d bytes):\n%s',
+        )
+        self.assertEqual(error_call.args[1], 12345)
+        self.assertEqual(error_call.args[3], len('partial pytest output here'))
+        self.assertEqual(error_call.args[4], 'partial pytest output here')
+
+    def test_run_tests_timeout_diagnostic_error_log_truncates_to_last_4000_bytes(self):
+        """The diagnostic log's captured-output tail must be exactly the
+        last 4000 bytes of the drained output — an off-by-one slice bound
+        only shows up with output longer than that limit."""
+        long_output = 'x' * 5000 + 'TAIL_MARKER'
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            (long_output, ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'), \
+             patch('nibe_test_runner.log_commands') as mock_log:
+            self._run('RUN_TESTS_PRESS', '')
+        error_call = next(
+            c for c in mock_log.error.call_args_list
+            if c.args[0].startswith('Test suite subprocess did not finish')
+        )
+        self.assertEqual(error_call.args[4], long_output[-4000:])
+        self.assertEqual(len(error_call.args[4]), 4000)
+
+    def test_run_tests_timeout_diagnostic_error_log_no_output_fallback_text(self):
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired('pytest', 3600),
+            ('', ''),
+        ]
+        with patch('subprocess.Popen', return_value=mock_proc), \
+             patch('builtins.open', MagicMock()), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg'), \
+             patch('nibe_test_runner.log_commands') as mock_log:
+            self._run('RUN_TESTS_PRESS', '')
+        error_call = next(
+            c for c in mock_log.error.call_args_list
+            if c.args[0].startswith('Test suite subprocess did not finish')
+        )
+        self.assertEqual(error_call.args[4], '(nothing captured)')
 
     def test_run_tests_launch_error_state_is_error(self):
         """An unexpected exception launching the subprocess must set state='error',
@@ -1007,7 +1478,27 @@ class TestManagementHandlers(unittest.TestCase):
             self._run('RUN_TESTS_PRESS', '')
         if mock_notify.called:
             kwargs = mock_notify.call_args.kwargs
-            self.assertIn('LAUNCH ERROR', kwargs.get('title', ''))
+            self.assertEqual(kwargs.get('title', ''), 'Nibe Test Suite — ⚠ LAUNCH ERROR')
+
+    def test_run_tests_launch_error_notification_body_is_the_real_output(self):
+        """The launch-error notification body must be the real output text
+        — not None. counts_line (the message's first line) is *also*
+        derived from `output` here (a single-line string has no other
+        line to extract), so a loose assertIn on the whole message can't
+        distinguish body=output from body=None: the exception text leaks
+        in via counts_line regardless. Splitting out the body section
+        specifically (between the double-newlines) closes that gap."""
+        with patch('subprocess.Popen',
+                   side_effect=OSError("no such file: python3")), \
+             patch('nibe_ha_integration.notify_ha') as mock_notify, \
+             patch('builtins.open', MagicMock()):
+            self._run('RUN_TESTS_PRESS', '')
+        self.assertTrue(mock_notify.called)
+        kwargs = mock_notify.call_args.kwargs
+        message = kwargs.get('message', '')
+        # message = f'{timestamp} — {counts_line} — {elapsed_str}\n\n{body}\n\n{report_link}'
+        body_section = message.split('\n\n')[1]
+        self.assertIn('no such file: python3', body_section)
 
     def test_run_tests_uses_nightly_hypothesis_profile(self):
         """The subprocess must be launched with HYPOTHESIS_PROFILE=nightly."""
@@ -1032,8 +1523,7 @@ class TestManagementHandlers(unittest.TestCase):
         args = mock_run.call_args.args[0]
         html_args = [a for a in args if a.startswith('--html=')]
         self.assertEqual(len(html_args), 1)
-        self.assertIn('/homeassistant/www/', html_args[0])
-        self.assertIn('nibe_test_report.html', html_args[0])
+        self.assertEqual(html_args[0], '--html=/homeassistant/www/nibe_test_report.html')
         self.assertNotIn('--self-contained-html', args)
 
     def test_run_tests_logs_warning_when_report_missing(self):
@@ -1054,6 +1544,34 @@ class TestManagementHandlers(unittest.TestCase):
             "Expected a warning about the missing HTML report",
         )
 
+    def test_run_tests_report_missing_warning_has_exact_text_and_real_path(self):
+        """The sibling test above uses a loose `in` check; assert the
+        mocked call's exact args instead, since that's the only way to
+        distinguish the real text/path from a dropped arg or XX-wrapped
+        mutant."""
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', side_effect=FileNotFoundError), \
+             patch('nibe_ha_integration.dismiss_ha'), \
+             patch('nibe_test_runner.log_commands') as mock_log:
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        mock_log.warning.assert_called_once_with(
+            'Test suite HTML report not found at %s — '
+            'pytest-html may not be installed in the Docker image. '
+            'Check requirements-test.txt and rebuild the add-on.',
+            '/homeassistant/www/nibe_test_report.html',
+        )
+
+    def test_run_tests_launch_exception_logged_with_exact_text(self):
+        with patch('subprocess.Popen', side_effect=OSError('boom')), \
+             patch('nibe_ha_integration.dismiss_ha'), \
+             patch('nibe_test_runner.log_commands') as mock_log:
+            self._run('RUN_TESTS_PRESS', '')
+        mock_log.exception.assert_called_once_with(
+            'Failed to launch test suite subprocess'
+        )
+
     def test_run_tests_failure_notification_contains_report_link(self):
         """Failure notification must include a link to the HTML report so
         the user can open it directly from the HA notification bell."""
@@ -1067,6 +1585,26 @@ class TestManagementHandlers(unittest.TestCase):
         self.assertTrue(mock_notify.called)
         message = mock_notify.call_args.kwargs.get('message', '')
         self.assertIn('nibe_test_report.html', message)
+
+    def test_run_tests_initial_running_state_attrs_has_status_and_started_keys(self):
+        """The very first RUN_TESTS_ATTRS publish (before the subprocess
+        even starts) must be {'status': 'running', 'started': <timestamp>}
+        — a wrong key here breaks the HA sensor attribute the frontend
+        polls to show 'test run in progress since HH:MM'."""
+        import json as _json
+
+        from nibe_mqtt_publisher import MgmtTopic
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        attrs_calls = [p for t, p in self._run_tests_call_args()
+                       if t == MgmtTopic.RUN_TESTS_ATTRS]
+        first = _json.loads(attrs_calls[0])
+        self.assertEqual(first['status'], 'running')
+        self.assertIn('started', first)
 
     def test_run_tests_publishes_attrs_with_summary(self):
         """The final attrs publish must contain a non-empty summary."""
@@ -1086,6 +1624,104 @@ class TestManagementHandlers(unittest.TestCase):
         self.assertIn('summary', final)
         self.assertIn('1543 passed', final['summary'])
 
+
+    def test_run_tests_subprocess_args_list_exact(self):
+        """The full pytest invocation argv (flags, order, and exact values)
+        must match exactly — each flag here (-m, pytest, --tb=short,
+        --no-header, -q) controls real subprocess behavior (module lookup,
+        traceback verbosity, header suppression, output verbosity)."""
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        args = mock_run.call_args.args[0]
+        python_exe = args[0]
+        self.assertEqual(args, [
+            python_exe,
+            '-m',
+            'pytest',
+            args[3],
+            '--html=/homeassistant/www/nibe_test_report.html',
+            '--tb=short',
+            '--no-header',
+            '-q',
+            '--timeout=600',
+            '-n',
+            'auto',
+        ])
+
+    def test_run_tests_communicate_timeout_is_14400(self):
+        """communicate() must be called with the 4-hour hard limit — a
+        wrong value here changes when a hung test run actually gets
+        killed."""
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        kwargs = mock_run.return_value.communicate.call_args.kwargs
+        self.assertEqual(kwargs.get('timeout'), 14400)
+
+    def test_run_tests_html_report_opened_with_utf8_encoding(self):
+        """The generated HTML report must be read back with an explicit
+        utf-8 encoding rather than relying on the platform default, since
+        pytest-html always writes utf-8 regardless of container locale."""
+        mock_open = MagicMock()
+        mock_open.return_value.__enter__.return_value.read.return_value = (
+            '<meta charset="utf-8"/><style>.container{min-width:800px}</style>'
+        )
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', mock_open), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        read_call = next(
+            c for c in mock_open.call_args_list
+            if c.args and str(c.args[0]).endswith('nibe_test_report.html')
+        )
+        self.assertEqual(read_call.kwargs.get('encoding'), 'utf-8')
+
+    def test_run_tests_html_report_postprocessing_exact(self):
+        """The HTML report is rewritten in place: opened for writing at the
+        same report_path with utf-8 encoding, and the written content has
+        the viewport meta tag injected right after the charset meta tag and
+        'min-width: 800px' narrowed to 'min-width: 320px' — both edits are
+        what make pytest-html's desktop-oriented report usable on a phone."""
+        mock_open = MagicMock()
+        mock_open.return_value.__enter__.return_value.read.return_value = (
+            '<html><head><meta charset="utf-8"/></head>'
+            '<style>.container{min-width: 800px}</style></html>'
+        )
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', mock_open), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        write_call = next(
+            c for c in mock_open.call_args_list
+            if len(c.args) >= 2 and c.args[1] == 'w'
+        )
+        self.assertEqual(write_call.args[0], '/homeassistant/www/nibe_test_report.html')
+        self.assertEqual(write_call.kwargs.get('encoding'), 'utf-8')
+        written = mock_open.return_value.__enter__.return_value.write.call_args.args[0]
+        self.assertIn(
+            '<meta charset="utf-8"/>\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1"/>',
+            written,
+        )
+        self.assertIn('min-width: 320px', written)
+        self.assertNotIn('min-width: 800px', written)
+        # assertIn alone can't distinguish the real replacement text from an
+        # XX-wrapped mutant ('min-width: 320px' is still a substring of
+        # 'XXmin-width: 320pxXX') — an exact-equality check on the isolated
+        # style-block content closes that gap.
+        style_content = written.split('.container{')[1].split('}')[0]
+        self.assertEqual(style_content, 'min-width: 320px')
 
     def test_run_tests_subprocess_uses_per_test_timeout_600(self):
         """pytest must be invoked with --timeout=600 so that long-running
@@ -1130,6 +1766,92 @@ class TestManagementHandlers(unittest.TestCase):
             self._run('RUN_TESTS_PRESS', '')
         self.assertTrue(mock_run.call_args.kwargs.get('start_new_session'))
 
+    def test_run_tests_subprocess_kwargs_pipe_and_text_and_cwd(self):
+        """stdout/stderr must be captured via subprocess.PIPE (not None,
+        which would let the child inherit this process's own stdout/stderr
+        instead of being captured for communicate()), text=True (else
+        communicate() returns bytes, and the string concatenation/regex
+        parsing later in this function would crash), and cwd must be a
+        real, non-None directory (pytest.ini lives there and configures
+        testpaths/pythonpath relative to it)."""
+        import os as _os
+        import subprocess as _subprocess
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        kwargs = mock_run.call_args.kwargs
+        self.assertEqual(kwargs.get('stdout'), _subprocess.PIPE)
+        self.assertEqual(kwargs.get('stderr'), _subprocess.PIPE)
+        self.assertIs(kwargs.get('text'), True)
+        self.assertIsNotNone(kwargs.get('cwd'))
+        self.assertTrue(_os.path.isabs(kwargs.get('cwd')))
+
+    def test_run_tests_test_path_arg_is_real_absolute_tests_dir(self):
+        """The test_path positional arg passed to pytest must be a real,
+        absolute path to a 'tests' directory. In this dev/CI environment
+        the hardcoded '/tests' container path never exists, so the
+        fallback branch (os.path.join(addon_dir, 'tests')) always runs —
+        an inverted isdir() check, or a fallback that silently drops
+        addon_dir, would point pytest at a nonexistent or wrong-relative
+        location, and it wouldn't collect (or would silently collect
+        zero) tests."""
+        import os as _os
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        args = mock_run.call_args.args[0]
+        test_path = args[3]
+        self.assertTrue(_os.path.isabs(test_path))
+        self.assertTrue(_os.path.isdir(test_path))
+        self.assertTrue(test_path.endswith('tests'))
+
+    def test_run_tests_pytest_ini_lookup_uses_absolute_addon_dir_path(self):
+        """pytest_ini = os.path.join(addon_dir, 'pytest.ini') must resolve
+        to an absolute path — dropping addon_dir would make the
+        os.path.exists() check resolve relative to whatever the current
+        working directory happens to be at runtime (unpredictable in a
+        container), silently picking the wrong run_dir when it doesn't
+        coincidentally match."""
+        import os as _os
+        real_exists = _os.path.exists
+        seen_paths = []
+        def spy_exists(path):
+            seen_paths.append(path)
+            return real_exists(path)
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'), \
+             patch('nibe_test_runner.os.path.exists', side_effect=spy_exists):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        ini_checks = [p for p in seen_paths if p.endswith('pytest.ini')]
+        self.assertTrue(ini_checks, "Expected an os.path.exists() check for pytest.ini")
+        self.assertTrue(_os.path.isabs(ini_checks[0]))
+
+    def test_run_tests_pythonpath_env_is_absolute_app_dir(self):
+        """The subprocess's PYTHONPATH must be an absolute path to app/ —
+        dropping addon_dir would leave a bare relative 'app', which only
+        resolves correctly if the subprocess's cwd happens to already be
+        the addon root (not guaranteed)."""
+        import os as _os
+        with patch('subprocess.Popen') as mock_run, \
+             patch('builtins.open', MagicMock()), \
+             patch('nibe_ha_integration.dismiss_ha'):
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            mock_run.return_value.communicate.return_value = ('', '')
+            self._run('RUN_TESTS_PRESS', '')
+        env = mock_run.call_args.kwargs.get('env', {})
+        pythonpath = env.get('PYTHONPATH', '')
+        self.assertTrue(_os.path.isabs(pythonpath))
+        self.assertTrue(pythonpath.endswith('app'))
+
     def test_run_tests_concurrent_trigger_ignored(self):
         """A second button press while a run is in flight must be silently
         dropped — subprocess.run must only be called once.
@@ -1160,9 +1882,72 @@ class TestManagementHandlers(unittest.TestCase):
                 # Trigger — should be ignored
                 msg = MagicMock()
                 msg.payload = b''
-                handler._handle_run_tests(None, None, msg)
+                with self.assertLogs('nibe.commands', level='INFO') as cm:
+                    handler._handle_run_tests(None, None, msg)
 
             mock_run.assert_not_called()
+            self.assertTrue(any(
+                msg_.splitlines()[0].endswith(
+                    'Test suite already running — ignoring duplicate trigger'
+                )
+                for msg_ in cm.output
+            ))
+        finally:
+            exe.shutdown(wait=False)
+
+    def test_run_tests_first_trigger_logs_start_message(self):
+        import concurrent.futures
+
+        from nibe_ha_integration import ManagementCommandHandler
+        em  = _make_em()
+        pub = MagicMock()
+        exe = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            handler = ManagementCommandHandler(em.mqtt, em, pub, exe)
+            handler.register_all()
+            with patch('subprocess.Popen') as mock_run, \
+                 patch('builtins.open', MagicMock()), \
+                 self.assertLogs('nibe.commands', level='INFO') as cm:
+                mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+                mock_run.return_value.communicate.return_value = ('', '')
+                msg = MagicMock()
+                msg.payload = b''
+                handler._handle_run_tests(None, None, msg)
+                handler._test_executor.shutdown(wait=True)
+            self.assertTrue(any(
+                msg_.splitlines()[0].endswith(
+                    'Run Test Suite triggered from HA (debug action)'
+                )
+                for msg_ in cm.output
+            ))
+        finally:
+            exe.shutdown(wait=False)
+
+    def test_run_tests_submits_the_handlers_own_test_running_event(self):
+        """run_test_suite must be given this handler's own _test_running
+        Event (not None/a different one) — that's the flag it clears in
+        its `finally` block, and the same flag the duplicate-trigger guard
+        above reads; passing the wrong object would leave _test_running
+        stuck set forever after the run finishes."""
+        import concurrent.futures
+
+        from nibe_ha_integration import ManagementCommandHandler
+        em  = _make_em()
+        pub = MagicMock()
+        exe = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            handler = ManagementCommandHandler(em.mqtt, em, pub, exe)
+            handler.register_all()
+            from nibe_ha_integration import _get_ha_base_url, dismiss_ha, notify_ha
+            with patch('nibe_ha_integration.run_test_suite') as mock_run_suite:
+                msg = MagicMock()
+                msg.payload = b''
+                handler._handle_run_tests(None, None, msg)
+                handler._test_executor.shutdown(wait=True)
+            mock_run_suite.assert_called_once_with(
+                em.mqtt, notify_ha, dismiss_ha, _get_ha_base_url,
+                handler._test_running,
+            )
         finally:
             exe.shutdown(wait=False)
 
@@ -1280,11 +2065,22 @@ class TestHandleTestConnection(unittest.TestCase):
                    return_value={'ok': True, 'summary': 'x',
                                  'ping': {'ok': True, 'summary': 'p'},
                                  'curl': {'ok': True, 'summary': 'c'}}), \
-             patch('nibe_ha_integration.dismiss_ha'):
+             patch('nibe_ha_integration.dismiss_ha'), \
+             self.assertLogs('nibe.commands', level='INFO') as cm:
             self._trigger(handler, mqtt, executor)
         states = [c.args[1] for c in em.mqtt.publish.call_args_list
                   if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
         self.assertIn('running', states)
+        running_call = next(c for c in em.mqtt.publish.call_args_list
+                             if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE
+                             and c.args[1] == 'running')
+        self.assertTrue(running_call.kwargs.get('retain'))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Test API Connection triggered from HA (debug action)'
+            )
+            for msg in cm.output
+        ))
 
     def test_publishes_reachable_state_on_success(self):
         from nibe_mqtt_publisher import MgmtTopic
@@ -1299,6 +2095,18 @@ class TestHandleTestConnection(unittest.TestCase):
                   if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
         self.assertIn('reachable', states)
         mock_dismiss.assert_called_once_with(em.mqtt, 'nibe_connectivity_check')
+        reachable_call = next(c for c in em.mqtt.publish.call_args_list
+                               if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE
+                               and c.args[1] == 'reachable')
+        self.assertTrue(reachable_call.kwargs.get('retain'))
+        attrs_call = next(c for c in em.mqtt.publish.call_args_list
+                           if c.args[0] == MgmtTopic.TEST_CONNECTION_ATTRS)
+        self.assertTrue(attrs_call.kwargs.get('retain'))
+        import json as _json
+        payload = _json.loads(attrs_call.args[1])
+        self.assertEqual(payload['status'], 'reachable')
+        self.assertEqual(payload['summary'], 'x')
+        self.assertIn('timestamp', payload)
 
     def test_publishes_unreachable_state_and_notifies_on_failure(self):
         from nibe_mqtt_publisher import MgmtTopic
@@ -1313,7 +2121,9 @@ class TestHandleTestConnection(unittest.TestCase):
                   if c.args[0] == MgmtTopic.TEST_CONNECTION_STATE]
         self.assertIn('unreachable', states)
         mock_notify.assert_called_once()
+        self.assertEqual(mock_notify.call_args.args[0], em.mqtt)
         self.assertEqual(mock_notify.call_args.kwargs['notification_id'], 'nibe_connectivity_check')
+        self.assertEqual(mock_notify.call_args.kwargs['title'], 'Nibe Bridge: Connectivity Check')
         self.assertIn('Unreachable', mock_notify.call_args.kwargs['message'])
 
     def test_attrs_include_ping_and_curl_sub_results(self):
@@ -1481,6 +2291,62 @@ class TestRegistryWatcherEventHandling(unittest.TestCase):
 # ===========================================================================
 
 
+class TestWsAuthenticate(unittest.TestCase):
+    """_ws_authenticate(): the three-step WebSocket auth handshake against
+    the HA Supervisor — wait auth_required, send credentials, confirm
+    auth_ok. Static method, no watcher instance needed."""
+
+    def _import(self):
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        return HAEntityRegistryWatcher._ws_authenticate
+
+    def _ws(self, recv_sequence):
+        ws = MagicMock()
+        ws.recv.side_effect = [json.dumps(m) for m in recv_sequence]
+        return ws
+
+    def test_success_sends_real_access_token(self):
+        ws_authenticate = self._import()
+        ws = self._ws([{'type': 'auth_required'}, {'type': 'auth_ok'}])
+        ws_authenticate(ws, 'real-supervisor-token')
+        sent = json.loads(ws.send.call_args.args[0])
+        self.assertEqual(sent, {'type': 'auth', 'access_token': 'real-supervisor-token'})
+
+    def test_wrong_greeting_type_closes_and_raises_with_the_real_type(self):
+        ws_authenticate = self._import()
+        ws = self._ws([{'type': 'auth_invalid'}])
+        with self.assertRaises(RuntimeError) as cm:
+            ws_authenticate(ws, 'tok')
+        ws.close.assert_called_once()
+        self.assertEqual(str(cm.exception), 'Unexpected WS greeting type: auth_invalid')
+
+    def test_wrong_greeting_type_missing_key_reports_unknown(self):
+        ws_authenticate = self._import()
+        ws = self._ws([{}])  # no 'type' key at all
+        with self.assertRaises(RuntimeError) as cm:
+            ws_authenticate(ws, 'tok')
+        self.assertEqual(str(cm.exception), 'Unexpected WS greeting type: unknown')
+
+    def test_auth_rejected_closes_and_raises_with_the_real_type(self):
+        ws_authenticate = self._import()
+        ws = self._ws([{'type': 'auth_required'}, {'type': 'auth_invalid'}])
+        with self.assertRaises(RuntimeError) as cm:
+            ws_authenticate(ws, 'tok')
+        ws.close.assert_called_once()
+        self.assertEqual(
+            str(cm.exception), 'WS auth failed (response type: auth_invalid)',
+        )
+
+    def test_auth_rejected_missing_type_reports_unknown(self):
+        ws_authenticate = self._import()
+        ws = self._ws([{'type': 'auth_required'}, {}])  # no 'type' key
+        with self.assertRaises(RuntimeError) as cm:
+            ws_authenticate(ws, 'tok')
+        self.assertEqual(
+            str(cm.exception), 'WS auth failed (response type: unknown)',
+        )
+
+
 class TestScheduleRefreshRegistry(unittest.TestCase):
     """_schedule_refresh_registry(): coalesces bursts of registry-refresh
     triggers into a single call.
@@ -1514,10 +2380,18 @@ class TestScheduleRefreshRegistry(unittest.TestCase):
 
     def test_single_call_starts_one_timer(self):
         w = self._make_watcher()
-        with patch('threading.Timer') as mock_timer:
+        with patch('threading.Timer') as mock_timer, \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
             w._schedule_refresh_registry()
         mock_timer.assert_called_once_with(w._REFRESH_DEBOUNCE_S, w.refresh_registry)
         mock_timer.return_value.start.assert_called_once()
+        self.assertEqual(
+            mock_timer.return_value.name, 'nibe_registry_refresh_debounce',
+        )
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Scheduling registry refresh (debounce)')
+            for msg in cm.output
+        ))
 
     def test_burst_of_many_calls_coalesces_to_one_pending_timer(self):
         """The core regression case: N calls in a burst (simulating N
@@ -1545,15 +2419,27 @@ class TestScheduleRefreshRegistry(unittest.TestCase):
         refresh_registry() itself is called at most once, not once per
         event, once the burst settles. Uses a shortened debounce window
         so the test doesn't wait on the real production delay while still
-        exercising the real Timer/thread integration."""
+        exercising the real Timer/thread integration.
+
+        The debounce window and join timeout below are deliberately far
+        more generous than the ~65 cheap Timer cancel/create calls in the
+        loop should ever need: a 0.05s window (a prior version of this
+        test) genuinely raced the loop itself on a loaded machine — this
+        test failed for real on the ODROID during its own nightly xdist
+        run, where CPU contention from the rest of the suite running in
+        parallel was enough to let the debounce timer fire mid-burst and
+        call refresh_registry() more than once. 1.0s gives ~20x the
+        margin, and the 5s join timeout comfortably covers the 1.0s
+        debounce plus the same class of scheduling delay. If this ever
+        flakes again, the fix is a wider margin here, not fewer events."""
         w = self._make_watcher()
         with patch.object(w, 'refresh_registry') as mock_refresh, \
-             patch.object(type(w), '_REFRESH_DEBOUNCE_S', 0.05):
+             patch.object(type(w), '_REFRESH_DEBOUNCE_S', 1.0):
             for i in range(65):
                 w._handle_event({'data': {'action': 'create',
                                           'entity_id': f'sensor.nibe_{i}'}})
             if w._refresh_timer is not None:
-                w._refresh_timer.join(timeout=2)
+                w._refresh_timer.join(timeout=5)
         mock_refresh.assert_called_once()
 
     def test_update_event_missing_unique_id_also_debounces(self):
@@ -1694,6 +2580,60 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
             w._on_entity_disabled('switch.nibe_100')
         mock_disable.assert_called_once_with(100)
 
+    def test_disabled_point_missing_is_dynamic_key_treated_as_static(self):
+        """A point dict entirely missing the 'is_dynamic' key must default
+        to False (mirrored/silent path) — not True (revert/notify path)."""
+        em = _make_em()
+        em.all_points_by_id[100] = {'display_title': 'Test point'}  # no 'is_dynamic'
+        w = self._make_watcher(em)
+        with patch.object(em, 'disable_entity') as mock_disable, \
+             patch('nibe_ha_integration._publish_stats'), \
+             patch('nibe_ha_integration.notify_ha') as mock_notify:
+            w._on_entity_disabled('switch.nibe_100')
+        mock_disable.assert_called_once_with(100)
+        mock_notify.assert_not_called()
+
+    def test_disabled_logs_debug_with_real_entity_and_point_id(self):
+        em = self._em_with_point(100, is_dynamic=False)
+        w = self._make_watcher(em)
+        with patch.object(em, 'disable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._on_entity_disabled('switch.nibe_100')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Entity switch.nibe_100 (point 100) disabled via HA — mirroring disable'
+            )
+            for msg in cm.output
+        ))
+
+    def test_disabled_static_point_logs_mirrored_info_verbatim(self):
+        em = self._em_with_point(100, is_dynamic=False)
+        w = self._make_watcher(em)
+        with patch.object(em, 'disable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             self.assertLogs('nibe.registry', level='INFO') as cm:
+            w._on_entity_disabled('switch.nibe_100')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Mirrored HA-side disable for point 100 in bridge'
+            )
+            for msg in cm.output
+        ))
+
+    def test_disabled_dynamic_point_logs_republished_info_verbatim(self):
+        em = self._em_with_point(50827, is_dynamic=True)
+        w = self._make_watcher(em)
+        with patch('nibe_ha_integration.notify_ha'), \
+             self.assertLogs('nibe.registry', level='INFO') as cm:
+            w._on_entity_disabled('sensor.nibe_50827')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Republished discovery config for point 50827 to reverse HA-side disable'
+            )
+            for msg in cm.output
+        ))
+
     def test_disabled_static_point_sends_no_notification(self):
         """The documented 'no confusing notification for an intentional
         disable' behavior — must not call notify_ha at all for a plain
@@ -1756,6 +2696,33 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
             w._on_entity_enabled('switch.nibe_100')
         mock_enable.assert_called_once_with(100)
 
+    def test_enabled_logs_info_with_real_entity_and_point_id(self):
+        em = self._em_with_point(100)
+        w = self._make_watcher(em)
+        with patch.object(em, 'enable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             patch('nibe_ha_integration.notify_ha'), \
+             self.assertLogs('nibe.registry', level='INFO') as cm:
+            w._on_entity_enabled('switch.nibe_100')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Entity switch.nibe_100 (point 100) re-enabled via HA — '
+                'republishing discovery'
+            )
+            for msg in cm.output
+        ))
+
+    def test_enabled_build_disable_notification_called_with_real_point_id(self):
+        em = self._em_with_point(100)
+        w = self._make_watcher(em)
+        with patch.object(em, 'enable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             patch.object(em, 'build_disable_notification',
+                          wraps=em.build_disable_notification) as mock_build, \
+             patch('nibe_ha_integration.notify_ha'):
+            w._on_entity_enabled('switch.nibe_100')
+        mock_build.assert_called_once_with(100, 'switch.nibe_100', action='re-enabled')
+
     def test_enabled_already_in_mqtt_enabled_points_republishes_discovery_instead(self):
         """If the bridge already considers the point enabled (e.g. HA's
         registry briefly lagged), don't re-run the full enable_entity path
@@ -1768,7 +2735,19 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
              patch('nibe_ha_integration.notify_ha'):
             w._on_entity_enabled('switch.nibe_100')
         mock_enable.assert_not_called()
-        pub.publish_entity_discovery.assert_called_once()
+        pub.publish_entity_discovery.assert_called_once_with(
+            em.all_points_by_id[100], em.bulk_data,
+        )
+
+    def test_enabled_publishes_stats_with_real_em_and_pub(self):
+        em = self._em_with_point(100)
+        pub = MagicMock()
+        w = self._make_watcher(em, pub=pub)
+        with patch.object(em, 'enable_entity'), \
+             patch('nibe_ha_integration._publish_stats') as mock_stats, \
+             patch('nibe_ha_integration.notify_ha'):
+            w._on_entity_enabled('switch.nibe_100')
+        mock_stats.assert_called_once_with(em, pub)
 
     def test_enabled_dismisses_the_disable_notification(self):
         """Re-enabling must clear whatever disable notification was shown
@@ -1792,6 +2771,23 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
             w._on_entity_enabled('switch.nibe_100')
         mock_notify.assert_called_once()
         self.assertIn('re-enabled', mock_notify.call_args.kwargs['title'].lower())
+
+    def test_enabled_notify_ha_receives_the_real_mqtt_and_message_and_notif_id(self):
+        """notify_ha must be called with the watcher's real mqtt client, a
+        real (non-None) message body, and the exact notif_id derived from
+        build_disable_notification — not a wrong/missing argument."""
+        em = self._em_with_point(100)
+        w = self._make_watcher(em)
+        with patch.object(em, 'enable_entity'), \
+             patch('nibe_ha_integration._publish_stats'), \
+             patch('nibe_ha_integration.notify_ha') as mock_notify:
+            w._on_entity_enabled('switch.nibe_100')
+        self.assertIs(mock_notify.call_args.args[0], em.mqtt)
+        self.assertTrue(mock_notify.call_args.kwargs['message'])
+        self.assertEqual(
+            mock_notify.call_args.kwargs['notification_id'],
+            'nibe_ha_disable_switch_nibe_100',
+        )
 
     def test_reenable_dismisses_the_exact_id_the_real_disable_notification_used(self):
         """build_disable_notification() (called when the entity is
@@ -1822,6 +2818,42 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
 # ===========================================================================
 # 55. update_alarm_state — alarm polling and HA notification
 # ===========================================================================
+
+
+class TestPublishStats(unittest.TestCase):
+    """_publish_stats: the dedup-log getattr default and its exact debug text."""
+
+    def _em(self):
+        em = _make_em()
+        em._stats_type_counts = {}
+        em._stats_category_counts = {}
+        em._stats_writable_count = 0
+        em._write_total = 0
+        em._write_success = 0
+        em._write_failed = 0
+        return em
+
+    def test_missing_last_stats_key_attr_does_not_raise(self):
+        """getattr's default must be None, not omitted — an EntityManager
+        that has never published stats before (no _last_stats_key attr
+        yet) must not raise AttributeError on the first call."""
+        from nibe_ha_integration import _publish_stats
+        em = self._em()
+        if hasattr(em, '_last_stats_key'):
+            del em._last_stats_key
+        pub = MagicMock()
+        _publish_stats(em, pub)  # must not raise
+
+    def test_dedup_debug_log_has_exact_text(self):
+        from nibe_ha_integration import _publish_stats
+        em = self._em()
+        pub = MagicMock()
+        with self.assertLogs('nibe.stats', level='DEBUG') as cm:
+            _publish_stats(em, pub)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Stats: MQTT=0, Active=0, Total=0')
+            for msg in cm.output
+        ))
 
 
 class TestUpdateAlarmState(unittest.TestCase):
@@ -1865,8 +2897,28 @@ class TestUpdateAlarmState(unittest.TestCase):
         em = _make_em()
         em._api.fetch_notifications.return_value = None
         pub = MagicMock()
-        update_alarm_state(em, pub)
+        with self.assertLogs('nibe.stats', level='DEBUG') as cm:
+            update_alarm_state(em, pub)
         pub.publish_alarm_state.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Alarm poll skipped — fetch_notifications returned None (API error)'
+            )
+            for msg in cm.output
+        ))
+
+    def test_alarm_count_change_logged_verbatim(self):
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._last_alarm_count = 0
+        em._alarm_notification_active = True  # suppress notify_ha; not under test here
+        em._api.fetch_notifications.return_value = [self._alarm(), self._alarm(alarm_id=2)]
+        with self.assertLogs('nibe.stats', level='DEBUG') as cm:
+            update_alarm_state(em, MagicMock())
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Alarm poll: 2 active alarm(s)')
+            for msg in cm.output
+        ))
 
     def test_empty_list_is_a_valid_zero_alarm_state(self):
         """An empty list (genuinely zero alarms) IS published, unlike None
@@ -1992,7 +3044,7 @@ class TestUpdateAlarmState(unittest.TestCase):
         with patch('nibe_ha_integration.dismiss_ha') as mock_dismiss:
             update_alarm_state(em, MagicMock())
         mock_dismiss.assert_called_once_with(em.mqtt, 'nibe_active_alarms')
-        self.assertFalse(em._alarm_notification_active)
+        self.assertIs(em._alarm_notification_active, False)
 
     def test_already_inactive_no_alarms_does_not_dismiss_again(self):
         """If there was no active notification to begin with, a zero-alarm
@@ -2001,9 +3053,40 @@ class TestUpdateAlarmState(unittest.TestCase):
         em = _make_em()
         em._alarm_notification_active = False
         em._api.fetch_notifications.return_value = []
-        with patch('nibe_ha_integration.dismiss_ha') as mock_dismiss:
+        with patch('nibe_ha_integration.dismiss_ha') as mock_dismiss, \
+             patch('nibe_ha_integration.notify_ha') as mock_notify:
             update_alarm_state(em, MagicMock())
         mock_dismiss.assert_not_called()
+        # Pins `alarm_count > 0` (not `>= 0`) — at zero alarms with no
+        # active notification, neither the trigger nor the clear branch
+        # must fire.
+        mock_notify.assert_not_called()
+
+    def test_notify_ha_receives_the_real_mqtt_client(self):
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._alarm_notification_active = False
+        em._api.fetch_notifications.return_value = [self._alarm()]
+        with patch('nibe_ha_integration.notify_ha') as mock_notify:
+            update_alarm_state(em, MagicMock())
+        self.assertIs(mock_notify.call_args.args[0], em.mqtt)
+
+    # NOTE: the alarm-line builder's `a.get("header", "Unknown alarm")`
+    # default is unreachable in practice — clean_alarms always sets the
+    # 'header' key (defaulting to '' via its own a.get("header", "")), so
+    # this second-level default can never fire on real cleaned-alarm dicts.
+    # The corresponding mutmut survivors for that literal are equivalent
+    # mutants, not real gaps.
+
+    def test_device_model_defaults_to_s_series_when_absent(self):
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._alarm_notification_active = False
+        em.device_info = {}  # no 'model' key
+        em._api.fetch_notifications.return_value = [self._alarm()]
+        with patch('nibe_ha_integration.notify_ha') as mock_notify:
+            update_alarm_state(em, MagicMock())
+        self.assertIn('S-series', mock_notify.call_args.kwargs['title'])
 
     # -- message composition ---------------------------------------------------
 
@@ -2025,6 +3108,20 @@ class TestUpdateAlarmState(unittest.TestCase):
         with patch('nibe_ha_integration.notify_ha') as mock_notify:
             update_alarm_state(em, MagicMock())
         self.assertIn('S-series', mock_notify.call_args.kwargs['title'])
+
+    def test_device_model_default_is_exactly_s_series(self):
+        """Pins the exact default string (not just a substring match) — a
+        mutated default like 'XXS-seriesXX' would still satisfy a bare
+        assertIn('S-series', ...) check since 'S-series' is itself a
+        substring of the mutated value."""
+        update_alarm_state = self._import()
+        em = _make_em()
+        em.device_info = {}  # no 'model' key
+        em._api.fetch_notifications.return_value = [self._alarm()]
+        with patch('nibe_ha_integration.notify_ha') as mock_notify:
+            update_alarm_state(em, MagicMock())
+        self.assertIn('Nibe S-series:', mock_notify.call_args.kwargs['title'])
+        self.assertIn('on the Nibe S-series:', mock_notify.call_args.kwargs['message'])
 
     def test_message_includes_equipment_and_severity(self):
         update_alarm_state = self._import()
@@ -2087,6 +3184,33 @@ class TestUpdateAlarmState(unittest.TestCase):
             update_alarm_state(em, MagicMock())
         msg = mock_notify.call_args.kwargs['message']
         self.assertNotIn('Severity:', msg)
+
+    def test_message_parts_joined_with_em_dash_separator(self):
+        """The header/equipment/severity/description parts of one alarm's
+        line must be joined with ' — ' (em dash) exactly."""
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._api.fetch_notifications.return_value = [
+            self._alarm(header='Pump fault', equip_name='GP1', severity='Critical'),
+        ]
+        with patch('nibe_ha_integration.notify_ha') as mock_notify:
+            update_alarm_state(em, MagicMock())
+        msg = mock_notify.call_args.kwargs['message']
+        self.assertIn('Pump fault — Equipment: GP1 — Severity: Critical', msg)
+
+    def test_alarm_lines_joined_with_real_newline(self):
+        """Multiple alarm bullet lines must be joined with a real newline,
+        not a literal placeholder — each alarm renders on its own line."""
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._api.fetch_notifications.return_value = [
+            self._alarm(alarm_id=1, header='Alarm A'),
+            self._alarm(alarm_id=2, header='Alarm B'),
+        ]
+        with patch('nibe_ha_integration.notify_ha') as mock_notify:
+            update_alarm_state(em, MagicMock())
+        msg = mock_notify.call_args.kwargs['message']
+        self.assertIn('• Alarm A — Severity: Warning\n• Alarm B — Severity: Warning', msg)
 
     def test_message_lists_multiple_alarms_as_bullet_points(self):
         update_alarm_state = self._import()
@@ -2866,6 +3990,90 @@ class TestRegistryFetchMissingUniqueId(unittest.TestCase):
         result = w._fetch_entity_registry(ws)
         self.assertEqual(result.get('nibe_opt_id'), 'sensor.nibe_opt')
 
+    def test_interleaved_message_logs_discard_with_real_type_and_id(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            json.dumps({'type': 'event', 'id': 99}),  # wrong id — discarded
+            json.dumps({'id': 1, 'type': 'result', 'success': True, 'result': []}),
+        ]
+        with self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._fetch_entity_registry(ws)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Registry fetch: discarding interleaved message type=event id=99'
+            )
+            for msg in cm.output
+        ))
+
+    def test_exception_logs_warning_with_real_error_text(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.side_effect = OSError('timed out')
+        with self.assertLogs('nibe.registry', level='WARNING') as cm:
+            result = w._fetch_entity_registry(ws)
+        self.assertEqual(result, {})
+        self.assertTrue(any(
+            msg.splitlines()[0] ==
+            'WARNING:nibe.registry:Could not fetch entity registry (timeout or error): '
+            'timed out'
+            for msg in cm.output
+        ))
+
+    def test_failed_response_logs_warning_with_the_real_response(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        resp = {'id': 1, 'type': 'result', 'success': False, 'error': {'code': 'unknown'}}
+        ws.recv.return_value = json.dumps(resp)
+        with self.assertLogs('nibe.registry', level='WARNING') as cm:
+            result = w._fetch_entity_registry(ws)
+        self.assertEqual(result, {})
+        self.assertTrue(any(
+            msg.splitlines()[0] == f'WARNING:nibe.registry:Could not fetch entity registry: {resp}'
+            for msg in cm.output
+        ))
+
+    def test_missing_result_key_with_success_true_does_not_crash(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps({'id': 1, 'type': 'result', 'success': True})
+        result = w._fetch_entity_registry(ws)  # must not raise
+        self.assertEqual(result, {})
+
+    def test_success_logs_exact_total_and_nibe_counts(self):
+        """Pins the exact nibe_count computation (1 per matching key, using
+        the real 'nibe_' prefix) and the exact log line — a mutated
+        multiplier or prefix would still often 'look right' for a single
+        entry, so this uses a mix of nibe/non-nibe entries."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps({
+            'id': 1, 'type': 'result', 'success': True,
+            'result': [
+                {'unique_id': 'nibe_1', 'entity_id': 'sensor.nibe_1'},
+                {'unique_id': 'nibe_2', 'entity_id': 'sensor.nibe_2'},
+                {'unique_id': 'other_3', 'entity_id': 'sensor.other_3'},
+            ],
+        })
+        with self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            result = w._fetch_entity_registry(ws)
+        self.assertEqual(len(result), 3)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Entity registry cached: 3 total entries, 2 nibe entries'
+            )
+            for msg in cm.output
+        ))
+
+    def test_sets_timeout_to_30_seconds_while_waiting_for_response(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps({
+            'id': 1, 'type': 'result', 'success': True, 'result': [],
+        })
+        w._fetch_entity_registry(ws)
+        ws.settimeout.assert_any_call(30)
+
     def test_ws_send_called_with_correct_request_payload(self):
         """ws.send() must be called with the real config/entity_registry/list
         request (correct req_id + type) — never verified elsewhere."""
@@ -2946,6 +4154,15 @@ class TestNotifyHa(unittest.TestCase):
         ):
             notify_ha(None, 't', 'm', 'id')  # must not raise
 
+    def test_urlopen_called_with_ten_second_timeout(self):
+        from nibe_ha_integration import notify_ha
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            notify_ha(None, 't', 'm', 'id')
+        self.assertEqual(mock_open.call_args.kwargs['timeout'], 10)
+
     def test_mqtt_client_argument_not_used(self):
         """mqtt_client is accepted for API compatibility but not used.
 
@@ -3015,6 +4232,25 @@ class TestDismissHa(unittest.TestCase):
             dismiss_ha(None, 'id')
             req = mock_open.call_args[0][0]
             self.assertIn('dismiss', req.full_url)
+
+    def test_dismiss_uses_post_method(self):
+        from nibe_ha_integration import dismiss_ha
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'id')
+            req = mock_open.call_args[0][0]
+            self.assertEqual(req.get_method(), 'POST')
+
+    def test_dismiss_urlopen_called_with_ten_second_timeout(self):
+        from nibe_ha_integration import dismiss_ha
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('urllib.request.urlopen') as mock_open,
+        ):
+            dismiss_ha(None, 'id')
+        self.assertEqual(mock_open.call_args.kwargs['timeout'], 10)
 
 
 # ===========================================================================
@@ -3120,8 +4356,55 @@ class TestDoRefreshRegistry(unittest.TestCase):
         with (
             patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
             patch('websocket.create_connection', side_effect=Exception('connection refused')),
+            self.assertLogs('nibe.registry', level='WARNING') as cm,
         ):
             w.refresh_registry()  # must not raise
+        self.assertTrue(any(
+            msg.splitlines()[0] ==
+            'WARNING:nibe.registry:Registry refresh failed: connection refused'
+            for msg in cm.output
+        ))
+
+    def test_ws_authenticate_called_with_the_real_token(self):
+        w = self._make_watcher()
+        ws = self._mock_ws([])
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'real-tok'}),
+            patch('websocket.create_connection', return_value=ws),
+            patch.object(w, '_ws_authenticate') as mock_auth,
+        ):
+            w.refresh_registry()
+        mock_auth.assert_called_once_with(ws, 'real-tok')
+
+    def test_auth_failure_logs_warning_verbatim(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+            patch.object(w, '_ws_authenticate', side_effect=RuntimeError('bad auth')),
+            self.assertLogs('nibe.registry', level='WARNING') as cm,
+        ):
+            w.refresh_registry()  # must not raise
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'WARNING:nibe.registry:Registry refresh: bad auth'
+            for msg in cm.output
+        ))
+
+    def test_success_logs_updated_count_verbatim(self):
+        w = self._make_watcher()
+        entries = [{'unique_id': 'nibe_1', 'entity_id': 'sensor.nibe_1'}]
+        ws = self._mock_ws(entries)
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+            self.assertLogs('nibe.registry', level='DEBUG') as cm,
+        ):
+            w.refresh_registry()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Registry refresh: updated 1 nibe entries')
+            for msg in cm.output
+        ))
 
     def test_empty_result_does_not_crash(self):
         w = self._make_watcher()
@@ -3151,6 +4434,30 @@ class TestDoRefreshRegistry(unittest.TestCase):
         ):
             w.refresh_registry()  # must not raise
         self.assertEqual(w._unique_id_map, {})
+
+    def test_missing_result_key_completes_without_logging_a_warning(self):
+        """resp.get('result', []) must genuinely default to an empty list
+        and let the for-loop complete cleanly with zero iterations — a
+        mutated default of None would make the loop raise TypeError, which
+        the broad except below silently swallows and logs as a warning.
+        'must not raise' alone can't distinguish that from a clean
+        zero-entries pass, since both leave _unique_id_map == {} — but the
+        absence of a 'Registry refresh failed' warning can."""
+        import json as _json
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            _json.dumps({'type': 'auth_required'}),
+            _json.dumps({'type': 'auth_ok'}),
+            _json.dumps({'id': 1, 'type': 'result', 'success': True}),  # no 'result'
+        ]
+        with (
+            patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}),
+            patch('websocket.create_connection', return_value=ws),
+            patch('nibe_ha_integration.log_registry') as mock_log,
+        ):
+            w.refresh_registry()
+        mock_log.warning.assert_not_called()
 
     def test_create_connection_called_with_correct_url_and_timeout(self):
         w = self._make_watcher()
@@ -3238,16 +4545,26 @@ class TestHandleRegenDashboard(unittest.TestCase):
         callback = MagicMock()
         self.em._on_enabled_state_change = callback
         handler = self._get_regen_handler()
-        handler(None, None, MagicMock())
-        self.executor.shutdown(wait=True)
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            handler(None, None, MagicMock())
+            self.executor.shutdown(wait=True)
         callback.assert_called_once()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Regenerate Dashboard triggered from HA')
+            for msg in cm.output
+        ))
 
     def test_no_crash_when_callback_is_none(self):
         """If no callback is registered the handler must not raise."""
         self.em._on_enabled_state_change = None
         handler = self._get_regen_handler()
-        handler(None, None, MagicMock())  # must not raise
-        self.executor.shutdown(wait=True)
+        with self.assertLogs('nibe.startup', level='INFO') as cm:
+            handler(None, None, MagicMock())  # must not raise
+            self.executor.shutdown(wait=True)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Regenerate Dashboard: no callback registered')
+            for msg in cm.output
+        ))
 
     def test_handler_registered_for_regen_topic(self):
         """Verify the handler is wired to the correct MQTT topic."""
@@ -3480,8 +4797,16 @@ class TestManagementHandlerEdgePaths(unittest.TestCase):
         em.device_modes_cache       = {}
         em._api.fetch_device_info.return_value = None
         pub = MagicMock()
-        _publish_device_modes(em, pub)  # must not raise
+        with self.assertLogs('nibe.commands', level='WARNING') as cm:
+            _publish_device_modes(em, pub)  # must not raise
         pub.publish_device_modes.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Could not fetch device mode states — aid/smart mode display may be stale '
+                '(see API errors above for the cause)'
+            )
+            for msg in cm.output
+        ))
 
 
 
@@ -3492,6 +4817,30 @@ class TestManagementRunTestsFailures(unittest.TestCase):
         import concurrent.futures
 
         from nibe_ha_integration import ManagementCommandHandler
+
+        # run_test_suite is wired with the REAL notify_ha/dismiss_ha by
+        # ManagementCommandHandler (not caller-injectable) — notify_ha
+        # doesn't use the mqtt_client arg at all, it POSTs straight to the
+        # Supervisor API gated only by SUPERVISOR_TOKEN being set. That env
+        # var is never set on a dev machine, so unpatched notify_ha silently
+        # no-ops there — but IS set when this suite runs for real inside the
+        # deployed add-on (e.g. via the nightly "Run Test Suite" button),
+        # where every test in this class would otherwise fire a real HA
+        # persistent notification. Must patch per CLAUDE.md's test-path rule.
+        self._notify_patcher = patch('nibe_ha_integration.notify_ha')
+        self._dismiss_patcher = patch('nibe_ha_integration.dismiss_ha')
+        # run_test_suite also gets _get_ha_base_url (for the report link),
+        # wired the same non-injectable way — it makes its own real,
+        # unmocked GET to the Supervisor API when SUPERVISOR_TOKEN is set.
+        self._base_url_patcher = patch(
+            'nibe_ha_integration._get_ha_base_url', return_value=''
+        )
+        self.mock_notify = self._notify_patcher.start()
+        self.mock_dismiss = self._dismiss_patcher.start()
+        self._base_url_patcher.start()
+        self.addCleanup(self._notify_patcher.stop)
+        self.addCleanup(self._dismiss_patcher.stop)
+        self.addCleanup(self._base_url_patcher.stop)
 
         # Create a fresh EntityManager with its own mock, then override its mqtt
         self.em = _make_em()
@@ -3804,19 +5153,35 @@ class TestRegistryWatcherStart(unittest.TestCase):
     def test_no_supervisor_token_returns_without_starting_thread(self):
         w = self._make_watcher()
         with patch.dict('os.environ', {}, clear=True), \
-             patch('threading.Thread') as mock_thread:
+             patch('threading.Thread') as mock_thread, \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
             w.start()
         mock_thread.assert_not_called()
         self.assertIsNone(w._thread)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'No SUPERVISOR_TOKEN — entity registry watcher disabled '
+                '(running outside HA add-on environment)'
+            )
+            for msg in cm.output
+        ))
 
     def test_supervisor_token_starts_daemon_thread(self):
         w = self._make_watcher()
         mock_thread = MagicMock()
         with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
-             patch('threading.Thread', return_value=mock_thread):
+             patch('threading.Thread', return_value=mock_thread) as mock_thread_cls, \
+             self.assertLogs('nibe.registry', level='INFO') as cm:
             w.start()
         mock_thread.start.assert_called_once()
         self.assertIs(w._thread, mock_thread)
+        mock_thread_cls.assert_called_once_with(
+            target=w._run, name='nibe_registry_watcher', daemon=True,
+        )
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Entity registry watcher started')
+            for msg in cm.output
+        ))
 
 
 
@@ -3868,6 +5233,15 @@ class TestRegistryWatcherStop(unittest.TestCase):
         w._thread = mock_thread
         w.stop()
         mock_thread.join.assert_called_once_with(timeout=5)
+
+    def test_stop_logs_stopped_message(self):
+        w = self._make_watcher()
+        with self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w.stop()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Entity registry watcher stopped')
+            for msg in cm.output
+        ))
 
     def test_stop_no_thread_does_not_raise(self):
         w = self._make_watcher()
@@ -3929,17 +5303,19 @@ class TestConnectAndSubscribe(unittest.TestCase):
 
     def test_subscription_failure_closes_and_raises(self):
         w = self._make_watcher()
+        sub_result = {"id": 1, "type": "result", "success": False}
         ws_mod, ws = self._make_ws_mod([
             {"type": "auth_required"},
             {"type": "auth_ok"},
-            {"id": 1, "type": "result", "success": False},   # sub failed
+            sub_result,   # sub failed
         ])
         with (
             patch.dict('sys.modules', {'websocket': ws_mod}),
-            self.assertRaises(RuntimeError),
+            self.assertRaises(RuntimeError) as cm,
         ):
             w._connect_and_subscribe("tok")
         ws.close.assert_called_once()
+        self.assertEqual(str(cm.exception), f"Event subscription failed: {sub_result}")
 
     def test_connects_authenticates_and_subscribes_with_real_arguments(self):
         """create_connection must use the real supervisor websocket URL and
@@ -3978,11 +5354,41 @@ class TestConnectAndSubscribe(unittest.TestCase):
             # _fetch_entity_registry will call recv once more
             {"id": 2, "type": "result", "success": True, "result": []},
         ])
-        with patch.dict('sys.modules', {'websocket': ws_mod}):
+        with patch.dict('sys.modules', {'websocket': ws_mod}), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
             result = w._connect_and_subscribe("tok")
         self.assertIs(result, ws)
         from nibe_ha_integration import HAEntityRegistryWatcher
-        ws.settimeout.assert_any_call(HAEntityRegistryWatcher._PING_INTERVAL_S)
+        # assert_any_call(30) would pass trivially even if this specific
+        # call were mutated: _fetch_entity_registry (called internally,
+        # just before this line runs) also calls ws.settimeout(30) for an
+        # unrelated reason, and _PING_INTERVAL_S's real value (30) happens
+        # to match. The LAST call is the one this line actually makes —
+        # _fetch_entity_registry's own settimeout(30)/settimeout(None) both
+        # happen earlier, inside its try/finally.
+        ws.settimeout.assert_called_with(HAEntityRegistryWatcher._PING_INTERVAL_S)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'WebSocket connected and subscribed to entity_registry_updated events'
+            )
+            for msg in cm.output
+        ))
+
+    def test_success_updates_unique_id_map_from_fetch_entity_registry(self):
+        """_unique_id_map must be set to _fetch_entity_registry()'s actual
+        return value, not left as None/unset — patch it directly so the
+        assertion is independent of the real registry-fetch parsing logic."""
+        w = self._make_watcher()
+        ws_mod, _ws = self._make_ws_mod([
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+            {"id": 1, "type": "result", "success": True},    # sub OK
+        ])
+        sentinel_map = {'sensor.x': 'unique_id_x'}
+        with patch.dict('sys.modules', {'websocket': ws_mod}), \
+             patch.object(w, '_fetch_entity_registry', return_value=sentinel_map):
+            w._connect_and_subscribe("tok")
+        self.assertEqual(w._unique_id_map, sentinel_map)
 
 
 
@@ -4180,6 +5586,37 @@ class TestRegistryWatcherRun(unittest.TestCase):
         w._pub = MagicMock()
         return w
 
+    def test_thread_exiting_log_has_exact_text(self):
+        w = self._make_watcher()
+        w._stop_event.set()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._run()
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'DEBUG:nibe.registry:Registry watcher thread exiting'
+            for msg in cm.output
+        ))
+
+    def test_missing_supervisor_token_passes_real_empty_string_default(self):
+        """os.environ.get('SUPERVISOR_TOKEN', '') must default to '' — not
+        None or a truthy placeholder — when the env var is unset. _run()
+        itself has no early-return guard for a missing token (unlike
+        start()/refresh_registry(), which do); it always calls
+        _connect_and_subscribe(token) regardless, so a truthy garbage
+        default here would send bogus auth credentials over the WebSocket
+        instead of the real, honest empty string."""
+        w = self._make_watcher()
+        captured = []
+        def fake_connect(token):
+            captured.append(token)
+            w._stop_event.set()
+            raise RuntimeError("stop probing")
+        with patch.dict('os.environ', {}, clear=True), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch.object(w._stop_event, 'wait'):
+            w._run()
+        self.assertEqual(captured, [''])
+
     def test_stop_event_set_before_run_exits_immediately(self):
         """If stop_event is already set, the while loop body never executes."""
         w = self._make_watcher()
@@ -4209,6 +5646,190 @@ class TestRegistryWatcherRun(unittest.TestCase):
             w._run()
         # after MAX_CONSEC_FAILURES=10 attempts it returns; stop_event not set
         self.assertFalse(w._stop_event.is_set())
+
+    def test_empty_recv_raises_with_exact_connection_error_text(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = ""
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch.object(w._stop_event, 'wait') as mock_wait, \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            def fake_wait(timeout=None):
+                w._stop_event.set()
+            mock_wait.side_effect = fake_wait
+            w._run()
+        self.assertTrue(any(
+            'WebSocket closed by server (empty recv)' in msg for msg in cm.output
+        ))
+
+    def test_malformed_frame_logged_with_exact_debug_text(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        call_count = [0]
+
+        def fake_recv():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "NOT_JSON {{{"
+            w._stop_event.set()
+            return json.dumps({"type": "pong"})
+
+        ws.recv.side_effect = fake_recv
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._run()
+        self.assertTrue(any(
+            msg.splitlines()[0].startswith(
+                'DEBUG:nibe.registry:Registry watcher: discarding malformed frame: '
+            )
+            for msg in cm.output
+        ))
+
+    def test_malformed_frame_debug_call_has_exact_format_and_real_exception(self):
+        """Same scenario, but asserting the mocked log call's exact args
+        directly — the sibling test above only checks a startswith prefix,
+        which can't distinguish the real exception object from a
+        dropped/None arg, since both produce a message with that same
+        prefix once formatted into text."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        call_count = [0]
+
+        def fake_recv():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "NOT_JSON {{{"
+            w._stop_event.set()
+            return json.dumps({"type": "pong"})
+
+        ws.recv.side_effect = fake_recv
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch('nibe_ha_integration.log_registry') as mock_log:
+            w._run()
+        debug_call = next(
+            c for c in mock_log.debug.call_args_list
+            if c.args[0] == "Registry watcher: discarding malformed frame: %s"
+        )
+        self.assertIsInstance(debug_call.args[1], json.JSONDecodeError)
+
+    def test_empty_recv_error_message_has_exact_text(self):
+        """The sibling `_in_` test above can't distinguish the real text
+        from an XX-wrapped mutant, since 'text' is still a substring of
+        'XXtextXX' — an exact equality check on the captured exception is
+        needed instead."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = ""
+
+        def fake_connect(_token):
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch.object(w._stop_event, 'wait') as mock_wait, \
+             patch('nibe_ha_integration.log_registry') as mock_log:
+            def fake_wait(timeout=None):
+                w._stop_event.set()
+            mock_wait.side_effect = fake_wait
+            w._run()
+        # "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)"
+        warning_call = mock_log.warning.call_args
+        caught_exc = warning_call.args[1]
+        self.assertEqual(str(caught_exc), 'WebSocket closed by server (empty recv)')
+
+
+    def test_import_error_logged_with_exact_warning_text(self):
+        w = self._make_watcher()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=ImportError('no module')), \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            w._run()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "websocket-client not installed — entity registry watcher cannot run. "
+                "Add 'websocket-client' to requirements.txt."
+            )
+            for msg in cm.output
+        ))
+
+    def test_give_up_logged_with_exact_warning_text_and_count(self):
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = self._make_watcher()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe',
+                          side_effect=RuntimeError('refused')), \
+             patch.object(w._stop_event, 'wait'), \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            w._run()
+        expected = (
+            f'Registry watcher: {HAEntityRegistryWatcher._MAX_CONSEC_FAILURES} '
+            'consecutive failures — giving up. HA-side entity enable/disable '
+            'events will not be detected.'
+        )
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(expected) for msg in cm.output
+        ))
+
+    def test_reconnect_warning_includes_the_real_exception_text(self):
+        w = self._make_watcher()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe',
+                          side_effect=[RuntimeError('specific reason'),
+                                       RuntimeError('stop')]), \
+             patch.object(w._stop_event, 'wait') as mock_wait, \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            def fake_wait(timeout=None):
+                w._stop_event.set()
+            mock_wait.side_effect = fake_wait
+            w._run()
+        self.assertTrue(any(
+            'Registry watcher disconnected (specific reason) — reconnecting in '
+            in msg and '(failure 1/10)' in msg
+            for msg in cm.output
+        ))
+
+    def test_reconnect_warning_has_exact_text_and_real_args(self):
+        """The sibling test above uses `in`, which can't distinguish the
+        real text from an XX-wrapped mutant ('text' is still a substring
+        of 'XXtextXX') — assert on the mocked call's exact args instead."""
+        w = self._make_watcher()
+        real_err = RuntimeError('specific reason')
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe',
+                          side_effect=[real_err, RuntimeError('stop')]), \
+             patch.object(w._stop_event, 'wait') as mock_wait, \
+             patch('nibe_ha_integration.log_registry') as mock_log:
+            def fake_wait(timeout=None):
+                w._stop_event.set()
+            mock_wait.side_effect = fake_wait
+            w._run()
+        mock_log.warning.assert_called_once_with(
+            "Registry watcher disconnected (%s) — reconnecting in %ds "
+            "(failure %d/%d)",
+            real_err, w._INITIAL_BACKOFF, 1, w._MAX_CONSEC_FAILURES,
+        )
+
+    def test_handle_event_error_warning_has_exact_text_and_real_exception(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        real_err = RuntimeError('handler exploded')
+
+        def fake_recv():
+            w._stop_event.set()
+            return json.dumps({"type": "event", "event": {}})
+
+        ws.recv.side_effect = fake_recv
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch.object(w, '_handle_event', side_effect=real_err), \
+             patch('nibe_ha_integration.log_registry') as mock_log:
+            w._run()
+        mock_log.warning.assert_called_once_with(
+            "Error handling registry event: %s", real_err, exc_info=True,
+        )
 
     def test_ws_close_exception_in_finally_is_swallowed(self):
         """ws.close() raising during teardown must not propagate — it's
@@ -4336,6 +5957,436 @@ class TestRegistryWatcherRun(unittest.TestCase):
         with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
              patch.object(w, '_connect_and_subscribe', side_effect=fake_connect):
             w._run()   # must return without scheduling retry
+
+    def test_stop_event_set_during_exception_still_reaches_exit_log(self):
+        """The stop_event-set branch inside the except handler must `break`
+        out of the while loop (falling through to the trailing 'thread
+        exiting' debug log just after it), not `return` early and skip
+        that log line — a mutated `return` here would still pass every
+        other _run test since none of them assert on this final log."""
+        w = self._make_watcher()
+        def fake_connect(_token):
+            w._stop_event.set()
+            raise RuntimeError("shutting down")
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._run()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Registry watcher thread exiting')
+            for msg in cm.output
+        ))
+
+    def test_token_defaults_to_empty_string_when_env_var_unset(self):
+        w = self._make_watcher()
+
+        def fake_connect(_token):
+            w._stop_event.set()
+            raise RuntimeError('boom')
+
+        with patch.dict('os.environ', {}, clear=True), \
+             patch.object(w, '_connect_and_subscribe',
+                          side_effect=fake_connect) as mock_connect:
+            w._run()
+        mock_connect.assert_called_once_with('')
+
+    def test_current_ws_is_set_to_the_real_connected_ws_object(self):
+        """_current_ws must be set to the actual ws returned by
+        _connect_and_subscribe — not None/some other object — so stop()
+        can close the right socket."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        seen = []
+
+        def fake_recv():
+            seen.append(w._current_ws)
+            w._stop_event.set()
+            return ""
+
+        ws.recv.side_effect = fake_recv
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws):
+            w._run()
+        self.assertEqual(seen, [ws])
+
+    def test_consec_failures_resets_to_zero_on_reconnect_then_counts_again(self):
+        """After a successful reconnect, consec_failures must reset to
+        exactly 0 — not some other fixed value. Pins the EXACT number of
+        post-reset failures tolerated before give-up (_MAX_CONSEC_FAILURES,
+        i.e. 10): a reset to 1 instead of 0 would give up one attempt
+        early, which a loose '>= budget' check wouldn't catch."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = self._make_watcher()
+        ws = MagicMock()
+        attempt = [0]
+
+        def fake_connect(_token):
+            attempt[0] += 1
+            if attempt[0] == 1:
+                raise RuntimeError('first failure')
+            if attempt[0] == 2:
+                return ws  # succeeds — must reset consec_failures to 0
+            raise RuntimeError(f'failure after reset #{attempt[0]}')
+
+        ws.recv.return_value = ""  # immediately disconnects after the success
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch.object(w._stop_event, 'wait'):
+            w._run()
+        # Attempt 1: fails (consec_failures 0->1).
+        # Attempt 2: connect succeeds (resets consec_failures to 0), but its
+        # immediate empty recv() is itself a failure, bumping 0->1 again.
+        # Attempts 3..11 (9 more): each a fresh connect failure, bumping
+        # 1->10, at which point the give-up path returns without attempt 12.
+        self.assertEqual(attempt[0], 1 + HAEntityRegistryWatcher._MAX_CONSEC_FAILURES)
+
+    def test_ping_timeout_uses_elapsed_time_not_sum(self):
+        """The keepalive check must be `now - ping_sent_at` (elapsed time
+        since the ping), not `now + ping_sent_at` — with real epoch
+        timestamps, a `+` here would make the check always true (the sum
+        of two large epoch values always exceeds _PING_TIMEOUT_S), forcing
+        a reconnect on literally the next recv after any ping is sent,
+        even though no time has actually elapsed."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        call_count = [0]
+
+        def fake_recv():
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                raise WebSocketTimeoutException("timeout")
+            w._stop_event.set()
+            raise WebSocketTimeoutException("stop")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+        connect_count = [0]
+
+        def fake_connect(_token):
+            connect_count[0] += 1
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect):
+            w._run()
+        # A real elapsed-time check never trips the keepalive-timeout
+        # reconnect here (pings are sent back-to-back, no real delay) —
+        # only one connection should ever have been made.
+        self.assertEqual(connect_count[0], 1)
+
+    def test_ping_payload_uses_id_key(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        def fake_recv():
+            w._stop_event.set()
+            raise WebSocketTimeoutException("timeout")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws):
+            w._run()
+        sent = json.loads(ws.send.call_args.args[0])
+        self.assertIn('id', sent)
+        self.assertEqual(sent['type'], 'ping')
+
+    def test_keepalive_timeout_boundary_exactly_at_limit_does_not_reconnect(self):
+        """The keepalive check is `elapsed > _PING_TIMEOUT_S` (strictly
+        greater), so elapsed == _PING_TIMEOUT_S exactly must NOT trigger a
+        reconnect — a `>=` mutant would reconnect one instant too early."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        real_time = __import__('time').time
+        base = real_time()
+        call_count = [0]
+
+        def fake_time():
+            call_count[0] += 1
+            # 1st call: store ping_sent_at = base. 2nd call: check elapsed —
+            # return exactly base + _PING_TIMEOUT_S (elapsed == limit).
+            if call_count[0] == 1:
+                return base
+            if call_count[0] == 2:
+                return base + HAEntityRegistryWatcher._PING_TIMEOUT_S
+            w._stop_event.set()
+            return real_time()
+
+        recv_count = [0]
+
+        def fake_recv():
+            recv_count[0] += 1
+            if recv_count[0] <= 2:
+                raise WebSocketTimeoutException("timeout")
+            w._stop_event.set()
+            raise WebSocketTimeoutException("stop")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+        connect_count = [0]
+
+        def fake_connect(_token):
+            connect_count[0] += 1
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch('nibe_ha_integration.time.time', side_effect=fake_time):
+            w._run()
+        self.assertEqual(connect_count[0], 1, "exactly-at-limit must not reconnect")
+
+    def test_keepalive_timeout_past_limit_reconnects_with_exact_error_text(self):
+        """One instant past _PING_TIMEOUT_S must reconnect, and the
+        ConnectionError's message — surfaced via the 'Registry watcher
+        disconnected (%s)' warning — must be the real, exact text, not
+        dropped/None."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        real_time = __import__('time').time
+        base = real_time()
+        call_count = [0]
+
+        def fake_time():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return base
+            if call_count[0] == 2:
+                return base + HAEntityRegistryWatcher._PING_TIMEOUT_S + 0.001
+            w._stop_event.set()
+            return real_time()
+
+        def fake_recv():
+            raise WebSocketTimeoutException("timeout")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+
+        def fake_connect(_token):
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch('nibe_ha_integration.time.time', side_effect=fake_time), \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            w._run()
+        expected = (
+            f"WebSocket keepalive timeout — no pong received "
+            f"in {HAEntityRegistryWatcher._PING_TIMEOUT_S}s after ping"
+        )
+        self.assertTrue(any(expected in msg for msg in cm.output))
+
+    def test_ping_timeout_branch_continues_not_breaks_inner_loop(self):
+        """After sending a keepalive ping on recv timeout, the inner recv
+        loop must `continue` (go straight back to ws.recv()) — not `break`
+        out to the outer loop, which would tear down and reconnect the
+        whole WebSocket unnecessarily on every single ping."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        recv_count = [0]
+
+        def fake_recv():
+            recv_count[0] += 1
+            if recv_count[0] >= 3:
+                w._stop_event.set()
+            raise WebSocketTimeoutException("timeout")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+        connect_count = [0]
+
+        def fake_connect(_token):
+            connect_count[0] += 1
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect):
+            w._run()
+        self.assertEqual(
+            connect_count[0], 1,
+            "repeated ping timeouts must not force a reconnect each time",
+        )
+        self.assertGreaterEqual(recv_count[0], 3)
+
+    def test_ping_sent_at_reset_to_zero_after_any_non_timeout_recv(self):
+        """Any successfully received frame (not just pong) must reset
+        ping_sent_at back to 0.0 — not None or a nonzero placeholder —
+        clearing the in-flight-ping state so the next timeout starts a
+        fresh keepalive cycle rather than immediately looking stale."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        try:
+            from websocket import WebSocketTimeoutException
+        except ImportError:
+            WebSocketTimeoutException = TimeoutError
+
+        call_count = [0]
+
+        def fake_recv():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise WebSocketTimeoutException("timeout")  # sends a ping
+            if call_count[0] == 2:
+                return json.dumps({"type": "pong"})  # resets ping_sent_at
+            if call_count[0] == 3:
+                # A second timeout right after the pong: if ping_sent_at
+                # wasn't reset to a falsy 0.0, `ping_sent_at > 0` would be
+                # true here and (with real elapsed time near 0) still not
+                # raise — so this alone can't distinguish 0.0 from a huge
+                # leftover value staying > 0 without also being "elapsed".
+                # What it DOES prove: no crash/TypeError from a None
+                # ping_sent_at flowing into the `now - ping_sent_at` subtraction.
+                w._stop_event.set()
+                raise WebSocketTimeoutException("timeout2")
+            raise WebSocketTimeoutException("stop")
+
+        ws.recv.side_effect = fake_recv
+        ws.send = MagicMock()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws):
+            w._run()  # must not raise (TypeError if ping_sent_at were None)
+        self.assertGreaterEqual(ws.send.call_count, 2)
+
+    def test_invalid_json_frame_continues_not_breaks_inner_loop(self):
+        """A single malformed frame must not tear down and reconnect the
+        whole WebSocket — the inner loop must `continue`, not `break`."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        recv_count = [0]
+
+        def fake_recv():
+            recv_count[0] += 1
+            if recv_count[0] >= 3:
+                w._stop_event.set()
+            return "NOT_JSON"
+
+        ws.recv.side_effect = fake_recv
+        connect_count = [0]
+
+        def fake_connect(_token):
+            connect_count[0] += 1
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect):
+            w._run()
+        self.assertEqual(connect_count[0], 1)
+        self.assertGreaterEqual(recv_count[0], 3)
+
+    def test_pong_message_continues_not_breaks_inner_loop(self):
+        """Receiving a pong must not tear down and reconnect the whole
+        WebSocket — the inner loop must `continue`, not `break`."""
+        w = self._make_watcher()
+        ws = MagicMock()
+        recv_count = [0]
+
+        def fake_recv():
+            recv_count[0] += 1
+            if recv_count[0] >= 3:
+                w._stop_event.set()
+            return json.dumps({"type": "pong"})
+
+        ws.recv.side_effect = fake_recv
+        connect_count = [0]
+
+        def fake_connect(_token):
+            connect_count[0] += 1
+            return ws
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect):
+            w._run()
+        self.assertEqual(connect_count[0], 1)
+        self.assertGreaterEqual(recv_count[0], 3)
+
+    def test_handle_event_error_logs_with_traceback_info(self):
+        """A raised exception inside _handle_event must be logged with
+        exc_info=True (real traceback attached) — not False, which would
+        silently drop the stack trace needed to actually debug it."""
+        w = self._make_watcher()
+        ws = MagicMock()
+
+        def fake_recv():
+            w._stop_event.set()
+            return json.dumps({"type": "event", "event": {}})
+
+        ws.recv.side_effect = fake_recv
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch.object(w, '_handle_event', side_effect=RuntimeError('boom')), \
+             patch('nibe_ha_integration.log_registry') as mock_log:
+            w._run()
+        mock_log.warning.assert_called_once()
+        self.assertTrue(mock_log.warning.call_args.kwargs.get('exc_info'))
+
+    def test_consec_failures_increments_by_one_per_failure(self):
+        """consec_failures must increment by exactly 1 per failed connect
+        attempt — pins the exact operator (+=1), not e.g. a fixed
+        reassignment or decrement, by checking the reported count in the
+        reconnect warning across two consecutive failures."""
+        w = self._make_watcher()
+        attempt = [0]
+
+        def fake_connect(_token):
+            attempt[0] += 1
+            if attempt[0] >= 3:
+                w._stop_event.set()
+            raise RuntimeError(f'failure {attempt[0]}')
+
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', side_effect=fake_connect), \
+             patch.object(w._stop_event, 'wait'), \
+             self.assertLogs('nibe.registry', level='WARNING') as cm:
+            w._run()
+        # Second reconnect warning must report "failure 2/10" — a `=1`
+        # mutation would report 1/10 again; a `-=1` would report -1/10.
+        self.assertTrue(any(
+            'failure 2/10' in msg for msg in cm.output
+        ))
+
+    def test_handle_event_receives_empty_dict_default_when_event_key_absent(self):
+        """msg.get('event', {}) must default to an empty dict — not None —
+        when the 'event' key is entirely absent from an event-type message,
+        or _handle_event(None) would crash on its own .get() calls."""
+        w = self._make_watcher()
+        ws = MagicMock()
+
+        def fake_recv():
+            w._stop_event.set()
+            return json.dumps({"type": "event"})  # no 'event' key
+
+        ws.recv.side_effect = fake_recv
+        received = []
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe', return_value=ws), \
+             patch.object(w, '_handle_event', side_effect=received.append):
+            w._run()
+        self.assertEqual(received, [{}])
 
 
 
@@ -4485,6 +6536,25 @@ class TestHandleEventExceptionIsolation(unittest.TestCase):
             w._run()
         # _INITIAL_BACKOFF=2, doubling: 2, 4, 8, ...
         self.assertEqual(waits, [2, 4, 8])
+
+    def test_backoff_sequence_caps_at_max_backoff_before_giving_up(self):
+        """The doubling-with-cap formula (backoff = min(backoff*2,
+        _MAX_BACKOFF)) is only exercised up to 8s by the 3-step doubling
+        test above — it never reaches _MAX_BACKOFF=300. With
+        _INITIAL_BACKOFF=2, the cap is first hit on the 8th wait (256*2=512
+        > 300), so run the watcher through all 10 failures (the real
+        give-up threshold) and check every wait against a formula computed
+        independently of the code under test, not read back from it."""
+        w = self._make_watcher()
+        waits = []
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch.object(w, '_connect_and_subscribe',
+                          side_effect=RuntimeError("connection refused")), \
+             patch.object(w._stop_event, 'wait', side_effect=lambda timeout=None: waits.append(timeout)):
+            w._run()
+        expected = [min(2 * (2 ** i), 300) for i in range(9)]
+        self.assertEqual(waits, expected)
+        self.assertEqual(waits[-1], 300, "backoff must be capped, not left to grow unbounded")
 
     def test_gives_up_at_exactly_max_consec_failures_not_one_before(self):
         """The give-up threshold is '>=' _MAX_CONSEC_FAILURES (10) — must
@@ -4785,6 +6855,36 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         states = [p for t, p in calls if t == MgmtTopic.RUN_TESTS_STATE]
         self.assertIn('passed', states)
 
+    def test_html_postprocess_exception_log_has_exact_text_and_real_args(self):
+        """The sibling tests above only check the run doesn't crash — the
+        diagnostic log's exact text/path/exception are otherwise untested."""
+        real_err = PermissionError('read-only filesystem')
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._trigger_and_wait(
+                returncode=0, stdout='2226 passed in 51s',
+                open_side_effect=real_err,
+            )
+        warning_call = next(
+            c for c in mock_log.warning.call_args_list
+            if c.args and c.args[0] == 'Could not post-process HTML report at %s: %s'
+        )
+        self.assertEqual(warning_call.args[1], '/homeassistant/www/nibe_test_report.html')
+        self.assertEqual(warning_call.args[2], real_err)
+
+    def test_post_run_report_check_log_has_exact_text_and_real_args(self):
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._trigger_and_wait(
+                returncode=0, stdout='2226 passed in 51s',
+                report_exists=True,
+            )
+        info_call = next(
+            c for c in mock_log.info.call_args_list
+            if c.args and c.args[0] == 'Post-run report check: exists=%s size=%d at %s'
+        )
+        self.assertEqual(info_call.args[1], True)
+        self.assertEqual(info_call.args[2], 123456)
+        self.assertEqual(info_call.args[3], '/homeassistant/www/nibe_test_report.html')
+
     # ── Pass-path output parsing ──────────────────────────────────────────────
 
     def test_pass_empty_stdout_summary_is_empty_string(self):
@@ -4836,6 +6936,30 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         self.assertIn("nibe_test_report.html", msg)
         self.assertNotIn(".......F......", msg)
 
+    def test_failure_line_splits_on_first_dash_separator_not_last(self):
+        """FAILED lines with multiple ' - ' occurrences (e.g. the assertion
+        message itself contains ' - ') must split the test path from the
+        message at the FIRST occurrence — the pytest format is always
+        '<test path> - <message>', and the message can legitimately
+        contain more ' - ' sequences of its own. `rpartition` here would
+        wrongly fold part of the message into the "test path" bold
+        heading."""
+        output = (
+            '=========================== short test summary info ============================\n'
+            'FAILED tests/test_x.py::TestFoo::test_bar - AssertionError: got 1 - 2 = -1\n'
+            '======================================================================\n'
+            '1 failed in 2.00s'
+        )
+        captured = {}
+        import nibe_ha_integration as _hi
+        def _fake_notify(mqtt_client, title, message, notification_id):
+            captured['message'] = message
+        with patch.object(_hi, 'notify_ha', side_effect=_fake_notify):
+            self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
+        message = captured['message']
+        self.assertIn('**tests/test_x.py::TestFoo::test_bar**', message)
+        self.assertIn('`AssertionError: got 1 - 2 = -1`', message)
+
     def test_failure_notification_counts_line_precedes_test_name(self):
         """The counts line must appear before the test name in the notification
         so the headline is immediately visible without scrolling."""
@@ -4865,6 +6989,46 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
 
     # ── Notification truncation ───────────────────────────────────────────────
 
+    def test_failure_notification_body_joins_multiple_fail_lines_with_blank_line(self):
+        """Multiple formatted FAILED entries in the notification body must
+        be separated by a real blank line ('\\n\\n'), not a literal
+        placeholder — this is what makes each failure render as its own
+        paragraph in the HA notification."""
+        output = (
+            "=========================== short test summary info ============================\n"
+            "FAILED tests/test_foo.py::test_one - AssertionError: first\n"
+            "FAILED tests/test_foo.py::test_two - AssertionError: second\n"
+            "2 failed in 0.5s\n"
+        )
+        captured = {}
+        def _fake_notify(mqtt_client, title, message, notification_id):
+            captured['message'] = message
+        import nibe_ha_integration as _hi
+        with patch.object(_hi, 'notify_ha', side_effect=_fake_notify):
+            self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
+        message = captured['message']
+        self.assertIn(
+            '**tests/test_foo.py::test_one**\n`AssertionError: first`\n\n'
+            '**tests/test_foo.py::test_two**\n`AssertionError: second`',
+            message,
+        )
+
+    def test_failure_notification_body_wraps_summary_in_code_block_when_no_fail_lines(self):
+        """When no FAILED lines could be extracted, the body must fall back
+        to the plain summary wrapped in a triple-backtick code block — not
+        an empty/None body."""
+        output = "some unparseable failure output\n1 failed in 0.5s\n"
+        captured = {}
+        def _fake_notify(mqtt_client, title, message, notification_id):
+            captured['message'] = message
+        import nibe_ha_integration as _hi
+        with patch.object(_hi, 'notify_ha', side_effect=_fake_notify):
+            self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
+        message = captured['message']
+        self.assertIn('```\n', message)
+        self.assertIn('\n```', message)
+        self.assertIn('1 failed in 0.5s', message)
+
     def test_failure_notification_truncated_when_exceeds_max(self):
         """When the assembled notification message exceeds _MAX_NOTIF=2048 chars
         the truncation suffix is appended and the report link reattached.
@@ -4878,6 +7042,12 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
             self._trigger_and_wait(returncode=1, stdout=long_summary,
                                    patch_notify=False)
         self.assertIn('message', captured, 'notify_ha was not called')
+        # Pin the exact truncated length: kept-prefix (_MAX_NOTIF -
+        # len(report_link) - 10) + len('\n…\n\n') (4) + report_link —
+        # simplifies to exactly _MAX_NOTIF - 6, catching an off-by-N error
+        # in either the -10 offset or the slice's sign that a looser
+        # "roughly under budget" check would miss.
+        self.assertEqual(len(captured['message']), 2048 - 6)
         # Production code appends "\n…\n\n" (ellipsis) — not the word "truncated"
         self.assertIn('…', captured['message'])
         self.assertIn('nibe_test_report.html', captured['message'])
@@ -4941,6 +7111,18 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         # The summary must contain the counts_line (re-appended by line 946)
         self.assertIn("........", attrs["summary"])
 
+    def test_pass_counts_line_not_duplicated_when_already_meaningful(self):
+        """When the counts line is itself a normal (non-noise) meaningful
+        line, it's already captured by the list comprehension — the
+        `counts_line not in meaningful` guard must prevent it being
+        appended a second time. An `or` in place of `and`, or `in` in
+        place of `not in`, would duplicate it."""
+        output = "5 passed in 1.23s\n"
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertEqual(summary.count("5 passed in 1.23s"), 1)
+
     def test_pass_xdist_noise_stripped_from_summary(self):
         """xdist startup lines and 'u' worker-rescheduling markers must not
         appear in the summary — they are infrastructure noise, not test results."""
@@ -4960,6 +7142,54 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         self.assertNotIn("uuu", summary)
         # Counts line preserved
         self.assertIn("2654 passed", summary)
+
+    def test_pass_summary_joins_meaningful_lines_with_real_newline(self):
+        """When two non-noise lines both survive the filter, they must be
+        joined with a real newline — not some other separator — so the
+        sensor attributes tab renders them as separate lines."""
+        output = (
+            "a genuinely meaningful warning line\n"
+            "5 passed, 1 warning in 1.23s\n"
+        )
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertEqual(
+            summary.split('\n'),
+            ["a genuinely meaningful warning line", "5 passed, 1 warning in 1.23s"],
+        )
+
+    def test_pass_summary_strips_equals_wrapped_section_headers(self):
+        """A pytest section header wrapped in '=' padding (e.g. the
+        'warnings summary' banner) must be stripped as noise on the pass
+        path — '=== ' is a distinct noise prefix from '--- ', not covered
+        by the dash-prefix case alone."""
+        output = (
+            "=== warnings summary ===\n"
+            "5 passed, 1 warning in 1.23s\n"
+        )
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertNotIn("warnings summary", summary)
+        self.assertIn("5 passed", summary)
+
+    def test_pass_summary_progress_marker_charset_is_case_sensitive(self):
+        """The progress-dot filter set only matches uppercase 'F'/'E'
+        (pytest's real failure/error dot-mode markers) — a line containing
+        lowercase 'f'/'e' text is NOT a progress-dot line and must survive
+        into the summary, while a line built purely from the real uppercase
+        markers is noise and must be stripped."""
+        output = (
+            ".FFF..EEE...sx......... [ 50%]\n"
+            "before the fix\n"
+            "5 passed in 1.23s\n"
+        )
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertNotIn(".FFF..EEE...sx", summary)
+        self.assertIn("before the fix", summary)
 
     def test_pass_summary_strips_report_line_regardless_of_dash_count(self):
         """Regression test: pytest-html's report line doesn't always use the
@@ -4983,6 +7213,23 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         self.assertNotIn("ssssss", summary)
         self.assertNotIn("[ 32%]", summary)
         self.assertIn("3287 passed, 28 skipped", summary)
+
+    def test_pass_summary_strips_bare_dash_wrapped_section_marker(self):
+        """A '--- ' (3-dash) wrapped line whose content isn't 'generated
+        html report' or 'bringing up nodes' must still be recognised as
+        noise via the standalone '--- ' prefix entry — the two existing
+        dash-prefix regression tests both happen to use lines whose
+        content also matches a different tuple entry ('generated html
+        report'), so neither actually exercises this entry on its own."""
+        output = (
+            "--- section marker ---\n"
+            "5 passed in 1.23s\n"
+        )
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        attrs = self._get_attrs(calls)
+        summary = attrs["summary"]
+        self.assertNotIn("section marker", summary)
+        self.assertIn("5 passed", summary)
 
     def test_pass_summary_includes_report_link_when_report_exists(self):
         """On success, the summary must point the user at the HTML report
@@ -5010,6 +7257,15 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         self.assertIn("may take a moment to load", summary)
         match = re.search(r'/local/nibe_test_report\.html\?v=(\d+)\)', summary)
         self.assertIsNotNone(match, "report link must have a numeric ?v= cache-buster")
+        # Pin the exact trailing text verbatim (not just a substring) so a
+        # stray marker/case/wording change anywhere in this literal is caught.
+        tail = summary[summary.index('(large file'):]
+        self.assertEqual(
+            tail,
+            '(large file — may take a moment to load. Left-click opens the '
+            'HA dashboard instead of the report — right-click and choose '
+            '"Open link in new tab" to view it.)',
+        )
 
     # ── Elapsed time minutes formatting (line 959) ────────────────────────────
 
@@ -5137,12 +7393,30 @@ class TestRunTestSuiteOuterCrashRecovery(unittest.TestCase):
         with patch('subprocess.Popen', return_value=proc), \
              self.assertLogs('nibe.commands', level='ERROR') as cm:
             run_test_suite(mqtt_client, notify_fn, dismiss_fn, lambda: 'http://ha', done_event)
-        self.assertTrue(any('crashed unexpectedly' in msg for msg in cm.output))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('run_test_suite crashed unexpectedly')
+            for msg in cm.output
+        ))
         from nibe_mqtt_publisher import MgmtTopic
         states = [c.args[1] for c in mqtt_client.publish.call_args_list
                   if c.args[0] == MgmtTopic.RUN_TESTS_STATE]
         self.assertIn('error', states)
         self.assertFalse(done_event.is_set())  # finally: done_event.clear() still ran
+        # Pin the exact crash-recovery publish calls — topic, retained
+        # flag, and JSON payload shape all matter for the HA sensor to
+        # reflect the crash rather than silently keeping a stale value.
+        from nibe_mqtt_publisher import MgmtTopic
+        state_call = [c for c in mqtt_client.publish.call_args_list
+                      if c.args[0] == MgmtTopic.RUN_TESTS_STATE][-1]
+        self.assertEqual(state_call.args[1], 'error')
+        self.assertTrue(state_call.kwargs.get('retain'))
+        attrs_call = [c for c in mqtt_client.publish.call_args_list
+                      if c.args[0] == MgmtTopic.RUN_TESTS_ATTRS][-1]
+        import json as _json
+        payload = _json.loads(attrs_call.args[1])
+        self.assertEqual(payload['status'], 'error')
+        self.assertIn('timestamp', payload)
+        self.assertTrue(attrs_call.kwargs.get('retain'))
 
     def test_publish_of_crash_state_itself_failing_is_also_caught(self):
         """If even the crash-recovery publish fails (e.g. broker down), the
@@ -5163,8 +7437,201 @@ class TestRunTestSuiteOuterCrashRecovery(unittest.TestCase):
         with patch('subprocess.Popen', return_value=proc), \
              self.assertLogs('nibe.commands', level='ERROR') as cm:
             run_test_suite(mqtt_client, notify_fn, dismiss_fn, lambda: 'http://ha', done_event)  # must not raise
-        self.assertTrue(any('Failed to publish crash state' in msg for msg in cm.output))
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Failed to publish crash state for run_test_suite')
+            for msg in cm.output
+        ))
         self.assertFalse(done_event.is_set())
+
+
+class TestRunTestSuiteStaleProcessCleanup(unittest.TestCase):
+    """run_test_suite's defensive cleanup: if _current_proc is somehow
+    still set and still running when a new run starts (guard/state desync),
+    the stale subprocess must be killed via abort_test_suite() before the
+    new one launches — must NOT fire when there is no stale process."""
+
+    def test_stale_still_running_process_is_killed_before_new_run(self):
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        stale_proc = MagicMock()
+        stale_proc.poll.return_value = None  # still running
+        stale_proc.pid = 4242
+        stale_proc.wait.return_value = None
+        nibe_test_runner._current_proc = stale_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg') as mock_killpg, \
+                 patch('os.getpgid', return_value=4242):
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            mock_killpg.assert_called_once_with(4242, signal.SIGKILL)
+            stale_proc.wait.assert_called_once_with(timeout=10)
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_stale_process_not_dying_within_10s_logs_error_but_continues(self):
+        """If SIGKILL doesn't make the stale process exit within the 10s
+        wait, that must be logged as an error — but the new run must
+        still proceed rather than getting stuck."""
+        import subprocess
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        stale_proc = MagicMock()
+        stale_proc.poll.return_value = None  # still running
+        stale_proc.pid = 4242
+        stale_proc.wait.side_effect = subprocess.TimeoutExpired(cmd='pytest', timeout=10)
+        nibe_test_runner._current_proc = stale_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg'), patch('os.getpgid', return_value=4242), \
+                 self.assertLogs('nibe.commands', level='ERROR') as cm:
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            self.assertTrue(any(
+                'did not exit within 10s' in msg for msg in cm.output
+            ))
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_stale_process_timeout_error_has_exact_text_and_real_pid(self):
+        """The sibling test above uses `in`, which can't distinguish the
+        real text from an XX-wrapped mutant — assert on the mocked call's
+        exact args instead."""
+        import subprocess
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        stale_proc = MagicMock()
+        stale_proc.poll.return_value = None
+        stale_proc.pid = 4242
+        stale_proc.wait.side_effect = subprocess.TimeoutExpired(cmd='pytest', timeout=10)
+        nibe_test_runner._current_proc = stale_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg'), patch('os.getpgid', return_value=4242), \
+                 patch('nibe_test_runner.log_commands') as mock_log:
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            error_call = next(
+                c for c in mock_log.error.call_args_list
+                if c.args[0].startswith('Stale test subprocess')
+            )
+            self.assertEqual(
+                error_call.args[0],
+                'Stale test subprocess (pid %d) did not exit within 10s '
+                'after SIGKILL',
+            )
+            self.assertEqual(error_call.args[1], 4242)
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_stale_process_warning_has_exact_text_and_real_pid(self):
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        stale_proc = MagicMock()
+        stale_proc.poll.return_value = None
+        stale_proc.pid = 4242
+        stale_proc.wait.return_value = None
+        nibe_test_runner._current_proc = stale_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg'), patch('os.getpgid', return_value=4242), \
+                 patch('nibe_test_runner.log_commands') as mock_log:
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            from unittest.mock import call
+            self.assertEqual(
+                mock_log.warning.call_args_list[0],
+                call(
+                    'Stale test subprocess (pid %d) found before starting a new '
+                    'run — killing it first', 4242,
+                ),
+            )
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_stale_process_abort_reason_has_exact_text(self):
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        stale_proc = MagicMock()
+        stale_proc.poll.return_value = None
+        stale_proc.pid = 4242
+        stale_proc.wait.return_value = None
+        nibe_test_runner._current_proc = stale_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg'), patch('os.getpgid', return_value=4242), \
+                 patch('nibe_test_runner.abort_test_suite') as mock_abort:
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            mock_abort.assert_called_once_with('superseded by a new test run')
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_no_stale_process_when_current_proc_already_finished(self):
+        """poll() returning a real exit code means the tracked process has
+        already finished — this must NOT be treated as stale/kill it."""
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        finished_proc = MagicMock()
+        finished_proc.poll.return_value = 0  # already exited
+        nibe_test_runner._current_proc = finished_proc
+
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        new_proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        new_proc.communicate.return_value = ('1 passed in 0.1s', '')
+        try:
+            with patch('subprocess.Popen', return_value=new_proc), \
+                 patch('os.killpg') as mock_killpg:
+                run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+            mock_killpg.assert_not_called()
+            finished_proc.wait.assert_not_called()
+        finally:
+            nibe_test_runner._current_proc = None
 
 
 class TestAbortTestSuite(unittest.TestCase):
@@ -5181,6 +7648,27 @@ class TestAbortTestSuite(unittest.TestCase):
     the top-level PID — see abort_test_suite's docstring for why that
     distinction matters with pytest-xdist) and the run thread unblocks and
     finishes."""
+
+    def test_default_reason_is_add_on_shutting_down(self):
+        """Directly pins abort_test_suite()'s default `reason` value,
+        without needing a full in-flight run_test_suite() — the default is
+        only exercised when the shutdown sequence calls abort_test_suite()
+        with no explicit reason."""
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 4242
+        nibe_test_runner._current_proc = mock_proc
+        nibe_test_runner._abort_reason = None
+        try:
+            with patch('os.killpg'), patch('os.getpgid', return_value=4242):
+                abort_test_suite()
+            self.assertEqual(nibe_test_runner._abort_reason, 'add-on shutting down')
+        finally:
+            nibe_test_runner._current_proc = None
+            nibe_test_runner._abort_reason = None
 
     def test_abort_kills_in_flight_subprocess_and_run_completes(self):
         import threading
@@ -5344,6 +7832,28 @@ class TestAbortTestSuite(unittest.TestCase):
         self.assertIsNone(nibe_test_runner._current_proc)
         abort_test_suite("nothing running")  # must not raise
 
+    def test_abort_logs_exact_warning_message_with_reason(self):
+        """abort_test_suite() must log the warning with the exact format
+        string and reason substituted via %s — not a hardcoded/garbled
+        message, and not the reason alone with no format string."""
+        import nibe_test_runner
+        from nibe_test_runner import abort_test_suite
+
+        mock_proc = MagicMock(pid=4242)
+        mock_proc.poll.return_value = None
+        nibe_test_runner._current_proc = mock_proc
+        try:
+            with patch('os.killpg'), patch('os.getpgid', return_value=4242), \
+                 self.assertLogs('nibe.commands', level='WARNING') as cm:
+                abort_test_suite('custom shutdown reason')
+            self.assertEqual(
+                cm.output,
+                ['WARNING:nibe.commands:Aborting in-flight test suite run: custom shutdown reason'],
+            )
+        finally:
+            nibe_test_runner._current_proc = None
+            nibe_test_runner._abort_reason = None
+
     def test_abort_swallows_process_lookup_error_race(self):
         """If the process exits on its own between abort_test_suite()'s
         poll() check and the actual killpg() call, os.killpg() raises
@@ -5464,6 +7974,15 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         self.assertIn('AssertionError: expected 1, got 2', kwargs['message'])
         self.assertEqual(kwargs['notification_id'], 'nibe_test_suite_result')
 
+    def test_notify_fn_receives_the_real_mqtt_client(self):
+        """notify_fn's first positional argument must be the real
+        mqtt_client passed into run_test_suite, not None/a placeholder —
+        notify_ha uses it to actually publish the notification."""
+        mqtt_client, notify_fn, _dismiss_fn, _ = self._run(
+            proc_returncode=1, proc_stdout='1 failed, 4 passed in 2.00s',
+        )
+        self.assertIs(notify_fn.call_args.args[0], mqtt_client)
+
     def test_failed_attrs_payload_exit_code_and_status(self):
         mqtt_client, *_ = self._run(
             proc_returncode=1, proc_stdout='1 failed, 4 passed in 2.00s',
@@ -5471,6 +7990,33 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         attrs = self._attrs(mqtt_client)
         self.assertEqual(attrs['status'], 'failed')
         self.assertEqual(attrs['exit_code'], 1)
+
+    def test_timeout_kill_race_process_already_gone_does_not_raise(self):
+        """If the process group is already gone by the time the hard
+        timeout tries to SIGKILL it (a race with the process exiting on
+        its own right at the 4-hour mark), os.killpg raising
+        ProcessLookupError must be swallowed — not propagate and crash
+        the run."""
+        import subprocess as _sp
+        proc = MagicMock(pid=12345)
+        proc.communicate.side_effect = [
+            _sp.TimeoutExpired(cmd='pytest', timeout=14400), ('', ''),
+        ]
+        mqtt_client = MagicMock()
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        done_event = threading.Event()
+        done_event.set()
+        with patch('subprocess.Popen', return_value=proc), \
+             patch('os.getpgid', return_value=99999), \
+             patch('os.killpg', side_effect=ProcessLookupError):
+            run_test_suite(mqtt_client, MagicMock(), MagicMock(),
+                           lambda: 'http://ha', done_event)  # must not raise
+        from nibe_mqtt_publisher import MgmtTopic
+        states = [c.args[1] for c in mqtt_client.publish.call_args_list
+                  if c.args[0] == MgmtTopic.RUN_TESTS_STATE]
+        self.assertIn('timed_out', states)
 
     def test_timeout_sets_timed_out_status_and_notifies(self):
         import subprocess as _sp
@@ -5484,6 +8030,153 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         self.assertIn('timed_out', states)
         notify_fn.assert_called_once()
         self.assertIn('TIMED OUT', notify_fn.call_args.kwargs['title'])
+
+    def _run_timeout(self, elapsed_seconds, output=''):
+        import subprocess as _sp
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        notify_fn = MagicMock()
+        timeout_exc = _sp.TimeoutExpired(cmd='pytest', timeout=14400)
+        proc = MagicMock(pid=12345)
+        proc.communicate.side_effect = [timeout_exc, (output, '')]
+        calls = {'n': 0}
+
+        def fake_monotonic():
+            calls['n'] += 1
+            return 0.0 if calls['n'] == 1 else float(elapsed_seconds)
+
+        with patch('subprocess.Popen', return_value=proc), \
+             patch('os.getpgid', return_value=99999), patch('os.killpg'), \
+             patch.object(nibe_test_runner.time, 'monotonic', side_effect=fake_monotonic):
+            run_test_suite(mqtt_client, notify_fn, MagicMock(), lambda: 'http://ha', done_event)
+        return notify_fn
+
+    def test_timeout_near_4hr_limit_gets_reduce_max_examples_advice(self):
+        """elapsed >= 14000 (close to the 4-hour hard limit) must produce
+        the exact "reduce max_examples" body verbatim — pins the >= boundary,
+        distinguishes it from the "not necessarily a problem" nowhere-near
+        case, and catches any wording/case/marker drift in the literal."""
+        notify_fn = self._run_timeout(14000)
+        message = notify_fn.call_args.kwargs['message']
+        self.assertEqual(
+            message.split('\n\n')[1],
+            'The test process was killed after running for '
+            '233m 20s, close to the 4-hour hard limit. '
+            'Reduce `max_examples` or `stateful_step_count` in '
+            '`tests/conftest.py` and rebuild the add-on.',
+        )
+
+    def test_timeout_far_from_4hr_limit_gets_diagnostic_advice(self):
+        """elapsed just under 14000 must produce the exact "nowhere near"
+        diagnostic body verbatim, not the "reduce max_examples" advice — a
+        process that died almost instantly is a different problem than one
+        that ran the tests too slowly."""
+        notify_fn = self._run_timeout(13999)
+        message = notify_fn.call_args.kwargs['message']
+        self.assertEqual(
+            message.split('\n\n')[1],
+            'The test process was killed after only 233m 19s — '
+            'nowhere near the 4-hour limit, so this is not a '
+            '"tests are too slow" situation. Check the captured '
+            'output above and the add-on log for what actually '
+            'happened to the subprocess.',
+        )
+
+    def test_timeout_falls_back_to_pre_kill_captured_output_when_drain_empty(self):
+        """If the post-kill drain communicate() returns nothing (process
+        already fully drained/closed), the partial output reported must
+        fall back to whatever the original timeout exception itself had
+        already captured — not silently become empty. An `and` in place of
+        this `or` would break the fallback whenever the drain returns ''
+        (falsy) rather than None."""
+        import subprocess as _sp
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        timeout_exc = _sp.TimeoutExpired(
+            cmd='pytest', timeout=14400, output='pre-kill stdout capture', stderr='pre-kill stderr capture',
+        )
+        proc = MagicMock(pid=12345)
+        proc.communicate.side_effect = [timeout_exc, ('', '')]
+        with patch('subprocess.Popen', return_value=proc), \
+             patch('os.getpgid', return_value=99999), patch('os.killpg'), \
+             self.assertLogs('nibe.commands', level='ERROR') as cm:
+            run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+        logged = '\n'.join(cm.output)
+        self.assertIn('pre-kill stdout capture', logged)
+        self.assertIn('pre-kill stderr capture', logged)
+
+    def test_timeout_elapsed_is_end_minus_start_not_reversed(self):
+        """Pins the timeout branch's elapsed-time computation direction —
+        t_start is read before the subprocess launches and this second
+        time.monotonic() call after the kill must be *later*, so elapsed
+        must be positive and equal to (end - start), not (start - end)."""
+        import subprocess as _sp
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        timeout_exc = _sp.TimeoutExpired(cmd='pytest', timeout=14400)
+        proc = MagicMock(pid=12345)
+        proc.communicate.side_effect = [timeout_exc, ('', '')]
+        calls = {'n': 0}
+
+        def fake_monotonic():
+            calls['n'] += 1
+            return 100.0 if calls['n'] == 1 else 340.0
+
+        with patch('subprocess.Popen', return_value=proc), \
+             patch('os.getpgid', return_value=99999), patch('os.killpg'), \
+             patch.object(nibe_test_runner.time, 'monotonic', side_effect=fake_monotonic):
+            run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed_s'], 240.0)
+
+    def test_html_report_gets_viewport_meta_and_widened_min_width(self):
+        """The HTML post-processing must inject a mobile viewport meta tag
+        right after the charset meta tag, and relax the desktop-oriented
+        800px min-width to 320px so the report is actually usable on a
+        phone — the two string literals involved (and the exact insertion
+        point) are load-bearing, not incidental."""
+        import threading
+        from unittest.mock import mock_open
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='1 passed in 0.1s', stderr='')
+        proc.communicate.return_value = ('1 passed in 0.1s', '')
+        original_html = (
+            '<html><head><meta charset="utf-8"/>'
+            '<style>.wrapper{min-width: 800px}</style></head><body></body></html>'
+        )
+        m = mock_open(read_data=original_html)
+        with patch('subprocess.Popen', return_value=proc), \
+             patch.object(nibe_test_runner, 'open', m, create=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('os.path.getsize', return_value=999):
+            run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+        written = ''.join(c.args[0] for c in m().write.call_args_list)
+        self.assertIn(
+            '<meta charset="utf-8"/>\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1"/>',
+            written,
+        )
+        self.assertIn('min-width: 320px', written)
+        self.assertNotIn('min-width: 800px', written)
 
     def test_timeout_attrs_exit_code_is_negative_one(self):
         import subprocess as _sp
@@ -5521,6 +8214,100 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         args = mock_run.call_args.args[0]
         self.assertEqual(args[0], '/usr/bin/python3')
 
+    def test_python_exe_falls_back_to_which_python_when_python3_not_found(self):
+        """When both sys.executable and `which python3` come up empty, the
+        second-tier fallback must try `which python` before finally
+        hardcoding 'python3' — an `and` in place of the `or` chain here
+        would short-circuit this fallback and jump straight to the
+        hardcoded default even when `which python` would have found a real
+        interpreter."""
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='', stderr='')
+        proc.communicate.return_value = ('', '')
+
+        def _which(name):
+            return '/usr/bin/python' if name == 'python' else None
+
+        with patch('sys.executable', ''), \
+             patch('shutil.which', side_effect=_which), \
+             patch('subprocess.Popen', return_value=proc) as mock_run:
+            run_test_suite(
+                mqtt_client, MagicMock(), MagicMock(),
+                lambda: 'http://ha.local', done_event,
+            )
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], '/usr/bin/python')
+
+    def test_python_exe_hardcoded_fallback_when_nothing_else_resolves(self):
+        """If sys.executable is empty and neither `which python3` nor
+        `which python` finds anything, the interpreter path must fall back
+        to the literal 'python3' rather than None/empty."""
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='', stderr='')
+        proc.communicate.return_value = ('', '')
+        with patch('sys.executable', ''), \
+             patch('shutil.which', return_value=None), \
+             patch('subprocess.Popen', return_value=proc) as mock_run:
+            run_test_suite(
+                mqtt_client, MagicMock(), MagicMock(),
+                lambda: 'http://ha.local', done_event,
+            )
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], 'python3')
+
+    def test_pythonpath_env_points_at_app_directory(self):
+        """The subprocess's PYTHONPATH must be set to <addon_dir>/app —
+        wrong key casing or a wrong path segment would make the spawned
+        pytest process unable to import the bridge's own app modules."""
+        import os
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='', stderr='')
+        proc.communicate.return_value = ('', '')
+        with patch('subprocess.Popen', return_value=proc) as mock_run:
+            run_test_suite(
+                mqtt_client, MagicMock(), MagicMock(),
+                lambda: 'http://ha.local', done_event,
+            )
+        env = mock_run.call_args.kwargs['env']
+        self.assertEqual(os.path.basename(env['PYTHONPATH']), 'app')
+        self.assertNotIn('pythonpath', env)
+
+    def test_running_state_published_with_retain_true(self):
+        """RUN_TESTS_STATE/ATTRS must be published retained — a subscriber
+        connecting mid-run (e.g. the HA sensor re-subscribing after a
+        restart) needs the last-known 'running' state immediately, not just
+        future updates."""
+        import threading
+
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        proc = MagicMock(returncode=0, stdout='', stderr='')
+        proc.communicate.return_value = ('', '')
+        with patch('subprocess.Popen', return_value=proc):
+            run_test_suite(
+                mqtt_client, MagicMock(), MagicMock(),
+                lambda: 'http://ha.local', done_event,
+            )
+        for call in mqtt_client.publish.call_args_list:
+            self.assertTrue(call.kwargs.get('retain'), f'not retained: {call}')
+
     def test_launch_error_message_includes_attempted_python_exe(self):
         """A launch failure's notification body must name the interpreter
         path that was actually attempted, so a "no such file" error is
@@ -5551,6 +8338,162 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         attrs = self._attrs(mqtt_client)
         self.assertEqual(attrs['status'], 'error')
         self.assertEqual(attrs['exit_code'], -2)
+
+    def test_elapsed_s_attr_rounded_to_one_decimal_not_two(self):
+        """Pins round(elapsed, 1) — a mutant rounding to 2 decimals instead
+        would report 5.57 rather than the intended 5.6."""
+        times = iter([1000.0, 1005.567])
+        with patch('time.monotonic', side_effect=lambda: next(times)):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed_s'], 5.6)
+
+    def test_report_size_is_zero_when_report_does_not_exist(self):
+        """report_size must default to 0 (not e.g. 1) when the report file
+        doesn't exist — os.path.getsize() is never even called on a
+        nonexistent path. os.path.isfile is patched explicitly rather than
+        relying on ambient filesystem state — on a real deployment (unlike
+        the dev sandbox) the report path can genuinely already exist from
+        a prior real test run, which previously made this test flaky
+        depending on which machine it ran on."""
+        with patch('nibe_test_runner.os.path.isfile', return_value=False):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertFalse(attrs['report_exists'])
+        self.assertEqual(attrs['report_size'], 0)
+
+    def test_final_attrs_timestamp_key_present_and_string(self):
+        """The final attrs publish must carry a 'timestamp' key (not e.g.
+        a typo'd/wrong-cased key) with the formatted-timestamp value."""
+        with patch('nibe_test_runner._fmt_ts', return_value='2026-08-22 12:00:00'):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['timestamp'], '2026-08-22 12:00:00')
+
+    def test_final_attrs_report_path_key_present_and_correct(self):
+        """The final attrs publish must carry a 'report_path' key (not
+        e.g. a typo'd/wrong-cased key) with the real report path."""
+        mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['report_path'], '/homeassistant/www/nibe_test_report.html')
+
+    def test_failure_summary_joins_fail_lines_with_real_newline(self):
+        """On a failing run, multiple extracted FAILED lines must be joined
+        with a real newline in the published summary."""
+        output = (
+            "=========================== short test summary info ============================\n"
+            "FAILED tests/test_foo.py::test_one - AssertionError: first\n"
+            "FAILED tests/test_foo.py::test_two - AssertionError: second\n"
+            "2 failed in 0.5s\n"
+        )
+        mqtt_client, *_ = self._run(proc_returncode=1, proc_stdout=output)
+        attrs = self._attrs(mqtt_client)
+        lines = attrs['summary'].split('\n')
+        self.assertIn("tests/test_foo.py::test_one - AssertionError: first", lines)
+        self.assertIn("tests/test_foo.py::test_two - AssertionError: second", lines)
+
+    def test_pass_result_logged_via_info_not_error(self):
+        """A passing run (exit_code 0) must log its 'Test suite %s in %s'
+        result line through .info(), not .error() — the reverse (exit_code
+        != 0 or == 1) would flip which log level a clean run shows up
+        under."""
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        info_msgs = [c.args[0] for c in mock_log.info.call_args_list]
+        error_msgs = [c.args[0] for c in mock_log.error.call_args_list]
+        self.assertIn('Test suite %s in %s', info_msgs)
+        self.assertNotIn('Test suite %s in %s (exit code %d)', error_msgs)
+
+    def test_fail_result_logged_via_error_not_info(self):
+        """A failing run (exit_code != 0) must log its result line through
+        .error(), not .info()."""
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._run(proc_returncode=1, proc_stdout='1 failed in 0.1s')
+        info_msgs = [c.args[0] for c in mock_log.info.call_args_list]
+        error_msgs = [c.args[0] for c in mock_log.error.call_args_list]
+        self.assertIn('Test suite %s in %s (exit code %d)', error_msgs)
+        self.assertNotIn('Test suite %s in %s', info_msgs)
+
+    def test_pass_result_log_has_the_real_status_and_elapsed_args(self):
+        """The sibling tests above only check the format string is used —
+        not that its %s args are the real status/elapsed_str, not None."""
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        info_call = next(
+            c for c in mock_log.info.call_args_list
+            if c.args and c.args[0] == 'Test suite %s in %s'
+        )
+        self.assertEqual(info_call.args[1], 'passed')
+        self.assertIsNotNone(info_call.args[2])
+
+    def test_fail_result_log_has_the_real_status_elapsed_and_exit_code_args(self):
+        with patch('nibe_test_runner.log_commands') as mock_log:
+            self._run(proc_returncode=1, proc_stdout='1 failed in 0.1s')
+        error_call = next(
+            c for c in mock_log.error.call_args_list
+            if c.args and c.args[0] == 'Test suite %s in %s (exit code %d)'
+        )
+        self.assertEqual(error_call.args[1], 'failed')
+        self.assertIsNotNone(error_call.args[2])
+        self.assertEqual(error_call.args[3], 1)
+
+    def test_notification_message_exactly_at_max_notif_is_not_truncated(self):
+        """The truncation must trigger on strictly-greater-than _MAX_NOTIF
+        (2048), not >= — a message of exactly 2048 chars must survive
+        untouched (no ellipsis inserted). A single FAILED entry's assertion
+        text (n chars) appears exactly once in the body, and every other
+        part of the message has fixed length for a given call, so message
+        length is `n + C` for some constant C — solve for C with one
+        throwaway call, then hit 2048 exactly on the real call."""
+        def _stdout(n):
+            return (
+                "=========================== short test summary info "
+                "============================\n"
+                f"FAILED tests/test_x.py::test_x - {'x' * n}\n"
+                "1 failed in 0.5s\n"
+            )
+        notify_fn = MagicMock()
+        self._run(proc_returncode=1, proc_stdout=_stdout(1), notify_fn=notify_fn)
+        baseline_len = len(notify_fn.call_args.kwargs['message'])
+        target_n = 2048 - (baseline_len - 1)
+        notify_fn.reset_mock()
+        self._run(proc_returncode=1, proc_stdout=_stdout(target_n), notify_fn=notify_fn)
+        message = notify_fn.call_args.kwargs['message']
+        self.assertEqual(len(message), 2048)
+        self.assertNotIn('…', message)
+
+    def test_report_size_reflects_getsize_of_report_path_when_it_exists(self):
+        """When the report file does exist, report_size must be
+        os.path.getsize() of the actual report_path — not a fixed/zero
+        value and not the size of some other path."""
+        with patch('nibe_test_runner.os.path.isfile', return_value=True), \
+             patch('nibe_test_runner.os.path.getsize') as mock_getsize:
+            mock_getsize.return_value = 123456
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        mock_getsize.assert_called_once_with('/homeassistant/www/nibe_test_report.html')
+        self.assertTrue(attrs['report_exists'])
+        self.assertEqual(attrs['report_size'], 123456)
+
+    def test_launch_error_elapsed_is_end_minus_start_not_reversed(self):
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+        mqtt_client = MagicMock()
+        done_event = threading.Event()
+        done_event.set()
+        calls = {'n': 0}
+
+        def fake_monotonic():
+            calls['n'] += 1
+            return 100.0 if calls['n'] == 1 else 155.0
+
+        with patch('subprocess.Popen', side_effect=OSError('boom')), \
+             patch.object(nibe_test_runner.time, 'monotonic', side_effect=fake_monotonic):
+            run_test_suite(mqtt_client, MagicMock(), MagicMock(), lambda: 'http://ha', done_event)
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed_s'], 55.0)
 
     def test_notification_link_uses_real_base_url(self):
         """The 'View full report' link must use the real get_base_url_fn()
@@ -5621,6 +8564,51 @@ class TestRunTestSuiteMainPaths(unittest.TestCase):
         attrs = self._attrs(mqtt_client2)
         self.assertEqual(attrs['elapsed'], '3m 15s')
 
+    def test_elapsed_exactly_60s_uses_minutes_format(self):
+        """The seconds/minutes format boundary is `elapsed < 60` — exactly
+        60.0s must already use the 'Xm Ys' format ('1m 0s'), not '60.0s'.
+        Distinguishes `<` from `<=`/`< 61`."""
+        times = iter([1000.0, 1060.0])  # exactly 60.0s elapsed
+        with patch('time.monotonic', side_effect=lambda: next(times)):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed'], '1m 0s')
+
+    def test_elapsed_121s_is_two_minutes_not_one(self):
+        """121 // 60 == 2 but 121 // 61 == 1 — pins the divisor used for the
+        minutes component against an off-by-one divisor mutation."""
+        times = iter([1000.0, 1121.0])  # 121s elapsed
+        with patch('time.monotonic', side_effect=lambda: next(times)):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed'], '2m 1s')
+
+    @given(elapsed=st.integers(min_value=0, max_value=59))
+    def test_elapsed_under_60s_formats_as_decimal_seconds(self, elapsed):
+        """For any elapsed < 60 (whole seconds, to avoid float-rounding
+        ambiguity in the `:.0f` seconds format used above 60s), the format
+        must be 'N.0s' — generalizes the single hand-picked 5.5s example
+        elsewhere in this file."""
+        times = iter([1000.0, 1000.0 + elapsed])
+        with patch('time.monotonic', side_effect=lambda: next(times)):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed'], f'{elapsed:.1f}s')
+
+    @given(elapsed=st.integers(min_value=60, max_value=100_000))
+    @example(elapsed=60)    # the exact boundary
+    @example(elapsed=121)   # the // vs // 61 off-by-one divisor
+    def test_elapsed_60s_and_above_formats_as_minutes_and_seconds(self, elapsed):
+        """For any elapsed >= 60 (whole seconds), the format must be
+        'Mm Ss' where M = elapsed // 60 and S = elapsed % 60 exactly —
+        generalizes the two hand-picked boundary tests above to the whole
+        space of minute/second decompositions."""
+        times = iter([1000.0, 1000.0 + elapsed])
+        with patch('time.monotonic', side_effect=lambda: next(times)):
+            mqtt_client, *_ = self._run(proc_returncode=0, proc_stdout='1 passed in 0.1s')
+        attrs = self._attrs(mqtt_client)
+        self.assertEqual(attrs['elapsed'], f'{elapsed // 60}m {elapsed % 60}s')
+
     def test_pass_summary_filters_progress_dot_noise_lines(self):
         """On a pass, pure progress-dot/percentage lines (e.g. '....... [ 50%]')
         must be filtered out of the summary — only meaningful lines (warnings,
@@ -5673,6 +8661,31 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
         w._pub = pub or MagicMock()
         return w
 
+    def test_logs_registry_event_with_real_action_and_entity_id(self):
+        w = self._make_watcher()
+        with patch.object(w, '_schedule_refresh_registry'), \
+             self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._handle_event({'data': {
+                'action': 'create', 'entity_id': 'sensor.nibe_100',
+            }})
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Registry event: action=create, entity_id=sensor.nibe_100'
+            )
+            for msg in cm.output
+        ))
+
+    def test_logs_unknown_entity_id_when_key_absent(self):
+        w = self._make_watcher()
+        with self.assertLogs('nibe.registry', level='DEBUG') as cm:
+            w._handle_event({'data': {'action': 'some_other_action'}})
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                'Registry event: action=some_other_action, entity_id=unknown'
+            )
+            for msg in cm.output
+        ))
+
     # ── create: no uid → _schedule_refresh_registry ──────────────────────────
 
     def test_create_no_uid_calls_schedule_refresh_registry(self):
@@ -5688,6 +8701,25 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
             if w._refresh_timer is not None:
                 w._refresh_timer.cancel()
         mock_sched.assert_called_once()
+
+    # ── update: unique_id nested under 'config' ───────────────────────────────
+
+    def test_update_unique_id_falls_back_to_nested_config_key(self):
+        """When the top-level 'unique_id' key is absent but a nested
+        config.unique_id is present, that nested value must be used —
+        not treated as missing (which would wrongly trigger the
+        _schedule_refresh_registry fallback instead of updating the map
+        directly)."""
+        w = self._make_watcher()
+        with patch.object(w, '_schedule_refresh_registry') as mock_sched:
+            w._handle_event({'data': {
+                'action':    'update',
+                'entity_id': 'sensor.nibe_100',
+                'config':    {'unique_id': 'nibe_100'},
+                # deliberately no top-level 'unique_id'
+            }})
+        mock_sched.assert_not_called()
+        self.assertEqual(w._unique_id_map.get('nibe_100'), 'sensor.nibe_100')
 
     # ── update: no uid → _schedule_refresh_registry ──────────────────────────
 
@@ -5919,6 +8951,109 @@ class TestGetHaBaseUrl(unittest.TestCase):
         self.assertEqual(req.full_url, "http://supervisor/core/api/config")
         self.assertEqual(req.get_header('Authorization'), 'Bearer sekrit-tok')
         self.assertEqual(req.get_method(), 'GET')
+        self.assertEqual(mock_open.call_args.kwargs.get('timeout'), 5)
+
+    def test_returns_empty_string_when_neither_url_present(self):
+        """Neither internal_url nor external_url present (both falsy) must
+        fall back to '' — not None or some other placeholder."""
+        from nibe_ha_integration import _get_ha_base_url
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api({}):
+            result = _get_ha_base_url()
+        self.assertEqual(result, '')
+
+    def test_only_trailing_slashes_stripped_not_internal_ones(self):
+        """rstrip('/') must strip only trailing slashes, not internal path
+        separators — pins the exact stripped character set."""
+        from nibe_ha_integration import _get_ha_base_url
+        cfg = {'internal_url': 'http://192.168.1.10:8123/api//'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg):
+            result = _get_ha_base_url()
+        self.assertEqual(result, 'http://192.168.1.10:8123/api')
+
+    def test_success_logs_resolved_url_verbatim(self):
+        from nibe_ha_integration import _get_ha_base_url
+        cfg = {'internal_url': 'http://192.168.1.10:8123'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg), \
+             self.assertLogs('nibe.mqtt', level='DEBUG') as cm:
+            _get_ha_base_url()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "HA base URL resolved: 'http://192.168.1.10:8123'"
+            )
+            for msg in cm.output
+        ))
+
+    def test_api_error_logs_warning_verbatim(self):
+        from nibe_ha_integration import _get_ha_base_url
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError('refused')), \
+             self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            _get_ha_base_url()
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'WARNING:nibe.mqtt:Could not fetch HA base URL: refused'
+            for msg in cm.output
+        ))
+
+    def test_retry_cooldown_boundary_allows_a_fetch_at_the_exact_instant(self):
+        """`now < _ha_base_url_retry_after` means the cooldown has NOT yet
+        elapsed at `now == retry_after` exactly — a fetch is allowed to
+        proceed at that instant. A `<=` mutant would still block it, one
+        instant too long."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_base_url
+        boundary = _time.time() + 10
+        _hi._ha_base_url_retry_after = boundary
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=boundary), \
+             self._mock_api({'internal_url': 'http://192.168.1.10:8123'}) as mock_open:
+            result = _get_ha_base_url()
+        self.assertEqual(result, 'http://192.168.1.10:8123')
+        mock_open.assert_called_once()
+
+    @given(delta=st.floats(min_value=-120.0, max_value=-0.001,
+                           allow_nan=False, allow_infinity=False))
+    def test_retry_cooldown_blocks_the_fetch_for_any_positive_delta(self, delta):
+        """For any retry_after strictly in the future (now < retry_after,
+        i.e. now - retry_after == delta < 0), the fetch must be blocked —
+        mirrors the same property already added for _get_ha_language,
+        generalizing the single hand-picked delta example above."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_base_url
+        _hi._ha_base_url = None
+        now = _time.time()
+        _hi._ha_base_url_retry_after = now - delta  # delta<0 => retry_after>now
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=now), \
+             patch('urllib.request.urlopen') as mock_open:
+            result = _get_ha_base_url()
+        self.assertEqual(result, '')
+        mock_open.assert_not_called()
+
+    @given(delta=st.floats(min_value=0.0, max_value=120.0,
+                           allow_nan=False, allow_infinity=False))
+    def test_retry_cooldown_allows_the_fetch_for_any_non_positive_delta(self, delta):
+        """The complementary case: now >= retry_after must always allow
+        the fetch to proceed."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_base_url
+        _hi._ha_base_url = None
+        now = _time.time()
+        _hi._ha_base_url_retry_after = now - delta  # delta>=0 => retry_after<=now
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=now), \
+             self._mock_api({'internal_url': 'http://192.168.1.10:8123'}) as mock_open:
+            result = _get_ha_base_url()
+        self.assertEqual(result, 'http://192.168.1.10:8123')
+        mock_open.assert_called_once()
 
     def test_cached_value_is_empty_string_not_none(self):
         """Without a supervisor token, the cached _ha_base_url must be the
@@ -6003,6 +9138,19 @@ class TestGetHaLanguage(unittest.TestCase):
             result = _get_ha_language()
         self.assertEqual(result, '')
 
+    def test_no_supervisor_token_caches_empty_string_not_none(self):
+        """The no-token result must be cached as '' (which passes the
+        module-level `is not None` cache guard), not left as None — a
+        None result would defeat the cache and re-check os.environ on
+        every subsequent call. Distinguishes this permanent-no-token case
+        from the API-failure case, which deliberately stays uncached
+        (None) so it can be retried after the cooldown."""
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        with patch.dict('os.environ', {}, clear=True):
+            _get_ha_language()
+        self.assertEqual(_hi._ha_language, '')
+
     def test_api_failure_returns_empty_string_and_is_retryable(self):
         """A failed fetch must not be cached forever — it's retried after
         the cooldown, unlike a permanently-missing SUPERVISOR_TOKEN."""
@@ -6028,6 +9176,96 @@ class TestGetHaLanguage(unittest.TestCase):
             second = _get_ha_language()
         self.assertEqual(second, 'de')
         mock_open.assert_not_called()
+
+    def test_retry_cooldown_is_a_future_timestamp_not_past(self):
+        """After a failed fetch, _ha_language_retry_after must be set to a
+        point in the FUTURE (now + cooldown) — a `-` in place of the `+`
+        here would set it in the past, defeating the cooldown entirely and
+        letting every subsequent call immediately retry the network."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        before = _time.time()
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError('unreachable')):
+            _get_ha_language()
+        self.assertGreater(_hi._ha_language_retry_after, before)
+
+    def test_retry_cooldown_boundary_allows_a_fetch_at_the_exact_instant(self):
+        """`now < _ha_language_retry_after` means the cooldown has NOT yet
+        elapsed at `now == retry_after` exactly — the retry is allowed to
+        proceed at that instant. A `<=` mutant would instead still block
+        it, one instant too long."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        boundary = _time.time() + 10
+        _hi._ha_language_retry_after = boundary
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=boundary), \
+             self._mock_api({'language': 'fr'}) as mock_open:
+            result = _get_ha_language()
+        self.assertEqual(result, 'fr')
+        mock_open.assert_called_once()
+
+    def test_retry_cooldown_still_active_returns_empty_without_network_call(self):
+        """While the cooldown from a prior failed fetch is still active
+        (now < retry_after), _get_ha_language must return '' immediately
+        without attempting another network call — the actually-blocked
+        case, distinct from the exact-boundary-allows-it test above."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        _hi._ha_language_retry_after = _time.time() + 60  # well within cooldown
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen') as mock_open:
+            result = _get_ha_language()
+        self.assertEqual(result, '')
+        mock_open.assert_not_called()
+
+    @given(delta=st.floats(min_value=-120.0, max_value=-0.001,
+                           allow_nan=False, allow_infinity=False))
+    def test_retry_cooldown_blocks_the_fetch_for_any_positive_delta(self, delta):
+        """For any retry_after strictly in the future (now < retry_after,
+        i.e. now - retry_after == delta < 0), the fetch must be blocked —
+        generalizes the single hand-picked delta=-60 example above to the
+        whole space of 'still within cooldown' offsets."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        _hi._ha_language = None  # @given re-invokes this body per example; setUp only runs once
+        now = _time.time()
+        _hi._ha_language_retry_after = now - delta  # delta<0 => retry_after>now
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=now), \
+             patch('urllib.request.urlopen') as mock_open:
+            result = _get_ha_language()
+        self.assertEqual(result, '')
+        mock_open.assert_not_called()
+
+    @given(delta=st.floats(min_value=0.0, max_value=120.0,
+                           allow_nan=False, allow_infinity=False))
+    def test_retry_cooldown_allows_the_fetch_for_any_non_positive_delta(self, delta):
+        """For any retry_after at or before now (now >= retry_after, i.e.
+        now - retry_after == delta >= 0), the cooldown has elapsed and the
+        fetch must proceed — the complementary case to the property above."""
+        import time as _time
+
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+        _hi._ha_language = None  # @given re-invokes this body per example; setUp only runs once
+        now = _time.time()
+        _hi._ha_language_retry_after = now - delta  # delta>=0 => retry_after<=now
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('time.time', return_value=now), \
+             self._mock_api({'language': 'fr'}) as mock_open:
+            result = _get_ha_language()
+        self.assertEqual(result, 'fr')
+        mock_open.assert_called_once()
 
     def test_independent_of_get_ha_base_url_cache(self):
         """_get_ha_language() must not be blocked or skipped just because
@@ -6058,6 +9296,30 @@ class TestGetHaLanguage(unittest.TestCase):
         self.assertEqual(req.full_url, "http://supervisor/core/api/config")
         self.assertEqual(req.get_header('Authorization'), 'Bearer sekrit-tok')
         self.assertEqual(req.get_method(), 'GET')
+        self.assertEqual(mock_open.call_args.kwargs.get('timeout'), 5)
+
+    def test_success_logs_resolved_language_verbatim(self):
+        from nibe_ha_integration import _get_ha_language
+        cfg = {'language': 'nl'}
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             self._mock_api(cfg), \
+             self.assertLogs('nibe.mqtt', level='DEBUG') as cm:
+            _get_ha_language()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith("HA language resolved: 'nl'")
+            for msg in cm.output
+        ))
+
+    def test_api_error_logs_warning_verbatim(self):
+        from nibe_ha_integration import _get_ha_language
+        with patch.dict('os.environ', {'SUPERVISOR_TOKEN': 'tok'}), \
+             patch('urllib.request.urlopen', side_effect=OSError('refused')), \
+             self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            _get_ha_language()
+        self.assertTrue(any(
+            msg.splitlines()[0] == 'WARNING:nibe.mqtt:Could not fetch HA language: refused'
+            for msg in cm.output
+        ))
 
 
 # ===========================================================================
@@ -6336,6 +9598,64 @@ class TestAlarmCountAndStatsKeyUnchanged(unittest.TestCase):
             write_failed=5,
         )
 
+    def test_publish_stats_first_call_with_no_cached_key_does_not_raise(self):
+        """The very first _publish_stats() call on a fresh entity_manager
+        (before _last_stats_key has ever been set) must not raise
+        AttributeError — getattr()'s None default is what makes a missing
+        attribute compare as 'changed' rather than crash."""
+        from contextlib import nullcontext
+
+        from nibe_ha_integration import _publish_stats
+
+        class _BareEntityManager:
+            _active_entities_lock = nullcontext()
+            active_entities_by_id: ClassVar[dict] = {}
+            all_points_by_id: ClassVar[dict] = {}
+            mqtt_enabled_points: ClassVar[set] = set()
+            _stats_type_counts: ClassVar[dict] = {}
+            _stats_category_counts: ClassVar[dict] = {}
+            _stats_writable_count = 0
+            _write_total = 0
+            _write_success = 0
+            _write_failed = 0
+            # deliberately no _last_stats_key attribute at all
+        em = _BareEntityManager()
+        pub = MagicMock()
+        _publish_stats(em, pub)  # must not raise AttributeError
+        self.assertTrue(pub.publish_stats.called)
+        self.assertEqual(em._last_stats_key, (0, 0, 0))
+
+    def test_stats_key_changed_logs_and_updates_cached_key(self):
+        """When the stats key genuinely changes between calls, the debug
+        log must fire and _last_stats_key must be updated to the NEW key
+        — pins both the `!=` comparison direction and that the cached key
+        is actually replaced (not left stale)."""
+        from nibe_ha_integration import _publish_stats
+        em = _make_em()
+        em.all_points_by_id = {1: {}}
+        pub = MagicMock()
+        _publish_stats(em, pub)  # first call establishes a cached key
+        em.all_points_by_id = {1: {}, 2: {}}  # total_count changes
+        with self.assertLogs('nibe.stats', level='DEBUG') as cm:
+            _publish_stats(em, pub)
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith('Stats: MQTT=0, Active=0, Total=2')
+            for msg in cm.output
+        ))
+        self.assertEqual(em._last_stats_key, (0, 0, 2))
+
+    def test_stats_key_unchanged_does_not_log(self):
+        """The dedup guard must actually suppress the log (not just leave
+        the cached key alone) when the stats key repeats — an `==` mutant
+        in place of `!=` would invert this and log on every unchanged
+        call instead of every changed one."""
+        from nibe_ha_integration import _publish_stats
+        em = _make_em()
+        pub = MagicMock()
+        _publish_stats(em, pub)
+        with self.assertNoLogs('nibe.stats', level='DEBUG'):
+            _publish_stats(em, pub)
+
     def test_stats_key_unchanged_skips_log_update(self):
         """Calling _publish_stats twice with identical state must skip the
         debug log on the second call (1167→exit False branch)."""
@@ -6403,11 +9723,58 @@ class TestHandleSnapshotCmd(unittest.TestCase):
             self._send({'action': 'restore', 'name': 'Test'})
         mock_restore.assert_called_once_with('Test', 'flush')
 
+    def test_missing_name_key_defaults_to_empty_string_not_none(self):
+        """cmd.get('name', '') must default to '' — not None, which would
+        crash the following .strip() call with AttributeError instead of
+        gracefully treating an omitted name as empty."""
+        with patch.object(self.em, 'save_snapshot', return_value=(True, 'ok')) as mock_save:
+            self._send({'action': 'save'})  # no 'name' key at all
+        mock_save.assert_called_once_with('')
+
+    def test_invalid_payload_error_log_has_the_real_exception(self):
+        import json as _json
+        msg = MagicMock()
+        msg.payload = b'not valid json {{{'
+        from nibe_ha_integration import ManagementCommandHandler
+        handler = ManagementCommandHandler(self.em.mqtt, self.em, self.pub, self.exe)
+        with patch('nibe_ha_integration.log_commands') as mock_log:
+            handler._handle_snapshot_cmd(None, None, msg)
+        error_call = mock_log.error.call_args
+        self.assertEqual(error_call.args[0], "snapshot_cmd: invalid payload: %s")
+        self.assertIsInstance(error_call.args[1], _json.JSONDecodeError)
+
     def test_restore_invalid_mode_defaults_to_flush(self):
         with patch.object(self.em, 'restore_snapshot',
-                          return_value=(True, 'ok')) as mock_restore:
+                          return_value=(True, 'ok')) as mock_restore, \
+             self.assertLogs('nibe.commands', level='ERROR') as cm:
             self._send({'action': 'restore', 'name': 'Test', 'mode': 'invalid'})
         mock_restore.assert_called_once_with('Test', 'flush')
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "snapshot_cmd restore: unknown mode 'invalid' — expected 'flush' or "
+                "'merge', using flush"
+            )
+            for msg in cm.output
+        ))
+
+    def test_restore_explicit_flush_mode_does_not_log_error(self):
+        """'flush' passed explicitly must be recognised as valid — a
+        mutated membership check that no longer matches the real string
+        'flush' would still end up calling restore_snapshot with 'flush'
+        (the fallback), silently masking itself unless the absence of the
+        warning log is also checked."""
+        with patch.object(self.em, 'restore_snapshot', return_value=(True, 'ok')), \
+             self.assertRaises(AssertionError), \
+             self.assertLogs('nibe.commands', level='ERROR'):
+            # assertLogs raises if nothing was logged — that's the
+            # expected (passing) outcome here.
+            self._send({'action': 'restore', 'name': 'Test', 'mode': 'flush'})
+
+    def test_restore_explicit_merge_mode_does_not_log_error(self):
+        with patch.object(self.em, 'restore_snapshot', return_value=(True, 'ok')), \
+             self.assertRaises(AssertionError), \
+             self.assertLogs('nibe.commands', level='ERROR'):
+            self._send({'action': 'restore', 'name': 'Test', 'mode': 'merge'})
 
     def test_restore_failure_does_not_publish_stats(self):
         with patch.object(self.em, 'restore_snapshot',
@@ -6432,11 +9799,18 @@ class TestHandleSnapshotCmd(unittest.TestCase):
         unknown-action branch, not crash or silently succeed."""
         with patch.object(self.em, 'save_snapshot') as ms, \
              patch.object(self.em, 'restore_snapshot') as mr, \
-             patch.object(self.em, 'delete_snapshot') as md:
+             patch.object(self.em, 'delete_snapshot') as md, \
+             self.assertLogs('nibe.commands', level='ERROR') as cm:
             self._send({'name': 'Test'})  # no 'action' key
         ms.assert_not_called()
         mr.assert_not_called()
         md.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "snapshot_cmd: unknown action '' — expected 'save', 'restore', or 'delete'"
+            )
+            for msg in cm.output
+        ))
 
     def test_delete_action_calls_delete_snapshot(self):
         with patch.object(self.em, 'delete_snapshot',
@@ -6447,16 +9821,34 @@ class TestHandleSnapshotCmd(unittest.TestCase):
     def test_unknown_action_is_ignored(self):
         with patch.object(self.em, 'save_snapshot') as ms, \
              patch.object(self.em, 'restore_snapshot') as mr, \
-             patch.object(self.em, 'delete_snapshot') as md:
+             patch.object(self.em, 'delete_snapshot') as md, \
+             self.assertLogs('nibe.commands', level='ERROR') as cm:
             self._send({'action': 'unknown', 'name': 'Test'})
         ms.assert_not_called()
         mr.assert_not_called()
         md.assert_not_called()
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith(
+                "snapshot_cmd: unknown action 'unknown' — expected 'save', 'restore', "
+                "or 'delete'"
+            )
+            for msg in cm.output
+        ))
+
+    def test_successful_action_logs_final_result_line(self):
+        with patch.object(self.em, 'save_snapshot', return_value=(True, 'Saved as Test')), \
+             self.assertLogs('nibe.commands', level='INFO') as cm:
+            self._send({'action': 'save', 'name': 'Test'})
+        self.assertTrue(any(
+            msg.splitlines()[0].endswith("snapshot_cmd save 'Test': Saved as Test")
+            for msg in cm.output
+        ))
 
     def test_invalid_json_payload_is_ignored(self):
         msg = MagicMock()
         msg.payload = b'not valid json'
-        with patch.object(self.em, 'save_snapshot') as ms:
+        with patch.object(self.em, 'save_snapshot') as ms, \
+             self.assertLogs('nibe.commands', level='ERROR') as cm:
             from nibe_ha_integration import ManagementCommandHandler
             handler = ManagementCommandHandler(
                 self.em.mqtt, self.em, self.pub, self.exe
@@ -6464,15 +9856,23 @@ class TestHandleSnapshotCmd(unittest.TestCase):
             handler._handle_snapshot_cmd(None, None, msg)
             self.exe.shutdown(wait=True)
         ms.assert_not_called()
+        self.assertTrue(any(
+            msg_.splitlines()[0].startswith('ERROR:nibe.commands:snapshot_cmd: invalid payload: ')
+            for msg_ in cm.output
+        ))
 
     def test_non_dict_json_payload_does_not_raise(self):
         """Valid JSON that isn't an object (e.g. a bare number, null, or a
         list) must not crash — .get() on a non-dict would otherwise raise
         AttributeError directly on the MQTT client's own thread."""
-        for payload in (b'5', b'null', b'["x"]', b'"just a string"'):
+        for payload, expected_repr in (
+            (b'5', '5'), (b'null', 'None'), (b'["x"]', "['x']"),
+            (b'"just a string"', "'just a string'"),
+        ):
             msg = MagicMock()
             msg.payload = payload
-            with patch.object(self.em, 'save_snapshot') as ms:
+            with patch.object(self.em, 'save_snapshot') as ms, \
+                 self.assertLogs('nibe.commands', level='ERROR') as cm:
                 from nibe_ha_integration import ManagementCommandHandler
                 handler = ManagementCommandHandler(
                     self.em.mqtt, self.em, self.pub, self.exe
@@ -6482,3 +9882,9 @@ class TestHandleSnapshotCmd(unittest.TestCase):
                 import concurrent.futures
                 self.exe = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             ms.assert_not_called()
+            self.assertTrue(any(
+                msg_.splitlines()[0].endswith(
+                    f'snapshot_cmd: expected a JSON object, got {expected_repr}'
+                )
+                for msg_ in cm.output
+            ), f"payload={payload!r}")

@@ -62,6 +62,23 @@ class TestWritePointValidation(unittest.TestCase):
     def test_below_min_false(self):     self.assertFalse(self.c.write_point(1, -10, self._ei()))
     def test_above_max_false(self):     self.assertFalse(self.c.write_point(1, 150, self._ei()))
 
+    def test_below_min_rejected_before_any_http_call(self):
+        """A below-minimum write must be rejected by the range check itself,
+        not merely happen to fail for an unrelated reason (e.g. no network
+        route in the test sandbox) — mock urlopen to succeed and confirm it
+        is never even called when the value is out of range."""
+        with patch('urllib.request.urlopen',
+                  return_value=self._resp({"1": "modified"})) as mock_urlopen:
+            self.assertFalse(self.c.write_point(1, -10, self._ei(lo=0, hi=100)))
+            mock_urlopen.assert_not_called()
+
+    def test_above_max_rejected_before_any_http_call(self):
+        """Symmetric to the below-min case for the maximum bound."""
+        with patch('urllib.request.urlopen',
+                  return_value=self._resp({"1": "modified"})) as mock_urlopen:
+            self.assertFalse(self.c.write_point(1, 150, self._ei(lo=0, hi=100)))
+            mock_urlopen.assert_not_called()
+
     def test_at_min_boundary(self):
         with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 0, self._ei()))
@@ -259,6 +276,19 @@ class TestRequestRetry(unittest.TestCase):
         ):
             self.client.request('https://192.0.2.1:8443/test')
 
+    def test_http_401_sets_last_error_with_code_and_reason(self):
+        """last_error must be set to a real message before the exception
+        propagates — a mutation to None here would leave the 'API
+        Unreachable' HA notification blank."""
+        import urllib.error
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNotNone(self.client.last_error)
+        self.assertIn('401', self.client.last_error)
+
     def test_auth_error_does_not_sleep(self):
         """Auth errors must not sleep — they are permanent failures."""
         import urllib.error
@@ -280,6 +310,21 @@ class TestRequestRetry(unittest.TestCase):
             self.assertRaises(urllib.error.HTTPError),
         ):
             self.client.request('https://192.0.2.1:8443/test')
+
+    def test_http_404_sets_last_error_with_url(self):
+        """last_error must be set to a real message before the exception
+        propagates — a mutation to None here would leave the 'API
+        Unreachable' HA notification blank."""
+        import urllib.error
+        url = 'https://192.0.2.1:8443/test'
+        with (
+            patch('urllib.request.urlopen', side_effect=self._http_error(404)),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            self.client.request(url)
+        self.assertIsNotNone(self.client.last_error)
+        self.assertIn('404', self.client.last_error)
+        self.assertIn(url, self.client.last_error)
 
     # ── HTTP 500 — retries once with jitter sleep, then returns None ──────────
 
@@ -452,19 +497,26 @@ class TestDescribeNetworkError(unittest.TestCase):
         self.assertEqual(result, '_NoMessage')
 
     def test_bare_timeout_error_gets_hint(self):
+        """Asserts the hint's exact text, not just a short substring —
+        assertIn('timed out', result) would still pass against a mutated
+        hint like 'XXtimed out waiting for a responseXX', since the
+        original words survive inside the mutmut XX-wrapping."""
         from nibe_api import _describe_network_error
         result = _describe_network_error(TimeoutError())
-        self.assertIn('timed out', result)
+        self.assertEqual(result, 'timed out waiting for a response')
 
     def test_connection_refused_gets_hint(self):
         from nibe_api import _describe_network_error
         result = _describe_network_error(ConnectionRefusedError())
-        self.assertIn('refused', result)
+        self.assertEqual(
+            result,
+            "connection actively refused (wrong port, or the API service isn't running)",
+        )
 
     def test_connection_reset_gets_hint(self):
         from nibe_api import _describe_network_error
         result = _describe_network_error(ConnectionResetError())
-        self.assertIn('reset', result)
+        self.assertEqual(result, 'connection reset by the device')
 
     def test_real_message_is_preserved_and_hint_appended(self):
         """An exception that DOES carry a real message must keep it, not
@@ -478,6 +530,24 @@ class TestDescribeNetworkError(unittest.TestCase):
         from nibe_api import _describe_network_error
         result = _describe_network_error(OSError('Network is unreachable'))
         self.assertEqual(result, 'Network is unreachable')
+
+    # NOTE: the `if not detail else None` guard inside the URLError+OSError
+    # branch is unreachable with real exception objects — urllib.error.
+    # URLError.__str__ always returns "<urlopen error ...>" (never empty),
+    # so `detail` can never be falsy for a URLError instance. Mutating that
+    # guard's condition is a genuinely equivalent mutant, not a test gap.
+
+    def test_url_error_wrapping_os_error_reason_returns_the_url_error_text(self):
+        """A URLError wrapping a low-level OSError (DNS failure, socket
+        error) must hit the URLError+OSError branch and return URLError's
+        own detail text — the branch itself was previously never exercised
+        by any test (only its unreachable inner guard was analysed above)."""
+        import urllib.error
+
+        from nibe_api import _describe_network_error
+        e = urllib.error.URLError(OSError('Name or service not known'))
+        result = _describe_network_error(e)
+        self.assertIn('Name or service not known', result)
 
 
 
@@ -2674,9 +2744,19 @@ class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
         self.assertIsNone(result)
         matching = [r for r in ctx.records if 'Unexpected error' in r.getMessage()]
         self.assertTrue(matching, f"expected an 'Unexpected error' record, got: {ctx.output}")
-        self.assertIsNotNone(matching[0].exc_info,
-                              "exc_info must be attached so tracebacks are logged")
-        self.assertIs(matching[0].exc_info[1].__class__, ValueError)
+
+    def test_unexpected_error_sets_last_error_from_the_actual_exception(self):
+        """The generic `except Exception as e` branch must call
+        _describe_network_error(e) with the real exception object — not
+        skip the call (last_error = None) and not pass None in its place.
+        No existing test inspects self.client.last_error after this branch,
+        so both `self.last_error = None` and `_describe_network_error(None)`
+        would otherwise go unnoticed even though they produce a useless
+        "API Unreachable" notification instead of the real diagnostic."""
+        with patch('urllib.request.urlopen', side_effect=ValueError("boom")):
+            self.client.request('https://192.0.2.1:8443/test')
+        self.assertIsNotNone(self.client.last_error)
+        self.assertIn('boom', self.client.last_error)
 
 
 class TestWriteDeviceModeHeaders(unittest.TestCase):
@@ -2828,6 +2908,7 @@ class TestNibeApiClientInit(unittest.TestCase):
         self.assertEqual(client.base_url, 'https://192.0.2.9:8443/api/v1/devices/0')
         self.assertEqual(client.auth, 'Basic dGVzdC1hdXRoLXZhbHVl')
         self.assertIs(client.ssl_context, ctx)
+        self.assertIsNone(client.last_error)
 
     def test_init_gives_each_instance_its_own_lock(self):
         """Two real instances must not share the class-level fallback lock —

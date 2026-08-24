@@ -304,6 +304,41 @@ class TestCrossFunctionProperties(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestMqttDiscoveryPublisherInit(unittest.TestCase):
+    """Constructor defaults. Existing tests elsewhere manually overwrite
+    _unit_override_warnings_issued after construction, so the constructor's
+    own default was never actually exercised — these pin it directly."""
+
+    def _pub(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        return MqttDiscoveryPublisher(
+            mqtt_client=mqtt, device_info={}, device_id='test', device_name='Test',
+        )
+
+    def test_unit_override_warnings_issued_defaults_to_real_empty_set(self):
+        """A None here would silently disable ALL unit-override warning
+        logging (not just deduplication) — resolve_unit()'s `warned is not
+        None` guard treats None identically to the caller explicitly
+        opting out of warnings entirely."""
+        pub = self._pub()
+        self.assertIsInstance(pub._unit_override_warnings_issued, set)
+        self.assertEqual(pub._unit_override_warnings_issued, set())
+
+    def test_unit_override_warning_is_actually_logged_via_constructed_publisher(self):
+        """End-to-end: a freshly-constructed publisher (not a manually
+        patched one) must still log the one-shot unit-override warning —
+        proving _unit_override_warnings_issued really is a working set,
+        not None, right out of the constructor. Point 50827 is a real
+        UNIT_OVERRIDES entry (firmware '%RH' -> '%')."""
+        from nibe_mqtt_publisher import resolve_unit
+        pub = self._pub()
+        with self.assertLogs('nibe.mqtt', level='WARNING') as cm:
+            resolve_unit(50827, '%RH', 'Humidity', pub._unit_override_warnings_issued)
+        self.assertTrue(any('50827' in msg for msg in cm.output))
+        self.assertIn(50827, pub._unit_override_warnings_issued)
+
+
 class TestDiscoveryConfigSnapshots(unittest.TestCase):
     """Pin the exact MQTT discovery config format for firmware-critical points.
 
@@ -1100,8 +1135,8 @@ class TestBuildNumberConfigProperties(unittest.TestCase):
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_command, t_state
         discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'Test', '', self._meta(), {}, pub._range_warnings_issued)
-        self.assertFalse(config.get('optimistic', True),
-                         "number discovery config must include optimistic:false")
+        self.assertIs(config.get('optimistic'), False,
+                      "number discovery config must include optimistic:false (not None/falsy)")
 
     @given(_safe_entity_id, _nibe_point_id,
            st.integers(min_value=-100, max_value=100),
@@ -1598,6 +1633,25 @@ class TestPublishStatsProperties(unittest.TestCase):
         attrs = self._get_attrs(mqtt)
         self.assertGreaterEqual(attrs['enabled_percentage'], 0)
         self.assertLessEqual(attrs['enabled_percentage'], 100)
+
+    @given(st.integers(min_value=1, max_value=10000),
+           st.integers(min_value=0, max_value=10000))
+    @example(total=3, enabled=1)   # the hand-picked 33.3 example elsewhere in this file
+    def test_enabled_percentage_is_exactly_round_ratio_times_100(self, total, enabled):
+        """For any total>0, enabled_percentage must equal exactly
+        round((enabled/total)*100, 1) — the sibling test above only
+        checks the [0,100] bound, which a wrong formula (e.g. missing the
+        *100, or rounding to the wrong number of decimals) could still
+        satisfy."""
+        enabled = min(enabled, total)
+        pub, mqtt = self._pub()
+        pub.publish_stats(
+            all_points_count=total, mqtt_enabled_count=enabled,
+            active_count=0, type_counts={}, category_counts={},
+            writable_count=0,
+        )
+        attrs = self._get_attrs(mqtt)
+        self.assertEqual(attrs['enabled_percentage'], round((enabled / total) * 100, 1))
 
     @given(st.integers(min_value=1, max_value=1000),
            st.integers(min_value=0, max_value=1000))
@@ -2471,6 +2525,22 @@ class TestPublishUptimeProperties(unittest.TestCase):
         pub.publish_uptime(start, last, failures)
         self._get_attrs(mqtt)  # parse without raising
 
+    def test_started_and_last_api_success_use_the_real_arguments_not_now(self):
+        """`started`/`last_api_success` must format the real bridge_start_time
+        / api_last_success_time arguments — a `_fmt_ts(None)` mutant would
+        silently use the current time instead, which no prior test
+        distinguishes (they only check shape/JSON-validity, not the value).
+        Compare against fmt_ts() computed independently on the same fixed
+        inputs, rather than a hardcoded string, to stay timezone-portable."""
+        from nibe_utils import fmt_ts
+        pub, mqtt = self._pub()
+        bridge_start_time = 1700000000.0
+        api_last_success_time = 1700003600.0
+        pub.publish_uptime(bridge_start_time, api_last_success_time, 0)
+        attrs = self._get_attrs(mqtt)
+        self.assertEqual(attrs['started'], fmt_ts(bridge_start_time))
+        self.assertEqual(attrs['last_api_success'], fmt_ts(api_last_success_time))
+
 
 # ---------------------------------------------------------------------------
 # publish_api_reachability properties (nibe_mqtt_publisher.py)
@@ -2657,6 +2727,16 @@ class TestInvalidateConfigHashProperties(unittest.TestCase):
         pub._config_hashes[pid2] = 'hash2'
         pub.invalidate_config_hash(pid1)
         self.assertEqual(pub._config_hashes.get(pid2), 'hash2')
+
+    @given(_nibe_point_id)
+    def test_after_invalidation_attributes_hash_not_in_cache(self, pid):
+        """invalidate_config_hash must also pop from _attributes_hashes
+        using the real point_id key, not some other/wrong key — a bad key
+        would silently leave the stale cached attributes hash in place."""
+        pub = self._pub()
+        pub._attributes_hashes[pid] = 'some_attrs_hash'
+        pub.invalidate_config_hash(pid)
+        self.assertNotIn(pid, pub._attributes_hashes)
 
 
 class TestSeedConfigHashFromRetained(unittest.TestCase):
@@ -3151,6 +3231,18 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         discovery_config.build_select_config(config, t_state('select', 'nibe_1000'), t_command('select', 'nibe_1000'), 1000, '')
         self.assertNotIn('options', config)
 
+    def test_publish_entity_discovery_missing_description_key_does_not_crash(self):
+        """publish_entity_discovery reads point.get('description', '') —
+        if that fell back to None (a wrong default, or the key simply
+        missing on a real point dict), a 'select' entity would crash inside
+        get_entity_options's '=' in description check. No prior test ever
+        omits the 'description' key entirely (every _point() helper always
+        supplies it, even as ''), so this path was never exercised."""
+        point = self._point('select')
+        del point['description']
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertIsNotNone(result)
+
     # ── publish_entity_discovery integration ─────────────────────────────────
 
     def test_publish_entity_discovery_returns_entity_info(self):
@@ -3223,14 +3315,140 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         self.assertIsNone(result.get('state_topic'))
 
     def test_publish_entity_discovery_switch_is_not_degenerate(self):
+        """assertIs (not assertFalse) — a None/dropped default for
+        config.get('_degenerate_range', False) would also satisfy
+        assertFalse(None), masking a wrong default value."""
         point = self._point('switch')
         result = self.pub.publish_entity_discovery(point, {})
-        self.assertFalse(result['is_degenerate_range'])
+        self.assertIs(result['is_degenerate_range'], False)
 
     def test_publish_entity_discovery_number_degenerate_flag_propagated(self):
         point = self._point('number', minValue=5, maxValue=5)
         result = self.pub.publish_entity_discovery(point, {})
         self.assertTrue(result['is_degenerate_range'])
+
+    def test_publish_entity_discovery_entity_type_change_forces_republish(self):
+        """When entity_type changes, the OLD config_hash entry for this
+        point_id must be popped by the correct key (point_id) — not some
+        wrong key like None. If the wrong key were popped, the stale hash
+        would survive and, on a collision with the new config's hash, the
+        new (structurally different) config would be wrongly skipped as
+        'unchanged'. Force the collision deterministically by mocking
+        hashlib.md5 to return a fixed digest regardless of content, so any
+        wrong-key pop is observable without needing a real hash collision."""
+        from nibe_mqtt_publisher import t_config
+        with patch('nibe_mqtt_publisher.hashlib.md5') as mock_md5:
+            mock_md5.return_value.hexdigest.return_value = 'fixed-hash'
+            sensor_point = self._point('sensor')
+            self.pub.publish_entity_discovery(sensor_point, {})
+            switch_point = self._point('switch')
+            self.pub.publish_entity_discovery(switch_point, {})
+        switch_topic = t_config('switch', 'nibe_1000')
+        switch_publishes = [
+            c for c in self.mqtt.publish.call_args_list
+            if c.args[0] == switch_topic
+        ]
+        self.assertEqual(len(switch_publishes), 1,
+                          "New entity_type's config must be published even "
+                          "when its hash collides with the old entity_type's "
+                          "stale, un-popped hash")
+
+    def test_publish_entity_discovery_missing_unit_key_uses_real_empty_default(self):
+        """metadata.get('unit', '') feeds resolve_unit(); a wrong default
+        (e.g. 'XXXX', None, or dropped) would leak into config['unit_of_measurement']
+        or crash resolve_unit's downstream clean_unit(None) call. No prior
+        test omits the 'unit' key from metadata entirely."""
+        point = self._point('sensor', unit='°C')
+        del point['metadata']['unit']
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertIsNotNone(result)
+        config_call = next(c for c in self.mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        payload = json.loads(config_call.args[1])
+        self.assertNotIn('unit_of_measurement', payload)
+
+    def test_sensor_device_class_uses_real_title_not_none(self):
+        """title feeds map_device_class("sensor", unit, title) inside
+        build_sensor_config's elif entity_type == "sensor" branch. Use a
+        unit absent from _UNIT_TO_DEVICE_CLASS (so it doesn't resolve a
+        device_class on its own — unit is ground truth when it does) but
+        still truthy (device_class mandates a unit be present) so
+        device_class comes purely from title's keyword match — a None
+        title would silently drop device_class."""
+        point = self._point('sensor', unit='xyz')
+        point['display_title'] = 'BT1 test'
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertIsNotNone(result)
+        config_call = next(c for c in self.mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        payload = json.loads(config_call.args[1])
+        self.assertEqual(payload['device_class'], 'temperature')
+
+    def test_unknown_entity_type_fallback_device_class_uses_real_title_not_none(self):
+        """Same as above but through the `else` fallback branch (unknown
+        entity_type), which calls build_sensor_config a second time with
+        its own title argument."""
+        point = self._point('some_unrecognized_type', unit='xyz')
+        point['display_title'] = 'BT1 test'
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertIsNotNone(result)
+        config_call = next(c for c in self.mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        payload = json.loads(config_call.args[1])
+        self.assertEqual(payload['device_class'], 'temperature')
+
+    def test_unknown_entity_type_fallback_date_sensor_uses_real_point_id_not_none(self):
+        """point_id feeds build_sensor_config's own point_id ==
+        _DATE_SENSOR_POINT_ID (2685) special case, through the `else`
+        fallback branch. A None point_id would silently skip the date
+        special-case and fall through to the generic sensor logic instead."""
+        point = self._point('some_unrecognized_type', unit='', variableId=2685)
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertIsNotNone(result)
+        config_call = next(c for c in self.mqtt.publish.call_args_list
+                            if c.args[0].endswith('/config'))
+        payload = json.loads(config_call.args[1])
+        self.assertEqual(payload['device_class'], 'date')
+
+    def test_attributes_publish_uses_retain_true(self):
+        """A None/dropped/False retain kwarg on the attributes-topic publish
+        would silently make HA lose these attributes on broker restart."""
+        point = self._point('sensor')
+        self.pub.publish_entity_discovery(point, {})
+        from nibe_mqtt_publisher import t_attributes
+        attributes_topic = t_attributes('sensor', 'nibe_1000')
+        attr_call = next(c for c in self.mqtt.publish.call_args_list
+                          if c.args[0] == attributes_topic)
+        self.assertIs(attr_call.kwargs.get('retain'), True)
+
+    def test_returned_command_topic_uses_the_real_key_not_wrong_key(self):
+        """config.get('command_topic') — a wrong/None key would silently
+        return None even though config actually has a real command_topic
+        for a writable entity type like switch."""
+        point = self._point('switch')
+        from nibe_mqtt_publisher import t_command
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertEqual(result['command_topic'], t_command('switch', 'nibe_1000'))
+
+    def test_returned_attributes_topic_uses_the_real_key_not_wrong_key(self):
+        """config.get('json_attributes_topic') — a wrong/None key would
+        silently return None even though non-button entities always get
+        this key wired into config by _publish_static_attributes."""
+        point = self._point('sensor')
+        from nibe_mqtt_publisher import t_attributes
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertEqual(result['attributes_topic'], t_attributes('sensor', 'nibe_1000'))
+
+    def test_value_mapping_uses_the_real_point_id_not_none(self):
+        """get_value_mapping's point_id argument selects which manual
+        VALUE_MAPPINGS table entry applies — a None point_id would silently
+        return a different (or no) mapping instead of the real one."""
+        point = self._point('sensor', variableId=1758)
+        result = self.pub.publish_entity_discovery(point, {})
+        self.assertEqual(
+            result['value_mapping'],
+            {10: "Off", 20: "Hot water", 30: "Heating", 40: "Pool", 60: "Cooling"},
+        )
 
 
 # ===========================================================================
@@ -3977,6 +4195,24 @@ class TestPublishManagementSensors(unittest.TestCase):
         self.assertTrue(str(state).isdigit())
         self.assertGreaterEqual(int(state), 99)
 
+    @given(elapsed=st.integers(min_value=0, max_value=10_000_000))
+    @example(elapsed=100)   # the hand-picked example above
+    def test_uptime_state_is_exactly_now_minus_start(self, elapsed):
+        """The published uptime must equal exactly int(now - start) — the
+        example above only checks a loose >=99 lower bound, which can't
+        catch e.g. a formula using the wrong sign or an off-by-a-constant
+        error, both of which would still satisfy that bound for a large
+        enough elapsed value. self.mqtt is reset per example — setUp()
+        only runs once for the whole @given-wrapped call, so without this
+        _payload_for's first-match lookup would keep returning the very
+        first example's result for every later example."""
+        self.mqtt.reset_mock()
+        now = 2_000_000_000.0
+        with patch('nibe_mqtt_publisher.time.time', return_value=now):
+            self.pub.publish_uptime(now - elapsed, now, 0)
+        state = self._payload_for(self.MgmtTopic.UPTIME_STATE)
+        self.assertEqual(int(state), elapsed)
+
     # ── publish_api_reachability ──────────────────────────────────────────────
 
     def test_api_healthy_publishes_on(self):
@@ -4330,6 +4566,101 @@ class TestPublishManagementDiscoveryPayload(unittest.TestCase):
                                 f"Expected non-empty payload for debug topic {topic}")
 
 
+class TestPublishManagementDiscoveryDeviceInfoDefaults(unittest.TestCase):
+    """mgmt_device manufacturer/model fall back to 'NIBE'/'Nibe S-series'
+    when device_info omits those keys — a wrong default or mistyped
+    lookup key would show a blank/wrong manufacturer or model in HA."""
+
+    def _pub(self, device_info):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        return MqttDiscoveryPublisher(
+            mqtt_client=mqtt,
+            device_info=device_info,
+            device_id='test', device_name='Test Device',
+        ), mqtt
+
+    def _mgmt_device(self, mqtt):
+        import json
+        for call in mqtt.publish.call_args_list:
+            try:
+                payload = json.loads(call.args[1])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(payload, dict) and 'device' in payload:
+                return payload['device']
+        self.fail("no discovery payload with a 'device' key was published")
+
+    def test_manufacturer_defaults_to_nibe_when_absent(self):
+        pub, mqtt = self._pub({'identifiers': ['nibe_test']})
+        pub.publish_management_discovery('essential')
+        self.assertEqual(self._mgmt_device(mqtt)['manufacturer'], 'NIBE')
+
+    def test_model_defaults_to_nibe_s_series_when_absent(self):
+        pub, mqtt = self._pub({'identifiers': ['nibe_test']})
+        pub.publish_management_discovery('essential')
+        self.assertEqual(self._mgmt_device(mqtt)['model'], 'Nibe S-series')
+
+    def test_manufacturer_from_device_info_overrides_default(self):
+        pub, mqtt = self._pub({'identifiers': ['nibe_test'], 'manufacturer': 'ACME'})
+        pub.publish_management_discovery('essential')
+        self.assertEqual(self._mgmt_device(mqtt)['manufacturer'], 'ACME')
+
+    def test_model_from_device_info_overrides_default(self):
+        pub, mqtt = self._pub({'identifiers': ['nibe_test'], 'model': 'X1000'})
+        pub.publish_management_discovery('essential')
+        self.assertEqual(self._mgmt_device(mqtt)['model'], 'X1000')
+
+    def test_test_connection_button_full_payload(self):
+        """The Test API Connection debug button's entire discovery payload
+        must match exactly — every key/value here is an HA contract field;
+        a mistyped key or altered-case literal would break entity registry
+        matching, the icon, or the config-entity category in HA."""
+        from nibe_mqtt_publisher import MgmtTopic
+        pub, mqtt = self._pub({'identifiers': ['nibe_test']})
+        pub.publish_management_discovery('essential', debug_mode=True)
+        import json
+        payload = next(
+            json.loads(c.args[1]) for c in mqtt.publish.call_args_list
+            if c.args[0] == MgmtTopic.TEST_CONNECTION_CONFIG and c.args[1]
+        )
+        device = payload.pop('device')
+        self.assertEqual(payload, {
+            'name': 'Test API Connection (DEBUG)',
+            'unique_id': 'nibe_test_connection',
+            'command_topic': MgmtTopic.TEST_CONNECTION_PRESS,
+            'availability_topic': MgmtTopic.AVAIL,
+            'icon': 'mdi:lan-connect',
+            'entity_category': 'config',
+        })
+        self.assertIn('test_management', device['identifiers'])
+
+    def test_connectivity_check_result_sensor_full_payload(self):
+        """The Connectivity Check Result debug sensor's entire discovery
+        payload must match exactly."""
+        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        pub, mqtt = self._pub({'identifiers': ['nibe_test']})
+        pub.publish_management_discovery('essential', debug_mode=True)
+        import json
+        topic = f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config"
+        payload = next(
+            json.loads(c.args[1]) for c in mqtt.publish.call_args_list
+            if c.args[0] == topic and c.args[1]
+        )
+        device = payload.pop('device')
+        self.assertEqual(payload, {
+            'name': 'Connectivity Check Result (DEBUG)',
+            'unique_id': 'nibe_connectivity_check_result',
+            'state_topic': MgmtTopic.TEST_CONNECTION_STATE,
+            'json_attributes_topic': MgmtTopic.TEST_CONNECTION_ATTRS,
+            'availability_topic': MgmtTopic.AVAIL,
+            'icon': 'mdi:lan-connect',
+            'entity_category': 'diagnostic',
+        })
+        self.assertIn('test_management', device['identifiers'])
+
+
 class TestPublishManagementDiscoveryExactPayloads(unittest.TestCase):
     """Pins the COMPLETE discovery-config payload for every management
     entity, not just topic presence or a single spot-checked field.
@@ -4547,6 +4878,77 @@ class TestPublishManagementDiscoveryExactPayloads(unittest.TestCase):
         self.pub.publish_management_discovery('essential')
         payload = self._payload(self.M.MODE_CONFIG)
         self.assertEqual(payload['device']['identifiers'], ['test_management'])
+
+    def test_last_fetch_state_uses_real_gmtime_not_wrong_format_or_dropped_arg(self):
+        """start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) —
+        a wrong format string, a dropped time.gmtime() argument (which
+        would default strftime to localtime, observably different from
+        UTC whenever the test machine's TZ isn't UTC), or a None start_iso
+        must all be observable. Freeze gmtime() to a fixed value so the
+        exact formatted string is deterministic."""
+        import time as time_mod
+        fixed = time_mod.struct_time((2023, 11, 14, 22, 13, 20, 1, 318, 0))
+        with patch('nibe_mqtt_publisher.time.gmtime', return_value=fixed):
+            self.pub.publish_management_discovery('essential')
+        call = next(c for c in self.mqtt.publish.call_args_list
+                    if c.args[0] == self.M.LAST_FETCH_STATE)
+        self.assertEqual(call.args[1], '2023-11-14T22:13:20Z')
+        self.assertIs(call.kwargs.get('retain'), True)
+
+    def test_run_tests_attrs_reset_payload_exact_in_debug_mode(self):
+        """RUN_TESTS_ATTRS's startup-reset payload — every key and value
+        here is read directly by the frontend card's test-suite-result
+        display; a mistyped key or altered status/note string would break
+        or silently misdescribe it."""
+        self.pub.publish_management_discovery('essential', debug_mode=True)
+        self.assertEqual(self._payload(self.M.RUN_TESTS_ATTRS), {
+            "status": "unknown",
+            "note": "Reset at startup — previous run may have been interrupted.",
+        })
+
+    def test_device_info_payload_exact_with_overrides(self):
+        """BrowserTopic.DEVICE_INFO's 4 keys each pull from a distinctly-
+        named device_info key with its own default/fallback — model and
+        manufacturer default to fixed strings, name falls back to
+        self.device_name (not a string literal), serial defaults to ''.
+        Provide real override values for all 4 so a wrong key or wrong
+        default is observable regardless of which one is broken."""
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=mqtt,
+            device_info={
+                'identifiers': ['nibe_test'], 'model': 'X1000',
+                'name': 'My Bridge', 'manufacturer': 'ACME',
+                'serial_number': 'SN-42',
+            },
+            device_id='test', device_name='Test Device',
+        )
+        pub.publish_management_discovery('essential')
+        call = next(c for c in mqtt.publish.call_args_list
+                    if c.args[0] == BrowserTopic.DEVICE_INFO)
+        self.assertEqual(json.loads(call.args[1]), {
+            'model': 'X1000', 'name': 'My Bridge',
+            'manufacturer': 'ACME', 'serial': 'SN-42',
+        })
+
+    def test_device_info_payload_exact_with_all_defaults(self):
+        """Empty device_info: model/manufacturer fall back to fixed
+        strings, name falls back to self.device_name, serial defaults to
+        ''. Pins every default simultaneously."""
+        from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher
+        mqtt = MagicMock()
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=mqtt, device_info={},
+            device_id='test', device_name='Test Device',
+        )
+        pub.publish_management_discovery('essential')
+        call = next(c for c in mqtt.publish.call_args_list
+                    if c.args[0] == BrowserTopic.DEVICE_INFO)
+        self.assertEqual(json.loads(call.args[1]), {
+            'model': 'Nibe S-series', 'name': 'Test Device',
+            'manufacturer': 'NIBE', 'serial': '',
+        })
 
 
 # ===========================================================================
@@ -4808,6 +5210,27 @@ class TestPublishBridgeStatus(unittest.TestCase):
         payload = self._publish(last_write_error='PATCH failed: 400')
         self.assertEqual(payload['writes']['last_error'], 'PATCH failed: 400')
 
+    def test_write_success_rate_rounded_to_one_decimal_place(self):
+        """round(..., 1) vs round(..., 2)/None/dropped — 1/3 = 33.333...%,
+        which differs observably between rounding precisions."""
+        payload = self._publish(write_total=3, write_success=1, write_failed=2)
+        self.assertEqual(payload['writes']['success_rate_pct'], 33.3)
+
+    def test_api_last_success_published_at_boundary_value_one(self):
+        """api_last_success_time=1 is > 0 so `last_success` must be
+        populated (not None). The `> 1` mutant would suppress it exactly
+        at this boundary."""
+        payload = self._publish(api_last_success_time=1)
+        self.assertIsNotNone(payload['api']['last_success'])
+
+    def test_api_last_success_uses_the_real_argument_not_now(self):
+        """`last_success` must format the real api_last_success_time
+        argument, not `_fmt_ts(None)` (current time)."""
+        from nibe_utils import fmt_ts
+        fixed_time = 1700000000.0
+        payload = self._publish(api_last_success_time=fixed_time)
+        self.assertEqual(payload['api']['last_success'], fmt_ts(fixed_time))
+
 
 
 class TestPublishManagementDiscovery(unittest.TestCase):
@@ -4985,6 +5408,26 @@ class TestPublishStats(unittest.TestCase):
         payload = json.loads(attr_calls[0][0][1])
         self.assertEqual(payload['enabled_percentage'], 50.0)
 
+    def test_note_field_has_exact_text(self):
+        import json
+        self._publish()
+        attr_calls = [c for c in self.mqtt.publish.call_args_list
+                      if c[0][0] == self.MgmtTopic.STATS_ATTRS]
+        payload = json.loads(attr_calls[0][0][1])
+        self.assertEqual(
+            payload['note'], "Counts based on MQTT retained discovery messages",
+        )
+
+    def test_write_success_rate_rounded_to_one_decimal_place(self):
+        """round(..., 1) vs round(..., 2) — 1/3 = 33.333...%, which differs
+        observably between 1 and 2 decimal places (33.3 vs 33.33)."""
+        import json
+        self._publish(write_total=3, write_success=1, write_failed=2)
+        attr_calls = [c for c in self.mqtt.publish.call_args_list
+                      if c[0][0] == self.MgmtTopic.STATS_ATTRS]
+        payload = json.loads(attr_calls[0][0][1])
+        self.assertEqual(payload['write_success_rate'], 33.3)
+
     def test_enabled_percentage_zero_when_no_points(self):
         import json
         self._publish(all_points_count=0, mqtt_enabled_count=0)
@@ -5035,6 +5478,14 @@ class TestPublishAlarmState(unittest.TestCase):
         state_calls = [c for c in self.mqtt.publish.call_args_list
                        if c[0][0] == self.MgmtTopic.ALARM_STATE]
         self.assertTrue(any(c[0][1] == '0' for c in state_calls))
+
+    def test_attrs_payload_has_exact_keys(self):
+        import json
+        self.pub.publish_alarm_state(1, [{'id': 1}])
+        attr_calls = [c for c in self.mqtt.publish.call_args_list
+                      if c[0][0] == self.MgmtTopic.ALARM_ATTRS]
+        payload = json.loads(attr_calls[0][0][1])
+        self.assertEqual(set(payload.keys()), {'alarms', 'last_updated'})
 
 
 
@@ -5531,6 +5982,38 @@ class TestPublishApiReachabilityLastSuccess(unittest.TestCase):
         calls = {c[0][0]: c[0][1] for c in self.mqtt.publish.call_args_list}
         self.assertEqual(calls.get(self.MgmtTopic.FETCH_DUR_STATE), '2.50')
 
+    @given(duration=st.floats(min_value=0.0, max_value=100_000.0,
+                              allow_nan=False, allow_infinity=False))
+    @example(duration=2.5)   # the hand-picked example above
+    def test_fetch_duration_always_formatted_to_two_decimals(self, duration):
+        """For any duration, the published string must be f'{duration:.2f}'
+        exactly — generalizes the single 2.5->'2.50' example to the whole
+        space of durations, including ones where naive rounding could
+        differ from Python's own :.2f (e.g. values ending in .xx5)."""
+        self.pub.publish_api_reachability(
+            api_consecutive_failures=0, api_failure_threshold=3,
+            api_last_success_time=0, last_fetch_duration=duration,
+        )
+        calls = {c[0][0]: c[0][1] for c in self.mqtt.publish.call_args_list}
+        self.assertEqual(calls.get(self.MgmtTopic.FETCH_DUR_STATE), f'{duration:.2f}')
+
+    @given(failures=st.integers(min_value=0, max_value=100),
+           threshold=st.integers(min_value=1, max_value=100))
+    @example(failures=3, threshold=3)    # the hand-picked "at threshold" example above
+    @example(failures=2, threshold=3)    # one below threshold — must be ON
+    def test_api_state_is_off_iff_failures_at_or_above_threshold(self, failures, threshold):
+        """api_state must be exactly 'OFF' when failures >= threshold and
+        'ON' otherwise — for any failures/threshold pair, not just the
+        single exact-equality boundary example above (which alone can't
+        distinguish `>=` from `>`)."""
+        self.pub.publish_api_reachability(
+            api_consecutive_failures=failures, api_failure_threshold=threshold,
+            api_last_success_time=0, last_fetch_duration=0.0,
+        )
+        calls = {c[0][0]: c[0][1] for c in self.mqtt.publish.call_args_list}
+        expected = 'OFF' if failures >= threshold else 'ON'
+        self.assertEqual(calls.get(self.MgmtTopic.API_OK_STATE), expected)
+
 
 # ===========================================================================
 # 80. EntityManager — scan_mqtt_discovery
@@ -5705,6 +6188,23 @@ class TestPublishApiReachabilityLastFetchFormat(unittest.TestCase):
         iso = calls.get(self.MgmtTopic.LAST_FETCH_STATE, '')
         self.assertRegex(iso, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$',
                          f"last_fetch value {iso!r} is not valid ISO-8601")
+
+    def test_last_fetch_value_derives_from_the_real_argument_not_current_time(self):
+        """A regex-only ISO-8601 shape check can't distinguish the real
+        api_last_success_time from time.gmtime(None) (current time) — both
+        produce a validly-shaped string. Pin the exact value derived from
+        a known, fixed timestamp instead."""
+        self.pub.publish_api_reachability(
+            api_consecutive_failures=0,
+            api_failure_threshold=3,
+            api_last_success_time=1700000000.0,
+            last_fetch_duration=1.2,
+        )
+        calls = self._calls()
+        self.assertEqual(
+            calls.get(self.MgmtTopic.LAST_FETCH_STATE),
+            '2023-11-14T22:13:20Z',
+        )
 
 
 class TestPublishManagementDiscoveryEntityConfig(unittest.TestCase):
@@ -6186,6 +6686,216 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         payload = json.loads(config_call[0][1])
         self.assertEqual(payload['mode'], 'box')
 
+    def test_is_writable_defaults_false_when_key_absent(self):
+        """is_writable falls back to False when the point dict omits the key
+        entirely — a wrong default (None, True, or a mistyped lookup key)
+        would silently mark a read-only point writable in HA."""
+        pub, _ = self._pub()
+        point = dict(self._sensor_point(7777))
+        del point['is_writable']
+        entity_info = pub.publish_entity_discovery(point, {})
+        self.assertIs(entity_info['is_writable'], False)
+
+    def test_is_writable_true_propagates_from_point(self):
+        """is_writable=True on the point must reach entity_info unchanged —
+        a mistyped lookup key would silently fall back to the False default."""
+        pub, _ = self._pub()
+        point = dict(self._sensor_point(7778))
+        point['is_writable'] = True
+        entity_info = pub.publish_entity_discovery(point, {})
+        self.assertIs(entity_info['is_writable'], True)
+
+    def test_description_absent_omits_attributes_key(self):
+        """An empty/absent description must not appear in the published
+        attributes payload — a wrong default (e.g. a non-empty placeholder)
+        would inject a spurious description HA users would see."""
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(8888))
+        del point['description']
+        pub.publish_entity_discovery(point, {})
+        from nibe_mqtt_publisher import t_attributes
+        from nibe_entity_detection import create_entity_id
+        entity_id = create_entity_id(8888)
+        attrs_call = next(c for c in mqtt.publish.call_args_list
+                          if c[0][0] == t_attributes('sensor', entity_id))
+        attrs = json.loads(attrs_call[0][1])
+        self.assertNotIn('description', attrs)
+
+    def test_switch_topics_use_switch_entity_type(self):
+        """Switch state/command topics must be built with entity_type='switch'
+        and the point's own entity_id — a wrong literal or swapped/None arg
+        would point HA at the wrong (or a broken) MQTT topic."""
+        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(6060))
+        point['entity_type'] = 'switch'
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(6060)
+        self.assertEqual(payload['state_topic'], t_state('switch', entity_id))
+        self.assertEqual(payload['command_topic'], t_command('switch', entity_id))
+
+    def test_button_command_topic_uses_own_entity_id(self):
+        """Button command_topic must be t_press(entity_id) for this point's
+        own entity_id — a None/wrong arg would break the button in HA."""
+        from nibe_mqtt_publisher import t_press
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(3030))
+        point['entity_type'] = 'button'
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(3030)
+        self.assertEqual(payload['command_topic'], t_press(entity_id))
+
+    def test_number_topics_use_number_entity_type(self):
+        """Number state/command topics must be built with entity_type='number'
+        and the point's own entity_id."""
+        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(5050))
+        point['entity_type'] = 'number'
+        point['is_writable'] = True
+        point['metadata'] = dict(point['metadata'])
+        point['metadata']['modbusRegisterType'] = 'MODBUS_HOLDING_REGISTER'
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(5050)
+        self.assertEqual(payload['state_topic'], t_state('number', entity_id))
+        self.assertEqual(payload['command_topic'], t_command('number', entity_id))
+
+    def test_number_unit_of_measurement_present_when_unit_set(self):
+        """A number entity with a non-empty resolved unit must carry
+        unit_of_measurement in its discovery config — a swapped/None unit
+        arg would silently drop the unit shown in HA."""
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(9090))
+        point['entity_type'] = 'number'
+        point['is_writable'] = True
+        point['metadata'] = dict(point['metadata'])
+        point['metadata']['modbusRegisterType'] = 'MODBUS_HOLDING_REGISTER'
+        point['metadata']['unit'] = '°C'
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        self.assertEqual(payload['unit_of_measurement'], '°C')
+
+    def test_select_topics_use_select_entity_type(self):
+        """Select state/command topics must be built with entity_type='select'
+        and the point's own entity_id."""
+        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(4040))
+        point['entity_type'] = 'select'
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(4040)
+        self.assertEqual(payload['state_topic'], t_state('select', entity_id))
+        self.assertEqual(payload['command_topic'], t_command('select', entity_id))
+
+    def test_time_topics_use_time_entity_type(self):
+        """Time entity state_topic/command_topic must be t_state/t_command
+        with entity_type='time' — wrong entity_type or a None arg would
+        break the entity in HA."""
+        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(2020))
+        point['entity_type'] = 'time'
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(2020)
+        self.assertEqual(payload['state_topic'], t_state('time', entity_id))
+        self.assertEqual(payload['command_topic'], t_command('time', entity_id))
+
+    def test_text_topics_use_text_entity_type(self):
+        """Text entity state_topic/command_topic must be t_state/t_command
+        with entity_type='text' — wrong entity_type or a None arg would
+        break the entity in HA."""
+        from nibe_mqtt_publisher import t_state, t_command
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(2021))
+        point['entity_type'] = 'text'
+        point['is_writable'] = True
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(2021)
+        self.assertEqual(payload['state_topic'], t_state('text', entity_id))
+        self.assertEqual(payload['command_topic'], t_command('text', entity_id))
+
+    def test_binary_sensor_state_topic_uses_binary_sensor_entity_type(self):
+        """Binary sensor state_topic must be t_state('binary_sensor', entity_id)."""
+        from nibe_mqtt_publisher import t_state
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(2022))
+        point['entity_type'] = 'binary_sensor'
+        point['is_writable'] = False
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(2022)
+        self.assertEqual(payload['state_topic'], t_state('binary_sensor', entity_id))
+
+    def test_sensor_state_topic_and_unit_use_sensor_entity_type(self):
+        """Explicit 'sensor' branch: state_topic must be t_state('sensor', entity_id)
+        and a non-empty unit must reach unit_of_measurement unchanged."""
+        from nibe_mqtt_publisher import t_state
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(2023))
+        point['entity_type'] = 'sensor'
+        point['metadata'] = dict(point['metadata'])
+        point['metadata']['unit'] = '°C'
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(2023)
+        self.assertEqual(payload['state_topic'], t_state('sensor', entity_id))
+        self.assertEqual(payload['unit_of_measurement'], '°C')
+
+    def test_unhandled_entity_type_falls_back_to_sensor_topic(self):
+        """An unrecognized entity_type must still get a working sensor
+        state_topic via the fallback branch — a None/wrong arg there would
+        leave the point silently broken with no visible entity in HA."""
+        from nibe_mqtt_publisher import t_state
+        from nibe_entity_detection import create_entity_id
+        pub, mqtt = self._pub()
+        point = dict(self._sensor_point(2024))
+        point['entity_type'] = 'totally_unknown_type'
+        point['metadata'] = dict(point['metadata'])
+        point['metadata']['unit'] = '°C'
+        pub.publish_entity_discovery(point, {})
+        config_call = next(c for c in mqtt.publish.call_args_list
+                           if '/config' in c[0][0])
+        payload = json.loads(config_call[0][1])
+        entity_id = create_entity_id(2024)
+        self.assertEqual(payload['state_topic'], t_state('sensor', entity_id))
+        self.assertEqual(payload['unit_of_measurement'], '°C')
+
     def test_config_hash_dedup_skips_second_identical_publish(self):
         """When config is unchanged, second publish must be skipped (hash match)."""
         pub, mqtt = self._pub()
@@ -6594,6 +7304,50 @@ class TestPublishStaticAttributesPayloadKeys(unittest.TestCase):
         )
         self.assertIn('default_value', attrs)
         self.assertIn('20', attrs['default_value'])
+
+    def test_default_value_uses_the_real_divisor_exactly(self):
+        """assertIn('20', ...) above passes even for an undivided '200' (20
+        is a substring of 200) — pin the exact value to actually prove the
+        real divisor is applied, not a wrong key/default/None that
+        apply_divisor's own falsy-divisor fallback would silently mask."""
+        attrs = self._attrs_payload(
+            unit='°C',
+            metadata=self._metadata(divisor=10, default=200),  # 200/10 = 20.0
+        )
+        self.assertEqual(attrs['default_value'], '20 °C')
+
+    def test_default_value_divisor_key_absent_defaults_to_one_not_two(self):
+        """metadata.get('divisor', 1) — when the 'divisor' key is entirely
+        absent (not just falsy), the .get() default itself is what's used
+        (unlike the divisor-present cases above, where the default is
+        irrelevant). A wrong default of 2 here would double the divisor."""
+        m = self._metadata(divisor=1, default=55)
+        del m['divisor']
+        attrs = self._attrs_payload(unit='', metadata=m)
+        self.assertEqual(attrs['default_value'], '55')
+
+    def test_default_value_divisor_explicit_zero_falls_back_to_one_not_two(self):
+        """`or 1` must fall back to exactly 1 when divisor is explicitly 0
+        (present but falsy) — `or 2` would silently halve the displayed
+        default instead of showing the raw integer."""
+        attrs = self._attrs_payload(
+            unit='', metadata=self._metadata(divisor=0, default=55),
+        )
+        self.assertEqual(attrs['default_value'], '55')
+
+    def test_default_value_divisor_key_wrong_default_is_observable(self):
+        """A metadata dict with NO 'divisor' key at all must still divide by
+        the real key's default (1) — but a metadata dict WITH a real,
+        non-1 divisor value must use that value, not a masked-to-1
+        fallback. This distinguishes 'divisor key absent' (where a wrong
+        default IS unobservable, since 1-vs-None both funnel to divisor=1)
+        from 'divisor key present with a non-1 value' (where a wrong key/
+        default/None IS observable)."""
+        attrs = self._attrs_payload(
+            unit='kWh',
+            metadata=self._metadata(divisor=100, default=12345),  # 12345/100 = 123.45
+        )
+        self.assertEqual(attrs['default_value'], '123.45 kWh')
 
     def test_default_value_key_absent_when_no_default(self):
         attrs = self._attrs_payload(metadata=self._metadata())
@@ -7102,18 +7856,74 @@ class TestPublishEntityDiscoveryConfigStructure(unittest.TestCase):
 
     def test_internal_keys_stripped_from_published_config(self):
         """Keys starting with '_' (e.g. '_degenerate_range') must not appear
-        in the published discovery payload — they are internal bridge state."""
+        in the published discovery payload — they are internal bridge state.
+
+        The prior version of this test never actually produced a '_'-keyed
+        entry in config (no point here had minValue == maxValue), so the
+        filter it claims to verify was never exercised — internal_keys was
+        vacuously [] whether or not the filter worked at all. This one
+        forces build_number_config's degenerate-range branch, which is the
+        only place '_degenerate_range' gets set."""
         pub, mqtt = self._pub()
         point = self._point(100, entity_type='number')
         point['is_writable'] = True
         point['metadata']['modbusRegisterType'] = 'MODBUS_HOLDING_REGISTER'
+        point['metadata']['minValue'] = 5
+        point['metadata']['maxValue'] = 5
         pub.publish_entity_discovery(point, {})
         config_call = next(c for c in mqtt.publish.call_args_list
                            if '/config' in c[0][0])
         payload = json.loads(config_call[0][1])
+        self.assertNotIn('_degenerate_range', payload)
         internal_keys = [k for k in payload if k.startswith('_')]
         self.assertEqual(internal_keys, [],
                          f"Internal keys must not be published: {internal_keys}")
+
+    def test_entity_type_change_clears_old_topic_with_retain_true(self):
+        """When a point's entity_type changes between publishes, the old
+        discovery topic must be cleared with an empty *retained* message
+        (retain=True) — an unretained clear would only affect subscribers
+        connected right now, leaving the broker still serving the stale
+        ghost config to any client that (re)subscribes later. This whole
+        entity_type-change cleanup path had no test at all before this."""
+        pub, mqtt = self._pub()
+        point = self._point(777, entity_type='sensor')
+        pub.publish_entity_discovery(point, {})
+        mqtt.reset_mock()
+
+        point2 = self._point(777, entity_type='switch')
+        pub.publish_entity_discovery(point2, {})
+
+        from nibe_mqtt_publisher import t_config
+        old_topic = t_config('sensor', 'nibe_777')
+        clear_calls = [c for c in mqtt.publish.call_args_list if c.args[0] == old_topic]
+        self.assertEqual(len(clear_calls), 1,
+                         f"Expected exactly one clear publish to {old_topic}")
+        self.assertEqual(clear_calls[0].args[1], "")
+        self.assertIs(clear_calls[0].kwargs.get('retain'), True)
+
+    def test_static_attributes_call_receives_the_real_point_id_unit_and_writable(self):
+        """publish_entity_discovery's call to _publish_static_attributes
+        passes point_id, unit, and is_writable positionally. Every existing
+        test of _publish_static_attributes's payload content calls it
+        directly with hand-supplied arguments — none of them go through
+        publish_entity_discovery, so a mutation swapping one of these three
+        positional arguments at the call site (e.g. point_id -> None) would
+        never be observed. This checks the full round trip: the published
+        attributes JSON must reflect the point's *actual* point_id, unit,
+        and writability, not a value from a different point."""
+        pub, mqtt = self._pub()
+        point = self._point(54321, entity_type='sensor')
+        point['is_writable'] = True
+        point['metadata']['unit'] = 'kWh'
+        point['metadata']['intDefaultValue'] = 5
+        pub.publish_entity_discovery(point, {})
+        attrs_call = next(c for c in mqtt.publish.call_args_list
+                          if 'attributes' in c.args[0])
+        attrs = json.loads(attrs_call.args[1])
+        self.assertEqual(attrs['point_id'], '54321')
+        self.assertEqual(attrs['writable'], True)
+        self.assertIn('kWh', attrs['default_value'])
 
     def test_attributes_topic_key_in_return_dict(self):
         """entity_info must have 'attributes_topic' key — EntityManager reads it."""
@@ -7182,6 +7992,24 @@ class TestNumberConfigDivisorZeroHandling(unittest.TestCase):
         # Must be exactly 0.1 to 10 decimal places
         self.assertEqual(round(config['step'], 10), 0.1)
         self.assertLess(abs(config['step'] - 0.1), 1e-10)
+
+    def test_divisor_key_absent_defaults_to_one(self):
+        """metadata entirely missing the 'divisor' key (not just divisor=None)
+        must default to 1 — a wrong .get() default (e.g. 2) would silently
+        halve/double every number entity's step and min/max scaling."""
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+        pub = object.__new__(MqttDiscoveryPublisher)
+        pub.mqtt = MagicMock()
+        pub.device_info = {}
+        pub._range_warnings_issued = set()
+        config = {}
+        metadata = {'minValue': 0, 'maxValue': 10}
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_command, t_state
+        discovery_config.build_number_config(config, t_state('number', 'test_id'), t_command('number', 'test_id'), 9999, 'T', '', metadata, {}, pub._range_warnings_issued)
+        self.assertEqual(config['step'], 1.0)
+        self.assertEqual(config['min'], 0.0)
+        self.assertEqual(config['max'], 10.0)
 
 
 class TestManagementDiscoveryIconsAndNames(unittest.TestCase):
@@ -7280,10 +8108,33 @@ class TestBuildPointMetadataDictDefaults(unittest.TestCase):
             'metadata': {},   # deliberately empty
         }
 
+    def test_missing_metadata_key_defaults_to_empty_dict_not_none(self):
+        """metadata_dict = point.get('metadata', {}) — a point with no
+        'metadata' key at all must fall back to {}, not None or a missing
+        argument. A None/dropped default would raise AttributeError on the
+        very next line's metadata_dict.get('unit', '') call."""
+        pub = self._pub()
+        point = self._minimal_point()
+        del point['metadata']
+        result = pub._build_point_metadata_dict(point)
+        self.assertEqual(result['unit_raw'], '')
+        self.assertEqual(result['unit'], '')
+
     def test_empty_metadata_unit_raw_defaults_to_empty_string(self):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._minimal_point())
         self.assertEqual(result['unit_raw'], '')
+
+    def test_empty_metadata_unit_passed_to_resolve_unit_is_real_empty_string(self):
+        """The separate `metadata_dict.get('unit', '')` call feeding
+        resolve_unit() (distinct from the unit_raw field's own .get call)
+        must also default to '' — point_id=100 is not in UNIT_OVERRIDES, so
+        the resolved unit passes straight through as the raw default value,
+        cleaned. A wrong default (e.g. 'XXXX') would leak into 'unit'."""
+        pub = self._pub()
+        result = pub._build_point_metadata_dict(self._minimal_point(point_id=100))
+        self.assertEqual(result['unit'], '')
+        self.assertFalse(result['unit_overridden'])
 
     def test_empty_metadata_variableType_defaults_to_empty_string(self):
         pub = self._pub()
@@ -7332,20 +8183,34 @@ class TestBuildPointMetadataDictDefaults(unittest.TestCase):
         result = pub._build_point_metadata_dict(self._minimal_point())
         self.assertIsNone(result['modbusRegisterID'])
 
+    def test_present_modbusRegisterID_is_returned_not_none(self):
+        """A wrong/case-flipped/None key lookup would also return None here
+        (same as the absent-key default above) — this needs a REAL value
+        present to distinguish 'correct key, real value' from 'wrong key,
+        silently falls through to None'."""
+        pub = self._pub()
+        point = self._minimal_point()
+        point['metadata']['modbusRegisterID'] = 42424
+        result = pub._build_point_metadata_dict(point)
+        self.assertEqual(result['modbusRegisterID'], 42424)
+
     def test_point_is_writable_false_default(self):
-        """is_writable absent from point → writable=False default."""
+        """is_writable absent from point → writable=False default.
+        assertIs (not assertFalse) — a None/dropped default would also
+        satisfy assertFalse(None), masking a wrong default value."""
         pub = self._pub()
         point = self._minimal_point()
         del point['is_writable']
         result = pub._build_point_metadata_dict(point)
-        self.assertFalse(result['writable'])
+        self.assertIs(result['writable'], False)
 
     def test_point_is_dynamic_false_default(self):
+        """assertIs (not assertFalse) — see test_point_is_writable_false_default."""
         pub = self._pub()
         point = self._minimal_point()
         del point['is_dynamic']
         result = pub._build_point_metadata_dict(point)
-        self.assertFalse(result['is_dynamic'])
+        self.assertIs(result['is_dynamic'], False)
 
     def test_point_entity_category_empty_default(self):
         pub = self._pub()
@@ -7353,6 +8218,16 @@ class TestBuildPointMetadataDictDefaults(unittest.TestCase):
         del point['entity_category']
         result = pub._build_point_metadata_dict(point)
         self.assertEqual(result['category'], '')
+
+    def test_present_entity_category_is_returned_not_default(self):
+        """A wrong/case-flipped/None key lookup would also fall back to ''
+        (same as the absent-key default above) — needs a REAL value
+        present to distinguish the two."""
+        pub = self._pub()
+        point = self._minimal_point()
+        point['entity_category'] = 'diagnostic'
+        result = pub._build_point_metadata_dict(point)
+        self.assertEqual(result['category'], 'diagnostic')
 
     def test_point_description_empty_default(self):
         pub = self._pub()
@@ -7442,6 +8317,12 @@ class TestPublishBridgeAlertDefaults(unittest.TestCase):
         self.assertEqual(payload['context'], {})
         # Verify it's a dict, not None (null in JSON)
         self.assertIsInstance(payload['context'], dict)
+
+    def test_publish_called_with_retain_false(self):
+        """retain=False (edge-fires, not on every reconnect) — the mqtt
+        client call's real retain kwarg value, not just its presence."""
+        _, call = self._call()
+        self.assertIs(call.kwargs['retain'], False)
 
     def test_alert_type_is_string_not_mutated(self):
         """alert_type value must pass through exactly."""

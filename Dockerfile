@@ -33,6 +33,14 @@ COPY app/ ./
 COPY tests/ /tests/
 COPY pytest.ini /
 
+# translations/ is otherwise only read by the HA Supervisor directly from
+# the add-on's source directory (not needed by the running container) —
+# copied here anyway so TestConfigTranslationsParity (config.yaml vs.
+# translations/*.yaml drift) can actually run for real when the test
+# suite executes inside the deployed container, not just from a dev
+# machine's repo checkout.
+COPY translations/ /translations/
+
 # BRIDGE_VERSION in generate_nibe_mqtt.py matches the version: field in config.yaml 
 # so they can't drift apart without the test catching it.
 COPY config.yaml /

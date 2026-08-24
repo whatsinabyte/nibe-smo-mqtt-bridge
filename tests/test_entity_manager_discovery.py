@@ -412,6 +412,38 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         em.complete_deferred_discovery('essential')
         em.publish_enabled_state.assert_not_called()
 
+    def test_apply_branch_logs_fresh_install_message(self):
+        """The 'apply' branch's log message is purely diagnostic (the actual
+        apply_mode/restore_from_mqtt calls happen via apply_startup_action,
+        driven by `action` directly) but must still name the real mode."""
+        em = self._make_em_ready(mqtt_enabled_count=0)
+        with self.assertLogs('nibe.restore', level='WARNING') as cm:
+            em.complete_deferred_discovery('essential')
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn(
+            "Deferred MQTT scan found 0 existing discovery configs — "
+            "looks like a fresh install. Applying mode 'essential'.",
+            cm.output[0],
+        )
+
+    def test_restore_branch_logs_restoring_message(self):
+        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
+        with self.assertLogs('nibe.restore', level='INFO') as cm:
+            em.complete_deferred_discovery('essential')
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("Restoring entities from MQTT database...", cm.output[0])
+
+    def test_reconcile_branch_logs_differs_message_with_real_mode(self):
+        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
+        with self.assertLogs('nibe.restore', level='INFO') as cm:
+            em.complete_deferred_discovery('menus')
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn(
+            "Deferred discovery: applied mode differs from configured mode 'menus' — "
+            "restoring then reconciling to the new mode.",
+            cm.output[0],
+        )
+
     def test_device_info_updated_from_api(self):
         em = self._make_em_ready()
         em._api.fetch_device_info.return_value = {
@@ -550,6 +582,46 @@ class TestScanMqttDiscovery(unittest.TestCase):
         em.mqtt_enabled_points.add(9999)
         em.scan_mqtt_discovery()
         self.assertNotIn(9999, em.mqtt_enabled_points)
+
+    def _capture_discovery_debug(self, em):
+        import logging
+        records = []
+        class CapHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+        cap = CapHandler()
+        cap.setLevel(logging.DEBUG)
+        logger = logging.getLogger('nibe.discovery')
+        logger.addHandler(cap)
+        original_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            em.scan_mqtt_discovery()
+        finally:
+            logger.removeHandler(cap)
+            logger.setLevel(original_level)
+        return [r.getMessage() for r in records]
+
+    def test_summary_log_exact_message_on_clean_scan(self):
+        """The final summary log's suffix must be empty (not the partial-scan
+        note) when the sentinel arrived on time."""
+        payload = {'unique_id': 'nibe_1234', 'name': 'Test'}
+        em = self._make_em_with_sentinel([payload])
+        messages = self._capture_discovery_debug(em)
+        self.assertIn("Found 1 existing MQTT discovery configs", messages)
+
+    def test_summary_log_exact_message_on_partial_scan(self):
+        """The final summary log's suffix must be the exact partial-scan note
+        when the sentinel timed out — not present (or altered) when it did."""
+        payload = {'unique_id': 'nibe_9999', 'name': 'Test'}
+        em = self._make_em_with_sentinel([payload], sentinel_fires=False)
+        with patch('nibe_entity_manager._MQTT_SCAN_TIMEOUT_S', 0):
+            messages = self._capture_discovery_debug(em)
+        self.assertIn(
+            "Found 1 existing MQTT discovery configs"
+            " (scan may be partial — sentinel timed out)",
+            messages,
+        )
 
     def test_unsubscribes_after_scan(self):
         em = self._make_em_with_sentinel([])
@@ -712,6 +784,23 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
         self.assertNotIn(999, em.mqtt_enabled_points)
+
+    def test_missing_point_does_not_abort_restoring_later_points(self):
+        """A point with no metadata must be skipped (`continue`), not abort
+        the whole restore loop (`break`) — every other valid point in
+        mqtt_enabled_points must still be restored regardless of where the
+        missing one falls in iteration order."""
+        em = self._make_em_with_points([100, 200, 300])
+        # 999 is not in all_points_by_id — deliberately missing metadata.
+        em.mqtt_enabled_points.update({1, 100, 200, 300, 999})
+        em._pub.publish_entity_discovery.side_effect = lambda point, bulk: (
+            self._entity_info(point['variableId'])
+        )
+        result = em.restore_from_mqtt()
+        self.assertEqual(result, 3)
+        self.assertEqual(
+            set(em.active_entities_by_id.keys()), {100, 200, 300}
+        )
 
     def test_online_published_for_restored_entities(self):
         em = self._make_em_with_points([100])
@@ -1405,6 +1494,36 @@ class TestScanMqttPartialWarning(unittest.TestCase):
             ),
             "Warning must mention 'partial' or 'incomplete' to diagnose missed configs",
         )
+
+    def test_sentinel_timeout_warning_exact_message(self):
+        """Pin the exact formatted warning text — the two substring checks
+        above ('Sentinel timeout' / 'partial' or 'incomplete') both still
+        pass if extra junk text is prepended/appended around either half of
+        the message, so they don't fully verify the format string."""
+        import logging
+        from nibe_entity_manager import _MQTT_SCAN_TIMEOUT_S
+
+        records = []
+        class CapHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+        cap = CapHandler()
+        cap.setLevel(logging.WARNING)
+        logging.getLogger('nibe.discovery').addHandler(cap)
+        try:
+            with patch('threading.Event.wait', return_value=False):
+                self.em.scan_mqtt_discovery()
+        finally:
+            logging.getLogger('nibe.discovery').removeHandler(cap)
+
+        warnings = [r for r in records if r.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        expected = (
+            f"Sentinel timeout after {_MQTT_SCAN_TIMEOUT_S}s — retained message "
+            f"delivery may be incomplete. 0 configs received so far; some "
+            f"entities may be missing until the next restart."
+        )
+        self.assertEqual(warnings[0].getMessage(), expected)
 
     def test_sentinel_success_emits_no_partial_warning(self):
         """When the sentinel arrives on time no partial-scan warning must appear."""
