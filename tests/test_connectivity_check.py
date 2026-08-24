@@ -190,9 +190,8 @@ class TestRunCurl(unittest.TestCase):
         vs a mistyped variant), or a `cmd = [...]` overwrite instead of
         `cmd += [...]` in the CA branch could all slip past `assertIn`
         checks elsewhere in this file."""
-        from nibe_utils import TLS_COMPAT_CIPHERS
-
         from nibe_connectivity_check import _run_curl
+        from nibe_utils import TLS_COMPAT_CIPHERS
         with patch('subprocess.run', return_value=self._curl_result(stdout='HTTP_CODE:200')) as mock_run:
             _run_curl('https://192.0.2.1:8443/api/v1/devices/0', None, timeout=10)
         cmd = mock_run.call_args.args[0]
@@ -557,6 +556,25 @@ class TestRunConnectivityCheck(unittest.TestCase):
                   return_value={'ok': ping_ok, 'summary': 'ping result'}),
             patch('nibe_connectivity_check._run_curl',
                   return_value={'ok': curl_ok, 'summary': 'curl result', 'http_code': 200 if curl_ok else None}),
+        )
+
+    def test_start_log_has_exact_text_and_real_host_and_base_url(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(True, True)
+        with p1, p2, patch('nibe_connectivity_check.log_commands') as mock_log:
+            run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        mock_log.info.assert_any_call(
+            "Running connectivity check against %s (%s)",
+            '192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0',
+        )
+
+    def test_result_log_has_exact_text_and_real_summary(self):
+        from nibe_connectivity_check import run_connectivity_check
+        p1, p2 = self._patch_both(True, True)
+        with p1, p2, patch('nibe_connectivity_check.log_commands') as mock_log:
+            result = run_connectivity_check('192.0.2.1', 'https://192.0.2.1:8443/api/v1/devices/0')
+        mock_log.info.assert_any_call(
+            "Connectivity check result: %s", result['summary'],
         )
 
     def test_both_succeed_overall_ok(self):

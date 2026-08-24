@@ -30,6 +30,9 @@ data/
 # Local secrets and env vars — never commit these
 .env
 
+# Local reference firmware data dumps — not committed, developer-local only
+/reference-dumps/
+
 # Claude Code project config — kept local-only
 .claude/
 

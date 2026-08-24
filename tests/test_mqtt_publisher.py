@@ -4639,7 +4639,7 @@ class TestPublishManagementDiscoveryDeviceInfoDefaults(unittest.TestCase):
     def test_connectivity_check_result_sensor_full_payload(self):
         """The Connectivity Check Result debug sensor's entire discovery
         payload must match exactly."""
-        from nibe_mqtt_publisher import MgmtTopic, _HA_BASE
+        from nibe_mqtt_publisher import _HA_BASE, MgmtTopic
         pub, mqtt = self._pub({'identifiers': ['nibe_test']})
         pub.publish_management_discovery('essential', debug_mode=True)
         import json
@@ -6713,8 +6713,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         point = dict(self._sensor_point(8888))
         del point['description']
         pub.publish_entity_discovery(point, {})
-        from nibe_mqtt_publisher import t_attributes
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_attributes
         entity_id = create_entity_id(8888)
         attrs_call = next(c for c in mqtt.publish.call_args_list
                           if c[0][0] == t_attributes('sensor', entity_id))
@@ -6725,8 +6725,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         """Switch state/command topics must be built with entity_type='switch'
         and the point's own entity_id — a wrong literal or swapped/None arg
         would point HA at the wrong (or a broken) MQTT topic."""
-        from nibe_mqtt_publisher import t_state, t_command
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_command, t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(6060))
         point['entity_type'] = 'switch'
@@ -6742,8 +6742,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
     def test_button_command_topic_uses_own_entity_id(self):
         """Button command_topic must be t_press(entity_id) for this point's
         own entity_id — a None/wrong arg would break the button in HA."""
-        from nibe_mqtt_publisher import t_press
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_press
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(3030))
         point['entity_type'] = 'button'
@@ -6758,8 +6758,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
     def test_number_topics_use_number_entity_type(self):
         """Number state/command topics must be built with entity_type='number'
         and the point's own entity_id."""
-        from nibe_mqtt_publisher import t_state, t_command
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_command, t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(5050))
         point['entity_type'] = 'number'
@@ -6794,8 +6794,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
     def test_select_topics_use_select_entity_type(self):
         """Select state/command topics must be built with entity_type='select'
         and the point's own entity_id."""
-        from nibe_mqtt_publisher import t_state, t_command
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_command, t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(4040))
         point['entity_type'] = 'select'
@@ -6812,8 +6812,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         """Time entity state_topic/command_topic must be t_state/t_command
         with entity_type='time' — wrong entity_type or a None arg would
         break the entity in HA."""
-        from nibe_mqtt_publisher import t_state, t_command
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_command, t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(2020))
         point['entity_type'] = 'time'
@@ -6830,8 +6830,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         """Text entity state_topic/command_topic must be t_state/t_command
         with entity_type='text' — wrong entity_type or a None arg would
         break the entity in HA."""
-        from nibe_mqtt_publisher import t_state, t_command
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_command, t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(2021))
         point['entity_type'] = 'text'
@@ -6846,8 +6846,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
 
     def test_binary_sensor_state_topic_uses_binary_sensor_entity_type(self):
         """Binary sensor state_topic must be t_state('binary_sensor', entity_id)."""
-        from nibe_mqtt_publisher import t_state
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(2022))
         point['entity_type'] = 'binary_sensor'
@@ -6862,8 +6862,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
     def test_sensor_state_topic_and_unit_use_sensor_entity_type(self):
         """Explicit 'sensor' branch: state_topic must be t_state('sensor', entity_id)
         and a non-empty unit must reach unit_of_measurement unchanged."""
-        from nibe_mqtt_publisher import t_state
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(2023))
         point['entity_type'] = 'sensor'
@@ -6881,8 +6881,8 @@ class TestPublishEntityDiscoveryPayloadContent(unittest.TestCase):
         """An unrecognized entity_type must still get a working sensor
         state_topic via the fallback branch — a None/wrong arg there would
         leave the point silently broken with no visible entity in HA."""
-        from nibe_mqtt_publisher import t_state
         from nibe_entity_detection import create_entity_id
+        from nibe_mqtt_publisher import t_state
         pub, mqtt = self._pub()
         point = dict(self._sensor_point(2024))
         point['entity_type'] = 'totally_unknown_type'
