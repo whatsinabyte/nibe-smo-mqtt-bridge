@@ -337,6 +337,18 @@ class MqttDiscoveryPublisher:
         # or its retained discovery config would linger in HA forever as
         # a ghost/duplicate entity that nothing ever removes.
         self._point_entity_types: dict[int, str] = {}
+        # Every entity_type domain seen retained on the broker for a point_id
+        # at startup (see seed_entity_type_from_retained). A point can have
+        # more than one stale domain retained simultaneously — e.g. right
+        # after this cleanup logic itself first ships, an install may still
+        # have an old binary_sensor config lingering alongside the already-
+        # correct sensor one. A single "first-seen" value (previously stored
+        # via setdefault on _point_entity_types) depends on the arbitrary
+        # order retained messages arrive from the broker across *different*
+        # topics, and so isn't reliable — this accumulates the full set
+        # instead so every stale domain can be cleared regardless of arrival
+        # order. Consumed (and cleared) by publish_entity_discovery.
+        self._point_retained_domains: dict[int, set[str]] = {}
         # Hash of the last published static-attributes JSON per point_id.
         # Independent of _config_hashes: description/intDefaultValue feed
         # the attributes payload but are NOT part of the hashed discovery
@@ -362,6 +374,7 @@ class MqttDiscoveryPublisher:
         """
         self._config_hashes.pop(point_id, None)
         self._point_entity_types.pop(point_id, None)
+        self._point_retained_domains.pop(point_id, None)
         self._attributes_hashes.pop(point_id, None)
 
     def seed_config_hash_from_retained(self, point_id: int, payload: bytes) -> None:
@@ -383,6 +396,25 @@ class MqttDiscoveryPublisher:
         # equivalence at the config_hash computation in publish_entity_discovery.
         payload_hash = hashlib.md5(payload, usedforsecurity=False).hexdigest()  # pragma: no mutate
         self._config_hashes[point_id] = payload_hash
+
+    def seed_entity_type_from_retained(self, point_id: int, entity_type: str) -> None:
+        """Record a retained discovery config's own domain, found on the
+        broker at startup (see EntityManager.scan_mqtt_discovery), as a
+        possibly-stale entity_type for this point_id.
+
+        Without this, _point_retained_domains always starts empty on a fresh
+        process, so publish_entity_discovery's entity_type-change cleanup
+        can never fire on the very restart where a point's classification
+        changes — the old retained config topic for the point's previous
+        entity_type is left behind as an orphaned ghost entity in HA. Adds
+        to a set (not a single overwritten value) because more than one
+        stale domain can legitimately be retained for the same point_id at
+        once — e.g. transitional state before this cleanup mechanism has had
+        a chance to clear an old one — and the broker gives no ordering
+        guarantee across messages on different topics, so remembering only
+        the first- or last-seen domain would non-deterministically miss one.
+        """
+        self._point_retained_domains.setdefault(point_id, set()).add(entity_type)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -528,29 +560,38 @@ class MqttDiscoveryPublisher:
         config_json    = json.dumps(publish_config, sort_keys=True)
         config_hash    = hashlib.md5(config_json.encode(), usedforsecurity=False).hexdigest()  # pragma: no mutate — flag has no effect on hexdigest() output
 
+        # Union of every domain this point_id is known to have been published
+        # under: this session's own last publish (_point_entity_types), plus
+        # every domain seen retained on the broker at startup
+        # (_point_retained_domains — can hold more than one entry; see
+        # seed_entity_type_from_retained). Any of those that isn't the
+        # entity_type we're about to publish now is stale and must be
+        # cleared, not just a single remembered "previous" value — a point
+        # can have more than one leftover domain retained simultaneously.
+        stale_domains = self._point_retained_domains.pop(point_id, set())
         prev_entity_type = self._point_entity_types.get(point_id)
-        if prev_entity_type is not None and prev_entity_type != entity_type:
-            # entity_type changed since the last publish — clear the old
-            # topic's retained discovery config so HA doesn't keep showing
-            # a ghost/duplicate entity that nothing else would ever remove.
-            old_topic = t_config(prev_entity_type, entity_id)
-            self.mqtt.publish(old_topic, "", retain=True)
-            # pragma: no mutate start
-            log_mqtt.info(
-                "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
-                point_id, prev_entity_type, entity_type, old_topic,
-            )
-            # pragma: no mutate end
+        if prev_entity_type is not None:
+            stale_domains.add(prev_entity_type)
+        stale_domains.discard(entity_type)
+
+        if stale_domains:
+            # entity_type changed since the last publish (this session or a
+            # prior one) — clear every stale domain's retained discovery
+            # config so HA doesn't keep showing a ghost/duplicate entity
+            # that nothing else would ever remove. Sorted for deterministic
+            # ordering (log output, test assertions) — the broker publish
+            # order doesn't matter functionally.
+            for stale_domain in sorted(stale_domains):
+                old_topic = t_config(stale_domain, entity_id)
+                self.mqtt.publish(old_topic, "", retain=True)
+                # pragma: no mutate start
+                log_mqtt.info(
+                    "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
+                    point_id, stale_domain, entity_type, old_topic,
+                )
+                # pragma: no mutate end
             # Force a fresh publish below even if the new config's hash
-            # happens to collide with whatever was last stored. A dropped
-            # `None` default is unobservable here: reaching this branch means
-            # prev_entity_type came back non-None from _point_entity_types,
-            # which is only ever set in the same statement as _config_hashes
-            # (see the pair a few lines below) — so point_id is always
-            # already present and .pop() never needs its default. Verified
-            # empirically. A WRONG key (e.g. None) instead of point_id IS
-            # observable — see
-            # test_publish_entity_discovery_entity_type_change_forces_republish.
+            # happens to collide with whatever was last stored.
             self._config_hashes.pop(point_id, None)
 
         if self._config_hashes.get(point_id) == config_hash:

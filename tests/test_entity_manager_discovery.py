@@ -713,6 +713,18 @@ class TestScanMqttDiscovery(unittest.TestCase):
         self.assertEqual(sentinel_calls[0].args[1], 'scan')
         self.assertEqual(sentinel_calls[0].kwargs.get('retain'), False)
 
+    def test_seeds_entity_type_from_retained_config_topic(self):
+        """A retained config found at homeassistant/sensor/.../config must
+        seed the publisher's entity-type tracking from the topic's own
+        entity_type segment (via seed_entity_type_from_retained), so a later
+        publish_entity_discovery() call for the same point_id can detect a
+        type change across a restart and clear the old topic instead of
+        leaving an orphaned ghost entity behind."""
+        payload = {'unique_id': 'nibe_1234', 'name': 'Test'}
+        em = self._make_em_with_sentinel([payload])
+        em.scan_mqtt_discovery()
+        em._pub.seed_entity_type_from_retained.assert_called_once_with(1234, 'sensor')
+
     def test_cleanup_removes_callbacks_and_unsubscribes_both_topics(self):
         """After the scan, both the config-topic and sentinel-topic
         callbacks/subscriptions must be torn down using their real topic

@@ -788,6 +788,19 @@ class EntityManager:
                             self._pub.seed_config_hash_from_retained(
                                 point_id, message.payload
                             )
+                            # Pre-seed the publisher's entity-type-change
+                            # tracking from this retained config's own topic,
+                            # so a point whose classification changed between
+                            # restarts (e.g. an ENTITY_TYPE_OVERRIDES update)
+                            # gets its stale previous-domain topic cleared
+                            # instead of left behind as an orphaned ghost
+                            # entity. topic is "homeassistant/<entity_type>/
+                            # <entity_id>/config" — see t_config(). See
+                            # seed_entity_type_from_retained.
+                            retained_entity_type = topic.split('/')[1]
+                            self._pub.seed_entity_type_from_retained(
+                                point_id, retained_entity_type
+                            )
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
                     # topic/e value substitutions are log-only (neither reused
                     # after) — not pragma'd, the format string and arg count
