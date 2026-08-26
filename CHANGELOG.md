@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] — 2026-08-26
+
+### Fixed
+- **Stale ghost entity left behind when a point's entity type changes across
+  a restart** — fixes [GitHub issue #23](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/23):
+  1.1.0 intentionally reclassified points `2002`, `1820`, and `1827` from
+  generic on/off binary sensors to proper multi-state sensors (point `2002`,
+  the QN10 diverter valve, now reports "Heating"/"Hot water" instead of
+  ON/OFF). The bridge is supposed to clear the old entity's retained
+  discovery config whenever a point's type changes so Home Assistant doesn't
+  keep a dead duplicate around, but that check only consulted an in-memory
+  record that always started empty on a fresh process — so on the very
+  restart the type change took effect, the old on/off entity was left behind
+  with no further updates, showing as unavailable in HA even though the
+  bridge itself was working correctly. The bridge now reconstructs that
+  record from every discovery config already retained on the MQTT broker at
+  startup, so it can detect a type change immediately after an upgrade and
+  clean up the stale entity automatically — no manual steps required. This
+  also correctly handles a point retained under more than one domain at
+  once, rather than depending on the arbitrary order retained messages
+  arrive from the broker. Verified end-to-end on real hardware.
+
 ## [1.1.0] — 2026-08-24
 
 ### Added

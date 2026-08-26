@@ -3877,6 +3877,7 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
         pub._warnings_lock = threading.Lock()
         pub._config_hashes = {}
         pub._point_entity_types = {}
+        pub._point_retained_domains = {}
         return pub
 
     def _point(self, point_id, unit='', entity_type='switch', category='config', writable=True):
@@ -7896,6 +7897,81 @@ class TestPublishEntityDiscoveryConfigStructure(unittest.TestCase):
 
         from nibe_mqtt_publisher import t_config
         old_topic = t_config('sensor', 'nibe_777')
+        clear_calls = [c for c in mqtt.publish.call_args_list if c.args[0] == old_topic]
+        self.assertEqual(len(clear_calls), 1,
+                         f"Expected exactly one clear publish to {old_topic}")
+        self.assertEqual(clear_calls[0].args[1], "")
+        self.assertIs(clear_calls[0].kwargs.get('retain'), True)
+
+    def test_seed_entity_type_from_retained_populates_retained_domains(self):
+        """seed_entity_type_from_retained must record the entity_type against
+        the point_id, so a later type-change check has something to compare
+        against."""
+        pub, _ = self._pub()
+        pub.seed_entity_type_from_retained(2002, 'binary_sensor')
+        self.assertEqual(pub._point_retained_domains.get(2002), {'binary_sensor'})
+
+    def test_seed_entity_type_from_retained_accumulates_multiple_domains(self):
+        """Two retained configs for the same point_id under different
+        domains (e.g. a stale binary_sensor alongside the real sensor one,
+        which can legitimately coexist for a point_id until this cleanup
+        clears the stale one) must both be remembered — not just whichever
+        arrives first or last, since the broker gives no ordering guarantee
+        across messages on different topics."""
+        pub, _ = self._pub()
+        pub.seed_entity_type_from_retained(2002, 'sensor')
+        pub.seed_entity_type_from_retained(2002, 'binary_sensor')
+        self.assertEqual(pub._point_retained_domains.get(2002), {'sensor', 'binary_sensor'})
+
+    def test_regression_seeded_type_change_clears_stale_topic_on_first_publish(self):
+        """Regression test for the point-2002-unavailable bug (GitHub #23):
+        a point reclassified by ENTITY_TYPE_OVERRIDES between releases (e.g.
+        binary_sensor -> sensor) must have its old retained discovery topic
+        cleared on the very first publish of the new process — not only on
+        a same-session type change. Before seed_entity_type_from_retained
+        existed, _point_entity_types always started empty on a fresh process,
+        so this cleanup could never fire across a restart and the old
+        binary_sensor entity was left orphaned in HA forever, showing
+        'unavailable' even though the firmware value was valid."""
+        pub, mqtt = self._pub()
+        # Simulate EntityManager.scan_mqtt_discovery() finding the point's
+        # pre-existing retained config at its old (binary_sensor) topic.
+        pub.seed_entity_type_from_retained(2002, 'binary_sensor')
+
+        point = self._point(2002, entity_type='sensor')
+        pub.publish_entity_discovery(point, {})
+
+        from nibe_mqtt_publisher import t_config
+        old_topic = t_config('binary_sensor', 'nibe_2002')
+        clear_calls = [c for c in mqtt.publish.call_args_list if c.args[0] == old_topic]
+        self.assertEqual(len(clear_calls), 1,
+                         f"Expected exactly one clear publish to {old_topic}")
+        self.assertEqual(clear_calls[0].args[1], "")
+        self.assertIs(clear_calls[0].kwargs.get('retain'), True)
+
+    def test_regression_both_stale_and_current_domain_retained_simultaneously(self):
+        """Real-world reproduction (verified on hardware while testing the
+        #23 fix): a point can have retained configs under *both* its old and
+        current domain at once — e.g. a manually-injected old binary_sensor
+        config alongside the already-correct, already-retained sensor one.
+        scan_mqtt_discovery seeds from whichever retained message arrives
+        first for either domain, in unspecified broker order. Regardless of
+        which domain is seeded first, the stale (non-matching) domain must
+        still be cleared — this is what the original setdefault-based
+        implementation got wrong: seeding 'sensor' first before 'binary_sensor'
+        made prev_entity_type == entity_type, so the cleanup branch never
+        fired and the stale binary_sensor entity was never removed."""
+        pub, mqtt = self._pub()
+        # Order matters for the bug this guards against: seed the *current*
+        # domain first, exactly like the failing hardware run did.
+        pub.seed_entity_type_from_retained(2002, 'sensor')
+        pub.seed_entity_type_from_retained(2002, 'binary_sensor')
+
+        point = self._point(2002, entity_type='sensor')
+        pub.publish_entity_discovery(point, {})
+
+        from nibe_mqtt_publisher import t_config
+        old_topic = t_config('binary_sensor', 'nibe_2002')
         clear_calls = [c for c in mqtt.publish.call_args_list if c.args[0] == old_topic]
         self.assertEqual(len(clear_calls), 1,
                          f"Expected exactly one clear publish to {old_topic}")
