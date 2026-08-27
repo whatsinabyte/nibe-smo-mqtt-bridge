@@ -90,7 +90,9 @@ def _retry_delay() -> float:
     Uses full jitter: ``random.uniform(0, min(base, cap))``.  This prevents
     correlated retries when multiple callers hit the same transient failure.
     """
-    return random.uniform(0, min(_RETRY_BASE_S, _RETRY_MAX_S))
+    return random.uniform(
+        0, min(_RETRY_BASE_S, _RETRY_MAX_S)
+    )  # retry jitter, not cryptographic  # nosec B311
 
 
 class NibeApiClient:
@@ -202,7 +204,7 @@ class NibeApiClient:
             for attempt in range(2):  # attempt 0 = first try, attempt 1 = single retry
                 last_attempt = attempt == 1
                 try:
-                    response = urllib.request.urlopen(
+                    response = urllib.request.urlopen(  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
                         req, context=self.ssl_context, timeout=30
                     )  # pragma: no mutate
                     self.last_error = None
@@ -407,7 +409,7 @@ class NibeApiClient:
                 method="PATCH",
             )
             # pragma: no mutate end
-            response = urllib.request.urlopen(
+            response = urllib.request.urlopen(  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
                 req, context=self.ssl_context, timeout=30
             )  # pragma: no mutate
             data_json = json.loads(response.read().decode())
@@ -523,7 +525,9 @@ class NibeApiClient:
             req = urllib.request.Request(
                 f"{self.base_url}/notifications", headers=headers, method="DELETE"
             )
-            urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
+            urllib.request.urlopen(
+                req, context=self.ssl_context, timeout=30
+            )  # pragma: no mutate  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
             log_commands.info("Notifications reset: all alarms cleared")  # pragma: no mutate
             return True
         except urllib.error.HTTPError as e:
@@ -579,7 +583,9 @@ class NibeApiClient:
                 method="POST",
             )
             # pragma: no mutate end
-            urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
+            urllib.request.urlopen(
+                req, context=self.ssl_context, timeout=30
+            )  # pragma: no mutate  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
             log_commands.info("Device mode %s set to %s", mode_type, value)  # pragma: no mutate
             return True
         except urllib.error.HTTPError as e:

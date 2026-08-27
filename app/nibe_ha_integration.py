@@ -115,7 +115,9 @@ def _get_ha_base_url() -> str:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(
+            req, timeout=5
+        ) as resp:  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
             cfg = json.loads(resp.read().decode())
         # Prefer internal_url; fall back to external_url; default to empty.
         url = cfg.get("internal_url") or cfg.get("external_url") or ""
@@ -188,7 +190,9 @@ def _get_ha_language() -> str:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(
+            req, timeout=5
+        ) as resp:  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
             cfg = json.loads(resp.read().decode())
         _ha_language = cfg.get("language") or ""
         log_mqtt.debug("HA language resolved: %r", _ha_language)
@@ -241,7 +245,9 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
         method="POST",
     )
     try:
-        urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(
+            req, timeout=10
+        )  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
         log_mqtt.warning("HA notification sent: [%s] %s", notification_id, title)
     except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
         log_mqtt.error("Failed to send HA notification: %s", e)
@@ -273,7 +279,9 @@ def dismiss_ha(mqtt_client: Any, notification_id: str) -> None:
         method="POST",
     )
     try:
-        urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(
+            req, timeout=10
+        )  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
         log_mqtt.debug("HA notification dismissed: [%s]", notification_id)
     except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
         log_mqtt.error("Failed to dismiss HA notification: %s", e)
@@ -447,9 +455,9 @@ class HAEntityRegistryWatcher:
                 self._refresh_timer = None
         with self._ws_lock:
             if self._current_ws:
-                try:
+                try:  # noqa: SIM105 — deliberately broad, documented on the except line below
                     self._current_ws.close()
-                except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+                except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
                     pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
@@ -662,9 +670,9 @@ class HAEntityRegistryWatcher:
                     # themselves are real/tested.
                     self._current_ws = None
                 if ws:
-                    try:
+                    try:  # noqa: SIM105 — deliberately broad, documented on the except line below
                         ws.close()
-                    except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+                    except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
                         pass
 
         log_registry.debug("Registry watcher thread exiting")

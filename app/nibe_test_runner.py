@@ -36,7 +36,7 @@ import os
 import re
 import shutil
 import signal
-import subprocess
+import subprocess  # deliberate: runs the pytest suite as an isolated subprocess, see module docstring  # nosec B404
 import sys
 import time
 from collections.abc import Callable
@@ -270,7 +270,7 @@ def run_test_suite(
             # top-level PID leaves orphaned xdist workers running, still
             # holding the stdout/stderr pipes open, and communicate() would
             # hang waiting for pipe EOF that never comes.
-            _current_proc = subprocess.Popen(
+            _current_proc = subprocess.Popen(  # python_exe is resolved via shutil.which()/sys.executable above, not untrusted input  # nosec B603
                 [
                     python_exe,
                     "-m",

@@ -56,27 +56,29 @@ class TestRunPing(unittest.TestCase):
     def test_uses_count_and_host_in_command(self):
         """The actual ping invocation must target the real host and use
         the count/timeout parameters — not hardcoded/dropped args."""
-        from nibe_connectivity_check import _run_ping
+        from nibe_connectivity_check import _PING_PATH, _run_ping
 
         with patch(
             "subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")
         ) as mock_run:
             _run_ping("192.0.2.9", count=5, timeout=3)
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd, ["ping", "-c", "5", "-W", "3", "192.0.2.9"])
+        self.assertEqual(cmd, [_PING_PATH, "-c", "5", "-W", "3", "192.0.2.9"])
 
     def test_default_count_and_timeout(self):
         """Pins the default count=3/timeout=5 signature — a mutant that
         changes either default would silently alter both the ping command
         and the subprocess timeout for every caller that doesn't override
         them."""
-        from nibe_connectivity_check import _run_ping
+        from nibe_connectivity_check import _PING_PATH, _run_ping
 
         with patch(
             "subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")
         ) as mock_run:
             _run_ping("192.0.2.9")
-        self.assertEqual(mock_run.call_args.args[0], ["ping", "-c", "3", "-W", "5", "192.0.2.9"])
+        self.assertEqual(
+            mock_run.call_args.args[0], [_PING_PATH, "-c", "3", "-W", "5", "192.0.2.9"]
+        )
         self.assertEqual(mock_run.call_args.kwargs["timeout"], 20)
 
     def test_subprocess_run_invoked_with_exact_kwargs(self):
@@ -144,14 +146,14 @@ class TestRunPingProperties(unittest.TestCase):
     @example(count=5, timeout=3)  # the exact values test_uses_count_and_host_in_command pins
     @example(count=3, timeout=5)  # the real default values
     def test_cmd_reflects_real_count_and_timeout(self, count, timeout):
-        from nibe_connectivity_check import _run_ping
+        from nibe_connectivity_check import _PING_PATH, _run_ping
 
         with patch(
             "subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")
         ) as mock_run:
             _run_ping("192.0.2.9", count=count, timeout=timeout)
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd, ["ping", "-c", str(count), "-W", str(timeout), "192.0.2.9"])
+        self.assertEqual(cmd, [_PING_PATH, "-c", str(count), "-W", str(timeout), "192.0.2.9"])
 
     @given(
         count=st.integers(min_value=1, max_value=20), timeout=st.integers(min_value=1, max_value=60)
@@ -232,7 +234,7 @@ class TestRunCurl(unittest.TestCase):
         vs a mistyped variant), or a `cmd = [...]` overwrite instead of
         `cmd += [...]` in the CA branch could all slip past `assertIn`
         checks elsewhere in this file."""
-        from nibe_connectivity_check import _run_curl
+        from nibe_connectivity_check import _CURL_PATH, _run_curl
         from nibe_utils import TLS_COMPAT_CIPHERS
 
         with patch(
@@ -243,7 +245,7 @@ class TestRunCurl(unittest.TestCase):
         self.assertEqual(
             cmd,
             [
-                "curl",
+                _CURL_PATH,
                 "-sS",
                 "--max-time",
                 "10",
@@ -264,7 +266,7 @@ class TestRunCurl(unittest.TestCase):
         path — the `cmd += ['--cacert', ...]` line must extend the base
         command, not replace it (a `cmd = [...]` mutation would silently
         drop 'curl' itself and every prior flag)."""
-        from nibe_connectivity_check import _run_curl
+        from nibe_connectivity_check import _CURL_PATH, _run_curl
 
         with patch(
             "subprocess.run", return_value=self._curl_result(stdout="HTTP_CODE:200")
@@ -279,7 +281,7 @@ class TestRunCurl(unittest.TestCase):
         self.assertEqual(
             cmd,
             [
-                "curl",
+                _CURL_PATH,
                 "-sS",
                 "--max-time",
                 "10",
