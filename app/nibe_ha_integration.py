@@ -39,7 +39,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from nibe_connectivity_check import run_connectivity_check
@@ -51,13 +52,15 @@ from nibe_mqtt_publisher import (
 from nibe_test_runner import run_test_suite
 from nibe_utils import fmt_ts as _fmt_ts
 
-log_mqtt     = logging.getLogger("nibe.mqtt")
-log_commands = logging.getLogger("nibe.commands")
-log_startup  = logging.getLogger("nibe.startup")
-log_stats    = logging.getLogger("nibe.stats")
-log_registry = logging.getLogger("nibe.registry")
-log_history  = logging.getLogger("nibe.history")
+if TYPE_CHECKING:
+    from nibe_entity_manager import EntityManager
 
+log_mqtt = logging.getLogger("nibe.mqtt")
+log_commands = logging.getLogger("nibe.commands")
+log_startup = logging.getLogger("nibe.startup")
+log_stats = logging.getLogger("nibe.stats")
+log_registry = logging.getLogger("nibe.registry")
+log_history = logging.getLogger("nibe.history")
 
 
 # ============================================================================
@@ -92,14 +95,14 @@ def _get_ha_base_url() -> str:
     if _ha_base_url is not None:
         return _ha_base_url
 
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
-        _ha_base_url = ''
+        _ha_base_url = ""
         return _ha_base_url
 
     now = time.time()
     if now < _ha_base_url_retry_after:
-        return ''
+        return ""
 
     # method="GET" is unobservable here: urllib's Request.get_method()
     # already defaults to "GET" whenever no data= is passed (verified
@@ -115,17 +118,21 @@ def _get_ha_base_url() -> str:
         with urllib.request.urlopen(req, timeout=5) as resp:
             cfg = json.loads(resp.read().decode())
         # Prefer internal_url; fall back to external_url; default to empty.
-        url = cfg.get('internal_url') or cfg.get('external_url') or ''
+        url = cfg.get("internal_url") or cfg.get("external_url") or ""
         # Widening this char set (e.g. adding a char that never appears in
         # a real HA base URL) is unobservable — verified empirically, still
         # real/tested for the actual '/' char via
         # test_only_trailing_slashes_stripped_not_internal_ones.
-        _ha_base_url = url.rstrip('/')
+        _ha_base_url = url.rstrip("/")
         log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)
         return _ha_base_url
     except (
-        urllib.error.URLError, OSError, TimeoutError,
-        json.JSONDecodeError, UnicodeDecodeError, AttributeError,
+        urllib.error.URLError,
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        AttributeError,
     ) as e:
         # URLError/OSError/TimeoutError: request failed (Supervisor
         # unreachable, timed out). JSONDecodeError/UnicodeDecodeError: the
@@ -133,7 +140,7 @@ def _get_ha_base_url() -> str:
         # body wasn't a dict (cfg.get() doesn't exist on e.g. a JSON array).
         log_mqtt.warning("Could not fetch HA base URL: %s", e)
         _ha_base_url_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
-        return ''
+        return ""
 
 
 _ha_language: str | None = None  # cached after first successful fetch
@@ -161,14 +168,14 @@ def _get_ha_language() -> str:
     if _ha_language is not None:
         return _ha_language
 
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
-        _ha_language = ''
+        _ha_language = ""
         return _ha_language
 
     now = time.time()
     if now < _ha_language_retry_after:
-        return ''
+        return ""
 
     # method="GET" is unobservable here: urllib's Request.get_method()
     # already defaults to "GET" whenever no data= is passed (verified
@@ -183,19 +190,23 @@ def _get_ha_language() -> str:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             cfg = json.loads(resp.read().decode())
-        _ha_language = cfg.get('language') or ''
+        _ha_language = cfg.get("language") or ""
         log_mqtt.debug("HA language resolved: %r", _ha_language)
         return _ha_language
     except (
-        urllib.error.URLError, OSError, TimeoutError,
-        json.JSONDecodeError, UnicodeDecodeError, AttributeError,
+        urllib.error.URLError,
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        AttributeError,
     ) as e:
         log_mqtt.warning("Could not fetch HA language: %s", e)
         _ha_language_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
-        return ''
+        return ""
 
 
-def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> None:
+def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) -> None:
     """Create or replace a persistent notification in Home Assistant.
 
     Uses the HA Supervisor REST API.  Falls back to a log warning when running
@@ -203,18 +214,18 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
 
     ``mqtt_client`` is accepted for API compatibility but not used.
     """
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
-        log_mqtt.warning(
-            "HA notification (no supervisor token): [%s] %s", notification_id, title
-        )
+        log_mqtt.warning("HA notification (no supervisor token): [%s] %s", notification_id, title)
         return
 
-    payload = json.dumps({
-        "title":           title,
-        "message":         message,
-        "notification_id": notification_id,
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": title,
+            "message": message,
+            "notification_id": notification_id,
+        }
+    ).encode()
 
     # Header key casing here is unobservable: urllib.request.Request
     # normalises every header key via str.capitalize() internally (verified
@@ -225,7 +236,7 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
         data=payload,
         headers={
             "Authorization": f"Bearer {supervisor_token}",
-            "Content-Type":  "application/json",
+            "Content-Type": "application/json",
         },
         method="POST",
     )
@@ -236,12 +247,12 @@ def notify_ha(mqtt_client, title: str, message: str, notification_id: str) -> No
         log_mqtt.error("Failed to send HA notification: %s", e)
 
 
-def dismiss_ha(mqtt_client, notification_id: str) -> None:
+def dismiss_ha(mqtt_client: Any, notification_id: str) -> None:
     """Dismiss a persistent notification in Home Assistant.
 
     ``mqtt_client`` is accepted for API compatibility but not used.
     """
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
         log_mqtt.info("HA notification dismiss (no supervisor token): [%s]", notification_id)
         return
@@ -257,7 +268,7 @@ def dismiss_ha(mqtt_client, notification_id: str) -> None:
         data=payload,
         headers={
             "Authorization": f"Bearer {supervisor_token}",
-            "Content-Type":  "application/json",
+            "Content-Type": "application/json",
         },
         method="POST",
     )
@@ -271,6 +282,7 @@ def dismiss_ha(mqtt_client, notification_id: str) -> None:
 # ============================================================================
 # HA ENTITY REGISTRY WATCHER
 # ============================================================================
+
 
 class HAEntityRegistryWatcher:
     """Long-lived WebSocket subscriber for HA entity_registry_updated events.
@@ -291,16 +303,16 @@ class HAEntityRegistryWatcher:
     """
 
     _INITIAL_BACKOFF = 2
-    _MAX_BACKOFF     = 300  # cap at 5 minutes between reconnect attempts
+    _MAX_BACKOFF = 300  # cap at 5 minutes between reconnect attempts
 
-    def __init__(self, entity_manager, publisher: MqttDiscoveryPublisher) -> None:
-        self._em         = entity_manager
-        self._pub        = publisher
+    def __init__(self, entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher) -> None:
+        self._em = entity_manager
+        self._pub = publisher
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._ws_lock    = threading.Lock()
+        self._ws_lock = threading.Lock()
         self._current_ws = None
-        self._msg_id     = 0
+        self._msg_id = 0
         self._unique_id_map: dict = {}
         # Protects _unique_id_map. _connect_and_subscribe (watcher thread, on
         # every reconnect) reassigns the dict wholesale; refresh_registry()
@@ -319,16 +331,14 @@ class HAEntityRegistryWatcher:
 
     def start(self) -> None:
         """Start the background watcher thread."""
-        supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+        supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
         if not supervisor_token:
             log_registry.debug(
                 "No SUPERVISOR_TOKEN — entity registry watcher disabled "
                 "(running outside HA add-on environment)"
             )
             return
-        self._thread = threading.Thread(
-            target=self._run, name="nibe_registry_watcher", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="nibe_registry_watcher", daemon=True)
         self._thread.start()
         log_registry.info("Entity registry watcher started")
 
@@ -351,11 +361,12 @@ class HAEntityRegistryWatcher:
         # A None/dropped default is unobservable — only ever checked via
         # `if not token:`, where None and '' are equally falsy. Verified
         # empirically.
-        token = os.environ.get('SUPERVISOR_TOKEN', '')
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
         if not token:
             return
         try:
             import websocket as _ws_lib
+
             ws = _ws_lib.create_connection(
                 "ws://supervisor/core/websocket",
                 timeout=10,
@@ -449,7 +460,7 @@ class HAEntityRegistryWatcher:
         return self._msg_id
 
     @staticmethod
-    def _ws_authenticate(ws, token: str) -> None:
+    def _ws_authenticate(ws: Any, token: str) -> None:
         """Authenticate a newly opened WebSocket connection to the HA Supervisor.
 
         Performs the three-step auth handshake expected by HA's WebSocket API:
@@ -465,9 +476,7 @@ class HAEntityRegistryWatcher:
         greeting = json.loads(ws.recv())
         if greeting.get("type") != "auth_required":
             ws.close()
-            raise RuntimeError(
-                f"Unexpected WS greeting type: {greeting.get('type', 'unknown')}"
-            )
+            raise RuntimeError(f"Unexpected WS greeting type: {greeting.get('type', 'unknown')}")
         ws.send(json.dumps({"type": "auth", "access_token": token}))
         auth_result = json.loads(ws.recv())
         if auth_result.get("type") != "auth_ok":
@@ -478,15 +487,21 @@ class HAEntityRegistryWatcher:
 
     def _connect_and_subscribe(self, token: str) -> object:
         import websocket
+
         ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=10)
 
         self._ws_authenticate(ws, token)
 
         sub_id = self._next_id()
-        ws.send(json.dumps({
-            "id": sub_id, "type": "subscribe_events",
-            "event_type": "entity_registry_updated",
-        }))
+        ws.send(
+            json.dumps(
+                {
+                    "id": sub_id,
+                    "type": "subscribe_events",
+                    "event_type": "entity_registry_updated",
+                }
+            )
+        )
         sub_result = json.loads(ws.recv())
         if not sub_result.get("success"):
             ws.close()
@@ -502,14 +517,12 @@ class HAEntityRegistryWatcher:
         # _PING_INTERVAL_S drives the recv timeout; _PING_TIMEOUT_S is how
         # long to wait for a pong before treating the connection as dead.
         ws.settimeout(self._PING_INTERVAL_S)
-        log_registry.debug(
-            "WebSocket connected and subscribed to entity_registry_updated events"
-        )
+        log_registry.debug("WebSocket connected and subscribed to entity_registry_updated events")
         return ws
 
     _MAX_CONSEC_FAILURES = 10
-    _PING_INTERVAL_S     = 30    # send a ping after this many seconds of silence
-    _PING_TIMEOUT_S      = 15    # reconnect if no pong arrives within this long
+    _PING_INTERVAL_S = 30  # send a ping after this many seconds of silence
+    _PING_TIMEOUT_S = 15  # reconnect if no pong arrives within this long
 
     def _run(self) -> None:
         """Main loop: connect → recv events → reconnect on failure.
@@ -518,8 +531,8 @@ class HAEntityRegistryWatcher:
         to avoid looping forever when the supervisor WebSocket is permanently
         unavailable. The counter resets to zero on any successful connection.
         """
-        token           = os.environ.get('SUPERVISOR_TOKEN', '')
-        backoff         = self._INITIAL_BACKOFF
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        backoff = self._INITIAL_BACKOFF
         consec_failures = 0
 
         while not self._stop_event.is_set():
@@ -532,7 +545,7 @@ class HAEntityRegistryWatcher:
                 ws = self._connect_and_subscribe(token)
                 with self._ws_lock:
                     self._current_ws = ws
-                backoff         = self._INITIAL_BACKOFF
+                backoff = self._INITIAL_BACKOFF
                 consec_failures = 0
 
                 # Import the websocket timeout exception for keepalive
@@ -562,9 +575,14 @@ class HAEntityRegistryWatcher:
                                 f"WebSocket keepalive timeout — no pong received "
                                 f"in {self._PING_TIMEOUT_S}s after ping"
                             ) from None
-                        ws.send(json.dumps({
-                            "id": self._next_id(), "type": "ping",
-                        }))
+                        ws.send(
+                            json.dumps(
+                                {
+                                    "id": self._next_id(),
+                                    "type": "ping",
+                                }
+                            )
+                        )
                         ping_sent_at = now
                         continue
 
@@ -626,9 +644,11 @@ class HAEntityRegistryWatcher:
                     )
                     return
                 log_registry.warning(
-                    "Registry watcher disconnected (%s) — reconnecting in %ds "
-                    "(failure %d/%d)",
-                    e, backoff, consec_failures, self._MAX_CONSEC_FAILURES,
+                    "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)",
+                    e,
+                    backoff,
+                    consec_failures,
+                    self._MAX_CONSEC_FAILURES,
                 )
                 self._stop_event.wait(timeout=backoff)
                 backoff = min(backoff * 2, self._MAX_BACKOFF)
@@ -649,7 +669,7 @@ class HAEntityRegistryWatcher:
 
         log_registry.debug("Registry watcher thread exiting")
 
-    def _fetch_entity_registry(self, ws) -> dict:
+    def _fetch_entity_registry(self, ws: Any) -> dict:
         """Fetch unique_id → entity_id mapping from the HA entity registry.
 
         Loops recv() until the response matching req_id arrives, discarding
@@ -671,7 +691,8 @@ class HAEntityRegistryWatcher:
                 # events arriving while our list request is in flight).
                 log_registry.debug(
                     "Registry fetch: discarding interleaved message type=%s id=%s",
-                    msg.get("type"), msg.get("id"),
+                    msg.get("type"),
+                    msg.get("id"),
                 )
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_registry.warning("Could not fetch entity registry (timeout or error): %s", e)
@@ -691,23 +712,26 @@ class HAEntityRegistryWatcher:
         mapping = {}
         result = resp.get("result", [])
         for entry in result:
-            uid = (entry.get("unique_id")
-                   or entry.get("config", {}).get("unique_id")
-                   or entry.get("options", {}).get("unique_id"))
+            uid = (
+                entry.get("unique_id")
+                or entry.get("config", {}).get("unique_id")
+                or entry.get("options", {}).get("unique_id")
+            )
             eid = entry.get("entity_id")
             if uid and eid:
                 mapping[uid] = eid
         nibe_count = sum(1 for k in mapping if k.startswith("nibe_"))
         log_registry.debug(
             "Entity registry cached: %d total entries, %d nibe entries",
-            len(mapping), nibe_count,
+            len(mapping),
+            nibe_count,
         )
         return mapping
 
     def _handle_event(self, event: dict) -> None:
         """Process a single entity_registry_updated event payload."""
-        data      = event.get("data", {})
-        action    = data.get("action")
+        data = event.get("data", {})
+        action = data.get("action")
         entity_id = data.get("entity_id", "unknown")
         log_registry.debug("Registry event: action=%s, entity_id=%s", action, entity_id)
 
@@ -782,7 +806,8 @@ class HAEntityRegistryWatcher:
 
         log_registry.info(
             "Entity %s (point %s) re-enabled via HA — republishing discovery",
-            ha_entity_id, point_id,
+            ha_entity_id,
+            point_id,
         )
 
         notif_id = self._em.ha_disable_notif_id(ha_entity_id)
@@ -797,7 +822,7 @@ class HAEntityRegistryWatcher:
                 self._pub.publish_entity_discovery(point_dict, self._em.bulk_data)
 
         title, message, _ = self._em.build_disable_notification(
-            point_id, ha_entity_id, action='re-enabled'
+            point_id, ha_entity_id, action="re-enabled"
         )
         notify_ha(self._em.mqtt, title=title, message=message, notification_id=notif_id)
 
@@ -811,18 +836,19 @@ class HAEntityRegistryWatcher:
         if point_id is None:
             return
 
-        point      = self._em.all_points_by_id.get(point_id)
+        point = self._em.all_points_by_id.get(point_id)
         # Only ever consumed via `if is_dynamic:` below — None and False
         # are indistinguishable. Verified empirically.
-        is_dynamic = point.get('is_dynamic', False) if point else False
+        is_dynamic = point.get("is_dynamic", False) if point else False
 
         log_registry.debug(
             "Entity %s (point %s) disabled via HA — mirroring disable",
-            ha_entity_id, point_id,
+            ha_entity_id,
+            point_id,
         )
 
         title, message, notif_id = self._em.build_disable_notification(
-            point_id, ha_entity_id, action='disabled'
+            point_id, ha_entity_id, action="disabled"
         )
 
         if is_dynamic:
@@ -837,7 +863,7 @@ class HAEntityRegistryWatcher:
             self._em.disable_entity(point_id)
             _publish_stats(self._em, self._pub)
             log_registry.info("Mirrored HA-side disable for point %s in bridge", point_id)
-            return   # no confusing notification for an intentional disable
+            return  # no confusing notification for an intentional disable
 
         notify_ha(self._em.mqtt, title=title, message=message, notification_id=notif_id)
 
@@ -860,16 +886,16 @@ class ManagementCommandHandler:
 
     def __init__(
         self,
-        mqtt_client,
-        entity_manager,
+        mqtt_client: Any,
+        entity_manager: "EntityManager",
         publisher: MqttDiscoveryPublisher,
         mgmt_executor: concurrent.futures.ThreadPoolExecutor,
         test_executor: concurrent.futures.ThreadPoolExecutor | None = None,
         ca_cert_path: str | None = None,
     ) -> None:
-        self._mqtt     = mqtt_client
-        self._em       = entity_manager
-        self._pub      = publisher
+        self._mqtt = mqtt_client
+        self._em = entity_manager
+        self._pub = publisher
         self._executor = mgmt_executor
         # Only set when nibe_ca_cert is configured and the file exists —
         # mirrors _build_ssl_context()'s own check in generate_nibe_mqtt.py,
@@ -893,28 +919,28 @@ class ManagementCommandHandler:
         ``entity_manager.register_mgmt_subscription`` so that
         ``resubscribe_all()`` can replay it after a Mosquitto restart.
         """
-        self._sub(MgmtTopic.SMART_SET,           self._handle_smart_mode)
-        self._sub(MgmtTopic.AID_SET,             self._handle_aid_mode)
-        self._sub(MgmtTopic.ALARM_RESET_PRESS,   self._handle_reset_alarms)
-        self._sub(MgmtTopic.FORCE_POLL_PRESS,    self._handle_force_poll)
-        self._sub(MgmtTopic.REGEN_DASH_PRESS,    self._handle_regen_dashboard)
-        self._sub(MgmtTopic.ENABLE_SET,          self._handle_enable)
-        self._sub(MgmtTopic.DISABLE_SET,         self._handle_disable)
+        self._sub(MgmtTopic.SMART_SET, self._handle_smart_mode)
+        self._sub(MgmtTopic.AID_SET, self._handle_aid_mode)
+        self._sub(MgmtTopic.ALARM_RESET_PRESS, self._handle_reset_alarms)
+        self._sub(MgmtTopic.FORCE_POLL_PRESS, self._handle_force_poll)
+        self._sub(MgmtTopic.REGEN_DASH_PRESS, self._handle_regen_dashboard)
+        self._sub(MgmtTopic.ENABLE_SET, self._handle_enable)
+        self._sub(MgmtTopic.DISABLE_SET, self._handle_disable)
         self._sub(MgmtTopic.CHANGELOG_READ_PRESS, self._handle_changelog_reset)
-        self._sub(MgmtTopic.FLUSH_MAP_PRESS,     self._handle_flush_dynamic_map)
-        self._sub(MgmtTopic.RUN_TESTS_PRESS,     self._handle_run_tests)
+        self._sub(MgmtTopic.FLUSH_MAP_PRESS, self._handle_flush_dynamic_map)
+        self._sub(MgmtTopic.RUN_TESTS_PRESS, self._handle_run_tests)
         self._sub(MgmtTopic.TEST_CONNECTION_PRESS, self._handle_test_connection)
-        self._sub(BrowserTopic.SNAPSHOTS_CMD,    self._handle_snapshot_cmd)
+        self._sub(BrowserTopic.SNAPSHOTS_CMD, self._handle_snapshot_cmd)
 
     # ── Internal helper ───────────────────────────────────────────────────────
 
-    def _sub(self, topic: str, handler, qos: int = 1) -> None:
+    def _sub(self, topic: str, handler: Callable, qos: int = 1) -> None:
         """Subscribe, add callback, and record for resubscription on reconnect."""
         self._mqtt.subscribe(topic, qos=qos)
         self._mqtt.message_callback_add(topic, handler)
         self._em.register_mgmt_subscription(topic, handler, qos)
 
-    def _submit(self, fn) -> None:
+    def _submit(self, fn: Callable) -> None:
         """Submit a handler's blocking work to mgmt_executor with logging.
 
         A bare ``self._executor.submit(fn)`` silently swallows any exception
@@ -923,23 +949,24 @@ class ManagementCommandHandler:
         line and no user-visible error. Wrapping it here ensures every
         command handler's failures are at least logged.
         """
-        def _wrapped():
+
+        def _wrapped() -> None:
             try:
                 fn()
             except Exception:
                 log_commands.exception("Unhandled exception in management command handler")
+
         self._executor.submit(_wrapped)
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
-    def _handle_smart_mode(self, _client, _userdata, message) -> None:
+    def _handle_smart_mode(self, _client: Any, _userdata: Any, message: Any) -> None:
         value = message.payload.decode().strip().lower()
         if value not in ("normal", "away"):
-            log_commands.error(
-                "Invalid smart mode value: %r — expected 'normal' or 'away'", value
-            )
+            log_commands.error("Invalid smart mode value: %r — expected 'normal' or 'away'", value)
             return
-        def _do():
+
+        def _do() -> None:
             if self._em._api.write_device_mode("smartmode", value):
                 self._mqtt.publish(MgmtTopic.SMART_STATE, value, retain=True)
                 # device_modes_dirty/device_modes_cache are also read+written
@@ -951,12 +978,14 @@ class ManagementCommandHandler:
                 with self._em._em_lock:
                     self._em.device_modes_dirty = True
                     self._em.device_modes_write_seq += 1
+
         self._submit(_do)
 
-    def _handle_aid_mode(self, _client, _userdata, message) -> None:
+    def _handle_aid_mode(self, _client: Any, _userdata: Any, message: Any) -> None:
         payload = message.payload.decode().strip()
-        value   = "on" if payload in ("ON", "1", "on", "true", "True") else "off"
-        def _do():
+        value = "on" if payload in ("ON", "1", "on", "true", "True") else "off"
+
+        def _do() -> None:
             if self._em._api.write_device_mode("aidmode", value):
                 self._mqtt.publish(
                     MgmtTopic.AID_STATE,
@@ -966,10 +995,11 @@ class ManagementCommandHandler:
                 with self._em._em_lock:
                     self._em.device_modes_dirty = True
                     self._em.device_modes_write_seq += 1
+
         self._submit(_do)
 
-    def _handle_reset_alarms(self, _client, _userdata, _message) -> None:
-        def _do():
+    def _handle_reset_alarms(self, _client: Any, _userdata: Any, _message: Any) -> None:
+        def _do() -> None:
             if self._em._api.reset_notifications():
                 self._mqtt.publish(MgmtTopic.ALARM_STATE, "0", retain=True)
                 self._mqtt.publish(
@@ -977,58 +1007,66 @@ class ManagementCommandHandler:
                     json.dumps({"alarms": [], "last_updated": _fmt_ts()}),
                     retain=True,
                 )
+
         self._submit(_do)
 
-    def _handle_force_poll(self, _client, _userdata, _message) -> None:
-        def _do():
+    def _handle_force_poll(self, _client: Any, _userdata: Any, _message: Any) -> None:
+        def _do() -> None:
             log_startup.info("Force poll triggered from HA")
             self._em.update_all_states(force=True)
             update_stats_and_health(self._em, self._pub)
             _publish_device_modes(self._em, self._pub)
+
         self._submit(_do)
 
-    def _handle_regen_dashboard(self, _client, _userdata, _message) -> None:
+    def _handle_regen_dashboard(self, _client: Any, _userdata: Any, _message: Any) -> None:
         log_startup.info("Regenerate Dashboard triggered from HA")
-        def _do():
+
+        def _do() -> None:
             cb = self._em._on_enabled_state_change
             if cb is not None:
                 cb()
             else:
                 log_startup.warning("Regenerate Dashboard: no callback registered")
+
         self._submit(_do)
 
-    def _handle_enable(self, _client, _userdata, message) -> None:
+    def _handle_enable(self, _client: Any, _userdata: Any, message: Any) -> None:
         raw = message.payload.decode().strip()
-        def _do():
+
+        def _do() -> None:
             try:
                 point_id = int(raw)
                 if self._em.enable_entity(point_id):
                     _publish_stats(self._em, self._pub)
             except ValueError:
                 log_commands.warning("handle_enable: invalid point id '%s'", raw)
+
         self._submit(_do)
 
-    def _handle_disable(self, _client, _userdata, message) -> None:
+    def _handle_disable(self, _client: Any, _userdata: Any, message: Any) -> None:
         raw = message.payload.decode().strip()
-        def _do():
+
+        def _do() -> None:
             try:
                 point_id = int(raw)
                 if self._em.disable_entity(point_id):
                     _publish_stats(self._em, self._pub)
             except ValueError:
                 log_commands.warning("handle_disable: invalid point id '%s'", raw)
+
         self._submit(_do)
 
-    def _handle_changelog_reset(self, _client, _userdata, _message) -> None:
+    def _handle_changelog_reset(self, _client: Any, _userdata: Any, _message: Any) -> None:
         log_history.info("Changelog reset requested by user")
         self._submit(self._em.mark_changelog_read)
 
-    def _handle_flush_dynamic_map(self, _client, _userdata, _message) -> None:
+    def _handle_flush_dynamic_map(self, _client: Any, _userdata: Any, _message: Any) -> None:
         log_commands.info("Flush Dynamic Map triggered from HA (debug action)")
-        def _do():
+
+        def _do() -> None:
             entity_types = {
-                pid: pt.get("entity_type", "")
-                for pid, pt in self._em.all_points_by_id.items()
+                pid: pt.get("entity_type", "") for pid, pt in self._em.all_points_by_id.items()
             }
             # dynamic_point_map._table is also mutated (under _em_lock) by
             # _run_learning_detection (write executor thread) and
@@ -1041,9 +1079,10 @@ class ManagementCommandHandler:
                 self._em.dynamic_point_map.flush(self._em.all_points_by_id, entity_types)
                 self._em._persist_dynamic_map()
             log_commands.info("Dynamic map flushed — all entries reset to unprocessed")
+
         self._submit(_do)
 
-    def _handle_snapshot_cmd(self, _client, _userdata, message) -> None:
+    def _handle_snapshot_cmd(self, _client: Any, _userdata: Any, message: Any) -> None:
         """Handle snapshot commands from the card via nibe/browser/snapshots/cmd.
 
         Expected payload (JSON):
@@ -1055,7 +1094,7 @@ class ManagementCommandHandler:
             # Python codec names are case-insensitive ('utf-8' == 'UTF-8')
             # — not pragma'd, the codec itself and the except clause below
             # are real/tested.
-            cmd = json.loads(message.payload.decode('utf-8'))
+            cmd = json.loads(message.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             log_commands.error("snapshot_cmd: invalid payload: %s", e)
             return
@@ -1068,28 +1107,29 @@ class ManagementCommandHandler:
             log_commands.error("snapshot_cmd: expected a JSON object, got %r", cmd)
             return
 
-        action = cmd.get('action', '').strip().lower()
-        name   = cmd.get('name', '').strip()
+        action = cmd.get("action", "").strip().lower()
+        name = cmd.get("name", "").strip()
 
         def _do() -> None:
-            if action == 'save':
+            if action == "save":
                 ok, msg = self._em.save_snapshot(name)
-            elif action == 'restore':
+            elif action == "restore":
                 # A case-variant default (e.g. "FLUSH") is unobservable: the
                 # trailing .lower() normalises it back to the real value —
                 # verified empirically. Not pragma'd since 'flush' vs a
                 # different-word default IS real/tested (test_restore_defaults_to_flush).
-                mode = cmd.get('mode', 'flush').strip().lower()
-                if mode not in ('flush', 'merge'):
+                mode = cmd.get("mode", "flush").strip().lower()
+                if mode not in ("flush", "merge"):
                     log_commands.error(
                         "snapshot_cmd restore: unknown mode %r — expected 'flush' or 'merge', "
-                        "using flush", mode
+                        "using flush",
+                        mode,
                     )
-                    mode = 'flush'
+                    mode = "flush"
                 ok, msg = self._em.restore_snapshot(name, mode)
                 if ok:
                     _publish_stats(self._em, self._pub)
-            elif action == 'delete':
+            elif action == "delete":
                 ok, msg = self._em.delete_snapshot(name)
             else:
                 log_commands.error(
@@ -1101,7 +1141,7 @@ class ManagementCommandHandler:
 
         self._submit(_do)
 
-    def _handle_run_tests(self, _client, _userdata, _message) -> None:
+    def _handle_run_tests(self, _client: Any, _userdata: Any, _message: Any) -> None:
         """Run the full pytest suite in a background thread.
 
         The run itself (subprocess orchestration, HTML report
@@ -1113,19 +1153,20 @@ class ManagementCommandHandler:
         log_commands.info("Run Test Suite triggered from HA (debug action)")
 
         if self._test_running.is_set():
-            log_commands.info(
-                "Test suite already running — ignoring duplicate trigger"
-            )
+            log_commands.info("Test suite already running — ignoring duplicate trigger")
             return
         self._test_running.set()
 
         self._test_executor.submit(
             run_test_suite,
-            self._em.mqtt, notify_ha, dismiss_ha, _get_ha_base_url,
+            self._em.mqtt,
+            notify_ha,
+            dismiss_ha,
+            _get_ha_base_url,
             self._test_running,
         )
 
-    def _handle_test_connection(self, _client, _userdata, _message) -> None:
+    def _handle_test_connection(self, _client: Any, _userdata: Any, _message: Any) -> None:
         """Run an independent ping + curl connectivity check against the
         configured Nibe REST API host, for diagnosing "add-on can't reach
         the device" reports without needing SSH/terminal access to the HA
@@ -1136,29 +1177,34 @@ class ManagementCommandHandler:
 
         def _do() -> None:
             base_url = self._em._api.base_url
-            host     = urlparse(base_url).hostname or base_url
+            host = urlparse(base_url).hostname or base_url
 
-            self._em.mqtt.publish(MgmtTopic.TEST_CONNECTION_STATE, 'running', retain=True)
+            self._em.mqtt.publish(MgmtTopic.TEST_CONNECTION_STATE, "running", retain=True)
 
             result = run_connectivity_check(
-                host, base_url, self._ca_cert_path, self._em._api.auth,
+                host,
+                base_url,
+                self._ca_cert_path,
+                self._em._api.auth,
             )
 
-            state = 'reachable' if result['ok'] else 'unreachable'
+            state = "reachable" if result["ok"] else "unreachable"
             self._em.mqtt.publish(MgmtTopic.TEST_CONNECTION_STATE, state, retain=True)
             self._em.mqtt.publish(
                 MgmtTopic.TEST_CONNECTION_ATTRS,
-                json.dumps({
-                    'status':    state,
-                    'summary':   result['summary'],
-                    'ping':      result['ping'],
-                    'curl':      result['curl'],
-                    'timestamp': _fmt_ts(),
-                }),
+                json.dumps(
+                    {
+                        "status": state,
+                        "summary": result["summary"],
+                        "ping": result["ping"],
+                        "curl": result["curl"],
+                        "timestamp": _fmt_ts(),
+                    }
+                ),
                 retain=True,
             )
-            if result['ok']:
-                dismiss_ha(self._em.mqtt, 'nibe_connectivity_check')
+            if result["ok"]:
+                dismiss_ha(self._em.mqtt, "nibe_connectivity_check")
             else:
                 notify_ha(
                     self._em.mqtt,
@@ -1168,7 +1214,7 @@ class ManagementCommandHandler:
                         f"Ping: {result['ping']['summary']}\n"
                         f"Curl: {result['curl']['summary']}"
                     ),
-                    notification_id='nibe_connectivity_check',
+                    notification_id="nibe_connectivity_check",
                 )
 
         self._submit(_do)
@@ -1178,8 +1224,9 @@ class ManagementCommandHandler:
 # POLL-LOOP HELPERS
 # ============================================================================
 
+
 def update_alarm_state(
-    entity_manager,
+    entity_manager: "EntityManager",
     publisher: MqttDiscoveryPublisher,
 ) -> None:
     """Fetch /notifications and update the Active Alarms sensor + HA notification."""
@@ -1191,15 +1238,15 @@ def update_alarm_state(
         log_stats.debug("Alarm poll skipped — fetch_notifications returned None (API error)")
         return
 
-    alarm_count  = len(alarms)
+    alarm_count = len(alarms)
     clean_alarms = [
         {
-            "alarmId":     a.get("alarmId"),
-            "header":      a.get("header", ""),
+            "alarmId": a.get("alarmId"),
+            "header": a.get("header", ""),
             "description": a.get("description", ""),
-            "severity":    a.get("severity"),
-            "time":        a.get("time", ""),
-            "equipName":   a.get("equipName", ""),
+            "severity": a.get("severity"),
+            "time": a.get("time", ""),
+            "equipName": a.get("equipName", ""),
         }
         for a in alarms
     ]
@@ -1235,7 +1282,7 @@ def update_alarm_state(
                 parts.append(desc)
             lines.append(" — ".join(parts))
 
-        device_model = entity_manager.device_info.get('model', 'S-series')
+        device_model = entity_manager.device_info.get("model", "S-series")
         alarm_lines = "\n".join(f"• {line}" for line in lines)
         message = (
             f"{alarm_count} active alarm(s) on the Nibe {device_model}:\n"
@@ -1256,7 +1303,9 @@ def update_alarm_state(
         entity_manager._alarm_notification_active = False
 
 
-def update_stats_and_health(entity_manager, publisher: MqttDiscoveryPublisher) -> None:
+def update_stats_and_health(
+    entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher
+) -> None:
     """Publish all bridge health/stats sensors in one call."""
     _publish_stats(entity_manager, publisher)
     publisher.publish_uptime(
@@ -1275,55 +1324,61 @@ def update_stats_and_health(entity_manager, publisher: MqttDiscoveryPublisher) -
     with entity_manager._pending_writes_lock:
         pending = len(entity_manager.pending_writes)
     publisher.publish_bridge_status(
-        bridge_start_time        = entity_manager.bridge_start_time,
-        api_consecutive_failures = entity_manager.api_consecutive_failures,
-        api_failure_threshold    = entity_manager.api_failure_threshold,
-        api_last_success_time    = entity_manager.api_last_success_time,
-        last_fetch_duration      = entity_manager.last_fetch_duration,
-        write_total              = entity_manager._write_total,
-        write_success            = entity_manager._write_success,
-        write_failed             = entity_manager._write_failed,
-        last_write_error         = entity_manager._last_write_error,
-        pending_write_count      = pending,
-        mqtt_enabled_count       = len(entity_manager.mqtt_enabled_points),
-        all_points_count         = len(entity_manager.all_points_by_id),
-        known_dynamic_count      = len(entity_manager.dynamic_point_map.all_known_dynamic_point_ids()),
+        bridge_start_time=entity_manager.bridge_start_time,
+        api_consecutive_failures=entity_manager.api_consecutive_failures,
+        api_failure_threshold=entity_manager.api_failure_threshold,
+        api_last_success_time=entity_manager.api_last_success_time,
+        last_fetch_duration=entity_manager.last_fetch_duration,
+        write_total=entity_manager._write_total,
+        write_success=entity_manager._write_success,
+        write_failed=entity_manager._write_failed,
+        last_write_error=entity_manager._last_write_error,
+        pending_write_count=pending,
+        mqtt_enabled_count=len(entity_manager.mqtt_enabled_points),
+        all_points_count=len(entity_manager.all_points_by_id),
+        known_dynamic_count=len(entity_manager.dynamic_point_map.all_known_dynamic_point_ids()),
     )
 
 
-def update_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> None:
+def update_device_modes(entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher) -> None:
     """Poll the device API for aid/smart mode and publish their states."""
     _publish_device_modes(entity_manager, publisher)
 
 
 # ── Private helpers ────────────────────────────────────────────────────────────
 
-def _publish_stats(entity_manager, publisher: MqttDiscoveryPublisher) -> None:
+
+def _publish_stats(entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher) -> None:
     with entity_manager._active_entities_lock:
         active_count = len(entity_manager.active_entities_by_id)
 
     publisher.publish_stats(
-        all_points_count   = len(entity_manager.all_points_by_id),
-        mqtt_enabled_count = len(entity_manager.mqtt_enabled_points),
-        active_count       = active_count,
-        type_counts        = dict(entity_manager._stats_type_counts),
-        category_counts    = dict(entity_manager._stats_category_counts),
-        writable_count     = entity_manager._stats_writable_count,
-        write_total        = entity_manager._write_total,
-        write_success      = entity_manager._write_success,
-        write_failed       = entity_manager._write_failed,
+        all_points_count=len(entity_manager.all_points_by_id),
+        mqtt_enabled_count=len(entity_manager.mqtt_enabled_points),
+        active_count=active_count,
+        type_counts=dict(entity_manager._stats_type_counts),
+        category_counts=dict(entity_manager._stats_category_counts),
+        writable_count=entity_manager._stats_writable_count,
+        write_total=entity_manager._write_total,
+        write_success=entity_manager._write_success,
+        write_failed=entity_manager._write_failed,
     )
-    mqtt_count  = len(entity_manager.mqtt_enabled_points)
+    mqtt_count = len(entity_manager.mqtt_enabled_points)
     total_count = len(entity_manager.all_points_by_id)
-    stats_key   = (mqtt_count, active_count, total_count)
-    if getattr(entity_manager, '_last_stats_key', None) != stats_key:
+    stats_key = (mqtt_count, active_count, total_count)
+    if getattr(entity_manager, "_last_stats_key", None) != stats_key:
         log_stats.debug(
-            "Stats: MQTT=%d, Active=%d, Total=%d", mqtt_count, active_count, total_count,
+            "Stats: MQTT=%d, Active=%d, Total=%d",
+            mqtt_count,
+            active_count,
+            total_count,
         )
         entity_manager._last_stats_key = stats_key
 
 
-def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> None:
+def _publish_device_modes(
+    entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher
+) -> None:
     """Publish aid mode and smart mode states.
 
     Uses a cache to avoid an extra fetch_device_info() API call on every
@@ -1338,12 +1393,12 @@ def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> 
     # command-handler threads that set device_modes_dirty on a write.
     with entity_manager._em_lock:
         if not entity_manager.device_modes_dirty and entity_manager.device_modes_cache:
-            cached_aid   = entity_manager.device_modes_cache.get("aidMode",   "off")
+            cached_aid = entity_manager.device_modes_cache.get("aidMode", "off")
             cached_smart = entity_manager.device_modes_cache.get("smartMode", "normal")
             # Only ever consumed via `if not fresh:` below, so None and
             # False are indistinguishable here — not pragma'd, `fresh = True`
             # on the other branch is real/tested.
-            fresh        = False
+            fresh = False
         else:
             fresh = True
         # Captured before the unlocked fetch below — see device_modes_write_seq's
@@ -1369,13 +1424,14 @@ def _publish_device_modes(entity_manager, publisher: MqttDiscoveryPublisher) -> 
         return
 
     with entity_manager._em_lock:
-        aid_mode   = response.get("aidMode",   "off")
+        aid_mode = response.get("aidMode", "off")
         smart_mode = response.get("smartMode", "normal")
         if entity_manager.device_modes_write_seq == write_seq_before:
             # No concurrent write landed during the fetch — safe to cache
             # and clear dirty.
             entity_manager.device_modes_cache = {
-                "aidMode": aid_mode, "smartMode": smart_mode,
+                "aidMode": aid_mode,
+                "smartMode": smart_mode,
             }
             entity_manager.device_modes_dirty = False
         # else: a write raced this fetch and already set dirty=True for us

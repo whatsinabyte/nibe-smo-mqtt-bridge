@@ -26,14 +26,15 @@ import os
 
 try:
     import quickjs
+
     QUICKJS_AVAILABLE = True
 except ImportError:
     QUICKJS_AVAILABLE = False
 
-_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app')
-if not os.path.exists(os.path.join(_APP_DIR, 'nibe-entity-manager-card.js')):
-    _APP_DIR = '/mnt/project/app'
-_CARD_JS_PATH = os.path.join(_APP_DIR, 'nibe-entity-manager-card.js')
+_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app")
+if not os.path.exists(os.path.join(_APP_DIR, "nibe-entity-manager-card.js")):
+    _APP_DIR = "/mnt/project/app"
+_CARD_JS_PATH = os.path.join(_APP_DIR, "nibe-entity-manager-card.js")
 
 # Minimal browser-global stubs needed only so the file can be parsed and
 # evaluated (class NibeEntityManager extends HTMLElement; the trailing
@@ -56,6 +57,6 @@ def load_card_context():
     """
     ctx = quickjs.Context()
     ctx.eval(_STUBS)
-    with open(_CARD_JS_PATH, encoding='utf-8') as f:
+    with open(_CARD_JS_PATH, encoding="utf-8") as f:
         ctx.eval(f.read())
     return ctx

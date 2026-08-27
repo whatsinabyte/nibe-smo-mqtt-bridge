@@ -1,0 +1,14 @@
+# Kept as a standalone ruff.toml rather than a [tool.ruff] section in
+# pyproject.toml: run-mutmut.sh overwrites pyproject.toml wholesale on every
+# mutation run to inject its own [tool.mutmut] config, so anything else
+# placed there would get silently wiped on the next mutmut invocation.
+line-length = 100
+
+[lint]
+extend-select = [
+    "B",    # flake8-bugbear: likely bugs (mutable defaults, unused loop vars, etc.)
+    "I",    # isort: import sorting/grouping
+    "SIM",  # flake8-simplify: unnecessary complexity
+    "C4",   # flake8-comprehensions: unnecessary comprehension patterns
+    "UP",   # pyupgrade: outdated syntax for the target Python version
+]

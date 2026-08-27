@@ -29,6 +29,7 @@ What this module does NOT do
   guard via the same threading.Event passed in here).
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -40,12 +41,12 @@ import sys
 import time
 from collections.abc import Callable
 from threading import Event
-from typing import cast
+from typing import Any, cast
 
 from nibe_mqtt_publisher import MgmtTopic
 from nibe_utils import fmt_ts as _fmt_ts
 
-log_commands = logging.getLogger('nibe.commands')
+log_commands = logging.getLogger("nibe.commands")
 
 # The in-flight pytest subprocess, if any — set right before it's launched
 # and cleared once it exits. Only one test run can be in flight at a time
@@ -66,7 +67,7 @@ _current_proc: subprocess.Popen[str] | None = None
 _abort_reason: str | None = None
 
 
-def abort_test_suite(reason: str = 'add-on shutting down') -> None:
+def abort_test_suite(reason: str = "add-on shutting down") -> None:
     """Kill the in-flight pytest subprocess (and its whole process group),
     if any, so it can't hold up a clean container stop. Safe to call when
     no run is in flight (no-op).
@@ -90,14 +91,12 @@ def abort_test_suite(reason: str = 'add-on shutting down') -> None:
     # reason value substitution and message text are log-only (reused for
     # real right after) — not pragma'd, arg count/format string are
     # real/tested (crash on None via %s formatting a None message).
-    log_commands.warning('Aborting in-flight test suite run: %s', reason)
+    log_commands.warning("Aborting in-flight test suite run: %s", reason)
     _abort_reason = reason
-    try:
+    # Process (and thus its group) already exited between the poll() check
+    # above and this call — nothing left to kill.
+    with contextlib.suppress(ProcessLookupError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        # Process (and thus its group) already exited between the poll()
-        # check above and this call — nothing left to kill.
-        pass
 
 
 def _extract_failure_lines(text: str) -> list[str]:
@@ -110,13 +109,13 @@ def _extract_failure_lines(text: str) -> list[str]:
     # pragma'd, `in_short = True` is real/tested.
     in_short = False
     for ln in text.splitlines():
-        if 'short test summary info' in ln:
+        if "short test summary info" in ln:
             in_short = True
             continue
         if in_short:
-            if ln.startswith('FAILED '):
-                result.append(ln[len('FAILED ') :].strip())
-            elif ln.startswith('='):
+            if ln.startswith("FAILED "):
+                result.append(ln[len("FAILED ") :].strip())
+            elif ln.startswith("="):
                 break
     if result:
         return result
@@ -126,19 +125,19 @@ def _extract_failure_lines(text: str) -> list[str]:
     in_failures = False
     block: list[str] = []
     for ln in text.splitlines():
-        if re.search(r'={3,} FAILURES ={3,}', ln):
+        if re.search(r"={3,} FAILURES ={3,}", ln):
             in_failures = True
             continue
         if in_failures:
-            if re.search(r'={3,}', ln):
+            if re.search(r"={3,}", ln):
                 break
             block.append(ln)
-    e_lines = [ln2.lstrip() for ln2 in block if ln2.strip().startswith('E ')]
+    e_lines = [ln2.lstrip() for ln2 in block if ln2.strip().startswith("E ")]
     return e_lines[:5] if e_lines else block[:10]
 
 
 def run_test_suite(
-    mqtt_client,
+    mqtt_client: Any,
     notify_fn: Callable,
     dismiss_fn: Callable,
     get_base_url_fn: Callable[[], str],
@@ -182,8 +181,8 @@ def run_test_suite(
         # Message text is log-only — not pragma'd, stale_proc.pid is
         # real/tested (crashes on None via %d).
         log_commands.warning(
-            'Stale test subprocess (pid %d) found before starting a new '
-            'run — killing it first', stale_proc.pid,
+            "Stale test subprocess (pid %d) found before starting a new run — killing it first",
+            stale_proc.pid,
         )
         # The exact reason string is unobservable — _abort_reason (which
         # this sets) is unconditionally reset to None a few lines below,
@@ -191,15 +190,15 @@ def run_test_suite(
         # Not pragma'd: abort_test_suite(None) vs a real string is still a
         # separate concern from THIS call's own correctness (it's what
         # actually kills the stale process), which is tested elsewhere.
-        abort_test_suite('superseded by a new test run')
+        abort_test_suite("superseded by a new test run")
         try:
             stale_proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             # Message text is log-only — not pragma'd, stale_proc.pid is
             # real/tested (crashes on None via %d).
             log_commands.error(
-                'Stale test subprocess (pid %d) did not exit within 10s '
-                'after SIGKILL', stale_proc.pid,
+                "Stale test subprocess (pid %d) did not exit within 10s after SIGKILL",
+                stale_proc.pid,
             )
 
     _abort_reason = None  # clear any stale reason (incl. from the cleanup above)
@@ -210,19 +209,19 @@ def run_test_suite(
         # the fallback branch always runs regardless) — not pragma'd, the
         # isdir() check itself and the fallback's addon_dir usage are
         # real/tested (see test_run_tests_test_path_arg_is_real_absolute_tests_dir).
-        test_path = '/tests'
+        test_path = "/tests"
         if not os.path.isdir(test_path):
             # Fallback for development layout (tests/ alongside app/)
-            test_path = os.path.join(addon_dir, 'tests')
+            test_path = os.path.join(addon_dir, "tests")
 
         # Determine working directory — pytest.ini lives at addon root
         # and configures testpaths/pythonpath relative to it.
-        pytest_ini = os.path.join(addon_dir, 'pytest.ini')
+        pytest_ini = os.path.join(addon_dir, "pytest.ini")
         # Same reasoning as test_path above for the '/tests' fallback text
         # — not pragma'd, addon_dir/os.path.exists(pytest_ini) are
         # real/tested (see test_run_tests_subprocess_kwargs_pipe_and_text_and_cwd
         # and test_run_tests_pytest_ini_lookup_uses_absolute_addon_dir_path).
-        run_dir = addon_dir if os.path.exists(pytest_ini) else '/tests'
+        run_dir = addon_dir if os.path.exists(pytest_ini) else "/tests"
 
         # sys.executable is normally the running interpreter's absolute path,
         # but on some Alpine/musl container setups it comes back empty (the
@@ -232,28 +231,30 @@ def run_test_suite(
         # process's own PATH would resolve — shutil.which() does a real
         # PATH-aware lookup right here instead of hoping subprocess.run's
         # own resolution works out.
-        python_exe = sys.executable or shutil.which('python3') or shutil.which('python') or 'python3'
+        python_exe = (
+            sys.executable or shutil.which("python3") or shutil.which("python") or "python3"
+        )
         env = {
             **os.environ,
-            'HYPOTHESIS_PROFILE': 'nightly',
-            'PYTHONPATH': os.path.join(addon_dir, 'app'),
+            "HYPOTHESIS_PROFILE": "nightly",
+            "PYTHONPATH": os.path.join(addon_dir, "app"),
         }
 
         # Publish 'running' state immediately
-        mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, 'running', retain=True)
+        mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, "running", retain=True)
         mqtt_client.publish(
             MgmtTopic.RUN_TESTS_ATTRS,
             json.dumps(
                 {
-                    'status': 'running',
-                    'started': _fmt_ts(),
+                    "status": "running",
+                    "started": _fmt_ts(),
                 }
             ),
             retain=True,
         )
 
         t_start = time.monotonic()
-        report_path = '/homeassistant/www/nibe_test_report.html'
+        report_path = "/homeassistant/www/nibe_test_report.html"
         try:
             # subprocess.Popen (rather than the simpler subprocess.run)
             # so the Popen handle can be stashed in _current_proc —
@@ -272,16 +273,16 @@ def run_test_suite(
             _current_proc = subprocess.Popen(
                 [
                     python_exe,
-                    '-m',
-                    'pytest',
+                    "-m",
+                    "pytest",
                     test_path,
-                    f'--html={report_path}',
-                    '--tb=short',  # full traceback on failures
-                    '--no-header',  # skip pytest version header
-                    '-q',  # compact: N passed in Xs
-                    '--timeout=600',  # per-test cap; nightly stateful tests exceed pytest.ini default of 300s
-                    '-n',
-                    'auto',  # xdist: one worker per CPU core (~4 on ODROID-M1)
+                    f"--html={report_path}",
+                    "--tb=short",  # full traceback on failures
+                    "--no-header",  # skip pytest version header
+                    "-q",  # compact: N passed in Xs
+                    "--timeout=600",  # per-test cap; nightly stateful tests exceed pytest.ini default of 300s
+                    "-n",
+                    "auto",  # xdist: one worker per CPU core (~4 on ODROID-M1)
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -296,10 +297,8 @@ def run_test_suite(
                 exit_code = _current_proc.returncode
                 output = (stdout + stderr).strip()
             except subprocess.TimeoutExpired as timeout_exc:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(os.getpgid(_current_proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
                 # The second communicate() call (post-kill) drains whatever
                 # output the process/its xdist workers had buffered and waits
                 # for the pipes to actually close — its return value is the
@@ -315,10 +314,10 @@ def run_test_suite(
                 # (the exception class isn't parametrized by Popen's text mode),
                 # but _current_proc was created with text=True, so at runtime
                 # they're actually str here too — cast to match reality.
-                exc_stdout = cast('str | None', timeout_exc.stdout)
-                exc_stderr = cast('str | None', timeout_exc.stderr)
-                partial_stdout = drained_stdout or exc_stdout or ''
-                partial_stderr = drained_stderr or exc_stderr or ''
+                exc_stdout = cast("str | None", timeout_exc.stdout)
+                exc_stderr = cast("str | None", timeout_exc.stderr)
+                partial_stdout = drained_stdout or exc_stdout or ""
+                partial_stderr = drained_stderr or exc_stderr or ""
                 partial_output = (partial_stdout + partial_stderr).strip()
                 elapsed = time.monotonic() - t_start
                 exit_code = -1
@@ -330,11 +329,13 @@ def run_test_suite(
                 # / test_run_tests_timeout_with_captured_output_summary) — not
                 # pragma'd, nothing else consumes this call's arguments.
                 log_commands.error(
-                    'Test suite subprocess did not finish within the 14400s hard '
-                    'limit — killed process group (pid %d) after %.1fs elapsed. '
-                    'Captured output (%d bytes):\n%s',
-                    _current_proc.pid, elapsed, len(partial_output),
-                    partial_output[-4000:] if partial_output else '(nothing captured)',
+                    "Test suite subprocess did not finish within the 14400s hard "
+                    "limit — killed process group (pid %d) after %.1fs elapsed. "
+                    "Captured output (%d bytes):\n%s",
+                    _current_proc.pid,
+                    elapsed,
+                    len(partial_output),
+                    partial_output[-4000:] if partial_output else "(nothing captured)",
                 )
                 # This line's own text is unobservable — verified empirically:
                 # `output` only ever surfaces downstream via its extracted
@@ -342,19 +343,19 @@ def run_test_suite(
                 # is never part of, and the timeout notification body is a
                 # separately hardcoded string that never quotes `output`.
                 output = (
-                    f'Test suite process killed after {elapsed:.1f}s '
-                    '(14400s hard limit).\n'
+                    f"Test suite process killed after {elapsed:.1f}s "
+                    "(14400s hard limit).\n"
                     + (
-                        f'Captured output before kill:\n{partial_output[-2000:]}'
+                        f"Captured output before kill:\n{partial_output[-2000:]}"
                         if partial_output
-                        else 'No output was captured before the process was killed — '
-                             'check the add-on log for the exact kill time.'
+                        else "No output was captured before the process was killed — "
+                        "check the add-on log for the exact kill time."
                     )
                 )
         except Exception as exc:
             elapsed = time.monotonic() - t_start
             exit_code = -2
-            output = f'Failed to run test suite (python_exe={python_exe!r}): {exc}'
+            output = f"Failed to run test suite (python_exe={python_exe!r}): {exc}"
             # Log the full exception here — output only ever reaches the HA
             # notification body, which HA renders as Markdown. A bracketed
             # OSError string like "[Errno 13] Permission denied: '/tests'"
@@ -363,14 +364,14 @@ def run_test_suite(
             # needed to actually diagnose a launch failure.
             # Log-only text — not pragma'd, this call happening at all
             # (vs. being skipped) is real/tested elsewhere.
-            log_commands.exception('Failed to launch test suite subprocess')
+            log_commands.exception("Failed to launch test suite subprocess")
         finally:
             _current_proc = None
 
         # Post-process the HTML report: inject a mobile viewport meta tag
         # and relax the min-width so the report is readable on phones.
         try:
-            with open(report_path, encoding='utf-8') as _f:
+            with open(report_path, encoding="utf-8") as _f:
                 _html = _f.read()
             _html = _html.replace(
                 '<meta charset="utf-8"/>',
@@ -378,9 +379,9 @@ def run_test_suite(
                 '    <meta name="viewport" '
                 'content="width=device-width, initial-scale=1"/>',
             )
-            _html = _html.replace('min-width: 800px', 'min-width: 320px')
+            _html = _html.replace("min-width: 800px", "min-width: 320px")
 
-            with open(report_path, 'w', encoding='utf-8') as _f:
+            with open(report_path, "w", encoding="utf-8") as _f:
                 _f.write(_html)
         except FileNotFoundError:
             # Diagnostic log line only — text and the report_path arg (a
@@ -388,9 +389,9 @@ def run_test_suite(
             # behavior; that a warning fires on FileNotFoundError at all is
             # real/tested by test_run_tests_logs_warning_when_report_missing.
             log_commands.warning(
-                'Test suite HTML report not found at %s — '
-                'pytest-html may not be installed in the Docker image. '
-                'Check requirements-test.txt and rebuild the add-on.',
+                "Test suite HTML report not found at %s — "
+                "pytest-html may not be installed in the Docker image. "
+                "Check requirements-test.txt and rebuild the add-on.",
                 report_path,
             )
         except (OSError, UnicodeDecodeError) as _e:
@@ -406,7 +407,7 @@ def run_test_suite(
             # this except is the real/tested behavior (see the comment
             # above about not letting this propagate to the outer except).
             log_commands.warning(
-                'Could not post-process HTML report at %s: %s',
+                "Could not post-process HTML report at %s: %s",
                 report_path,
                 _e,
             )
@@ -426,7 +427,7 @@ def run_test_suite(
         # separately real/tested via the published RUN_TESTS_ATTRS
         # ('report_exists'/'report_size' keys).
         log_commands.info(
-            'Post-run report check: exists=%s size=%d at %s',
+            "Post-run report check: exists=%s size=%d at %s",
             report_exists,
             report_size,
             report_path,
@@ -441,30 +442,30 @@ def run_test_suite(
             # reported as one. Checked first: an abort can race with the
             # 4-hour timeout path (both use os.killpg internally) and must
             # take priority over whatever exit_code the kill produced.
-            status = 'aborted'
+            status = "aborted"
         elif passed:
-            status = 'passed'
+            status = "passed"
         elif exit_code == -1:
-            status = 'timed_out'
+            status = "timed_out"
         elif exit_code == -2:
-            status = 'error'
+            status = "error"
         else:
-            status = 'failed'
+            status = "failed"
 
         # ── Extract the pytest counts line ────────────────────────────
         # Always the last non-empty line, e.g. "1 failed, 2251 passed in 1:10:22"
         lines = output.splitlines()
-        counts_line = next((ln.strip() for ln in reversed(lines) if ln.strip()), '')
+        counts_line = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
 
         # ── Build the sensor summary (stored in attributes tab) ────────
         # Pass: strip progress-dot lines, keep warnings + counts line.
         # Fail: short summary block + counts line.
         # xdist/pytest infrastructure lines to suppress from the summary
         _NOISE_PREFIXES = (
-            'bringing up nodes',
-            'generated html report',
-            '=== ',
-            '--- ',
+            "bringing up nodes",
+            "generated html report",
+            "=== ",
+            "--- ",
         )
 
         def _is_noise_line(ln: str) -> bool:
@@ -477,7 +478,7 @@ def run_test_suite(
             # unobservable — verified empirically, still real/tested for
             # the actual '-', '=', ' ' chars via
             # test_pass_summary_strips_report_line_regardless_of_dash_count.
-            core = ln.strip().strip('-= ').lower()
+            core = ln.strip().strip("-= ").lower()
             # The second `or` clause exists only for symbol-only prefixes
             # ('=== '/'--- ') on lines with NO extra dash/equals padding to
             # strip (see test_pass_summary_strips_equals_wrapped_section_headers)
@@ -488,14 +489,16 @@ def run_test_suite(
             # equals this same lowered string already) and for the
             # symbol-only prefixes .lower()/.upper() make no difference —
             # verified empirically, .upper() here is an equivalent mutant.
-            return core.startswith(_NOISE_PREFIXES) or ln.strip().lower().startswith(_NOISE_PREFIXES)
+            return core.startswith(_NOISE_PREFIXES) or ln.strip().lower().startswith(
+                _NOISE_PREFIXES
+            )
 
         if aborted:
             # The captured output is just whatever partial stdout/stderr
             # happened to be flushed before the kill — not a meaningful
             # pass/fail summary, so don't run it through that parsing at
             # all; state plainly what happened instead.
-            summary = f'Test run aborted before completion: {_abort_reason}'
+            summary = f"Test run aborted before completion: {_abort_reason}"
         elif exit_code == 0:
             # Widening this charset (e.g. adding a char real pytest
             # progress-dot output never contains) is unobservable — an
@@ -507,18 +510,18 @@ def run_test_suite(
                 ln
                 for ln in lines
                 if ln.strip()
-                and not set(ln.strip()).issubset(set('.FEsx[] |\t0123456789%u'))
+                and not set(ln.strip()).issubset(set(".FEsx[] |\t0123456789%u"))
                 and not _is_noise_line(ln)
             ]
             if counts_line and counts_line not in meaningful:
                 meaningful.append(counts_line)
-            summary = '\n'.join(meaningful) if meaningful else counts_line
+            summary = "\n".join(meaningful) if meaningful else counts_line
             if report_exists:
                 summary += (
-                    f'\n\n📄 [View full report]({get_base_url_fn()}/local/'
-                    f'nibe_test_report.html?v={int(time.time())})\n'
-                    '(large file — may take a moment to load. Left-click opens the '
-                    'HA dashboard instead of the report — right-click and choose '
+                    f"\n\n📄 [View full report]({get_base_url_fn()}/local/"
+                    f"nibe_test_report.html?v={int(time.time())})\n"
+                    "(large file — may take a moment to load. Left-click opens the "
+                    "HA dashboard instead of the report — right-click and choose "
                     '"Open link in new tab" to view it.)'
                 )
         else:
@@ -532,30 +535,30 @@ def run_test_suite(
             # bounds (-2000 vs -2001 vs +2000) are unobservable — verified
             # empirically, not pragma'd since parts/fail_lines/counts_line
             # themselves are real/tested.
-            summary = '\n'.join(parts) if parts else output[-2000:]
+            summary = "\n".join(parts) if parts else output[-2000:]
 
         timestamp = _fmt_ts()
 
         # Format elapsed time readably
         if elapsed < 60:
-            elapsed_str = f'{elapsed:.1f}s'
+            elapsed_str = f"{elapsed:.1f}s"
         else:
             # elapsed is always >= 0 here (time.monotonic() deltas), so
             # floor division (//) and true division truncated by int() (/)
             # agree — int(x // 60) == int(x / 60) for all non-negative x;
             # they'd only diverge for negative x — not pragma'd, this is
             # the only line-level mutation, verified empirically.
-            elapsed_str = f'{int(elapsed // 60)}m {elapsed % 60:.0f}s'
+            elapsed_str = f"{int(elapsed // 60)}m {elapsed % 60:.0f}s"
 
         if exit_code == 0:
             log_commands.info(
-                'Test suite %s in %s',
+                "Test suite %s in %s",
                 status,
                 elapsed_str,
             )
         else:
             log_commands.error(
-                'Test suite %s in %s (exit code %d)',
+                "Test suite %s in %s (exit code %d)",
                 status,
                 elapsed_str,
                 exit_code,
@@ -567,15 +570,15 @@ def run_test_suite(
             MgmtTopic.RUN_TESTS_ATTRS,
             json.dumps(
                 {
-                    'status': status,
-                    'exit_code': exit_code,
-                    'elapsed_s': round(elapsed, 1),
-                    'elapsed': elapsed_str,
-                    'timestamp': timestamp,
-                    'summary': summary,
-                    'report_path': report_path,
-                    'report_exists': report_exists,
-                    'report_size': report_size,
+                    "status": status,
+                    "exit_code": exit_code,
+                    "elapsed_s": round(elapsed, 1),
+                    "elapsed": elapsed_str,
+                    "timestamp": timestamp,
+                    "summary": summary,
+                    "report_path": report_path,
+                    "report_exists": report_exists,
+                    "report_size": report_size,
                 }
             ),
             retain=True,
@@ -594,21 +597,21 @@ def run_test_suite(
         if aborted:
             pass
         elif passed:
-            dismiss_fn(mqtt_client, 'nibe_test_suite_result')
+            dismiss_fn(mqtt_client, "nibe_test_suite_result")
         else:
             _MAX_NOTIF = 2048
             timed_out = exit_code == -1
             launch_error = exit_code == -2
             if timed_out:
-                title = 'Nibe Test Suite — ⏱ TIMED OUT'
+                title = "Nibe Test Suite — ⏱ TIMED OUT"
                 if elapsed >= 14000:
                     # Actually ran close to the full 4-hour hard limit — the
                     # "reduce test volume" advice is the right diagnosis.
                     body = (
-                        'The test process was killed after running for '
-                        f'{elapsed_str}, close to the 4-hour hard limit. '
-                        'Reduce `max_examples` or `stateful_step_count` in '
-                        '`tests/conftest.py` and rebuild the add-on.'
+                        "The test process was killed after running for "
+                        f"{elapsed_str}, close to the 4-hour hard limit. "
+                        "Reduce `max_examples` or `stateful_step_count` in "
+                        "`tests/conftest.py` and rebuild the add-on."
                     )
                 else:
                     # Killed by the same code path, but nowhere near the
@@ -617,52 +620,45 @@ def run_test_suite(
                     # subprocess almost immediately; point at the captured
                     # output (see `output` above) rather than the wrong fix.
                     body = (
-                        f'The test process was killed after only {elapsed_str} — '
-                        'nowhere near the 4-hour limit, so this is not a '
+                        f"The test process was killed after only {elapsed_str} — "
+                        "nowhere near the 4-hour limit, so this is not a "
                         '"tests are too slow" situation. Check the captured '
-                        'output above and the add-on log for what actually '
-                        'happened to the subprocess.'
+                        "output above and the add-on log for what actually "
+                        "happened to the subprocess."
                     )
             elif launch_error:
-                title = 'Nibe Test Suite — ⚠ LAUNCH ERROR'
+                title = "Nibe Test Suite — ⚠ LAUNCH ERROR"
                 body = output
             else:
-                title = 'Nibe Test Suite — ❌ FAILED'
+                title = "Nibe Test Suite — ❌ FAILED"
                 fail_lines = _extract_failure_lines(output)
                 if fail_lines:
                     # Format each as bold test path + assertion on next line
                     formatted: list[str] = []
                     for fl in fail_lines:
-                        if ' - ' in fl:
-                            test_path, _, err_msg = fl.partition(' - ')
-                            formatted.append(f'**{test_path}**\n`{err_msg}`')
+                        if " - " in fl:
+                            test_path, _, err_msg = fl.partition(" - ")
+                            formatted.append(f"**{test_path}**\n`{err_msg}`")
                         else:
-                            formatted.append(f'**{fl}**')
-                    body = '\n\n'.join(formatted)
+                            formatted.append(f"**{fl}**")
+                    body = "\n\n".join(formatted)
                 else:
-                    body = f'```\n{summary}\n```'
+                    body = f"```\n{summary}\n```"
 
             report_link = (
-                f'[View full report]({get_base_url_fn()}/local/'
-                f'nibe_test_report.html?v={int(time.time())}) '
+                f"[View full report]({get_base_url_fn()}/local/"
+                f"nibe_test_report.html?v={int(time.time())}) "
                 '(right-click → "Open link in new tab" — left-click opens the HA '
-                'dashboard instead)'
+                "dashboard instead)"
             )
-            message = (
-                f'{timestamp} — {counts_line} — {elapsed_str}\n\n'
-                f'{body}\n\n'
-                f'{report_link}'
-            )
+            message = f"{timestamp} — {counts_line} — {elapsed_str}\n\n{body}\n\n{report_link}"
             if len(message) > _MAX_NOTIF:
-                message = (
-                    message[: _MAX_NOTIF - len(report_link) - 10] + '\n…\n\n'
-                    f'{report_link}'
-                )
+                message = message[: _MAX_NOTIF - len(report_link) - 10] + f"\n…\n\n{report_link}"
             notify_fn(
                 mqtt_client,
                 title=title,
                 message=message,
-                notification_id='nibe_test_suite_result',
+                notification_id="nibe_test_suite_result",
             )
     except Exception:
         # Anything unprotected above (an MQTT publish failing mid-run, a
@@ -671,15 +667,15 @@ def run_test_suite(
         # runs in a background executor, so nothing would surface the
         # error — leaving RUN_TESTS_STATE retained as "running" forever.
         # Force a terminal state so a stuck run is at least visible.
-        log_commands.exception('run_test_suite crashed unexpectedly')
+        log_commands.exception("run_test_suite crashed unexpectedly")
         try:
-            mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, 'error', retain=True)
+            mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, "error", retain=True)
             mqtt_client.publish(
                 MgmtTopic.RUN_TESTS_ATTRS,
-                json.dumps({'status': 'error', 'timestamp': _fmt_ts()}),
+                json.dumps({"status": "error", "timestamp": _fmt_ts()}),
                 retain=True,
             )
         except Exception:
-            log_commands.exception('Failed to publish crash state for run_test_suite')
+            log_commands.exception("Failed to publish crash state for run_test_suite")
     finally:
         done_event.clear()

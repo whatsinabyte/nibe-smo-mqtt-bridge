@@ -35,7 +35,9 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from enum import StrEnum
+from typing import Any
 
 import nibe_discovery_config as discovery_config
 from nibe_entity_detection import (
@@ -47,17 +49,18 @@ from nibe_entity_detection import (
 )
 from nibe_utils import fmt_ts as _fmt_ts
 
-log_mqtt     = logging.getLogger("nibe.mqtt")
+log_mqtt = logging.getLogger("nibe.mqtt")
 log_entities = logging.getLogger("nibe.entities")
 
 # ── Topic prefix constants ─────────────────────────────────────────────────────
-_HA_BASE    = "homeassistant"
+_HA_BASE = "homeassistant"
 MQTT_PREFIX = "nibe/browser"
 
 
 # ============================================================================
 # TOPIC ENUMS  — single source of truth for every fixed MQTT topic string
 # ============================================================================
+
 
 class MgmtTopic(StrEnum):
     """All fixed management-entity MQTT topics.
@@ -74,85 +77,85 @@ class MgmtTopic(StrEnum):
         <ENTITY_ID>_SET      — command topic (HA → bridge)
         <ENTITY_ID>_PRESS    — button press topic (HA → bridge)
     """
+
     # ── Entity mode sensor (read-only — mode is config-level, restart-required) ──
-    MODE_CONFIG    = f"{_HA_BASE}/sensor/nibe_active_mode/config"
-    MODE_STATE     = f"{_HA_BASE}/sensor/nibe_active_mode/state"
+    MODE_CONFIG = f"{_HA_BASE}/sensor/nibe_active_mode/config"
+    MODE_STATE = f"{_HA_BASE}/sensor/nibe_active_mode/state"
 
     # ── Stats sensor ──────────────────────────────────────────────────────
-    STATS_CONFIG   = f"{_HA_BASE}/sensor/nibe_entity_stats/config"
-    STATS_STATE    = f"{_HA_BASE}/sensor/nibe_entity_stats/state"
-    STATS_ATTRS    = f"{_HA_BASE}/sensor/nibe_entity_stats/attributes"
+    STATS_CONFIG = f"{_HA_BASE}/sensor/nibe_entity_stats/config"
+    STATS_STATE = f"{_HA_BASE}/sensor/nibe_entity_stats/state"
+    STATS_ATTRS = f"{_HA_BASE}/sensor/nibe_entity_stats/attributes"
 
     # ── Aid mode switch ───────────────────────────────────────────────────
-    AID_CONFIG     = f"{_HA_BASE}/switch/nibe_aid_mode/config"
-    AID_STATE      = f"{_HA_BASE}/switch/nibe_aid_mode/state"
-    AID_SET        = f"{_HA_BASE}/switch/nibe_aid_mode/set"
+    AID_CONFIG = f"{_HA_BASE}/switch/nibe_aid_mode/config"
+    AID_STATE = f"{_HA_BASE}/switch/nibe_aid_mode/state"
+    AID_SET = f"{_HA_BASE}/switch/nibe_aid_mode/set"
 
     # ── Smart mode select ─────────────────────────────────────────────────
-    SMART_CONFIG   = f"{_HA_BASE}/select/nibe_smart_mode/config"
-    SMART_STATE    = f"{_HA_BASE}/select/nibe_smart_mode/state"
-    SMART_SET      = f"{_HA_BASE}/select/nibe_smart_mode/set"
+    SMART_CONFIG = f"{_HA_BASE}/select/nibe_smart_mode/config"
+    SMART_STATE = f"{_HA_BASE}/select/nibe_smart_mode/state"
+    SMART_SET = f"{_HA_BASE}/select/nibe_smart_mode/set"
 
     # ── Active alarms sensor ──────────────────────────────────────────────
-    ALARM_CONFIG   = f"{_HA_BASE}/sensor/nibe_notifications/config"
-    ALARM_STATE    = f"{_HA_BASE}/sensor/nibe_notifications/state"
-    ALARM_ATTRS    = f"{_HA_BASE}/sensor/nibe_notifications/attributes"
+    ALARM_CONFIG = f"{_HA_BASE}/sensor/nibe_notifications/config"
+    ALARM_STATE = f"{_HA_BASE}/sensor/nibe_notifications/state"
+    ALARM_ATTRS = f"{_HA_BASE}/sensor/nibe_notifications/attributes"
 
     # ── Reset alarms button ───────────────────────────────────────────────
     ALARM_RESET_CONFIG = f"{_HA_BASE}/button/nibe_reset_alarms/config"
-    ALARM_RESET_PRESS  = f"{_HA_BASE}/button/nibe_reset_alarms/press"
+    ALARM_RESET_PRESS = f"{_HA_BASE}/button/nibe_reset_alarms/press"
 
     # ── Force poll button ─────────────────────────────────────────────────
-    FORCE_POLL_CONFIG  = f"{_HA_BASE}/button/nibe_force_poll/config"
-    FORCE_POLL_PRESS   = f"{_HA_BASE}/button/nibe_force_poll/press"
+    FORCE_POLL_CONFIG = f"{_HA_BASE}/button/nibe_force_poll/config"
+    FORCE_POLL_PRESS = f"{_HA_BASE}/button/nibe_force_poll/press"
 
     # ── Regenerate dashboard button ───────────────────────────────────────
-    REGEN_DASH_CONFIG  = f"{_HA_BASE}/button/nibe_regen_dashboard/config"
-    REGEN_DASH_PRESS   = f"{_HA_BASE}/button/nibe_regen_dashboard/press"
-
+    REGEN_DASH_CONFIG = f"{_HA_BASE}/button/nibe_regen_dashboard/config"
+    REGEN_DASH_PRESS = f"{_HA_BASE}/button/nibe_regen_dashboard/press"
 
     # ── Bridge uptime sensor ──────────────────────────────────────────────
-    UPTIME_CONFIG  = f"{_HA_BASE}/sensor/nibe_bridge_uptime/config"
-    UPTIME_STATE   = f"{_HA_BASE}/sensor/nibe_bridge_uptime/state"
-    UPTIME_ATTRS   = f"{_HA_BASE}/sensor/nibe_bridge_uptime/attributes"
+    UPTIME_CONFIG = f"{_HA_BASE}/sensor/nibe_bridge_uptime/config"
+    UPTIME_STATE = f"{_HA_BASE}/sensor/nibe_bridge_uptime/state"
+    UPTIME_ATTRS = f"{_HA_BASE}/sensor/nibe_bridge_uptime/attributes"
 
     # ── API last-fetch timestamp sensor ───────────────────────────────────
     LAST_FETCH_CONFIG = f"{_HA_BASE}/sensor/nibe_last_fetch_timestamp/config"
-    LAST_FETCH_STATE  = f"{_HA_BASE}/sensor/nibe_last_fetch_timestamp/state"
+    LAST_FETCH_STATE = f"{_HA_BASE}/sensor/nibe_last_fetch_timestamp/state"
 
     # ── API fetch duration sensor ─────────────────────────────────────────
-    FETCH_DUR_CONFIG  = f"{_HA_BASE}/sensor/nibe_fetch_duration/config"
-    FETCH_DUR_STATE   = f"{_HA_BASE}/sensor/nibe_fetch_duration/state"
+    FETCH_DUR_CONFIG = f"{_HA_BASE}/sensor/nibe_fetch_duration/config"
+    FETCH_DUR_STATE = f"{_HA_BASE}/sensor/nibe_fetch_duration/state"
 
     # ── API reachable binary_sensor ───────────────────────────────────────
-    API_OK_CONFIG  = f"{_HA_BASE}/binary_sensor/nibe_api_reachable/config"
-    API_OK_STATE   = f"{_HA_BASE}/binary_sensor/nibe_api_reachable/state"
+    API_OK_CONFIG = f"{_HA_BASE}/binary_sensor/nibe_api_reachable/config"
+    API_OK_STATE = f"{_HA_BASE}/binary_sensor/nibe_api_reachable/state"
 
     # ── Bridge availability (shared LWT / online topic) ───────────────────
-    AVAIL          = f"{_HA_BASE}/sensor/nibe_bridge/available"
+    AVAIL = f"{_HA_BASE}/sensor/nibe_bridge/available"
 
     # ── Enable / disable entity text inputs ──────────────────────────────
-    ENABLE_SET     = f"{_HA_BASE}/text/nibe_enable_entity/set"
-    DISABLE_SET    = f"{_HA_BASE}/text/nibe_disable_entity/set"
+    ENABLE_SET = f"{_HA_BASE}/text/nibe_enable_entity/set"
+    DISABLE_SET = f"{_HA_BASE}/text/nibe_disable_entity/set"
 
     # ── Changelog mark-read button ────────────────────────────────────────
     CHANGELOG_READ_PRESS = f"{_HA_BASE}/button/nibe_mark_changes_read/press"
 
     # ── Dynamic map flush button (debug only) ─────────────────────────────
     FLUSH_MAP_CONFIG = f"{_HA_BASE}/button/nibe_flush_dynamic_map/config"
-    FLUSH_MAP_PRESS  = f"{_HA_BASE}/button/nibe_flush_dynamic_map/press"
+    FLUSH_MAP_PRESS = f"{_HA_BASE}/button/nibe_flush_dynamic_map/press"
 
     # ── Test suite runner button (debug only) ──────────────────────────────
-    RUN_TESTS_CONFIG  = f"{_HA_BASE}/button/nibe_run_tests/config"
-    RUN_TESTS_PRESS   = f"{_HA_BASE}/button/nibe_run_tests/press"
-    RUN_TESTS_STATE   = "nibe/browser/test_suite/state"
-    RUN_TESTS_ATTRS   = "nibe/browser/test_suite/attrs"
+    RUN_TESTS_CONFIG = f"{_HA_BASE}/button/nibe_run_tests/config"
+    RUN_TESTS_PRESS = f"{_HA_BASE}/button/nibe_run_tests/press"
+    RUN_TESTS_STATE = "nibe/browser/test_suite/state"
+    RUN_TESTS_ATTRS = "nibe/browser/test_suite/attrs"
 
     # ── API connectivity check button (debug only) ─────────────────────────
     TEST_CONNECTION_CONFIG = f"{_HA_BASE}/button/nibe_test_connection/config"
-    TEST_CONNECTION_PRESS  = f"{_HA_BASE}/button/nibe_test_connection/press"
-    TEST_CONNECTION_STATE  = "nibe/browser/connectivity_check/state"
-    TEST_CONNECTION_ATTRS  = "nibe/browser/connectivity_check/attrs"
+    TEST_CONNECTION_PRESS = f"{_HA_BASE}/button/nibe_test_connection/press"
+    TEST_CONNECTION_STATE = "nibe/browser/connectivity_check/state"
+    TEST_CONNECTION_ATTRS = "nibe/browser/connectivity_check/attrs"
 
 
 class BrowserTopic(StrEnum):
@@ -161,22 +164,25 @@ class BrowserTopic(StrEnum):
     These topics are used by the frontend card and internal bridge state;
     they are not HA MQTT discovery topics.
     """
-    META_TEMPLATE      = f"{MQTT_PREFIX}/meta/{{id}}"   # format with point id
-    ALL_METADATA       = f"{MQTT_PREFIX}/all_metadata"   # batched: all points in one retained message
-    ENABLED_STATE      = f"{MQTT_PREFIX}/enabled_state"
-    DYNAMIC            = f"{MQTT_PREFIX}/dynamic"
-    SCAN_SENTINEL      = f"{MQTT_PREFIX}/scan_sentinel"
-    KNOWN_DYNAMIC      = f"{MQTT_PREFIX}/known_dynamic_points"   # legacy — retained for migration
-    DYNAMIC_MAP        = f"{MQTT_PREFIX}/dynamic_point_map"      # DynamicPointMap table (compressed)
-    ACTIVE_DYNAMIC     = f"{MQTT_PREFIX}/active_dynamic_points"  # currently active dynamic point_ids
-    APPLIED_MODE       = f"{MQTT_PREFIX}/applied_mode"           # last-applied entity mode (plain string)
-    WANTED_POINTS      = f"{MQTT_PREFIX}/wanted_points"           # user-enabled point_ids, catch-all re-enable set
-    DEVICE_INFO        = f"{MQTT_PREFIX}/device_info"
-    POINT_LIST         = f"{MQTT_PREFIX}/point_list"
-    CHANGELOG_HISTORY  = f"{MQTT_PREFIX}/changelog/history"
-    CHANGELOG_UNREAD   = f"{MQTT_PREFIX}/changelog/unread"
-    SNAPSHOTS          = f"{MQTT_PREFIX}/snapshots"          # retained: list of snapshots
-    SNAPSHOTS_CMD      = f"{MQTT_PREFIX}/snapshots/cmd"      # command topic (card → bridge)
+
+    META_TEMPLATE = f"{MQTT_PREFIX}/meta/{{id}}"  # format with point id
+    ALL_METADATA = f"{MQTT_PREFIX}/all_metadata"  # batched: all points in one retained message
+    ENABLED_STATE = f"{MQTT_PREFIX}/enabled_state"
+    DYNAMIC = f"{MQTT_PREFIX}/dynamic"
+    SCAN_SENTINEL = f"{MQTT_PREFIX}/scan_sentinel"
+    KNOWN_DYNAMIC = f"{MQTT_PREFIX}/known_dynamic_points"  # legacy — retained for migration
+    DYNAMIC_MAP = f"{MQTT_PREFIX}/dynamic_point_map"  # DynamicPointMap table (compressed)
+    ACTIVE_DYNAMIC = f"{MQTT_PREFIX}/active_dynamic_points"  # currently active dynamic point_ids
+    APPLIED_MODE = f"{MQTT_PREFIX}/applied_mode"  # last-applied entity mode (plain string)
+    WANTED_POINTS = (
+        f"{MQTT_PREFIX}/wanted_points"  # user-enabled point_ids, catch-all re-enable set
+    )
+    DEVICE_INFO = f"{MQTT_PREFIX}/device_info"
+    POINT_LIST = f"{MQTT_PREFIX}/point_list"
+    CHANGELOG_HISTORY = f"{MQTT_PREFIX}/changelog/history"
+    CHANGELOG_UNREAD = f"{MQTT_PREFIX}/changelog/unread"
+    SNAPSHOTS = f"{MQTT_PREFIX}/snapshots"  # retained: list of snapshots
+    SNAPSHOTS_CMD = f"{MQTT_PREFIX}/snapshots/cmd"  # command topic (card → bridge)
 
     # ── Observability topics ───────────────────────────────────────────────
     # BRIDGE_ALERT: non-retained, published when an alertable condition is
@@ -186,8 +192,8 @@ class BrowserTopic(StrEnum):
     # BRIDGE_STATUS: retained, consolidated health snapshot published on every
     #   poll cycle.  Contains everything needed to diagnose the bridge state
     #   without grepping logs.
-    BRIDGE_ALERT       = f"{MQTT_PREFIX}/bridge/alert"
-    BRIDGE_STATUS      = f"{MQTT_PREFIX}/bridge/status"
+    BRIDGE_ALERT = f"{MQTT_PREFIX}/bridge/alert"
+    BRIDGE_STATUS = f"{MQTT_PREFIX}/bridge/status"
 
 
 # MGMT_AVAIL_TOPIC is imported by generate_nibe_mqtt.py.
@@ -212,25 +218,30 @@ _LEGACY_PRESET_TOPICS = (
 )
 
 
-
 # ============================================================================
 # TOPIC BUILDERS
 # ============================================================================
 
+
 def t_config(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/config"
+
 
 def t_state(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/state"
 
+
 def t_command(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/set"
+
 
 def t_available(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/available"
 
+
 def t_attributes(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/attributes"
+
 
 def t_press(entity_id: str) -> str:
     return f"{_HA_BASE}/button/{entity_id}/press"
@@ -273,17 +284,20 @@ def resolve_unit(
         # pragma: no mutate start
         log_mqtt.warning(
             "Point %d (%s): unit overridden \u2014 firmware reported %r, using %r instead.",
-            point_id, title or f"Point {point_id}", raw_unit, unit,
+            point_id,
+            title or f"Point {point_id}",
+            raw_unit,
+            unit,
         )
         # pragma: no mutate end
         warned.add(point_id)
     return unit, was_overridden
 
 
-
 # ============================================================================
 # DISCOVERY PUBLISHER
 # ============================================================================
+
 
 class MqttDiscoveryPublisher:
     """Builds and publishes HA MQTT discovery configs and state payloads.
@@ -302,14 +316,14 @@ class MqttDiscoveryPublisher:
 
     def __init__(
         self,
-        mqtt_client,
+        mqtt_client: Any,
         device_info: dict,
         device_id: str,
         device_name: str,
     ) -> None:
-        self.mqtt        = mqtt_client
+        self.mqtt = mqtt_client
         self.device_info = device_info
-        self.device_id   = device_id
+        self.device_id = device_id
         self.device_name = device_name
         # Per-session set of point IDs for which a firmware range inconsistency
         # warning has already been logged.  Prevents repeat warnings every poll.
@@ -329,7 +343,7 @@ class MqttDiscoveryPublisher:
         # Hash of the last published discovery config per point_id.
         # Used by publish_entity_discovery to skip redundant MQTT publishes
         # when the config has not changed since the last restart.
-        self._config_hashes:      dict[int, str] = {}
+        self._config_hashes: dict[int, str] = {}
         # entity_type last published per point_id — t_config() embeds
         # entity_type in the topic path, so if a point's entity_type is
         # ever re-derived to something different (e.g. metadata changes
@@ -357,7 +371,7 @@ class MqttDiscoveryPublisher:
         # republish on config_hash alone would let a firmware description/
         # default-value change go unpublished indefinitely whenever nothing
         # else about the point changed.
-        self._attributes_hashes:  dict[int, str] = {}
+        self._attributes_hashes: dict[int, str] = {}
 
     # ------------------------------------------------------------------ #
     # Config hash management                                               #
@@ -430,9 +444,7 @@ class MqttDiscoveryPublisher:
         result = self.mqtt.publish(topic, payload, retain=True)
         if result.rc != 0:
             # pragma: no mutate start
-            log_mqtt.warning(
-                "State publish failed for topic %s (rc=%d)", topic, result.rc
-            )
+            log_mqtt.warning("State publish failed for topic %s (rc=%d)", topic, result.rc)
             # pragma: no mutate end
 
     # ------------------------------------------------------------------ #
@@ -450,13 +462,13 @@ class MqttDiscoveryPublisher:
         needed for state updates and command handling), or None if the MQTT
         publish failed.
         """
-        point_id    = point['variableId']
-        metadata    = point.get('metadata', {})
-        entity_type = point['entity_type']
-        category    = point['entity_category']
-        title       = point['display_title']
-        is_writable = point.get('is_writable', False)
-        description = point.get('description', '')
+        point_id = point["variableId"]
+        metadata = point.get("metadata", {})
+        entity_type = point["entity_type"]
+        category = point["entity_category"]
+        title = point["display_title"]
+        is_writable = point.get("is_writable", False)
+        description = point.get("description", "")
 
         with self._warnings_lock:
             # title here only ever surfaces inside resolve_unit's own
@@ -469,17 +481,17 @@ class MqttDiscoveryPublisher:
             # "always returns a string, never None". Only a wrong non-None
             # default (e.g. 'XXXX') is observable. Verified empirically.
             unit, _ = resolve_unit(
-                point_id, metadata.get('unit', ''), title, self._unit_override_warnings_issued
+                point_id, metadata.get("unit", ""), title, self._unit_override_warnings_issued
             )
 
         entity_id = create_entity_id(point_id)
 
         config: dict = {
-            "name":                  title,
-            "unique_id":             f"nibe_{point_id}",
-            "device":                self.device_info,
-            "availability_topic":    t_available(entity_type, entity_id),
-            "payload_available":     "online",
+            "name": title,
+            "unique_id": f"nibe_{point_id}",
+            "device": self.device_info,
+            "availability_topic": t_available(entity_type, entity_id),
+            "payload_available": "online",
             "payload_not_available": "offline",
         }
         if category:
@@ -497,33 +509,45 @@ class MqttDiscoveryPublisher:
                 # pragma'd, log-only warning calls — never affects config
                 # output. Verified empirically.
                 discovery_config.build_number_config(
-                    config, t_state("number", entity_id), t_command("number", entity_id),
-                    point_id, title, unit, metadata, bulk_data, self._range_warnings_issued,
+                    config,
+                    t_state("number", entity_id),
+                    t_command("number", entity_id),
+                    point_id,
+                    title,
+                    unit,
+                    metadata,
+                    bulk_data,
+                    self._range_warnings_issued,
                 )
         elif entity_type == "select":
             discovery_config.build_select_config(
-                config, t_state("select", entity_id), t_command("select", entity_id),
-                point_id, description,
+                config,
+                t_state("select", entity_id),
+                t_command("select", entity_id),
+                point_id,
+                description,
             )
         elif entity_type == "time":
-            config["state_topic"]   = t_state("time", entity_id)
+            config["state_topic"] = t_state("time", entity_id)
             config["command_topic"] = t_command("time", entity_id)
-            config["optimistic"]    = False
+            config["optimistic"] = False
             # Ensure no unit leaks in — time entities show HH:MM, not seconds.
             # Defensive: config never has this key yet at this point in the
             # function, so the .pop() key/default are currently unobservable.
             config.pop("unit_of_measurement", None)  # pragma: no mutate
         elif entity_type == "text":
-            config["state_topic"]   = t_state("text", entity_id)
+            config["state_topic"] = t_state("text", entity_id)
             config["command_topic"] = t_command("text", entity_id)
-            config["optimistic"]    = False
-            config["max"]           = 64   # matches Nibe string register size; also enforced server-side
+            config["optimistic"] = False
+            config["max"] = 64  # matches Nibe string register size; also enforced server-side
         elif entity_type == "binary_sensor":
             # title is passed through to map_device_class("binary_sensor", "", title),
             # which returns None unconditionally for entity_type=="binary_sensor"
             # via its own dedicated early-return branch, before title is ever
             # read — unobservable regardless of title's value. Verified empirically.
-            discovery_config.build_binary_sensor_config(config, t_state("binary_sensor", entity_id), title)
+            discovery_config.build_binary_sensor_config(
+                config, t_state("binary_sensor", entity_id), title
+            )
         elif entity_type == "sensor":
             # The "sensor" comparison itself (and the string's exact casing/
             # content) is unobservable: any entity_type that doesn't match one
@@ -540,7 +564,8 @@ class MqttDiscoveryPublisher:
             # pragma: no mutate start
             log_mqtt.warning(
                 "Point %d: unhandled entity type %r — falling back to sensor",
-                point_id, entity_type,
+                point_id,
+                entity_type,
             )
             # pragma: no mutate end
             discovery_config.build_sensor_config(
@@ -551,14 +576,23 @@ class MqttDiscoveryPublisher:
         # checks `if publish:`, where None and False are both falsy —
         # verified empirically.
         static_attributes = self._publish_static_attributes(
-            entity_type, entity_id, point_id, unit, is_writable, description, metadata, config,
+            entity_type,
+            entity_id,
+            point_id,
+            unit,
+            is_writable,
+            description,
+            metadata,
+            config,
             publish=False,
         )
 
-        config_topic   = t_config(entity_type, entity_id)
-        publish_config = {k: v for k, v in config.items() if not k.startswith('_')}
-        config_json    = json.dumps(publish_config, sort_keys=True)
-        config_hash    = hashlib.md5(config_json.encode(), usedforsecurity=False).hexdigest()  # pragma: no mutate — flag has no effect on hexdigest() output
+        config_topic = t_config(entity_type, entity_id)
+        publish_config = {k: v for k, v in config.items() if not k.startswith("_")}
+        config_json = json.dumps(publish_config, sort_keys=True)
+        config_hash = hashlib.md5(
+            config_json.encode(), usedforsecurity=False
+        ).hexdigest()  # pragma: no mutate — flag has no effect on hexdigest() output
 
         # Union of every domain this point_id is known to have been published
         # under: this session's own last publish (_point_entity_types), plus
@@ -587,7 +621,10 @@ class MqttDiscoveryPublisher:
                 # pragma: no mutate start
                 log_mqtt.info(
                     "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
-                    point_id, stale_domain, entity_type, old_topic,
+                    point_id,
+                    stale_domain,
+                    entity_type,
+                    old_topic,
                 )
                 # pragma: no mutate end
             # Force a fresh publish below even if the new config's hash
@@ -595,12 +632,17 @@ class MqttDiscoveryPublisher:
             self._config_hashes.pop(point_id, None)
 
         if self._config_hashes.get(point_id) == config_hash:
-            log_mqtt.debug("Discovery config unchanged for point %d — skipping publish", point_id)  # pragma: no mutate
+            log_mqtt.debug(
+                "Discovery config unchanged for point %d — skipping publish", point_id
+            )  # pragma: no mutate
         else:
             # pragma: no mutate start
             log_mqtt.debug(
                 "Publishing discovery for point %d (%s) as %s (category=%s)",
-                point_id, title, entity_type, category,
+                point_id,
+                title,
+                entity_type,
+                category,
             )
             # pragma: no mutate end
             result = self.mqtt.publish(config_topic, config_json, retain=True)
@@ -608,7 +650,8 @@ class MqttDiscoveryPublisher:
                 # pragma: no mutate start
                 log_mqtt.error(
                     "Failed to publish discovery for point %d: MQTT error %d",
-                    point_id, result.rc,
+                    point_id,
+                    result.rc,
                 )
                 # pragma: no mutate end
                 return None
@@ -636,17 +679,17 @@ class MqttDiscoveryPublisher:
                 self._attributes_hashes[point_id] = attributes_hash
 
         return {
-            'point_id':            point_id,
-            'entity_id':           entity_id,
-            'entity_type':         entity_type,
-            'state_topic':         config.get('state_topic'),
-            'command_topic':       config.get('command_topic'),
-            'availability_topic':  config['availability_topic'],
-            'attributes_topic':    config.get('json_attributes_topic'),
-            'metadata':            metadata,
-            'is_writable':         is_writable,
-            'point_data':          point,
-            'is_degenerate_range': config.get('_degenerate_range', False),
+            "point_id": point_id,
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+            "state_topic": config.get("state_topic"),
+            "command_topic": config.get("command_topic"),
+            "availability_topic": config["availability_topic"],
+            "attributes_topic": config.get("json_attributes_topic"),
+            "metadata": metadata,
+            "is_writable": is_writable,
+            "point_data": point,
+            "is_degenerate_range": config.get("_degenerate_range", False),
             # Resolved once at discovery time — avoids repeated get_value_mapping()
             # calls on every poll for select/sensor entities with enum descriptions.
             # The register_type argument (metadata.get('modbusRegisterType'))
@@ -654,8 +697,10 @@ class MqttDiscoveryPublisher:
             # default, or dropped-argument mutation to it is unobservable.
             # Verified empirically. point_id, in contrast, IS used (manual
             # VALUE_MAPPINGS lookup) and is covered by a dedicated test.
-            'value_mapping':       get_value_mapping(
-                point_id, point, metadata.get('modbusRegisterType'),
+            "value_mapping": get_value_mapping(
+                point_id,
+                point,
+                metadata.get("modbusRegisterType"),
             ),
         }
 
@@ -688,10 +733,10 @@ class MqttDiscoveryPublisher:
         when the discovery config itself actually changed, rather than
         rewriting an identical retained payload on every poll cycle).
         """
-        if entity_type == 'button':
+        if entity_type == "button":
             return None
 
-        attributes_topic         = t_attributes(entity_type, entity_id)
+        attributes_topic = t_attributes(entity_type, entity_id)
         config["json_attributes_topic"] = attributes_topic
 
         # A None/dropped default (with the correct 'divisor' key) is
@@ -700,18 +745,19 @@ class MqttDiscoveryPublisher:
         # or wrong `or` fallback IS observable whenever divisor is present
         # with a real non-1 value, is explicitly 0, or is absent entirely —
         # verified empirically.
-        attr_divisor  = metadata.get('divisor', 1) or 1
-        int_default   = metadata.get('intDefaultValue')
+        attr_divisor = metadata.get("divisor", 1) or 1
+        int_default = metadata.get("intDefaultValue")
         default_with_unit = None
         if int_default is not None:
-            default_display   = apply_divisor(int_default, attr_divisor)
+            default_display = apply_divisor(int_default, attr_divisor)
             default_with_unit = f"{default_display} {unit}".strip()
 
         attributes: dict = {
-            "point_id":        str(point_id),
+            "point_id": str(point_id),
             "modbus_register": (
-                str(metadata['modbusRegisterID'])
-                if metadata.get('modbusRegisterID') is not None else None
+                str(metadata["modbusRegisterID"])
+                if metadata.get("modbusRegisterID") is not None
+                else None
             ),
             "writable": is_writable,
         }
@@ -736,7 +782,7 @@ class MqttDiscoveryPublisher:
         or disappears). For startup bulk publishing use ``publish_all_metadata``
         which sends a single batched message instead of one message per point.
         """
-        point_id = point['variableId']
+        point_id = point["variableId"]
         metadata = self._build_point_metadata_dict(point)
         metadata["last_updated"] = time.time()
         topic = BrowserTopic.META_TEMPLATE.format(id=point_id)
@@ -752,37 +798,37 @@ class MqttDiscoveryPublisher:
         lets the card show the user explicitly when firmware's reported unit
         was replaced (e.g. a switch firmware mislabels with '%').
         """
-        metadata_dict = point.get('metadata', {})
-        point_id = point['variableId']
+        metadata_dict = point.get("metadata", {})
+        point_id = point["variableId"]
         # A None/dropped default for metadata_dict.get('unit', ...) is
         # unobservable: clean_unit() explicitly treats any non-str
         # (including None) as '' — same equivalence as the identical
         # pattern in publish_entity_discovery. Verified empirically.
-        unit, unit_overridden = resolve_unit(point_id, metadata_dict.get('unit', ''))
+        unit, unit_overridden = resolve_unit(point_id, metadata_dict.get("unit", ""))
         return {
-            "id":                point_id,
-            "title":             point['display_title'],
-            "type":              point['entity_type'],
-            "writable":          point.get('is_writable', False),
-            "unit":              unit,
-            "unit_overridden":   unit_overridden,
-            "unit_raw":          metadata_dict.get('unit', ''),
-            "min_value":         metadata_dict.get('minValue'),
-            "max_value":         metadata_dict.get('maxValue'),
-            "category":          point.get('entity_category', ''),
-            "description":       point.get('description', ''),
-            "is_dynamic":        point.get('is_dynamic', False),
-            "modbusRegisterID":  metadata_dict.get('modbusRegisterID'),
-            "variableType":      metadata_dict.get('variableType', ''),
-            "variableSize":      metadata_dict.get('variableSize', ''),
-            "modbusRegisterType": metadata_dict.get('modbusRegisterType', ''),
-            "shortUnit":         metadata_dict.get('shortUnit', ''),
-            "divisor":           metadata_dict.get('divisor', 1),
-            "decimal":           metadata_dict.get('decimal', 0),
-            "change":            metadata_dict.get('change', 0),
+            "id": point_id,
+            "title": point["display_title"],
+            "type": point["entity_type"],
+            "writable": point.get("is_writable", False),
+            "unit": unit,
+            "unit_overridden": unit_overridden,
+            "unit_raw": metadata_dict.get("unit", ""),
+            "min_value": metadata_dict.get("minValue"),
+            "max_value": metadata_dict.get("maxValue"),
+            "category": point.get("entity_category", ""),
+            "description": point.get("description", ""),
+            "is_dynamic": point.get("is_dynamic", False),
+            "modbusRegisterID": metadata_dict.get("modbusRegisterID"),
+            "variableType": metadata_dict.get("variableType", ""),
+            "variableSize": metadata_dict.get("variableSize", ""),
+            "modbusRegisterType": metadata_dict.get("modbusRegisterType", ""),
+            "shortUnit": metadata_dict.get("shortUnit", ""),
+            "divisor": metadata_dict.get("divisor", 1),
+            "decimal": metadata_dict.get("decimal", 0),
+            "change": metadata_dict.get("change", 0),
         }
 
-    def publish_all_metadata(self, points) -> None:
+    def publish_all_metadata(self, points: Iterable[dict]) -> None:
         """Publish browser metadata for all known points in a single batched message.
 
         Replaces the previous approach of 1063 individual per-point MQTT publishes
@@ -795,16 +841,17 @@ class MqttDiscoveryPublisher:
         (e.g. after a dynamic point appears or disappears).
         """
         points_list = list(points)
-        batch = {
-            str(p['variableId']): self._build_point_metadata_dict(p)
-            for p in points_list
-        }
-        payload = json.dumps({
-            "metadata":     batch,
-            "count":        len(batch),
-            "last_updated": time.time(),
-        })
-        log_mqtt.debug("Publishing batched metadata for %d points", len(points_list))  # pragma: no mutate
+        batch = {str(p["variableId"]): self._build_point_metadata_dict(p) for p in points_list}
+        payload = json.dumps(
+            {
+                "metadata": batch,
+                "count": len(batch),
+                "last_updated": time.time(),
+            }
+        )
+        log_mqtt.debug(
+            "Publishing batched metadata for %d points", len(points_list)
+        )  # pragma: no mutate
         self.mqtt.publish(BrowserTopic.ALL_METADATA, payload, retain=True)
 
     def publish_point_list(self, all_points_by_id: dict) -> None:
@@ -820,24 +867,29 @@ class MqttDiscoveryPublisher:
         adds or removes points.
         """
         point_ids = sorted(all_points_by_id.keys())
-        payload   = json.dumps({
-            "points":       point_ids,
-            "count":        len(point_ids),
-            "last_updated": time.time(),
-        })
+        payload = json.dumps(
+            {
+                "points": point_ids,
+                "count": len(point_ids),
+                "last_updated": time.time(),
+            }
+        )
         self.mqtt.publish(BrowserTopic.POINT_LIST, payload, retain=True)
         log_mqtt.debug("Published point list: %d points", len(point_ids))  # pragma: no mutate
-
 
     def publish_enabled_state(self, mqtt_enabled_points: set) -> None:
         """Publish the current enabled-point list to MQTT for the frontend card."""
         enabled = list(mqtt_enabled_points)
-        payload = json.dumps({
-            "enabled_points": enabled,
-            "count":          len(enabled),
-            "timestamp":      time.time(),
-        })
-        log_mqtt.debug("Publishing enabled state: %d enabled points", len(enabled))  # pragma: no mutate
+        payload = json.dumps(
+            {
+                "enabled_points": enabled,
+                "count": len(enabled),
+                "timestamp": time.time(),
+            }
+        )
+        log_mqtt.debug(
+            "Publishing enabled state: %d enabled points", len(enabled)
+        )  # pragma: no mutate
         self.mqtt.publish(BrowserTopic.ENABLED_STATE, payload, retain=True)
 
     # ------------------------------------------------------------------ #
@@ -846,38 +898,45 @@ class MqttDiscoveryPublisher:
 
     def publish_stats(
         self,
-        all_points_count:   int,
+        all_points_count: int,
         mqtt_enabled_count: int,
-        active_count:       int,
-        type_counts:        dict,
-        category_counts:    dict,
-        writable_count:     int,
-        write_total:        int = 0,
-        write_success:      int = 0,
-        write_failed:       int = 0,
+        active_count: int,
+        type_counts: dict,
+        category_counts: dict,
+        writable_count: int,
+        write_total: int = 0,
+        write_success: int = 0,
+        write_failed: int = 0,
     ) -> None:
         """Publish entity count statistics to the HA stats sensor."""
-        enabled_pct = round((mqtt_enabled_count / all_points_count) * 100, 1) \
-                      if all_points_count > 0 else 0
+        enabled_pct = (
+            round((mqtt_enabled_count / all_points_count) * 100, 1) if all_points_count > 0 else 0
+        )
         self._pub_state(MgmtTopic.STATS_STATE, str(mqtt_enabled_count))
-        self._pub_state(MgmtTopic.STATS_ATTRS, json.dumps({
-            "total":              all_points_count,
-            "mqtt_enabled":       mqtt_enabled_count,
-            "actually_active":    active_count,
-            "discrepancy":        mqtt_enabled_count - active_count,
-            "enabled_percentage": enabled_pct,
-            "writable_count":     writable_count,
-            "by_type":            type_counts,
-            "by_category":        category_counts,
-            "writes_total":       write_total,
-            "writes_success":     write_success,
-            "writes_failed":      write_failed,
-            "write_success_rate": round(write_success / write_total * 100, 1)
-                                  if write_total > 0 else 100.0,
-            "last_updated":       _fmt_ts(),
-            "timestamp":          time.time(),
-            "note":               "Counts based on MQTT retained discovery messages",
-        }))
+        self._pub_state(
+            MgmtTopic.STATS_ATTRS,
+            json.dumps(
+                {
+                    "total": all_points_count,
+                    "mqtt_enabled": mqtt_enabled_count,
+                    "actually_active": active_count,
+                    "discrepancy": mqtt_enabled_count - active_count,
+                    "enabled_percentage": enabled_pct,
+                    "writable_count": writable_count,
+                    "by_type": type_counts,
+                    "by_category": category_counts,
+                    "writes_total": write_total,
+                    "writes_success": write_success,
+                    "writes_failed": write_failed,
+                    "write_success_rate": round(write_success / write_total * 100, 1)
+                    if write_total > 0
+                    else 100.0,
+                    "last_updated": _fmt_ts(),
+                    "timestamp": time.time(),
+                    "note": "Counts based on MQTT retained discovery messages",
+                }
+            ),
+        )
 
     def publish_uptime(
         self,
@@ -888,11 +947,16 @@ class MqttDiscoveryPublisher:
         """Publish bridge uptime and API health sensors."""
         uptime_s = int(time.time() - bridge_start_time)
         self._pub_state(MgmtTopic.UPTIME_STATE, str(uptime_s))
-        self._pub_state(MgmtTopic.UPTIME_ATTRS, json.dumps({
-            "started":              _fmt_ts(bridge_start_time),
-            "last_api_success":     _fmt_ts(api_last_success_time),
-            "consecutive_failures": api_consecutive_failures,
-        }))
+        self._pub_state(
+            MgmtTopic.UPTIME_ATTRS,
+            json.dumps(
+                {
+                    "started": _fmt_ts(bridge_start_time),
+                    "last_api_success": _fmt_ts(api_last_success_time),
+                    "consecutive_failures": api_consecutive_failures,
+                }
+            ),
+        )
 
     def publish_api_reachability(
         self,
@@ -905,9 +969,7 @@ class MqttDiscoveryPublisher:
         api_state = "OFF" if api_consecutive_failures >= api_failure_threshold else "ON"
         self._pub_state(MgmtTopic.API_OK_STATE, api_state)
         if api_last_success_time > 0:
-            last_fetch_iso = time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(api_last_success_time)
-            )
+            last_fetch_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(api_last_success_time))
             self._pub_state(MgmtTopic.LAST_FETCH_STATE, last_fetch_iso)
         self._pub_state(MgmtTopic.FETCH_DUR_STATE, f"{last_fetch_duration:.2f}")
 
@@ -917,7 +979,7 @@ class MqttDiscoveryPublisher:
         smart_mode: str,
     ) -> None:
         """Publish aid mode switch state and smart mode select state."""
-        self._pub_state(MgmtTopic.AID_STATE,   "ON" if aid_mode == "on" else "OFF")
+        self._pub_state(MgmtTopic.AID_STATE, "ON" if aid_mode == "on" else "OFF")
         self._pub_state(MgmtTopic.SMART_STATE, smart_mode)
 
     def publish_initial_device_modes(self, device_info: dict) -> None:
@@ -936,14 +998,15 @@ class MqttDiscoveryPublisher:
         # case variants, etc.) is unobservable. smartMode's default is only
         # ever published after .lower(), which normalises case mutations
         # away. Verified empirically.
-        aid_on    = str(device_info.get('aidMode', 'off')).lower() == 'on'
-        smart_val = str(device_info.get('smartMode', 'normal')).lower()
-        self.mqtt.publish(MgmtTopic.AID_STATE,   "ON" if aid_on else "OFF", retain=True)
+        aid_on = str(device_info.get("aidMode", "off")).lower() == "on"
+        smart_val = str(device_info.get("smartMode", "normal")).lower()
+        self.mqtt.publish(MgmtTopic.AID_STATE, "ON" if aid_on else "OFF", retain=True)
         self.mqtt.publish(MgmtTopic.SMART_STATE, smart_val, retain=True)
         # pragma: no mutate start
         log_mqtt.debug(
             "Pre-published initial device modes: aid=%s smart=%s",
-            "ON" if aid_on else "OFF", smart_val,
+            "ON" if aid_on else "OFF",
+            smart_val,
         )
         # pragma: no mutate end
 
@@ -954,17 +1017,22 @@ class MqttDiscoveryPublisher:
     ) -> None:
         """Publish active alarm count and detail attributes."""
         self._pub_state(MgmtTopic.ALARM_STATE, str(alarm_count))
-        self._pub_state(MgmtTopic.ALARM_ATTRS, json.dumps({
-            "alarms":       clean_alarms,
-            "last_updated": _fmt_ts(),
-        }))
+        self._pub_state(
+            MgmtTopic.ALARM_ATTRS,
+            json.dumps(
+                {
+                    "alarms": clean_alarms,
+                    "last_updated": _fmt_ts(),
+                }
+            ),
+        )
 
     def publish_bridge_alert(
         self,
-        alert_type:  str,
-        severity:    str,
-        message:     str,
-        context:     dict | None = None,
+        alert_type: str,
+        severity: str,
+        message: str,
+        context: dict | None = None,
     ) -> None:
         """Publish a non-retained alert event to nibe/browser/bridge/alert.
 
@@ -985,33 +1053,37 @@ class MqttDiscoveryPublisher:
             Optional dict of structured key/value pairs for additional context
             (e.g. point_id, failure_count, last_success).
         """
-        payload = json.dumps({
-            "alert_type":    alert_type,
-            "severity":      severity,
-            "message":       message,
-            "timestamp":     time.time(),
-            "iso_timestamp": _fmt_ts(),
-            "context":       context or {},
-        })
+        payload = json.dumps(
+            {
+                "alert_type": alert_type,
+                "severity": severity,
+                "message": message,
+                "timestamp": time.time(),
+                "iso_timestamp": _fmt_ts(),
+                "context": context or {},
+            }
+        )
         # retain=False — alert fires on edge, not on every broker reconnect.
-        log_mqtt.debug("Publishing bridge alert: type=%s, severity=%s", alert_type, severity)  # pragma: no mutate
+        log_mqtt.debug(
+            "Publishing bridge alert: type=%s, severity=%s", alert_type, severity
+        )  # pragma: no mutate
         self.mqtt.publish(BrowserTopic.BRIDGE_ALERT, payload, retain=False)
 
     def publish_bridge_status(
         self,
-        bridge_start_time:        float,
+        bridge_start_time: float,
         api_consecutive_failures: int,
-        api_failure_threshold:    int,
-        api_last_success_time:    float,
-        last_fetch_duration:      float,
-        write_total:              int,
-        write_success:            int,
-        write_failed:             int,
-        last_write_error:         str | None,
-        pending_write_count:      int,
-        mqtt_enabled_count:       int,
-        all_points_count:         int,
-        known_dynamic_count:      int,
+        api_failure_threshold: int,
+        api_last_success_time: float,
+        last_fetch_duration: float,
+        write_total: int,
+        write_success: int,
+        write_failed: int,
+        last_write_error: str | None,
+        pending_write_count: int,
+        mqtt_enabled_count: int,
+        all_points_count: int,
+        known_dynamic_count: int,
     ) -> None:
         """Publish a retained consolidated health snapshot to nibe/browser/bridge/status.
 
@@ -1020,44 +1092,45 @@ class MqttDiscoveryPublisher:
         individual sensor topics or grepping logs.  Retained so the current
         state is immediately available to any new subscriber.
         """
-        uptime_s    = int(time.time() - bridge_start_time)
+        uptime_s = int(time.time() - bridge_start_time)
         api_healthy = api_consecutive_failures < api_failure_threshold
 
-        payload = json.dumps({
-            # Overall state
-            "status":        "healthy" if api_healthy else "degraded",
-            "timestamp":     time.time(),
-            "iso_timestamp": _fmt_ts(),
-            "uptime_s":      uptime_s,
-
-            # API health
-            "api": {
-                "healthy":               api_healthy,
-                "consecutive_failures":  api_consecutive_failures,
-                "failure_threshold":     api_failure_threshold,
-                "last_success":          _fmt_ts(api_last_success_time)
-                                         if api_last_success_time > 0 else None,
-                "last_fetch_duration_s": round(last_fetch_duration, 3),
-            },
-
-            # Write metrics
-            "writes": {
-                "total":            write_total,
-                "success":          write_success,
-                "failed":           write_failed,
-                "pending":          pending_write_count,
-                "success_rate_pct": round(write_success / write_total * 100, 1)
-                                    if write_total > 0 else 100.0,
-                "last_error":       last_write_error,
-            },
-
-            # Entity counts
-            "entities": {
-                "total_known":   all_points_count,
-                "mqtt_enabled":  mqtt_enabled_count,
-                "known_dynamic": known_dynamic_count,
-            },
-        })
+        payload = json.dumps(
+            {
+                # Overall state
+                "status": "healthy" if api_healthy else "degraded",
+                "timestamp": time.time(),
+                "iso_timestamp": _fmt_ts(),
+                "uptime_s": uptime_s,
+                # API health
+                "api": {
+                    "healthy": api_healthy,
+                    "consecutive_failures": api_consecutive_failures,
+                    "failure_threshold": api_failure_threshold,
+                    "last_success": _fmt_ts(api_last_success_time)
+                    if api_last_success_time > 0
+                    else None,
+                    "last_fetch_duration_s": round(last_fetch_duration, 3),
+                },
+                # Write metrics
+                "writes": {
+                    "total": write_total,
+                    "success": write_success,
+                    "failed": write_failed,
+                    "pending": pending_write_count,
+                    "success_rate_pct": round(write_success / write_total * 100, 1)
+                    if write_total > 0
+                    else 100.0,
+                    "last_error": last_write_error,
+                },
+                # Entity counts
+                "entities": {
+                    "total_known": all_points_count,
+                    "mqtt_enabled": mqtt_enabled_count,
+                    "known_dynamic": known_dynamic_count,
+                },
+            }
+        )
         self.mqtt.publish(BrowserTopic.BRIDGE_STATUS, payload, retain=True)
 
     # ------------------------------------------------------------------ #
@@ -1085,16 +1158,16 @@ class MqttDiscoveryPublisher:
             log level is DEBUG.
         """
         mgmt_device = {
-            "identifiers":   [f"{self.device_id}_management"],
-            "name":          f"{self.device_name} Management",
-            "manufacturer":  self.device_info.get("manufacturer", "NIBE"),
-            "model":         self.device_info.get("model", "Nibe S-series"),
+            "identifiers": [f"{self.device_id}_management"],
+            "name": f"{self.device_name} Management",
+            "manufacturer": self.device_info.get("manufacturer", "NIBE"),
+            "model": self.device_info.get("model", "Nibe S-series"),
             "serial_number": self.device_info.get("serial_number", ""),
         }
         mgmt_device = {k: v for k, v in mgmt_device.items() if v != ""}
         avail = MgmtTopic.AVAIL
 
-        def _pub(topic, payload):
+        def _pub(topic: str, payload: dict) -> None:
             log_mqtt.debug("Publishing management discovery for %s", topic)  # pragma: no mutate
             self.mqtt.publish(topic, json.dumps(payload), retain=True)
 
@@ -1110,149 +1183,252 @@ class MqttDiscoveryPublisher:
         # it documents what topic is being retired, not a removed family.
         self.mqtt.publish(BrowserTopic.KNOWN_DYNAMIC, "", retain=True)
 
-        _pub(MgmtTopic.MODE_CONFIG, {
-            "name": "Entity Mode", "unique_id": "nibe_active_mode",
-            "state_topic":   MgmtTopic.MODE_STATE,
-            "availability_topic": avail,
-            "device": mgmt_device, "icon": "mdi:tune", "entity_category": "diagnostic",
-        })
+        _pub(
+            MgmtTopic.MODE_CONFIG,
+            {
+                "name": "Entity Mode",
+                "unique_id": "nibe_active_mode",
+                "state_topic": MgmtTopic.MODE_STATE,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:tune",
+                "entity_category": "diagnostic",
+            },
+        )
         # Read-only diagnostic — mode is config-level and restart-required
         # (see config.yaml / en.yaml), unlike the removed live preset
         # selector. Publish the current value immediately so it isn't
         # "Unknown" until the next reconciliation; EntityManager republishes
         # this whenever the applied mode actually changes.
         self.mqtt.publish(MgmtTopic.MODE_STATE, mode, retain=True)
-        _pub(MgmtTopic.STATS_CONFIG, {
-            "name": f"{self.device_name} Enabled Entity Stats", "unique_id": "nibe_entity_stats",
-            "state_topic": MgmtTopic.STATS_STATE, "json_attributes_topic": MgmtTopic.STATS_ATTRS,
-            "availability_topic": avail, "device": mgmt_device,
-            "icon": "mdi:chart-box", "entity_category": "diagnostic",
-            "state_class": "measurement", "unit_of_measurement": "entities",
-        })
-        _pub(MgmtTopic.AID_CONFIG, {
-            "name": "Aid Mode", "unique_id": "nibe_aid_mode",
-            "state_topic":   MgmtTopic.AID_STATE,
-            "command_topic": MgmtTopic.AID_SET,
-            "availability_topic": avail,
-            "payload_on": "ON", "payload_off": "OFF",
-            "device": mgmt_device, "icon": "mdi:alert-circle", "entity_category": "config",
-        })
-        _pub(MgmtTopic.SMART_CONFIG, {
-            "name": "Smart Mode", "unique_id": "nibe_smart_mode",
-            "state_topic":   MgmtTopic.SMART_STATE,
-            "command_topic": MgmtTopic.SMART_SET,
-            "availability_topic": avail,
-            "options": ["normal", "away"],
-            "device": mgmt_device, "icon": "mdi:home-account", "entity_category": "config",
-        })
-        _pub(MgmtTopic.ALARM_CONFIG, {
-            "name": f"{self.device_name} Active Alarms", "unique_id": "nibe_notifications",
-            "state_topic": MgmtTopic.ALARM_STATE, "json_attributes_topic": MgmtTopic.ALARM_ATTRS,
-            "availability_topic": avail, "device": mgmt_device,
-            "icon": "mdi:bell-alert", "entity_category": "diagnostic",
-            "state_class": "measurement", "unit_of_measurement": "alarms",
-        })
-        _pub(MgmtTopic.ALARM_RESET_CONFIG, {
-            "name": "Reset Alarms", "unique_id": "nibe_reset_alarms",
-            "command_topic": MgmtTopic.ALARM_RESET_PRESS,
-            "availability_topic": avail,
-            "device": mgmt_device, "icon": "mdi:bell-off", "entity_category": "config",
-        })
-        _pub(MgmtTopic.FORCE_POLL_CONFIG, {
-            "name": "Force Poll", "unique_id": "nibe_force_poll",
-            "command_topic": MgmtTopic.FORCE_POLL_PRESS,
-            "availability_topic": avail,
-            "device": mgmt_device, "icon": "mdi:refresh", "entity_category": "config",
-        })
+        _pub(
+            MgmtTopic.STATS_CONFIG,
+            {
+                "name": f"{self.device_name} Enabled Entity Stats",
+                "unique_id": "nibe_entity_stats",
+                "state_topic": MgmtTopic.STATS_STATE,
+                "json_attributes_topic": MgmtTopic.STATS_ATTRS,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:chart-box",
+                "entity_category": "diagnostic",
+                "state_class": "measurement",
+                "unit_of_measurement": "entities",
+            },
+        )
+        _pub(
+            MgmtTopic.AID_CONFIG,
+            {
+                "name": "Aid Mode",
+                "unique_id": "nibe_aid_mode",
+                "state_topic": MgmtTopic.AID_STATE,
+                "command_topic": MgmtTopic.AID_SET,
+                "availability_topic": avail,
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device": mgmt_device,
+                "icon": "mdi:alert-circle",
+                "entity_category": "config",
+            },
+        )
+        _pub(
+            MgmtTopic.SMART_CONFIG,
+            {
+                "name": "Smart Mode",
+                "unique_id": "nibe_smart_mode",
+                "state_topic": MgmtTopic.SMART_STATE,
+                "command_topic": MgmtTopic.SMART_SET,
+                "availability_topic": avail,
+                "options": ["normal", "away"],
+                "device": mgmt_device,
+                "icon": "mdi:home-account",
+                "entity_category": "config",
+            },
+        )
+        _pub(
+            MgmtTopic.ALARM_CONFIG,
+            {
+                "name": f"{self.device_name} Active Alarms",
+                "unique_id": "nibe_notifications",
+                "state_topic": MgmtTopic.ALARM_STATE,
+                "json_attributes_topic": MgmtTopic.ALARM_ATTRS,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:bell-alert",
+                "entity_category": "diagnostic",
+                "state_class": "measurement",
+                "unit_of_measurement": "alarms",
+            },
+        )
+        _pub(
+            MgmtTopic.ALARM_RESET_CONFIG,
+            {
+                "name": "Reset Alarms",
+                "unique_id": "nibe_reset_alarms",
+                "command_topic": MgmtTopic.ALARM_RESET_PRESS,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:bell-off",
+                "entity_category": "config",
+            },
+        )
+        _pub(
+            MgmtTopic.FORCE_POLL_CONFIG,
+            {
+                "name": "Force Poll",
+                "unique_id": "nibe_force_poll",
+                "command_topic": MgmtTopic.FORCE_POLL_PRESS,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:refresh",
+                "entity_category": "config",
+            },
+        )
         if mode == "menus":
             # Only makes sense when a Nibe Menus dashboard actually exists
             # to regenerate — see publish_management_discovery docstring.
-            _pub(MgmtTopic.REGEN_DASH_CONFIG, {
-                "name": "Regenerate Dashboard", "unique_id": "nibe_regen_dashboard",
-                "command_topic": MgmtTopic.REGEN_DASH_PRESS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:view-dashboard-edit",
-                "entity_category": "config",
-            })
+            _pub(
+                MgmtTopic.REGEN_DASH_CONFIG,
+                {
+                    "name": "Regenerate Dashboard",
+                    "unique_id": "nibe_regen_dashboard",
+                    "command_topic": MgmtTopic.REGEN_DASH_PRESS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:view-dashboard-edit",
+                    "entity_category": "config",
+                },
+            )
         else:
             # Clear any retained config left over from a previous menus-mode
             # run — otherwise HA keeps showing the button as a ghost entity
             # pointing at a regen action that no longer applies.
             self.mqtt.publish(MgmtTopic.REGEN_DASH_CONFIG, "", retain=True)
-        _pub(MgmtTopic.UPTIME_CONFIG, {
-            "name": f"{self.device_name} Bridge Uptime", "unique_id": "nibe_bridge_uptime",
-            "state_topic": MgmtTopic.UPTIME_STATE, "json_attributes_topic": MgmtTopic.UPTIME_ATTRS,
-            "availability_topic": avail, "device": mgmt_device,
-            "icon": "mdi:clock-outline", "entity_category": "diagnostic",
-            "device_class": "duration", "unit_of_measurement": "s",
-            "state_class": "total_increasing",
-        })
-        _pub(MgmtTopic.LAST_FETCH_CONFIG, {
-            "name": "API Last Fetch", "unique_id": "nibe_last_fetch_timestamp",
-            "state_topic": MgmtTopic.LAST_FETCH_STATE,
-            "availability_topic": avail, "device": mgmt_device,
-            "icon": "mdi:clock-check", "entity_category": "diagnostic",
-            "device_class": "timestamp",
-        })
-        _pub(MgmtTopic.FETCH_DUR_CONFIG, {
-            "name": "API Fetch Duration", "unique_id": "nibe_fetch_duration",
-            "state_topic": MgmtTopic.FETCH_DUR_STATE,
-            "availability_topic": avail, "device": mgmt_device,
-            "icon": "mdi:timer-sand", "entity_category": "diagnostic",
-            "unit_of_measurement": "s", "device_class": "duration",
-            "state_class": "measurement",
-        })
-        _pub(MgmtTopic.API_OK_CONFIG, {
-            "name": "API Reachable", "unique_id": "nibe_api_reachable",
-            "state_topic": MgmtTopic.API_OK_STATE,
-            "availability_topic": avail,
-            "payload_on": "ON", "payload_off": "OFF",
-            "device_class": "connectivity",
-            "device": mgmt_device, "icon": "mdi:api", "entity_category": "diagnostic",
-        })
+        _pub(
+            MgmtTopic.UPTIME_CONFIG,
+            {
+                "name": f"{self.device_name} Bridge Uptime",
+                "unique_id": "nibe_bridge_uptime",
+                "state_topic": MgmtTopic.UPTIME_STATE,
+                "json_attributes_topic": MgmtTopic.UPTIME_ATTRS,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:clock-outline",
+                "entity_category": "diagnostic",
+                "device_class": "duration",
+                "unit_of_measurement": "s",
+                "state_class": "total_increasing",
+            },
+        )
+        _pub(
+            MgmtTopic.LAST_FETCH_CONFIG,
+            {
+                "name": "API Last Fetch",
+                "unique_id": "nibe_last_fetch_timestamp",
+                "state_topic": MgmtTopic.LAST_FETCH_STATE,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:clock-check",
+                "entity_category": "diagnostic",
+                "device_class": "timestamp",
+            },
+        )
+        _pub(
+            MgmtTopic.FETCH_DUR_CONFIG,
+            {
+                "name": "API Fetch Duration",
+                "unique_id": "nibe_fetch_duration",
+                "state_topic": MgmtTopic.FETCH_DUR_STATE,
+                "availability_topic": avail,
+                "device": mgmt_device,
+                "icon": "mdi:timer-sand",
+                "entity_category": "diagnostic",
+                "unit_of_measurement": "s",
+                "device_class": "duration",
+                "state_class": "measurement",
+            },
+        )
+        _pub(
+            MgmtTopic.API_OK_CONFIG,
+            {
+                "name": "API Reachable",
+                "unique_id": "nibe_api_reachable",
+                "state_topic": MgmtTopic.API_OK_STATE,
+                "availability_topic": avail,
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device_class": "connectivity",
+                "device": mgmt_device,
+                "icon": "mdi:api",
+                "entity_category": "diagnostic",
+            },
+        )
 
         if debug_mode:
-            _pub(MgmtTopic.FLUSH_MAP_CONFIG, {
-                "name": "Flush Dynamic Map (DEBUG)", "unique_id": "nibe_flush_dynamic_map",
-                "command_topic": MgmtTopic.FLUSH_MAP_PRESS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:table-refresh",
-                "entity_category": "config",
-            })
-            _pub(MgmtTopic.RUN_TESTS_CONFIG, {
-                "name": "Run Test Suite (DEBUG)", "unique_id": "nibe_run_tests",
-                "command_topic": MgmtTopic.RUN_TESTS_PRESS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:test-tube",
-                "entity_category": "config",
-            })
+            _pub(
+                MgmtTopic.FLUSH_MAP_CONFIG,
+                {
+                    "name": "Flush Dynamic Map (DEBUG)",
+                    "unique_id": "nibe_flush_dynamic_map",
+                    "command_topic": MgmtTopic.FLUSH_MAP_PRESS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:table-refresh",
+                    "entity_category": "config",
+                },
+            )
+            _pub(
+                MgmtTopic.RUN_TESTS_CONFIG,
+                {
+                    "name": "Run Test Suite (DEBUG)",
+                    "unique_id": "nibe_run_tests",
+                    "command_topic": MgmtTopic.RUN_TESTS_PRESS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:test-tube",
+                    "entity_category": "config",
+                },
+            )
             # Sensor that shows last test run result
-            _pub(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", {
-                "name": "Test Suite Result (DEBUG)",
-                "unique_id": "nibe_test_suite_result",
-                "state_topic": MgmtTopic.RUN_TESTS_STATE,
-                "json_attributes_topic": MgmtTopic.RUN_TESTS_ATTRS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:test-tube",
-                "entity_category": "diagnostic",
-            })
-            _pub(MgmtTopic.TEST_CONNECTION_CONFIG, {
-                "name": "Test API Connection (DEBUG)", "unique_id": "nibe_test_connection",
-                "command_topic": MgmtTopic.TEST_CONNECTION_PRESS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:lan-connect",
-                "entity_category": "config",
-            })
+            _pub(
+                f"{_HA_BASE}/sensor/nibe_test_suite_result/config",
+                {
+                    "name": "Test Suite Result (DEBUG)",
+                    "unique_id": "nibe_test_suite_result",
+                    "state_topic": MgmtTopic.RUN_TESTS_STATE,
+                    "json_attributes_topic": MgmtTopic.RUN_TESTS_ATTRS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:test-tube",
+                    "entity_category": "diagnostic",
+                },
+            )
+            _pub(
+                MgmtTopic.TEST_CONNECTION_CONFIG,
+                {
+                    "name": "Test API Connection (DEBUG)",
+                    "unique_id": "nibe_test_connection",
+                    "command_topic": MgmtTopic.TEST_CONNECTION_PRESS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:lan-connect",
+                    "entity_category": "config",
+                },
+            )
             # Sensor that shows last connectivity check result
-            _pub(f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config", {
-                "name": "Connectivity Check Result (DEBUG)",
-                "unique_id": "nibe_connectivity_check_result",
-                "state_topic": MgmtTopic.TEST_CONNECTION_STATE,
-                "json_attributes_topic": MgmtTopic.TEST_CONNECTION_ATTRS,
-                "availability_topic": avail,
-                "device": mgmt_device, "icon": "mdi:lan-connect",
-                "entity_category": "diagnostic",
-            })
+            _pub(
+                f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config",
+                {
+                    "name": "Connectivity Check Result (DEBUG)",
+                    "unique_id": "nibe_connectivity_check_result",
+                    "state_topic": MgmtTopic.TEST_CONNECTION_STATE,
+                    "json_attributes_topic": MgmtTopic.TEST_CONNECTION_ATTRS,
+                    "availability_topic": avail,
+                    "device": mgmt_device,
+                    "icon": "mdi:lan-connect",
+                    "entity_category": "diagnostic",
+                },
+            )
         else:
             # Clear any retained debug-entity configs left over from a
             # previous debug-mode run — otherwise HA keeps showing them as
@@ -1261,12 +1437,14 @@ class MqttDiscoveryPublisher:
             self.mqtt.publish(MgmtTopic.RUN_TESTS_CONFIG, "", retain=True)
             self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_test_suite_result/config", "", retain=True)
             self.mqtt.publish(MgmtTopic.TEST_CONNECTION_CONFIG, "", retain=True)
-            self.mqtt.publish(f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config", "", retain=True)
+            self.mqtt.publish(
+                f"{_HA_BASE}/sensor/nibe_connectivity_check_result/config", "", retain=True
+            )
 
         # Initial sensor states
-        self.mqtt.publish(MgmtTopic.UPTIME_STATE,      "0",    retain=True)
-        self.mqtt.publish(MgmtTopic.API_OK_STATE,      "ON",   retain=True)
-        self.mqtt.publish(MgmtTopic.FETCH_DUR_STATE,   "0.00", retain=True)
+        self.mqtt.publish(MgmtTopic.UPTIME_STATE, "0", retain=True)
+        self.mqtt.publish(MgmtTopic.API_OK_STATE, "ON", retain=True)
+        self.mqtt.publish(MgmtTopic.FETCH_DUR_STATE, "0.00", retain=True)
         start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.mqtt.publish(MgmtTopic.LAST_FETCH_STATE, start_iso, retain=True)
 
@@ -1274,18 +1452,30 @@ class MqttDiscoveryPublisher:
         # an interrupted run (e.g. add-on rebuild mid-test) does not persist.
         if debug_mode:
             self.mqtt.publish(MgmtTopic.RUN_TESTS_STATE, "unknown", retain=True)
-            self.mqtt.publish(MgmtTopic.RUN_TESTS_ATTRS, json.dumps({
-                "status":  "unknown",
-                "note":    "Reset at startup — previous run may have been interrupted.",
-            }), retain=True)
+            self.mqtt.publish(
+                MgmtTopic.RUN_TESTS_ATTRS,
+                json.dumps(
+                    {
+                        "status": "unknown",
+                        "note": "Reset at startup — previous run may have been interrupted.",
+                    }
+                ),
+                retain=True,
+            )
 
         # Mark management interface online
         self.mqtt.publish(MgmtTopic.AVAIL, "online", retain=True)
 
         # Publish device info for the frontend card
-        self.mqtt.publish(BrowserTopic.DEVICE_INFO, json.dumps({
-            'model':        self.device_info.get('model', 'Nibe S-series'),
-            'name':         self.device_info.get('name', self.device_name),
-            'manufacturer': self.device_info.get('manufacturer', 'NIBE'),
-            'serial':       self.device_info.get('serial_number', ''),
-        }), retain=True)
+        self.mqtt.publish(
+            BrowserTopic.DEVICE_INFO,
+            json.dumps(
+                {
+                    "model": self.device_info.get("model", "Nibe S-series"),
+                    "name": self.device_info.get("name", self.device_name),
+                    "manufacturer": self.device_info.get("manufacturer", "NIBE"),
+                    "serial": self.device_info.get("serial_number", ""),
+                }
+            ),
+            retain=True,
+        )

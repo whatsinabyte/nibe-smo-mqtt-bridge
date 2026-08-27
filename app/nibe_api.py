@@ -36,7 +36,7 @@ import time
 import urllib.error
 import urllib.request
 
-log_api      = logging.getLogger("nibe.api")
+log_api = logging.getLogger("nibe.api")
 log_commands = logging.getLogger("nibe.commands")
 
 
@@ -75,12 +75,14 @@ def _describe_network_error(e: Exception) -> str:
         return hint
     return type(e).__name__
 
+
 # ── Retry / backoff constants ──────────────────────────────────────────────────
 # The API client retries once on transient errors.  The delay uses full jitter
 # (random in [0, base]) to avoid thundering-herd if multiple components retry
 # simultaneously after a network event.
-_RETRY_BASE_S  = 2.0   # base delay in seconds
-_RETRY_MAX_S   = 10.0  # cap (relevant if base is increased in future)
+_RETRY_BASE_S = 2.0  # base delay in seconds
+_RETRY_MAX_S = 10.0  # cap (relevant if base is increased in future)
+
 
 def _retry_delay() -> float:
     """Return a jittered backoff delay in seconds.
@@ -131,14 +133,14 @@ class NibeApiClient:
         ssl_context: ssl.SSLContext,
         language: str | None = None,
     ) -> None:
-        self.base_url    = base_url
-        self.auth        = auth
+        self.base_url = base_url
+        self.auth = auth
         self.ssl_context = ssl_context
-        self.language    = language
+        self.language = language
         # One lock per real instance — see request()'s docstring for why
         # this exists. The class-level default above is only a fallback for
         # test doubles built via __new__() that bypass this constructor.
-        self._lock       = threading.Lock()
+        self._lock = threading.Lock()
         # Human-readable reason for the most recent request() failure, or
         # None after a successful request. Read by EntityManager to include
         # an actual diagnostic reason in the "API Unreachable" HA
@@ -155,7 +157,7 @@ class NibeApiClient:
     def request(
         self,
         url: str,
-        method: str = 'GET',
+        method: str = "GET",
         data: str | None = None,
     ) -> dict | None:
         """Send an HTTP request and return the parsed JSON body, or None.
@@ -184,33 +186,39 @@ class NibeApiClient:
         # header names internally, so mutating the case here is unobservable.
         # pragma: no mutate start
         headers = {
-            'Authorization': self.auth,
-            'Accept':        'application/json',
+            "Authorization": self.auth,
+            "Accept": "application/json",
         }
         # pragma: no mutate end
         if self.language:
-            headers['Accept-Language'] = self.language  # pragma: no mutate
+            headers["Accept-Language"] = self.language  # pragma: no mutate
         if data:
-            headers['Content-Type'] = 'application/json'  # pragma: no mutate
+            headers["Content-Type"] = "application/json"  # pragma: no mutate
 
         body = data.encode() if isinstance(data, str) else data
-        req  = urllib.request.Request(url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
 
         with self._lock:
-            for attempt in range(2):   # attempt 0 = first try, attempt 1 = single retry
-                last_attempt = (attempt == 1)
+            for attempt in range(2):  # attempt 0 = first try, attempt 1 = single retry
+                last_attempt = attempt == 1
                 try:
-                    response = urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
+                    response = urllib.request.urlopen(
+                        req, context=self.ssl_context, timeout=30
+                    )  # pragma: no mutate
                     self.last_error = None
-                    return json.loads(response.read().decode())
+                    result: dict | None = json.loads(response.read().decode())
+                    return result
 
                 except urllib.error.HTTPError as e:
                     if e.code in (401, 403):
-                        self.last_error = f"HTTP {e.code} — authentication rejected, check credentials"
+                        self.last_error = (
+                            f"HTTP {e.code} — authentication rejected, check credentials"
+                        )
                         # pragma: no mutate start
                         log_api.error(
                             "API authentication failed (HTTP %d) for %s — check credentials",
-                            e.code, url,
+                            e.code,
+                            url,
                         )
                         # pragma: no mutate end
                         raise
@@ -229,7 +237,8 @@ class NibeApiClient:
                     # pragma: no mutate start
                     log_api.warning(
                         "HTTP %d from %s — %s",
-                        e.code, url,
+                        e.code,
+                        url,
                         "giving up" if (last_attempt or not retryable) else "retrying with backoff",
                     )
                     # pragma: no mutate end
@@ -241,7 +250,9 @@ class NibeApiClient:
                     # pragma: no mutate start
                     log_api.warning(
                         "Request to %s failed: %s — %s",
-                        url, self.last_error, "giving up" if last_attempt else "retrying with backoff",
+                        url,
+                        self.last_error,
+                        "giving up" if last_attempt else "retrying with backoff",
                     )
                     # pragma: no mutate end
                     if last_attempt:
@@ -263,7 +274,6 @@ class NibeApiClient:
                 time.sleep(delay)
 
             return None  # pragma: no cover — unreachable; satisfies type checkers
-
 
     # ------------------------------------------------------------------ #
     # High-level fetch methods                                             #
@@ -301,7 +311,8 @@ class NibeApiClient:
                 # pragma: no mutate start
                 log_api.debug(
                     "fetch_point(%d): point absent (dynamic point inactive "
-                    "or does not exist at this firmware version)", point_id,
+                    "or does not exist at this firmware version)",
+                    point_id,
                 )
                 # pragma: no mutate end
                 return None
@@ -316,7 +327,7 @@ class NibeApiClient:
         # — .get()'s default only applies when the key is absent, and the
         # sole caller (update_alarm_state) only guards the None-response
         # case above, not a present-but-null alarms list.
-        return response.get('alarms', []) or []
+        return response.get("alarms", []) or []
 
     # ------------------------------------------------------------------ #
     # Write methods                                                        #
@@ -339,19 +350,19 @@ class NibeApiClient:
         """
         # `or {}` also covers entity_info['metadata'] being explicitly None
         # rather than absent — .get()'s default only applies to a missing key.
-        metadata = entity_info.get('metadata', {}) or {}
+        metadata = entity_info.get("metadata", {}) or {}
 
         # None vs False are indistinguishable under `not ...:` — the default
         # only matters when the key is absent, and both are falsy.
-        if not entity_info.get('is_writable', False):
+        if not entity_info.get("is_writable", False):
             log_commands.warning("Point %d is not writable", point_id)  # pragma: no mutate
             return False
 
-        min_val      = metadata.get('minValue')
-        max_val      = metadata.get('maxValue')
+        min_val = metadata.get("minValue")
+        max_val = metadata.get("maxValue")
         # Same None-vs-False truthiness equivalence as is_writable above —
         # only used via `if not is_degenerate:` below.
-        is_degenerate = entity_info.get('is_degenerate_range', False)
+        is_degenerate = entity_info.get("is_degenerate_range", False)
 
         if not is_degenerate:
             if min_val is not None and value < min_val:
@@ -369,40 +380,46 @@ class NibeApiClient:
                 # pragma: no mutate end
                 return False
 
-        payload = json.dumps([{
-            "type":         "datavalue",   # pragma: no mutate
-            "variableId":   point_id,      # pragma: no mutate
-            "integerValue": value,         # pragma: no mutate
-            "stringValue":  None,          # pragma: no mutate
-        }])
+        payload = json.dumps(
+            [
+                {
+                    "type": "datavalue",  # pragma: no mutate
+                    "variableId": point_id,  # pragma: no mutate
+                    "integerValue": value,  # pragma: no mutate
+                    "stringValue": None,  # pragma: no mutate
+                }
+            ]
+        )
 
         url = f"{self.base_url}/points"
         try:
             # Header key casing is irrelevant — urllib.request.Request
             # normalises header names internally.
             # pragma: no mutate start
-            req      = urllib.request.Request(
+            req = urllib.request.Request(
                 url,
                 data=payload.encode(),
                 headers={
-                    'Authorization': self.auth,
-                    'Accept':        'application/json',
-                    'Content-Type':  'application/json',
+                    "Authorization": self.auth,
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
                 },
-                method='PATCH',
+                method="PATCH",
             )
             # pragma: no mutate end
-            response     = urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
-            data_json    = json.loads(response.read().decode())
-            point_resp   = data_json.get(str(point_id))
+            response = urllib.request.urlopen(
+                req, context=self.ssl_context, timeout=30
+            )  # pragma: no mutate
+            data_json = json.loads(response.read().decode())
+            point_resp = data_json.get(str(point_id))
 
             # Accept both the documented string response and the actual full-object
             # response returned by SMO S40 firmware.
             if point_resp == "modified":
                 return True
             if isinstance(point_resp, dict):
-                dv = point_resp.get('value', {})
-                if dv.get('isOk'):
+                dv = point_resp.get("value", {})
+                if dv.get("isOk"):
                     # pragma: no mutate start
                     log_commands.debug(
                         "Write confirmed for point %d (firmware full-object response)", point_id
@@ -412,7 +429,8 @@ class NibeApiClient:
                 # pragma: no mutate start
                 log_commands.error(
                     "Write for point %d: firmware returned object but isOk=False "
-                    "(value may not have been committed)", point_id
+                    "(value may not have been committed)",
+                    point_id,
                 )
                 # pragma: no mutate end
                 return False
@@ -428,7 +446,8 @@ class NibeApiClient:
                 # pragma: no mutate start
                 log_commands.error(
                     "Write rejected for point %d: register is read-only "
-                    "(check entity configuration)", point_id,
+                    "(check entity configuration)",
+                    point_id,
                 )
                 # pragma: no mutate end
             else:
@@ -436,7 +455,8 @@ class NibeApiClient:
                 log_commands.error(
                     "Write for point %d: unexpected API response: %r "
                     "(expected 'modified' or point object)",
-                    point_id, point_resp,
+                    point_id,
+                    point_resp,
                 )
                 # pragma: no mutate end
             return False
@@ -444,7 +464,7 @@ class NibeApiClient:
         except urllib.error.HTTPError as e:
             body = ""
             try:
-                body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
+                body = e.read().decode("utf-8", errors="replace")  # pragma: no mutate
             except (OSError, http.client.HTTPException, ValueError) as body_err:
                 # OSError/HTTPException: the underlying socket read can fail
                 # (connection reset, timeout, truncated response). ValueError:
@@ -453,23 +473,37 @@ class NibeApiClient:
                 # pragma: no mutate start
                 log_commands.debug(
                     "Could not read HTTP %d error body for point %d: %s",
-                    e.code, point_id, body_err,
+                    e.code,
+                    point_id,
+                    body_err,
                 )
                 # pragma: no mutate end
             if e.code == 400:  # pragma: no mutate
-                log_commands.error("Write rejected for point %d (HTTP 400): %s", point_id, body)  # pragma: no mutate
+                log_commands.error(
+                    "Write rejected for point %d (HTTP 400): %s", point_id, body
+                )  # pragma: no mutate
             elif e.code == 401:  # pragma: no mutate
-                log_commands.error("Write rejected for point %d: auth invalid (HTTP 401)", point_id)  # pragma: no mutate
+                log_commands.error(
+                    "Write rejected for point %d: auth invalid (HTTP 401)", point_id
+                )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
-                log_commands.error("Write rejected for point %d: wrong deviceId (HTTP 403)", point_id)  # pragma: no mutate
+                log_commands.error(
+                    "Write rejected for point %d: wrong deviceId (HTTP 403)", point_id
+                )  # pragma: no mutate
             else:
-                log_commands.error("Write HTTP %d for point %d: %s", e.code, point_id, body)  # pragma: no mutate
+                log_commands.error(
+                    "Write HTTP %d for point %d: %s", e.code, point_id, body
+                )  # pragma: no mutate
             return False
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
-            log_commands.error("Network error writing point %d: %s", point_id, e)  # pragma: no mutate
+            log_commands.error(
+                "Network error writing point %d: %s", point_id, e
+            )  # pragma: no mutate
             return False
         except Exception:
-            log_commands.exception("Unexpected error writing point %d", point_id)  # pragma: no mutate
+            log_commands.exception(
+                "Unexpected error writing point %d", point_id
+            )  # pragma: no mutate
             return False
 
     def reset_notifications(self) -> bool:
@@ -481,26 +515,34 @@ class NibeApiClient:
         # header names internally, so mutating the case here is unobservable.
         # pragma: no mutate start
         headers = {
-            'Authorization': self.auth,
-            'Accept':        'application/json',
+            "Authorization": self.auth,
+            "Accept": "application/json",
         }
         # pragma: no mutate end
         try:
             req = urllib.request.Request(
-                f"{self.base_url}/notifications", headers=headers, method='DELETE'
+                f"{self.base_url}/notifications", headers=headers, method="DELETE"
             )
             urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
             log_commands.info("Notifications reset: all alarms cleared")  # pragma: no mutate
             return True
         except urllib.error.HTTPError as e:
             if e.code == 405:  # pragma: no mutate
-                log_commands.warning("Notifications reset not supported (HTTP 405)")  # pragma: no mutate
+                log_commands.warning(
+                    "Notifications reset not supported (HTTP 405)"
+                )  # pragma: no mutate
             elif e.code == 401:  # pragma: no mutate
-                log_commands.error("Notifications reset: auth invalid (HTTP 401)")  # pragma: no mutate
+                log_commands.error(
+                    "Notifications reset: auth invalid (HTTP 401)"
+                )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
-                log_commands.error("Notifications reset: wrong deviceId (HTTP 403)")  # pragma: no mutate
+                log_commands.error(
+                    "Notifications reset: wrong deviceId (HTTP 403)"
+                )  # pragma: no mutate
             else:
-                log_commands.error("Notifications reset failed: HTTP %d", e.code)  # pragma: no mutate
+                log_commands.error(
+                    "Notifications reset failed: HTTP %d", e.code
+                )  # pragma: no mutate
             return False
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
             log_commands.error("Network error resetting notifications: %s", e)  # pragma: no mutate
@@ -520,21 +562,21 @@ class NibeApiClient:
             The string value to write (e.g. "on"/"off" for aidmode,
             "normal"/"away" for smartmode).
         """
-        url     = f"{self.base_url}/{mode_type}"
+        url = f"{self.base_url}/{mode_type}"
         payload = json.dumps({mode_type: value})
         try:
             # Header key casing is irrelevant — urllib.request.Request
             # normalises header names internally.
             # pragma: no mutate start
-            req      = urllib.request.Request(
+            req = urllib.request.Request(
                 url,
                 data=payload.encode(),
                 headers={
-                    'Authorization': self.auth,
-                    'Accept':        'application/json',
-                    'Content-Type':  'application/json',
+                    "Authorization": self.auth,
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
                 },
-                method='POST',
+                method="POST",
             )
             # pragma: no mutate end
             urllib.request.urlopen(req, context=self.ssl_context, timeout=30)  # pragma: no mutate
@@ -543,7 +585,7 @@ class NibeApiClient:
         except urllib.error.HTTPError as e:
             body = ""
             try:
-                body = e.read().decode('utf-8', errors='replace')  # pragma: no mutate
+                body = e.read().decode("utf-8", errors="replace")  # pragma: no mutate
             except (OSError, http.client.HTTPException, ValueError) as body_err:
                 # OSError/HTTPException: the underlying socket read can fail
                 # (connection reset, timeout, truncated response). ValueError:
@@ -552,21 +594,35 @@ class NibeApiClient:
                 # pragma: no mutate start
                 log_commands.debug(
                     "Could not read HTTP %d error body for device mode %s: %s",
-                    e.code, mode_type, body_err,
+                    e.code,
+                    mode_type,
+                    body_err,
                 )
                 # pragma: no mutate end
             if e.code == 400:  # pragma: no mutate
-                log_commands.error("Device mode %s rejected (HTTP 400): %s", mode_type, body)  # pragma: no mutate
+                log_commands.error(
+                    "Device mode %s rejected (HTTP 400): %s", mode_type, body
+                )  # pragma: no mutate
             elif e.code == 401:  # pragma: no mutate
-                log_commands.error("Device mode %s: auth invalid (HTTP 401)", mode_type)  # pragma: no mutate
+                log_commands.error(
+                    "Device mode %s: auth invalid (HTTP 401)", mode_type
+                )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
-                log_commands.error("Device mode %s: wrong deviceId (HTTP 403)", mode_type)  # pragma: no mutate
+                log_commands.error(
+                    "Device mode %s: wrong deviceId (HTTP 403)", mode_type
+                )  # pragma: no mutate
             else:
-                log_commands.error("Device mode %s failed: HTTP %d — %s", mode_type, e.code, body)  # pragma: no mutate
+                log_commands.error(
+                    "Device mode %s failed: HTTP %d — %s", mode_type, e.code, body
+                )  # pragma: no mutate
             return False
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
-            log_commands.error("Network error setting device mode %s: %s", mode_type, e)  # pragma: no mutate
+            log_commands.error(
+                "Network error setting device mode %s: %s", mode_type, e
+            )  # pragma: no mutate
             return False
         except Exception:
-            log_commands.exception("Unexpected error setting device mode %s", mode_type)  # pragma: no mutate
+            log_commands.exception(
+                "Unexpected error setting device mode %s", mode_type
+            )  # pragma: no mutate
             return False

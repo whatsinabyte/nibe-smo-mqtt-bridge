@@ -23,13 +23,17 @@ class TestFetchBulkDataStringCache(unittest.TestCase):
     1000+ point installation (cache never hits) — covers only the cache
     behavior itself, not the rest of the (much larger) bulk-fetch function."""
 
-    def _response(self, point_id=100, title='Outdoor temperature', description=''):
+    def _response(self, point_id=100, title="Outdoor temperature", description=""):
         return {
             str(point_id): {
-                'title': title, 'description': description,
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'minValue': -400, 'maxValue': 400},
-                'value': {'integerValue': 50, 'stringValue': '', 'isOk': True},
+                "title": title,
+                "description": description,
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                    "minValue": -400,
+                    "maxValue": 400,
+                },
+                "value": {"integerValue": 50, "stringValue": "", "isOk": True},
             }
         }
 
@@ -37,7 +41,8 @@ class TestFetchBulkDataStringCache(unittest.TestCase):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = self._response()
         from nibe_entity_detection import clean_string as real_clean_string
-        with patch('nibe_entity_manager.clean_string', wraps=real_clean_string) as spy:
+
+        with patch("nibe_entity_manager.clean_string", wraps=real_clean_string) as spy:
             em._fetch_bulk_data(detect_changes=False)
         self.assertIn(100, em._point_string_cache)
         spy.assert_called()
@@ -50,7 +55,8 @@ class TestFetchBulkDataStringCache(unittest.TestCase):
         em._fetch_bulk_data(detect_changes=False)  # populate cache
 
         from nibe_entity_detection import clean_string as real_clean_string
-        with patch('nibe_entity_manager.clean_string', wraps=real_clean_string) as spy:
+
+        with patch("nibe_entity_manager.clean_string", wraps=real_clean_string) as spy:
             em._fetch_bulk_data(detect_changes=False)
         spy.assert_not_called()
 
@@ -59,22 +65,22 @@ class TestFetchBulkDataStringCache(unittest.TestCase):
         changes point naming) must invalidate the cache and recompute —
         confirms the cache doesn't silently freeze stale data forever."""
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._response(title='Old title')
+        em._api.fetch_bulk_points.return_value = self._response(title="Old title")
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[100]['title'], 'Old title')
+        self.assertEqual(em.bulk_data[100]["title"], "Old title")
 
-        em._api.fetch_bulk_points.return_value = self._response(title='New title')
+        em._api.fetch_bulk_points.return_value = self._response(title="New title")
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[100]['title'], 'New title')
-        self.assertEqual(em._point_string_cache[100][0], 'New title')
+        self.assertEqual(em.bulk_data[100]["title"], "New title")
+        self.assertEqual(em._point_string_cache[100][0], "New title")
 
     def test_changed_description_also_invalidates_cache(self):
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._response(description='Old desc')
+        em._api.fetch_bulk_points.return_value = self._response(description="Old desc")
         em._fetch_bulk_data(detect_changes=False)
-        em._api.fetch_bulk_points.return_value = self._response(description='New desc')
+        em._api.fetch_bulk_points.return_value = self._response(description="New desc")
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[100]['description'], 'New desc')
+        self.assertEqual(em.bulk_data[100]["description"], "New desc")
 
     def test_disappeared_point_removed_from_cache(self):
         """A point that drops out of the bulk response entirely (e.g.
@@ -101,12 +107,12 @@ class TestFetchBulkDataStringCache(unittest.TestCase):
         entry_before = em.bulk_data[100]
 
         resp2 = self._response()
-        resp2['100']['value']['integerValue'] = 99
+        resp2["100"]["value"]["integerValue"] = 99
         em._api.fetch_bulk_points.return_value = resp2
         em._fetch_bulk_data(detect_changes=False)
 
         self.assertIs(em.bulk_data[100], entry_before)  # same object, updated in place
-        self.assertEqual(em.bulk_data[100]['raw_value'], 99)
+        self.assertEqual(em.bulk_data[100]["raw_value"], 99)
 
 
 class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
@@ -124,18 +130,18 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         only default/absent values could never observe."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '900': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 55, 'stringValue': 'SVAL', 'isOk': True},
+            "900": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 55, "stringValue": "SVAL", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
         entry = em.bulk_data[900]
-        self.assertEqual(entry['raw_value'], 55)
-        self.assertEqual(entry['string_value'], 'SVAL')
-        self.assertIs(entry['is_ok'], True)
+        self.assertEqual(entry["raw_value"], 55)
+        self.assertEqual(entry["string_value"], "SVAL")
+        self.assertIs(entry["is_ok"], True)
 
     def test_is_ok_defaults_to_false_not_none_when_key_absent_on_first_poll(self):
         """value_data with no 'isOk' key at all must yield is_ok == False
@@ -143,15 +149,15 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         two, so assertIs is required."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '901': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': ''},  # no isOk key
+            "901": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": ""},  # no isOk key
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertIs(em.bulk_data[901]['is_ok'], False)
+        self.assertIs(em.bulk_data[901]["is_ok"], False)
 
     def test_is_writable_defaults_false_on_first_poll_index_when_key_absent(self):
         """The all_points_by_id indexing path reached on the very first
@@ -160,14 +166,15 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         not None or True."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '903': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER'},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "903": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER"},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertIs(em.all_points_by_id[903]['is_writable'], False)
+        self.assertIs(em.all_points_by_id[903]["is_writable"], False)
 
     def test_string_value_defaults_to_empty_string_not_none_when_key_absent(self):
         """value_data with no 'stringValue' key must yield string_value ==
@@ -175,16 +182,16 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         the state for a text entity instead of an empty string."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '902': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'isOk': True},  # no stringValue key
+            "902": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "isOk": True},  # no stringValue key
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[902]['string_value'], '')
-        self.assertIsNotNone(em.bulk_data[902]['string_value'])
+        self.assertEqual(em.bulk_data[902]["string_value"], "")
+        self.assertIsNotNone(em.bulk_data[902]["string_value"])
 
     def test_description_key_correct_on_first_poll_before_any_update_path_masking(self):
         """Checked strictly after ONE poll — a second poll's update-path
@@ -192,15 +199,15 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         fix a create-path key typo and mask the mutation."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '902': {
-                'title': 'T', 'description': 'FirstPollDesc',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "902": {
+                "title": "T",
+                "description": "FirstPollDesc",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[902]['description'], 'FirstPollDesc')
+        self.assertEqual(em.bulk_data[902]["description"], "FirstPollDesc")
 
     def test_timestamp_set_to_the_now_value_captured_this_cycle_on_first_poll(self):
         """'timestamp' must be set to the actual `now` value computed at
@@ -208,16 +215,16 @@ class TestFetchBulkDataNewEntryFieldsCreatePath(unittest.TestCase):
         under a typo'd key. Pin time.time() to a distinctive value."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '903': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "903": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
-        with patch('nibe_entity_manager.time.time', return_value=424242.0):
+        with patch("nibe_entity_manager.time.time", return_value=424242.0):
             em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[903]['timestamp'], 424242.0)
+        self.assertEqual(em.bulk_data[903]["timestamp"], 424242.0)
 
 
 class TestFetchBulkDataStringCacheHitAssignsCorrectSlots(unittest.TestCase):
@@ -229,24 +236,24 @@ class TestFetchBulkDataStringCacheHitAssignsCorrectSlots(unittest.TestCase):
     def test_title_and_description_not_swapped_on_cache_hit(self):
         em = _make_em()
         resp = {
-            '904': {
-                'title': 'AlphaTitle', 'description': 'BetaDescription',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "904": {
+                "title": "AlphaTitle",
+                "description": "BetaDescription",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em._api.fetch_bulk_points.return_value = resp
         em._fetch_bulk_data(detect_changes=False)  # populate cache
-        first_title = em.bulk_data[904]['title']
-        first_desc = em.bulk_data[904]['description']
+        first_title = em.bulk_data[904]["title"]
+        first_desc = em.bulk_data[904]["description"]
         self.assertNotEqual(first_title, first_desc)  # sanity: distinct values
 
         # Second poll, identical raw strings -> hits the cache branch
         em._api.fetch_bulk_points.return_value = resp
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[904]['title'], first_title)
-        self.assertEqual(em.bulk_data[904]['description'], first_desc)
+        self.assertEqual(em.bulk_data[904]["title"], first_title)
+        self.assertEqual(em.bulk_data[904]["description"], first_desc)
 
 
 class TestFetchBulkDataMissingDescriptionKeyDefault(unittest.TestCase):
@@ -257,16 +264,15 @@ class TestFetchBulkDataMissingDescriptionKeyDefault(unittest.TestCase):
     def test_missing_description_key_defaults_to_empty_string(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '905': {
-                'title': 'T',
+            "905": {
+                "title": "T",
                 # no 'description' key at all
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.bulk_data[905]['description'], '')
+        self.assertEqual(em.bulk_data[905]["description"], "")
 
 
 class TestFetchBulkDataEmptyDictResponseIsFailure(unittest.TestCase):
@@ -278,7 +284,7 @@ class TestFetchBulkDataEmptyDictResponseIsFailure(unittest.TestCase):
     def test_empty_dict_response_triggers_api_failure(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {}
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -294,91 +300,94 @@ class TestFetchBulkDataUpdatePathFieldsCorrectKeys(unittest.TestCase):
     def _resp(self, point_id, integer_value, string_value, is_ok):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': integer_value,
-                          'stringValue': string_value, 'isOk': is_ok},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {
+                    "integerValue": integer_value,
+                    "stringValue": string_value,
+                    "isOk": is_ok,
+                },
             }
         }
 
     def test_update_path_reads_correct_keys_with_distinctive_values(self):
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._resp(910, 1, 'first', False)
+        em._api.fetch_bulk_points.return_value = self._resp(910, 1, "first", False)
         em._fetch_bulk_data(detect_changes=False)  # first poll -> create branch
 
-        em._api.fetch_bulk_points.return_value = self._resp(910, 77, 'SECONDVAL', True)
+        em._api.fetch_bulk_points.return_value = self._resp(910, 77, "SECONDVAL", True)
         em._fetch_bulk_data(detect_changes=False)  # second poll -> update branch
 
         entry = em.bulk_data[910]
-        self.assertEqual(entry['raw_value'], 77)
-        self.assertEqual(entry['string_value'], 'SECONDVAL')
-        self.assertIs(entry['is_ok'], True)
+        self.assertEqual(entry["raw_value"], 77)
+        self.assertEqual(entry["string_value"], "SECONDVAL")
+        self.assertIs(entry["is_ok"], True)
 
     def test_update_path_is_ok_defaults_to_false_not_none_when_key_absent(self):
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._resp(911, 1, '', True)
+        em._api.fetch_bulk_points.return_value = self._resp(911, 1, "", True)
         em._fetch_bulk_data(detect_changes=False)  # first poll
 
         em._api.fetch_bulk_points.return_value = {
-            '911': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': ''},  # no isOk key
+            "911": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": ""},  # no isOk key
             }
         }
         em._fetch_bulk_data(detect_changes=False)  # second poll -> update branch
-        self.assertIs(em.bulk_data[911]['is_ok'], False)
+        self.assertIs(em.bulk_data[911]["is_ok"], False)
 
     def test_update_path_raw_value_defaults_to_zero_not_none_when_key_absent(self):
         """On the update branch, value_data with no 'integerValue' key must
         yield raw_value == 0 (not None) — assertFalse can't distinguish
         the two, so an exact equality check is required."""
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._resp(913, 1, '', True)
+        em._api.fetch_bulk_points.return_value = self._resp(913, 1, "", True)
         em._fetch_bulk_data(detect_changes=False)  # first poll -> create branch
 
         em._api.fetch_bulk_points.return_value = {
-            '913': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'stringValue': '', 'isOk': True},  # no integerValue key
+            "913": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"stringValue": "", "isOk": True},  # no integerValue key
             }
         }
         em._fetch_bulk_data(detect_changes=False)  # second poll -> update branch
-        self.assertEqual(em.bulk_data[913]['raw_value'], 0)
-        self.assertIsNotNone(em.bulk_data[913]['raw_value'])
+        self.assertEqual(em.bulk_data[913]["raw_value"], 0)
+        self.assertIsNotNone(em.bulk_data[913]["raw_value"])
 
     def test_update_path_string_value_defaults_to_empty_string_not_none_when_key_absent(self):
         """On the update branch, value_data with no 'stringValue' key must
         yield string_value == '' (not None)."""
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._resp(914, 1, '', True)
+        em._api.fetch_bulk_points.return_value = self._resp(914, 1, "", True)
         em._fetch_bulk_data(detect_changes=False)  # first poll -> create branch
 
         em._api.fetch_bulk_points.return_value = {
-            '914': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'isOk': True},  # no stringValue key
+            "914": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "isOk": True},  # no stringValue key
             }
         }
         em._fetch_bulk_data(detect_changes=False)  # second poll -> update branch
-        self.assertEqual(em.bulk_data[914]['string_value'], '')
-        self.assertIsNotNone(em.bulk_data[914]['string_value'])
+        self.assertEqual(em.bulk_data[914]["string_value"], "")
+        self.assertIsNotNone(em.bulk_data[914]["string_value"])
 
     def test_update_path_timestamp_set_to_now_captured_this_cycle(self):
         em = _make_em()
-        em._api.fetch_bulk_points.return_value = self._resp(912, 1, '', True)
+        em._api.fetch_bulk_points.return_value = self._resp(912, 1, "", True)
         em._fetch_bulk_data(detect_changes=False)  # first poll
 
-        em._api.fetch_bulk_points.return_value = self._resp(912, 2, '', True)
-        with patch('nibe_entity_manager.time.time', return_value=13579.0):
+        em._api.fetch_bulk_points.return_value = self._resp(912, 2, "", True)
+        with patch("nibe_entity_manager.time.time", return_value=13579.0):
             em._fetch_bulk_data(detect_changes=False)  # second poll -> update branch
-        self.assertEqual(em.bulk_data[912]['timestamp'], 13579.0)
+        self.assertEqual(em.bulk_data[912]["timestamp"], 13579.0)
 
 
 class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
@@ -391,18 +400,22 @@ class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'DynTitle', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 5, 'stringValue': '', 'isOk': True},
+                "title": "DynTitle",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 5, "stringValue": "", "isOk": True},
             }
         }
 
     def _setup_known_dynamic(self, em, controlling_id=77, dynamic_id=700):
         from nibe_dynamic_map import DynamicPointEntry
+
         em.dynamic_point_map._table[controlling_id] = DynamicPointEntry(
-            point_id=controlling_id, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=controlling_id,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [dynamic_id]},
         )
 
@@ -415,12 +428,12 @@ class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
         self._setup_known_dynamic(em)
         resp = self._resp(700)
         em._api.fetch_bulk_points.return_value = resp
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         self.assertNotIn(700, em.all_points_by_id)
         mock_dyn.assert_called_once()
         new_points_arg = mock_dyn.call_args[0][0]
-        self.assertEqual(new_points_arg, [(700, resp['700'])])
+        self.assertEqual(new_points_arg, [(700, resp["700"])])
 
     def test_new_points_entry_is_id_data_tuple_during_post_write(self):
         """During a post-write scan, an appearing point must be appended to
@@ -432,11 +445,11 @@ class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
         em._post_write_until = time.time() + 9999
         resp = self._resp(701)
         em._api.fetch_bulk_points.return_value = resp
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_called_once()
         new_points_arg = mock_dyn.call_args[0][0]
-        self.assertEqual(new_points_arg, [(701, resp['701'])])
+        self.assertEqual(new_points_arg, [(701, resp["701"])])
 
 
 class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
@@ -448,10 +461,10 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'New Sensor', 'description': 'desc',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': True},
-                'value': {'integerValue': 5, 'stringValue': '', 'isOk': True},
+                "title": "New Sensor",
+                "description": "desc",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": True},
+                "value": {"integerValue": 5, "stringValue": "", "isOk": True},
             }
         }
 
@@ -465,8 +478,8 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(950)
         with (
-            patch.object(em, '_get_cached_entity_type', return_value=('select', 'config')),
-            patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop,
+            patch.object(em, "_get_cached_entity_type", return_value=("select", "config")),
+            patch.object(em.dynamic_point_map, "populate_from_bulk") as mock_pop,
         ):
             em._fetch_bulk_data(detect_changes=True)
         mock_pop.assert_called_once()
@@ -477,15 +490,15 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(951)
         with (
-            patch.object(em, '_get_cached_entity_type', return_value=('switch', 'config')),
-            patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop,
+            patch.object(em, "_get_cached_entity_type", return_value=("switch", "config")),
+            patch.object(em.dynamic_point_map, "populate_from_bulk") as mock_pop,
         ):
             em._fetch_bulk_data(detect_changes=True)
         mock_pop.assert_called_once()
         args = mock_pop.call_args[0]
         points_arg, types_arg = args[0], args[1]
         self.assertIn(951, points_arg)
-        self.assertEqual(types_arg, {951: 'switch'})
+        self.assertEqual(types_arg, {951: "switch"})
 
     def test_publish_point_metadata_called_with_the_indexed_point_object(self):
         em = _make_em()
@@ -514,10 +527,10 @@ class TestFetchBulkDataDetectChangesGatesReindexBlock(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'Existing', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "Existing",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -527,7 +540,7 @@ class TestFetchBulkDataDetectChangesGatesReindexBlock(unittest.TestCase):
         em.baseline_point_ids.add(960)
         em.published_configs.add(960)  # already fully known -> skips the first block too
         em._api.fetch_bulk_points.return_value = self._resp(960)
-        with patch.object(em, '_index_point') as mock_index:
+        with patch.object(em, "_index_point") as mock_index:
             em._fetch_bulk_data(detect_changes=True)
         mock_index.assert_not_called()
 
@@ -541,16 +554,16 @@ class TestFetchBulkDataReindexPathFieldCorrectness(unittest.TestCase):
     def test_reindex_path_sets_display_title_and_description_from_response(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '961': {
-                'title': 'ReindexTitle', 'description': 'ReindexDesc',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "961": {
+                "title": "ReindexTitle",
+                "description": "ReindexDesc",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.all_points_by_id[961]['display_title'], 'ReindexTitle')
-        self.assertEqual(em.all_points_by_id[961]['description'], 'ReindexDesc')
+        self.assertEqual(em.all_points_by_id[961]["display_title"], "ReindexTitle")
+        self.assertEqual(em.all_points_by_id[961]["description"], "ReindexDesc")
 
 
 class TestFetchBulkDataLockBusy(unittest.TestCase):
@@ -572,7 +585,7 @@ class TestFetchBulkDataBadResponse(unittest.TestCase):
     def test_none_response_calls_handle_api_failure(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = None
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -580,7 +593,7 @@ class TestFetchBulkDataBadResponse(unittest.TestCase):
     def test_list_response_calls_handle_api_failure(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = []
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -593,7 +606,7 @@ class TestFetchBulkDataBadResponse(unittest.TestCase):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = None
         em._api.last_error = "Connection refused"
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             em._fetch_bulk_data()
         mock_fail.assert_called_once_with("Connection refused")
 
@@ -603,11 +616,11 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
 
     def test_http_401_calls_handle_api_failure(self):
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=401, msg='Unauthorized',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)
         em._api.fetch_bulk_points.side_effect = err
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -619,16 +632,14 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
         self._api.last_error later, which races against the write-command
         executor thread's own concurrent request()/last_error writes."""
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=401, msg='Unauthorized',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)
         em._api.fetch_bulk_points.side_effect = err
         em._api.last_error = "HTTP 401 — authentication rejected, check credentials"
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             em._fetch_bulk_data()
-        mock_fail.assert_called_once_with(
-            "HTTP 401 — authentication rejected, check credentials"
-        )
+        mock_fail.assert_called_once_with("HTTP 401 — authentication rejected, check credentials")
 
     def test_http_401_logs_credentials_message_not_generic_retry_message(self):
         """A 401/403 gets a distinct 'credentials may not yet be configured'
@@ -636,13 +647,13 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
         other observable difference exists between the two branches, so
         this is the only way to verify the code-range check is correct."""
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=401, msg='Unauthorized',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)
         em._api.fetch_bulk_points.side_effect = err
-        with self.assertLogs('nibe.discovery', level='WARNING') as cm:
+        with self.assertLogs("nibe.discovery", level="WARNING") as cm:
             em._fetch_bulk_data()
-        self.assertTrue(any('credentials may not yet be configured' in m for m in cm.output))
+        self.assertTrue(any("credentials may not yet be configured" in m for m in cm.output))
 
     def test_http_403_logs_credentials_message_not_generic_retry_message(self):
         """`if e.code in (401, 403):` — only 401 was previously exercised
@@ -650,34 +661,39 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
         would silently survive. 403 (Forbidden) must get the same
         'credentials' warning as 401, not the generic 'will retry' one."""
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=403, msg='Forbidden',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
         em._api.fetch_bulk_points.side_effect = err
-        with self.assertLogs('nibe.discovery', level='WARNING') as cm:
+        with self.assertLogs("nibe.discovery", level="WARNING") as cm:
             em._fetch_bulk_data()
-        self.assertTrue(any('credentials may not yet be configured' in m for m in cm.output))
+        self.assertTrue(any("credentials may not yet be configured" in m for m in cm.output))
 
     def test_http_503_logs_generic_retry_message_not_credentials_message(self):
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=503, msg='Service Unavailable',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(
+            url="", code=503, msg="Service Unavailable", hdrs=None, fp=None
+        )
         em._api.fetch_bulk_points.side_effect = err
-        with self.assertLogs('nibe.discovery', level='WARNING') as cm:
+        with self.assertLogs("nibe.discovery", level="WARNING") as cm:
             em._fetch_bulk_data()
-        self.assertTrue(any(
-            'Bulk fetch failed with HTTP 503' in m and 'credentials' not in m
-            for m in cm.output
-        ))
+        self.assertTrue(
+            any(
+                "Bulk fetch failed with HTTP 503" in m and "credentials" not in m for m in cm.output
+            )
+        )
 
     def test_http_503_calls_handle_api_failure(self):
         import urllib.error
+
         em = _make_em()
-        err = urllib.error.HTTPError(url='', code=503, msg='Service Unavailable',
-                                     hdrs=None, fp=None)
+        err = urllib.error.HTTPError(
+            url="", code=503, msg="Service Unavailable", hdrs=None, fp=None
+        )
         em._api.fetch_bulk_points.side_effect = err
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -685,7 +701,7 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
     def test_unhandled_exception_calls_handle_api_failure(self):
         em = _make_em()
         em._api.fetch_bulk_points.side_effect = RuntimeError("unexpected")
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             result = em._fetch_bulk_data()
         self.assertIs(result, False)
         mock_fail.assert_called_once()
@@ -696,7 +712,7 @@ class TestFetchBulkDataHttpErrors(unittest.TestCase):
         em = _make_em()
         em._api.fetch_bulk_points.side_effect = RuntimeError("unexpected")
         em._api.last_error = "Timed out"
-        with patch.object(em, '_handle_api_failure') as mock_fail:
+        with patch.object(em, "_handle_api_failure") as mock_fail:
             em._fetch_bulk_data()
         mock_fail.assert_called_once_with("Timed out")
 
@@ -709,17 +725,17 @@ class TestFetchBulkDataValueError(unittest.TestCase):
         em.initial_discovery_complete = True
         # A point whose metadata causes a TypeError when processed
         em._api.fetch_bulk_points.return_value = {
-            'bad': {   # non-integer key → ValueError in int(point_id_str)
-                'title': 'Bad', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                              'isWritable': False},
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+            "bad": {  # non-integer key → ValueError in int(point_id_str)
+                "title": "Bad",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             },
-            '100': {
-                'title': 'Good', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                              'isWritable': False},
-                'value': {'integerValue': 42, 'stringValue': '', 'isOk': True},
+            "100": {
+                "title": "Good",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 42, "stringValue": "", "isOk": True},
             },
         }
         em._fetch_bulk_data(detect_changes=False)
@@ -735,15 +751,15 @@ class TestFetchBulkDataPostWriteNoChanges(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = True
         em._api.fetch_bulk_points.return_value = {
-            '100': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                              'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "100": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
         em.baseline_point_ids.add(100)
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_not_called()
 
@@ -755,10 +771,10 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
         """Non-empty truthy response that skips new-point routing."""
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                              'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -771,6 +787,7 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
         from nibe_entity_manager import _NOTIF_API_UNREACHABLE
+
         em._dismiss.assert_called_once_with(em.mqtt, _NOTIF_API_UNREACHABLE)
         self.assertIs(em._api_notification_active, False)
 
@@ -782,6 +799,7 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
         from nibe_entity_manager import _NOTIF_DISCOVERY_INCOMPLETE
+
         em._dismiss.assert_called_once_with(em.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
         self.assertIs(em._discovery_notification_active, False)
 
@@ -811,22 +829,26 @@ class TestFetchBulkDataDetectChangesDefault(unittest.TestCase):
 
     def test_default_call_detects_dynamic_point_changes(self):
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
         em.initial_discovery_complete = True
         em.dynamic_point_map._table[77] = DynamicPointEntry(
-            point_id=77, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=77,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [700]},
         )
         em._api.fetch_bulk_points.return_value = {
-            '700': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "700": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             result = em._fetch_bulk_data()  # no detect_changes arg
         mock_dyn.assert_called_once()
         self.assertIs(result, True)
@@ -849,19 +871,22 @@ class TestFetchBulkDataDisappearedGuardRequiresDetectChanges(unittest.TestCase):
         em.baseline_point_ids.add(555)  # absent from this fetch's response
         em.baseline_point_ids.add(999)  # present, stays
         em._api.fetch_bulk_points.return_value = {
-            '999': {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+            "999": {
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=False)
         mock_dyn.assert_not_called()
-        self.assertIn(555, em.baseline_point_ids,
+        self.assertIn(
+            555,
+            em.baseline_point_ids,
             "baseline_point_ids must not be mutated by the disappeared-points "
-            "logic when detect_changes=False")
+            "logic when detect_changes=False",
+        )
 
 
 class TestFetchBulkDataNewSwitchPopulatesMap(unittest.TestCase):
@@ -872,18 +897,24 @@ class TestFetchBulkDataNewSwitchPopulatesMap(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = {
-            '500': {
-                'title': 'Mode switch', 'description': '',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                    'isWritable': True, 'minValue': 0, 'maxValue': 1,
-                    'variableType': 'integer', 'variableSize': 'u8',
-                    'divisor': 1, 'decimal': 0, 'unit': '',
+            "500": {
+                "title": "Mode switch",
+                "description": "",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "isWritable": True,
+                    "minValue": 0,
+                    "maxValue": 1,
+                    "variableType": "integer",
+                    "variableSize": "u8",
+                    "divisor": 1,
+                    "decimal": 0,
+                    "unit": "",
                 },
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
-        with patch.object(em.dynamic_point_map, 'populate_from_bulk') as mock_pop:
+        with patch.object(em.dynamic_point_map, "populate_from_bulk") as mock_pop:
             em._fetch_bulk_data(detect_changes=True)
         mock_pop.assert_called_once()
 
@@ -897,19 +928,25 @@ class TestFetchBulkDataNewSwitchPopulatesMap(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = {
-            '500': {
-                'title': 'Mode switch', 'description': '',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                    'isWritable': True, 'minValue': 0, 'maxValue': 1,
-                    'variableType': 'integer', 'variableSize': 'u8',
-                    'divisor': 1, 'decimal': 0, 'unit': '',
+            "500": {
+                "title": "Mode switch",
+                "description": "",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "isWritable": True,
+                    "minValue": 0,
+                    "maxValue": 1,
+                    "variableType": "integer",
+                    "variableSize": "u8",
+                    "divisor": 1,
+                    "decimal": 0,
+                    "unit": "",
                 },
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=True)
-        self.assertEqual(em.dynamic_point_map._table[500].title, 'Mode switch')
+        self.assertEqual(em.dynamic_point_map._table[500].title, "Mode switch")
 
 
 class TestUpdateAllStates(unittest.TestCase):
@@ -918,20 +955,25 @@ class TestUpdateAllStates(unittest.TestCase):
     def _point_response(self, point_id=100, value=1):
         return {
             str(point_id): {
-                'title': 'Test', 'description': '',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                    'isWritable': False, 'variableType': 'integer',
-                    'variableSize': 'u8', 'divisor': 1, 'decimal': 0, 'unit': '',
+                "title": "Test",
+                "description": "",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "isWritable": False,
+                    "variableType": "integer",
+                    "variableSize": "u8",
+                    "divisor": 1,
+                    "decimal": 0,
+                    "unit": "",
                 },
-                'value': {'integerValue': value, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": value, "stringValue": "", "isOk": True},
             }
         }
 
     def test_no_active_entities_returns_without_iterating(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {}
-        with patch.object(em, '_update_entity_state') as mock_update:
+        with patch.object(em, "_update_entity_state") as mock_update:
             em.update_all_states()
         mock_update.assert_not_called()
 
@@ -940,13 +982,15 @@ class TestUpdateAllStates(unittest.TestCase):
         em.initial_discovery_complete = True
         em._api.fetch_bulk_points.return_value = self._point_response(100, 1)
         entity_info = {
-            'point_id': 100, 'entity_type': 'sensor',
-            'availability_topic': 'nibe/avail/100',
-            'state_topic': 'nibe/state/100',
-            'command_topic': None, 'point_data': {},
+            "point_id": 100,
+            "entity_type": "sensor",
+            "availability_topic": "nibe/avail/100",
+            "state_topic": "nibe/state/100",
+            "command_topic": None,
+            "point_data": {},
         }
         em.active_entities_by_id[100] = entity_info
-        with patch.object(em, '_update_entity_state') as mock_update:
+        with patch.object(em, "_update_entity_state") as mock_update:
             em.update_all_states()
         mock_update.assert_called_once_with(entity_info)
 
@@ -961,7 +1005,7 @@ class TestUpdateAllStates(unittest.TestCase):
     def test_post_write_window_ends_when_expired(self):
         em = _make_em()
         em.post_write_active = True
-        em._post_write_until = 0.0   # already past
+        em._post_write_until = 0.0  # already past
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
         self.assertFalse(em.post_write_active)
@@ -990,17 +1034,25 @@ class TestUpdateAllStatesActiveEntitiesLogging(unittest.TestCase):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {}
         em.active_entities_by_id[100] = {
-            'point_id': 100, 'entity_type': 'sensor',
-            'availability_topic': 'a', 'state_topic': 's',
-            'command_topic': None, 'point_data': {},
+            "point_id": 100,
+            "entity_type": "sensor",
+            "availability_topic": "a",
+            "state_topic": "s",
+            "command_topic": None,
+            "point_data": {},
         }
         em.active_entities_by_id[101] = {
-            'point_id': 101, 'entity_type': 'sensor',
-            'availability_topic': 'a2', 'state_topic': 's2',
-            'command_topic': None, 'point_data': {},
+            "point_id": 101,
+            "entity_type": "sensor",
+            "availability_topic": "a2",
+            "state_topic": "s2",
+            "command_topic": None,
+            "point_data": {},
         }
-        with patch('nibe_entity_manager.log_entities.debug') as mock_debug, \
-             patch.object(em, '_update_entity_state'):
+        with (
+            patch("nibe_entity_manager.log_entities.debug") as mock_debug,
+            patch.object(em, "_update_entity_state"),
+        ):
             em.update_all_states()
         mock_debug.assert_called_once_with("Updating %d active entities", 2)
 
@@ -1014,17 +1066,22 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
 
     def _response(self, point_id, meta_override=None):
         meta = {
-            'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-            'isWritable': False, 'variableType': 'integer',
-            'variableSize': 'u8', 'divisor': 1, 'minValue': 0, 'maxValue': 100,
+            "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+            "isWritable": False,
+            "variableType": "integer",
+            "variableSize": "u8",
+            "divisor": 1,
+            "minValue": 0,
+            "maxValue": 100,
         }
         if meta_override:
             meta.update(meta_override)
         return {
             str(point_id): {
-                'title': 'Test', 'description': '',
-                'metadata': meta,
-                'value': {'integerValue': 42, 'stringValue': '', 'isOk': True},
+                "title": "Test",
+                "description": "",
+                "metadata": meta,
+                "value": {"integerValue": 42, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1039,7 +1096,7 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
         # First fetch — populates bulk_data
         em._api.fetch_bulk_points.return_value = self._response(100)
         em._fetch_bulk_data(detect_changes=False)
-        original_metadata = em.bulk_data[100]['metadata']
+        original_metadata = em.bulk_data[100]["metadata"]
 
         # Second fetch — same metadata content, new dict object
         em._api.fetch_bulk_points.return_value = self._response(100)
@@ -1047,9 +1104,12 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
 
         # Metadata object must be the SAME as after the first fetch
         # (not replaced by a new dict with identical content)
-        self.assertIs(em.bulk_data[100]['metadata'], original_metadata,
+        self.assertIs(
+            em.bulk_data[100]["metadata"],
+            original_metadata,
             "Metadata must not be reassigned when content is unchanged — "
-            "use != not 'is not' for the comparison")
+            "use != not 'is not' for the comparison",
+        )
 
     def test_metadata_updated_when_content_changes(self):
         """When API returns metadata with different content, bulk_data['metadata']
@@ -1058,22 +1118,26 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
 
-        em._api.fetch_bulk_points.return_value = self._response(100, {'divisor': 1})
+        em._api.fetch_bulk_points.return_value = self._response(100, {"divisor": 1})
         em._fetch_bulk_data(detect_changes=False)
 
-        em._api.fetch_bulk_points.return_value = self._response(100, {'divisor': 10})
+        em._api.fetch_bulk_points.return_value = self._response(100, {"divisor": 10})
         em._fetch_bulk_data(detect_changes=False)
 
-        self.assertEqual(em.bulk_data[100]['metadata']['divisor'], 10)
+        self.assertEqual(em.bulk_data[100]["metadata"]["divisor"], 10)
 
     def test_implementation_uses_equality_not_identity(self):
         """Regression guard: verify the source uses != not 'is not'."""
         import inspect
 
         from nibe_entity_manager import EntityManager
+
         src = inspect.getsource(EntityManager._fetch_bulk_data)
-        self.assertNotIn("is not metadata", src,
-            "_fetch_bulk_data must use != not 'is not' for metadata comparison")
+        self.assertNotIn(
+            "is not metadata",
+            src,
+            "_fetch_bulk_data must use != not 'is not' for metadata comparison",
+        )
         self.assertIn("!= metadata", src)
 
     """_publish_dynamic_changes: ValueError/TypeError/AttributeError raised
@@ -1087,25 +1151,41 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
 
         point_id = 500
         em.all_points_by_id[point_id] = {
-            'variableId': point_id, 'display_title': 'Test', 'description': '',
-            'entity_type': 'sensor', 'entity_category': 'diagnostic',
-            'is_writable': False, 'is_dynamic': True,
-            'metadata': {'isWritable': False, 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                         'variableType': 'integer', 'variableSize': 'u8',
-                         'divisor': 1, 'minValue': 0, 'maxValue': 1},
+            "variableId": point_id,
+            "display_title": "Test",
+            "description": "",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": True,
+            "metadata": {
+                "isWritable": False,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableType": "integer",
+                "variableSize": "u8",
+                "divisor": 1,
+                "minValue": 0,
+                "maxValue": 1,
+            },
         }
 
-        new_points = [(point_id, {
-            'title': 'Test', 'description': '',
-            'metadata': em.all_points_by_id[point_id]['metadata'],
-            'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
-        })]
+        new_points = [
+            (
+                point_id,
+                {
+                    "title": "Test",
+                    "description": "",
+                    "metadata": em.all_points_by_id[point_id]["metadata"],
+                    "value": {"integerValue": 0, "stringValue": "", "isOk": True},
+                },
+            )
+        ]
 
         # Make _notify raise a ValueError — should be caught, not propagated
         em._notify.side_effect = ValueError("simulated notification error")
 
         # _publish_dynamic_changes acquires _em_lock and calls _enable_entity_locked directly
-        with patch.object(em, '_enable_entity_locked'):
+        with patch.object(em, "_enable_entity_locked"):
             try:
                 em._publish_dynamic_changes(new_points, set())
             except (ValueError, TypeError, AttributeError) as e:
@@ -1118,12 +1198,12 @@ class TestFetchBulkDataMalformed(unittest.TestCase):
     def test_skip_non_dict_point(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '100': {
-                'title': 'Good point',
-                'metadata': {},
-                'value': {'integerValue': 0, 'isOk': True}
+            "100": {
+                "title": "Good point",
+                "metadata": {},
+                "value": {"integerValue": 0, "isOk": True},
             },
-            '200': ['not', 'a', 'dict'],
+            "200": ["not", "a", "dict"],
         }
         em._fetch_bulk_data(detect_changes=False)
         self.assertIn(100, em.bulk_data)
@@ -1132,15 +1212,15 @@ class TestFetchBulkDataMalformed(unittest.TestCase):
     def test_point_without_value_key(self):
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '300': {
-                'title': 'Missing value',
-                'metadata': {},
+            "300": {
+                "title": "Missing value",
+                "metadata": {},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
         self.assertIn(300, em.bulk_data)
-        self.assertEqual(em.bulk_data[300]['raw_value'], 0)
-        self.assertFalse(em.bulk_data[300]['is_ok'])
+        self.assertEqual(em.bulk_data[300]["raw_value"], 0)
+        self.assertFalse(em.bulk_data[300]["is_ok"])
 
     def test_point_with_explicit_null_value_and_metadata(self):
         """An API response with "value": null / "metadata": null (present but
@@ -1148,23 +1228,23 @@ class TestFetchBulkDataMalformed(unittest.TestCase):
         points in the same response must still be processed."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '400': {
-                'title': 'Null value point',
-                'metadata': None,
-                'value': None,
+            "400": {
+                "title": "Null value point",
+                "metadata": None,
+                "value": None,
             },
-            '401': {
-                'title': 'Good point',
-                'metadata': {},
-                'value': {'integerValue': 42, 'isOk': True},
+            "401": {
+                "title": "Good point",
+                "metadata": {},
+                "value": {"integerValue": 42, "isOk": True},
             },
         }
         em._fetch_bulk_data(detect_changes=False)
         self.assertIn(400, em.bulk_data)
-        self.assertEqual(em.bulk_data[400]['raw_value'], 0)
-        self.assertFalse(em.bulk_data[400]['is_ok'])
+        self.assertEqual(em.bulk_data[400]["raw_value"], 0)
+        self.assertFalse(em.bulk_data[400]["is_ok"])
         self.assertIn(401, em.bulk_data)
-        self.assertEqual(em.bulk_data[401]['raw_value'], 42)
+        self.assertEqual(em.bulk_data[401]["raw_value"], 42)
 
 
 class TestUpdateAllStatesIntervalAndLockBusy(unittest.TestCase):
@@ -1174,7 +1254,7 @@ class TestUpdateAllStatesIntervalAndLockBusy(unittest.TestCase):
         """When interval has not elapsed, fetch_bulk_points must not be called."""
         em = _make_em()
         em.last_bulk_fetch = time.time()
-        em.bulk_interval   = 99999
+        em.bulk_interval = 99999
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
         em._api.fetch_bulk_points.assert_not_called()
@@ -1184,12 +1264,13 @@ class TestUpdateAllStatesIntervalAndLockBusy(unittest.TestCase):
         last_bulk_fetch must not advance so the next call retries immediately."""
         em = _make_em()
         em.last_bulk_fetch = 0.0
-        original_failures  = em.api_consecutive_failures
-        with patch.object(em, '_fetch_bulk_data', return_value=False):
+        original_failures = em.api_consecutive_failures
+        with patch.object(em, "_fetch_bulk_data", return_value=False):
             em.update_all_states()
         self.assertEqual(em.api_consecutive_failures, original_failures)
-        self.assertEqual(em.last_bulk_fetch, 0.0,
-                         "last_bulk_fetch must not be updated when lock was busy")
+        self.assertEqual(
+            em.last_bulk_fetch, 0.0, "last_bulk_fetch must not be updated when lock was busy"
+        )
 
 
 class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
@@ -1208,8 +1289,8 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em.bulk_interval = 30
         em.last_bulk_fetch = 12345.0  # stale value, must be overwritten by force
         with (
-            patch('time.time', return_value=30.0),
-            patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch,
+            patch("time.time", return_value=30.0),
+            patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch,
         ):
             em.update_all_states(force=True)
         mock_fetch.assert_called_once()
@@ -1221,7 +1302,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em.post_write_active = True
         em._post_write_until = 500.0
         em._api.fetch_bulk_points.return_value = {}
-        with patch('time.time', return_value=500.0):
+        with patch("time.time", return_value=500.0):
             em.update_all_states()
         self.assertIs(em.post_write_active, True)
 
@@ -1252,15 +1333,19 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         known dynamic points present and post-write inactive, should_detect
         must be exactly True — not None, not falsy-but-wrong."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
         em.post_write_active = False
         em.dynamic_point_map._table[77] = DynamicPointEntry(
-            point_id=77, title='Test Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=77,
+            title="Test Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [22001, 22002]},
         )
         self.assertGreater(len(em.dynamic_point_map.all_known_dynamic_point_ids()), 0)
-        with patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch:
+        with patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch:
             em.update_all_states()
         mock_fetch.assert_called_once_with(detect_changes=True)
 
@@ -1274,7 +1359,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em = _make_em()
         em.post_write_active = False
         self.assertEqual(len(em.dynamic_point_map.all_known_dynamic_point_ids()), 0)
-        with patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch:
+        with patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch:
             em.update_all_states()
         mock_fetch.assert_called_once_with(detect_changes=False)
 
@@ -1286,7 +1371,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em.post_write_active = True
         em._post_write_until = time.time() + 9999
         self.assertEqual(len(em.dynamic_point_map.all_known_dynamic_point_ids()), 0)
-        with patch.object(em, '_fetch_bulk_data', return_value=True) as mock_fetch:
+        with patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch:
             em.update_all_states()
         mock_fetch.assert_called_once_with(detect_changes=True)
 
@@ -1301,8 +1386,8 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em = _make_em()
         em.last_bulk_fetch = 0.0
         with (
-            patch('time.time', return_value=999.0),
-            patch.object(em, '_fetch_bulk_data', return_value=True),
+            patch("time.time", return_value=999.0),
+            patch.object(em, "_fetch_bulk_data", return_value=True),
         ):
             em.update_all_states()
         self.assertEqual(em.last_bulk_fetch, 999.0)
@@ -1315,8 +1400,8 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         em = _make_em()
         em.last_bulk_fetch = 0.0
         with (
-            patch('time.time', return_value=54321.5),
-            patch.object(em, '_fetch_bulk_data', return_value=True),
+            patch("time.time", return_value=54321.5),
+            patch.object(em, "_fetch_bulk_data", return_value=True),
         ):
             em.update_all_states()
         self.assertEqual(em.last_bulk_fetch, 54321.5)
@@ -1333,10 +1418,10 @@ class TestFetchBulkDataApiRestorationNoPriorNotification(unittest.TestCase):
     def _minimal_response(self, point_id=100):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1345,7 +1430,7 @@ class TestFetchBulkDataApiRestorationNoPriorNotification(unittest.TestCase):
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
         em.api_consecutive_failures = em.api_failure_threshold + 1
-        em._api_notification_active = False   # notification was never raised
+        em._api_notification_active = False  # notification was never raised
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
         # dismiss must NOT have been called (no notification to dismiss)
@@ -1359,7 +1444,7 @@ class TestFetchBulkDataApiRestorationNoPriorNotification(unittest.TestCase):
         em.baseline_point_ids.add(100)
         em.api_consecutive_failures = em.api_failure_threshold + 1
         em._api_notification_active = True
-        em._pub = None   # publisher not yet wired (edge case at startup)
+        em._pub = None  # publisher not yet wired (edge case at startup)
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         # Must not raise AttributeError accessing _pub.publish_bridge_alert
         em._fetch_bulk_data(detect_changes=False)
@@ -1377,16 +1462,16 @@ class TestFetchBulkDataApiRestorationNoPriorNotification(unittest.TestCase):
         em.api_consecutive_failures = 7
         em.api_failure_threshold = 3
         em._api_notification_active = True
-        em._api.base_url = 'http://192.0.2.1'
+        em._api.base_url = "http://192.0.2.1"
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
         em._pub.publish_bridge_alert.assert_called_once_with(
-            alert_type='api_restored',
-            severity='info',
-            message='Nibe API contact restored after 7 failed polls.',
+            alert_type="api_restored",
+            severity="info",
+            message="Nibe API contact restored after 7 failed polls.",
             context={
-                'previous_failure_count': 7,
-                'api_url': 'http://192.0.2.1',
+                "previous_failure_count": 7,
+                "api_url": "http://192.0.2.1",
             },
         )
 
@@ -1399,18 +1484,22 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
     def _setup_known_dynamic(self, em, controlling_id=77, dynamic_id=22001):
         from nibe_dynamic_map import DynamicPointEntry
+
         em.dynamic_point_map._table[controlling_id] = DynamicPointEntry(
-            point_id=controlling_id, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=controlling_id,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [dynamic_id]},
         )
 
@@ -1424,7 +1513,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         em.active_dynamic_points.add(22001)
         em.baseline_point_ids.add(999)  # unrelated point present in response
         em._api.fetch_bulk_points.return_value = self._resp(999)  # 22001 absent
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_called_once()
         _, kwargs_or_args = mock_dyn.call_args[0][0], mock_dyn.call_args[0][1]
@@ -1443,7 +1532,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         em._post_write_controlling_point = 77
         em.baseline_point_ids.add(999)  # will be absent from the response
         em._api.fetch_bulk_points.return_value = self._resp(1)  # 999 absent
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_called_once()
         self.assertIn(999, mock_dyn.call_args[0][1])
@@ -1460,7 +1549,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         # 22001 is known-dynamic but NOT currently active
         em.baseline_point_ids.add(999)
         em._api.fetch_bulk_points.return_value = self._resp(999)
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_not_called()
 
@@ -1473,7 +1562,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         em.active_dynamic_points.add(22001)
         em.published_configs = {22001}  # already published — not a "new" appearance
         em._api.fetch_bulk_points.return_value = self._resp(22001)
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_not_called()
 
@@ -1487,10 +1576,10 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1502,13 +1591,16 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
         em.baseline_point_ids.add(555)  # will go missing this fetch
         em.baseline_point_ids.add(999)  # present, stays
         em._api.fetch_bulk_points.return_value = self._resp(999)  # 555 absent
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_called_once()
         disappeared_arg = mock_dyn.call_args[0][1]
         self.assertIn(555, disappeared_arg)
-        self.assertNotIn(555, em.baseline_point_ids,
-            "point must be discarded from baseline_point_ids once reclassified as dynamic")
+        self.assertNotIn(
+            555,
+            em.baseline_point_ids,
+            "point must be discarded from baseline_point_ids once reclassified as dynamic",
+        )
 
     def test_baseline_point_absent_outside_post_write_is_not_reclassified(self):
         """The same absence, but OUTSIDE a post-write scan window, must NOT
@@ -1520,7 +1612,7 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
         em.baseline_point_ids.add(555)
         em.baseline_point_ids.add(999)
         em._api.fetch_bulk_points.return_value = self._resp(999)
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_not_called()
         self.assertIn(555, em.baseline_point_ids)
@@ -1528,17 +1620,17 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
 
 class TestFetchBulkDataReturnValue(unittest.TestCase):
     """_fetch_bulk_data's return value contract:
-      detect_changes=True  -> bool(new_points or disappeared_points)
-      detect_changes=False -> True (unconditional success)
+    detect_changes=True  -> bool(new_points or disappeared_points)
+    detect_changes=False -> True (unconditional success)
     """
 
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1557,11 +1649,15 @@ class TestFetchBulkDataReturnValue(unittest.TestCase):
         is routed into new_points (see _fetch_bulk_data's dynamic-appearance
         branch), so the return value must be exactly True."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
         em.initial_discovery_complete = True
         em.dynamic_point_map._table[77] = DynamicPointEntry(
-            point_id=77, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=77,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [700]},
         )
         # baseline_point_ids empty, published_configs empty -> point 700 counts as new
@@ -1587,10 +1683,10 @@ class TestFetchBulkDataBookkeeping(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1617,7 +1713,7 @@ class TestFetchBulkDataBookkeeping(unittest.TestCase):
         em.baseline_point_ids.add(100)
         em.api_last_success_time = 1.0
         em._api.fetch_bulk_points.return_value = self._resp(100)
-        with patch('nibe_entity_manager.time.time', return_value=88888.0):
+        with patch("nibe_entity_manager.time.time", return_value=88888.0):
             em._fetch_bulk_data(detect_changes=False)
         self.assertEqual(em.api_last_success_time, 88888.0)
 
@@ -1634,7 +1730,7 @@ class TestFetchBulkDataBookkeeping(unittest.TestCase):
         # more call), elapsed calc, api_last_success_time. Use a generous
         # side_effect sequence anchored on a known start/end gap.
         times = iter([1000.0] + [1007.5] * 30)
-        with patch('nibe_entity_manager.time.time', side_effect=lambda: next(times)):
+        with patch("nibe_entity_manager.time.time", side_effect=lambda: next(times)):
             em._fetch_bulk_data(detect_changes=False)
         self.assertEqual(em.last_fetch_duration, 7.5)
 
@@ -1648,27 +1744,31 @@ class TestFetchBulkDataControllingPointSnapshot(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'T', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 1, 'stringValue': '', 'isOk': True},
+                "title": "T",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
             }
         }
 
     def test_snapshot_value_passed_through_to_publish_dynamic_changes(self):
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
         em.initial_discovery_complete = True
         em.post_write_active = True
         em._post_write_until = time.time() + 9999
         em._post_write_controlling_point = 314159  # distinctive, independently-known value
         em.dynamic_point_map._table[77] = DynamicPointEntry(
-            point_id=77, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=77,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [700]},
         )
         em._api.fetch_bulk_points.return_value = self._resp(700)
-        with patch.object(em, '_publish_dynamic_changes') as mock_dyn:
+        with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
         mock_dyn.assert_called_once()
         self.assertEqual(mock_dyn.call_args[0][2], 314159)
@@ -1683,12 +1783,13 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
     def _resp(self, point_id, writable=True):
         return {
             str(point_id): {
-                'title': 'New Sensor', 'description': 'desc',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                    'isWritable': writable,
+                "title": "New Sensor",
+                "description": "desc",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                    "isWritable": writable,
                 },
-                'value': {'integerValue': 5, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": 5, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1699,7 +1800,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._resp(600)
         em._fetch_bulk_data(detect_changes=True)
         self.assertIn(600, em.all_points_by_id)
-        self.assertIs(em.all_points_by_id[600]['is_dynamic'], False)
+        self.assertIs(em.all_points_by_id[600]["is_dynamic"], False)
 
     def test_new_permanent_point_is_writable_taken_from_metadata(self):
         """is_writable in the indexed point must reflect metadata['isWritable']
@@ -1709,7 +1810,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(601, writable=True)
         em._fetch_bulk_data(detect_changes=True)
-        self.assertIs(em.all_points_by_id[601]['is_writable'], True)
+        self.assertIs(em.all_points_by_id[601]["is_writable"], True)
 
     def test_new_permanent_point_is_writable_defaults_false_when_key_absent(self):
         """metadata missing 'isWritable' entirely must default to False,
@@ -1719,14 +1820,15 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = {
-            '602': {
-                'title': 'No isWritable key', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER'},
-                'value': {'integerValue': 5, 'stringValue': '', 'isOk': True},
+            "602": {
+                "title": "No isWritable key",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER"},
+                "value": {"integerValue": 5, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=True)
-        self.assertIs(em.all_points_by_id[602]['is_writable'], False)
+        self.assertIs(em.all_points_by_id[602]["is_writable"], False)
 
     def test_new_permanent_point_added_to_baseline_point_ids(self):
         em = _make_em()
@@ -1751,8 +1853,8 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = self._resp(604)
         em._fetch_bulk_data(detect_changes=True)
-        self.assertEqual(em.all_points_by_id[604]['display_title'], 'New Sensor')
-        self.assertEqual(em.all_points_by_id[604]['description'], 'desc')
+        self.assertEqual(em.all_points_by_id[604]["display_title"], "New Sensor")
+        self.assertEqual(em.all_points_by_id[604]["description"], "desc")
 
     def test_new_permanent_point_classified_select_from_enum_description(self):
         """The dict passed to _get_cached_entity_type() must carry the real
@@ -1764,17 +1866,18 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = {
-            '605': {
-                'title': 'Mode', 'description': '0 = Off, 1 = On',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                    'isWritable': True,
+            "605": {
+                "title": "Mode",
+                "description": "0 = Off, 1 = On",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "isWritable": True,
                 },
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=True)
-        self.assertEqual(em.all_points_by_id[605]['entity_type'], 'select')
+        self.assertEqual(em.all_points_by_id[605]["entity_type"], "select")
 
     def test_new_permanent_point_stores_real_metadata_and_category(self):
         """The dict passed to _index_point() must carry the real point's own
@@ -1785,21 +1888,22 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         metadata = {
-            'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-            'isWritable': False,
+            "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            "isWritable": False,
         }
         em._api.fetch_bulk_points.return_value = {
-            '606': {
-                'title': 'Read-only setting', 'description': '',
-                'metadata': metadata,
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+            "606": {
+                "title": "Read-only setting",
+                "description": "",
+                "metadata": metadata,
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=True)
-        self.assertEqual(em.all_points_by_id[606]['metadata'], metadata)
+        self.assertEqual(em.all_points_by_id[606]["metadata"], metadata)
         # isWritable=False on a HOLDING register -> sensor/diagnostic (see
         # _detect_holding_entity).
-        self.assertEqual(em.all_points_by_id[606]['entity_category'], 'diagnostic')
+        self.assertEqual(em.all_points_by_id[606]["entity_category"], "diagnostic")
 
     def test_missing_title_key_falls_back_to_point_id_placeholder(self):
         """When the API response omits 'title' entirely, the point must get
@@ -1809,14 +1913,14 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         em._api.fetch_bulk_points.return_value = {
-            '607': {
-                'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER'},
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+            "607": {
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER"},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=True)
-        self.assertEqual(em.all_points_by_id[607]['display_title'], 'Point 607')
+        self.assertEqual(em.all_points_by_id[607]["display_title"], "Point 607")
 
 
 class TestFetchBulkDataNoDetectChangesReindexing(unittest.TestCase):
@@ -1828,10 +1932,10 @@ class TestFetchBulkDataNoDetectChangesReindexing(unittest.TestCase):
     def _resp(self, point_id):
         return {
             str(point_id): {
-                'title': 'Discovery Point', 'description': '',
-                'metadata': {'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                             'isWritable': False},
-                'value': {'integerValue': 9, 'stringValue': '', 'isOk': True},
+                "title": "Discovery Point",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": False},
+                "value": {"integerValue": 9, "stringValue": "", "isOk": True},
             }
         }
 
@@ -1840,16 +1944,20 @@ class TestFetchBulkDataNoDetectChangesReindexing(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._resp(700)
         em._fetch_bulk_data(detect_changes=False)
         self.assertIn(700, em.all_points_by_id)
-        self.assertIs(em.all_points_by_id[700]['is_dynamic'], False)
+        self.assertIs(em.all_points_by_id[700]["is_dynamic"], False)
 
     def test_known_dynamic_point_not_reindexed_when_detect_changes_false(self):
         """A point that IS a known dynamic point must be skipped by this
         block — it must not be (re-)indexed as static here."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
         em.dynamic_point_map._table[77] = DynamicPointEntry(
-            point_id=77, title='Switch', entity_type='switch',
-            processed_values={0, 1}, is_controlling=True,
+            point_id=77,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
             dynamic_points_by_value={1: [701]},
         )
         em._api.fetch_bulk_points.return_value = self._resp(701)
@@ -1863,17 +1971,18 @@ class TestFetchBulkDataNoDetectChangesReindexing(unittest.TestCase):
         key, or enum-syntax HOLDING registers get misclassified."""
         em = _make_em()
         em._api.fetch_bulk_points.return_value = {
-            '702': {
-                'title': 'Mode', 'description': '0 = Off, 1 = On',
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                    'isWritable': True,
+            "702": {
+                "title": "Mode",
+                "description": "0 = Off, 1 = On",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "isWritable": True,
                 },
-                'value': {'integerValue': 0, 'stringValue': '', 'isOk': True},
+                "value": {"integerValue": 0, "stringValue": "", "isOk": True},
             }
         }
         em._fetch_bulk_data(detect_changes=False)
-        self.assertEqual(em.all_points_by_id[702]['entity_type'], 'select')
+        self.assertEqual(em.all_points_by_id[702]["entity_type"], "select")
 
 
 class TestRawApiValueToFinalStatePayload(unittest.TestCase):
@@ -1893,23 +2002,24 @@ class TestRawApiValueToFinalStatePayload(unittest.TestCase):
     def _raw_api_response(self, point_id, raw_int_value, divisor):
         return {
             str(point_id): {
-                'title': 'Outdoor Temperature', 'description': '',
-                'value': {'integerValue': raw_int_value, 'stringValue': '', 'isOk': True},
-                'metadata': {
-                    'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                    'variableType':  'integer',
-                    'variableSize':  's16',
-                    'minValue':      -400,
-                    'maxValue':      400,
-                    'divisor':       divisor,
-                    'decimal':       1,
-                    'unit':          '°C',
-                    'shortUnit':     '°C',
-                    'isWritable':    False,
-                    'intDefaultValue': 0,
-                    'stringDefaultValue': '',
-                    'change':        1,
-                    'modbusRegisterID': point_id,
+                "title": "Outdoor Temperature",
+                "description": "",
+                "value": {"integerValue": raw_int_value, "stringValue": "", "isOk": True},
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                    "variableType": "integer",
+                    "variableSize": "s16",
+                    "minValue": -400,
+                    "maxValue": 400,
+                    "divisor": divisor,
+                    "decimal": 1,
+                    "unit": "°C",
+                    "shortUnit": "°C",
+                    "isWritable": False,
+                    "intDefaultValue": 0,
+                    "stringDefaultValue": "",
+                    "change": 1,
+                    "modbusRegisterID": point_id,
                 },
             }
         }
@@ -1918,32 +2028,37 @@ class TestRawApiValueToFinalStatePayload(unittest.TestCase):
         point_id = 77001
         em = _make_em()
         em._api.fetch_bulk_points.return_value = self._raw_api_response(
-            point_id, raw_int_value=225, divisor=10,
+            point_id,
+            raw_int_value=225,
+            divisor=10,
         )
         # An already-discovered, already-active entity, as it would be
         # after a real discover_points() call — update_all_states() only
         # updates entities already in active_entities_by_id, it does not
         # discover new ones.
         em.active_entities_by_id[point_id] = {
-            'point_id':           point_id,
-            'entity_type':        'sensor',
-            'entity_category':    'diagnostic',
-            'state_topic':        f'homeassistant/sensor/nibe_{point_id}/state',
-            'availability_topic': f'homeassistant/sensor/nibe_{point_id}/available',
-            'point_data':         {},
-            'value_mapping':      None,
+            "point_id": point_id,
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "state_topic": f"homeassistant/sensor/nibe_{point_id}/state",
+            "availability_topic": f"homeassistant/sensor/nibe_{point_id}/available",
+            "point_data": {},
+            "value_mapping": None,
         }
 
         em.update_all_states()
 
-        state_calls = [c for c in em.mqtt.publish.call_args_list
-                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/state']
+        state_calls = [
+            c
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] == f"homeassistant/sensor/nibe_{point_id}/state"
+        ]
         self.assertTrue(state_calls, "no state publish reached the real topic")
         # 225 / divisor 10 = 22.5, computed independently here as a literal
         # (not read back from apply_divisor's own return value) — the real
         # apply_divisor() runs inside the chain under test; its own
         # correctness is separately verified by its round-trip property tests.
-        self.assertEqual(state_calls[-1].args[1], '22.5')
+        self.assertEqual(state_calls[-1].args[1], "22.5")
 
     def test_raw_isOk_false_publishes_offline_not_a_state_value(self):
         """isOk=False in the raw API value must reach the real offline
@@ -1951,24 +2066,30 @@ class TestRawApiValueToFinalStatePayload(unittest.TestCase):
         point_id = 77002
         em = _make_em()
         response = self._raw_api_response(point_id, raw_int_value=0, divisor=10)
-        response[str(point_id)]['value']['isOk'] = False
+        response[str(point_id)]["value"]["isOk"] = False
         em._api.fetch_bulk_points.return_value = response
         em.active_entities_by_id[point_id] = {
-            'point_id':           point_id,
-            'entity_type':        'sensor',
-            'entity_category':    'diagnostic',
-            'state_topic':        f'homeassistant/sensor/nibe_{point_id}/state',
-            'availability_topic': f'homeassistant/sensor/nibe_{point_id}/available',
-            'point_data':         {},
-            'value_mapping':      None,
+            "point_id": point_id,
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "state_topic": f"homeassistant/sensor/nibe_{point_id}/state",
+            "availability_topic": f"homeassistant/sensor/nibe_{point_id}/available",
+            "point_data": {},
+            "value_mapping": None,
         }
 
         em.update_all_states()
 
-        avail_calls = [c for c in em.mqtt.publish.call_args_list
-                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/available']
+        avail_calls = [
+            c
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] == f"homeassistant/sensor/nibe_{point_id}/available"
+        ]
         self.assertTrue(avail_calls)
-        self.assertEqual(avail_calls[-1].args[1], 'offline')
-        state_calls = [c for c in em.mqtt.publish.call_args_list
-                       if c.args[0] == f'homeassistant/sensor/nibe_{point_id}/state']
+        self.assertEqual(avail_calls[-1].args[1], "offline")
+        state_calls = [
+            c
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] == f"homeassistant/sensor/nibe_{point_id}/state"
+        ]
         self.assertEqual(state_calls, [])
