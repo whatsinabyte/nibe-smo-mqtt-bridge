@@ -61,33 +61,40 @@ class TestEnableDisableEntity(unittest.TestCase):
 
         # Seed a fully-specified indexed point
         self.em.all_points_by_id[self.point_id] = {
-            'variableId':      self.point_id,
-            'display_title':   'Outdoor temperature',
-            'entity_type':     'sensor',
-            'entity_category': 'diagnostic',
-            'is_writable':     False,
-            'is_dynamic':      False,
-            'metadata': {
-                'divisor': 10, 'unit': '°C', 'minValue': -400, 'maxValue': 400,
-                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+            "variableId": self.point_id,
+            "display_title": "Outdoor temperature",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "metadata": {
+                "divisor": 10,
+                "unit": "°C",
+                "minValue": -400,
+                "maxValue": 400,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
             },
         }
         self.em.bulk_data[self.point_id] = {
-            'raw_value': 119, 'string_value': '', 'is_ok': True,
-            'metadata': {'divisor': 10}, 'title': 'Outdoor temperature',
-            'description': '', 'timestamp': time.time(),
+            "raw_value": 119,
+            "string_value": "",
+            "is_ok": True,
+            "metadata": {"divisor": 10},
+            "title": "Outdoor temperature",
+            "description": "",
+            "timestamp": time.time(),
         }
 
         # Make publish_entity_discovery return a realistic entity_info dict
         self.mock_entity_info = {
-            'point_id':          self.point_id,
-            'entity_type':       'sensor',
-            'entity_id':         f'nibe_{self.point_id}',
-            'state_topic':       f'homeassistant/sensor/nibe_{self.point_id}/state',
-            'availability_topic': f'homeassistant/sensor/nibe_{self.point_id}/availability',
-            'attributes_topic':  f'homeassistant/sensor/nibe_{self.point_id}/attributes',
-            'command_topic':     None,   # read-only sensor — no command topic
-            'metadata':          {'divisor': 10},
+            "point_id": self.point_id,
+            "entity_type": "sensor",
+            "entity_id": f"nibe_{self.point_id}",
+            "state_topic": f"homeassistant/sensor/nibe_{self.point_id}/state",
+            "availability_topic": f"homeassistant/sensor/nibe_{self.point_id}/availability",
+            "attributes_topic": f"homeassistant/sensor/nibe_{self.point_id}/attributes",
+            "command_topic": None,  # read-only sensor — no command topic
+            "metadata": {"divisor": 10},
         }
         self.em._pub.publish_entity_discovery.return_value = self.mock_entity_info
 
@@ -115,7 +122,7 @@ class TestEnableDisableEntity(unittest.TestCase):
     def test_enable_publishes_availability_online(self):
         self.em.enable_entity(self.point_id)
         calls = [str(c) for c in self.em.mqtt.publish.call_args_list]
-        avail_calls = [c for c in calls if 'availability' in c and 'online' in c]
+        avail_calls = [c for c in calls if "availability" in c and "online" in c]
         self.assertTrue(len(avail_calls) > 0, "Availability 'online' should be published")
 
     def test_enable_returns_true_on_success(self):
@@ -132,12 +139,12 @@ class TestEnableDisableEntity(unittest.TestCase):
 
     def test_enable_increments_type_stats(self):
         self.em.enable_entity(self.point_id)
-        self.assertIn('sensor', self.em._stats_type_counts)
-        self.assertGreater(self.em._stats_type_counts['sensor'], 0)
+        self.assertIn("sensor", self.em._stats_type_counts)
+        self.assertGreater(self.em._stats_type_counts["sensor"], 0)
 
     def test_enable_writable_increments_writable_count(self):
         # Override with a writable point
-        self.em.all_points_by_id[self.point_id]['is_writable'] = True
+        self.em.all_points_by_id[self.point_id]["is_writable"] = True
         before = self.em._stats_writable_count
         self.em.enable_entity(self.point_id)
         self.assertEqual(self.em._stats_writable_count, before + 1)
@@ -147,7 +154,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         a starting count of 0 can't distinguish the two, so this seeds a
         nonzero count first."""
         self.em._stats_writable_count = 5
-        point = {'entity_type': 'switch', 'entity_category': 'config', 'is_writable': True}
+        point = {"entity_type": "switch", "entity_category": "config", "is_writable": True}
         self.em._increment_stats(point)
         self.assertEqual(self.em._stats_writable_count, 6)
 
@@ -162,27 +169,29 @@ class TestEnableDisableEntity(unittest.TestCase):
         """A read-only sensor (command_topic=None) must not subscribe to MQTT."""
         self.em.enable_entity(self.point_id)
         subscribe_calls = [str(c) for c in self.em.mqtt.subscribe.call_args_list]
-        command_subs = [c for c in subscribe_calls if 'command' in c.lower()]
+        command_subs = [c for c in subscribe_calls if "command" in c.lower()]
         self.assertEqual(len(command_subs), 0)
 
     def test_writable_entity_command_callback_dispatches_to_handle_command(self):
         """When a writable entity is enabled, the registered MQTT command callback
         must invoke _handle_command (line 863)."""
-        cmd_topic = f'homeassistant/switch/nibe_{self.point_id}/set'
-        self.mock_entity_info['command_topic'] = cmd_topic
-        self.mock_entity_info['entity_type'] = 'switch'
+        cmd_topic = f"homeassistant/switch/nibe_{self.point_id}/set"
+        self.mock_entity_info["command_topic"] = cmd_topic
+        self.mock_entity_info["entity_type"] = "switch"
 
         stored_cb = {}
+
         def fake_callback_add(topic, cb):
             stored_cb[topic] = cb
+
         self.em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
 
         self.em.enable_entity(self.point_id)
         self.assertIn(cmd_topic, stored_cb)
 
         msg = MagicMock()
-        msg.payload = b'1'
-        with patch.object(self.em, '_handle_command') as mock_handle:
+        msg.payload = b"1"
+        with patch.object(self.em, "_handle_command") as mock_handle:
             stored_cb[cmd_topic](None, None, msg)
         mock_handle.assert_called_once_with(self.mock_entity_info, msg)
 
@@ -223,8 +232,10 @@ class TestEnableDisableEntity(unittest.TestCase):
         # Must be persisted (retained MQTT publish), not just an in-memory
         # change that's lost on the very restart this exists to survive.
         from nibe_mqtt_publisher import BrowserTopic
+
         persist_calls = [
-            c for c in self.em.mqtt.publish.call_args_list
+            c
+            for c in self.em.mqtt.publish.call_args_list
             if c.args[0] == BrowserTopic.ACTIVE_DYNAMIC
         ]
         self.assertTrue(persist_calls, "active_dynamic_points removal must be persisted")
@@ -236,8 +247,10 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.em.enable_entity(self.point_id)
         self.em.disable_entity(self.point_id)
         from nibe_mqtt_publisher import BrowserTopic
+
         persist_calls = [
-            c for c in self.em.mqtt.publish.call_args_list
+            c
+            for c in self.em.mqtt.publish.call_args_list
             if c.args[0] == BrowserTopic.ACTIVE_DYNAMIC
         ]
         self.assertFalse(persist_calls)
@@ -253,9 +266,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.em.value_cache.should_publish(self.point_id, 100, threshold=1)
         self.em.disable_entity(self.point_id)
         # After discard, next publish call for this point is treated as first
-        self.assertTrue(
-            self.em.value_cache.should_publish(self.point_id, 100, threshold=1)
-        )
+        self.assertTrue(self.em.value_cache.should_publish(self.point_id, 100, threshold=1))
 
     def test_disable_clears_pending_write(self):
         """A write triggered just before disable must not leak in
@@ -264,7 +275,8 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.em.enable_entity(self.point_id)
         with self.em._pending_writes_lock:
             self.em.pending_writes[self.point_id] = {
-                'value': 100, 'timestamp': time.time(),
+                "value": 100,
+                "timestamp": time.time(),
             }
         self.em.disable_entity(self.point_id)
         self.assertNotIn(self.point_id, self.em.pending_writes)
@@ -276,36 +288,38 @@ class TestEnableDisableEntity(unittest.TestCase):
         here would leave a stale discovery config in HA (a ghost entity),
         the same bug class fixed repeatedly elsewhere in this project."""
         from nibe_mqtt_publisher import t_config
+
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
-        expected_topic = t_config('sensor', f'nibe_{self.point_id}')
+        expected_topic = t_config("sensor", f"nibe_{self.point_id}")
         clear_calls = [
-            c for c in self.em.mqtt.publish.call_args_list
+            c
+            for c in self.em.mqtt.publish.call_args_list
             if c.args[0] == expected_topic and c.args[1] == ""
         ]
         self.assertTrue(
             clear_calls,
             f"Expected an empty-payload publish to {expected_topic!r}, "
-            f"got calls: {self.em.mqtt.publish.call_args_list}"
+            f"got calls: {self.em.mqtt.publish.call_args_list}",
         )
 
     def test_disable_decrements_type_stats(self):
         self.em.enable_entity(self.point_id)
-        count_before = self.em._stats_type_counts.get('sensor', 0)
+        count_before = self.em._stats_type_counts.get("sensor", 0)
         self.em.disable_entity(self.point_id)
-        count_after = self.em._stats_type_counts.get('sensor', 0)
+        count_after = self.em._stats_type_counts.get("sensor", 0)
         self.assertEqual(count_after, count_before - 1)
 
     def test_disable_stat_count_never_below_zero(self):
         """Stats decrement must be guarded against going negative."""
-        self.em._stats_type_counts['sensor'] = 0
-        self.em.all_points_by_id[self.point_id]['entity_type'] = 'sensor'
+        self.em._stats_type_counts["sensor"] = 0
+        self.em.all_points_by_id[self.point_id]["entity_type"] = "sensor"
         self.em.mqtt_enabled_points.add(self.point_id)
         with self.em._active_entities_lock:
             self.em.active_entities_by_id[self.point_id] = self.mock_entity_info
         self.em.disable_entity(self.point_id)
-        self.assertGreaterEqual(self.em._stats_type_counts.get('sensor', 0), 0)
+        self.assertGreaterEqual(self.em._stats_type_counts.get("sensor", 0), 0)
 
     def test_disable_clears_discovery_config_with_retain_true(self):
         """The config-clearing publish must use retain=True — without it,
@@ -315,7 +329,8 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         from nibe_mqtt_publisher import t_config
-        expected_topic = t_config('sensor', f'nibe_{self.point_id}')
+
+        expected_topic = t_config("sensor", f"nibe_{self.point_id}")
         self.em.mqtt.publish.assert_any_call(expected_topic, "", retain=True)
 
     def test_disable_invalidates_config_hash_for_the_correct_point(self):
@@ -331,33 +346,36 @@ class TestEnableDisableEntity(unittest.TestCase):
     def test_disable_clears_attributes_topic_when_present(self):
         """When entity_info has an attributes_topic, disable must publish an
         empty retained payload to that EXACT topic — not a wrong/None one."""
-        self.mock_entity_info['attributes_topic'] = f'homeassistant/sensor/nibe_{self.point_id}/attributes'
+        self.mock_entity_info["attributes_topic"] = (
+            f"homeassistant/sensor/nibe_{self.point_id}/attributes"
+        )
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         self.em.mqtt.publish.assert_any_call(
-            f'homeassistant/sensor/nibe_{self.point_id}/attributes', "", retain=True
+            f"homeassistant/sensor/nibe_{self.point_id}/attributes", "", retain=True
         )
 
     def test_disable_no_attributes_topic_publishes_no_attributes_clear(self):
         """When attributes_topic is absent/None, no clearing publish for it
         should occur at all — the .get() guard must not be bypassed."""
-        self.mock_entity_info['attributes_topic'] = None
+        self.mock_entity_info["attributes_topic"] = None
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         attr_calls = [
-            c for c in self.em.mqtt.publish.call_args_list
-            if 'attributes' in str(c.args[0] if c.args else '')
+            c
+            for c in self.em.mqtt.publish.call_args_list
+            if "attributes" in str(c.args[0] if c.args else "")
         ]
         self.assertEqual(attr_calls, [])
 
     def test_disable_unsubscribes_and_removes_callback_for_command_topic(self):
         """When entity_info has a command_topic, disable must remove the
         message callback and unsubscribe using THAT exact topic string."""
-        cmd_topic = f'homeassistant/switch/nibe_{self.point_id}/set'
-        self.mock_entity_info['command_topic'] = cmd_topic
-        self.mock_entity_info['entity_type'] = 'switch'
+        cmd_topic = f"homeassistant/switch/nibe_{self.point_id}/set"
+        self.mock_entity_info["command_topic"] = cmd_topic
+        self.mock_entity_info["entity_type"] = "switch"
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
@@ -371,10 +389,10 @@ class TestEnableDisableEntity(unittest.TestCase):
         wrong/None key mutant that would pop nothing (or the wrong thing)."""
         other_pid = self.point_id + 100
         self.em.enable_entity(self.point_id)
-        self.em._point_string_cache.put(self.point_id, ('sensor', 'diagnostic'))
-        self.em._point_string_cache.put(other_pid, ('sensor', 'diagnostic'))
-        self.em._entity_type_cache.put(self.point_id, ('sensor', 'diagnostic'))
-        self.em._entity_type_cache.put(other_pid, ('sensor', 'diagnostic'))
+        self.em._point_string_cache.put(self.point_id, ("sensor", "diagnostic"))
+        self.em._point_string_cache.put(other_pid, ("sensor", "diagnostic"))
+        self.em._entity_type_cache.put(self.point_id, ("sensor", "diagnostic"))
+        self.em._entity_type_cache.put(other_pid, ("sensor", "diagnostic"))
         self.em.disable_entity(self.point_id)
         self.assertIsNone(self.em._point_string_cache.get(self.point_id))
         self.assertIsNotNone(self.em._point_string_cache.get(other_pid))
@@ -405,23 +423,23 @@ class TestEnableDisableEntity(unittest.TestCase):
         independently-chosen starting value distinct from any hardcoded
         default in the source."""
         self.em.enable_entity(self.point_id)
-        self.em._stats_category_counts['diagnostic'] = 9
+        self.em._stats_category_counts["diagnostic"] = 9
         self.em.disable_entity(self.point_id)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 8)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 8)
 
     def test_disable_category_stat_clamped_at_zero_not_left_at_one(self):
         """max(0, count - 1) must clamp to 0 when count is already 0/1 —
         not to 1, which would leave a phantom positive count forever after
         repeated disables (a real bug if the cap constant is mutated)."""
         self.em.enable_entity(self.point_id)
-        self.em._stats_category_counts['diagnostic'] = 0
+        self.em._stats_category_counts["diagnostic"] = 0
         self.em.disable_entity(self.point_id)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 0)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 0)
 
     def test_disable_writable_count_decrements_when_point_is_writable(self):
         """A writable point's disable must decrement _stats_writable_count
         by exactly 1 from an independently-seeded starting value."""
-        self.em.all_points_by_id[self.point_id]['is_writable'] = True
+        self.em.all_points_by_id[self.point_id]["is_writable"] = True
         self.em.enable_entity(self.point_id)
         self.em._stats_writable_count = 4
         self.em.disable_entity(self.point_id)
@@ -432,7 +450,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         suppression block — the guard is 'if not suppressed', not
         'if suppressed'."""
         self.em.enable_entity(self.point_id)
-        with patch.object(self.em, 'publish_enabled_state') as mock_publish:
+        with patch.object(self.em, "publish_enabled_state") as mock_publish:
             self.em.disable_entity(self.point_id)
         mock_publish.assert_called_once()
 
@@ -459,27 +477,27 @@ class TestEnableDisableEntity(unittest.TestCase):
         dicts must be keyed under the literal defaults 'unknown'/'none' —
         not None or some other placeholder — otherwise the memory-usage /
         dashboard stats silently lose these points under an unexpected key."""
-        del self.em.all_points_by_id[self.point_id]['entity_type']
-        del self.em.all_points_by_id[self.point_id]['entity_category']
+        del self.em.all_points_by_id[self.point_id]["entity_type"]
+        del self.em.all_points_by_id[self.point_id]["entity_category"]
         self.em.enable_entity(self.point_id)
-        self.assertEqual(self.em._stats_type_counts.get('unknown'), 1)
-        self.assertEqual(self.em._stats_category_counts.get('none'), 1)
+        self.assertEqual(self.em._stats_type_counts.get("unknown"), 1)
+        self.assertEqual(self.em._stats_category_counts.get("none"), 1)
 
     def test_enable_increments_existing_type_and_category_counts_by_exactly_one(self):
         """Stats counters must increment the *existing* count by exactly 1,
         not overwrite it or jump by 2 — verified against independently
         pre-seeded starting values."""
-        self.em._stats_type_counts['sensor'] = 5
-        self.em._stats_category_counts['diagnostic'] = 7
+        self.em._stats_type_counts["sensor"] = 5
+        self.em._stats_category_counts["diagnostic"] = 7
         self.em.enable_entity(self.point_id)
-        self.assertEqual(self.em._stats_type_counts['sensor'], 6)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 8)
+        self.assertEqual(self.em._stats_type_counts["sensor"], 6)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 8)
 
     def test_enable_missing_is_writable_key_does_not_increment_writable_count(self):
         """point.get('is_writable', False) must default to False (falsy) when
         the key is absent — not True, which would silently mark every
         conditional/legacy point missing this key as writable."""
-        del self.em.all_points_by_id[self.point_id]['is_writable']
+        del self.em.all_points_by_id[self.point_id]["is_writable"]
         before = self.em._stats_writable_count
         self.em.enable_entity(self.point_id)
         self.assertEqual(self.em._stats_writable_count, before)
@@ -487,8 +505,8 @@ class TestEnableDisableEntity(unittest.TestCase):
     def test_enable_subscribes_command_topic_with_qos_1(self):
         """The command topic subscription must use QoS 1 specifically (at
         least once delivery) — not QoS 2 or any other value."""
-        cmd_topic = f'homeassistant/switch/nibe_{self.point_id}/set'
-        self.mock_entity_info['command_topic'] = cmd_topic
+        cmd_topic = f"homeassistant/switch/nibe_{self.point_id}/set"
+        self.mock_entity_info["command_topic"] = cmd_topic
         self.em.enable_entity(self.point_id)
         self.em.mqtt.subscribe.assert_called_once_with(cmd_topic, qos=1)
 
@@ -500,7 +518,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         across broker restarts."""
         self.em.enable_entity(self.point_id)
         self.em.mqtt.publish.assert_any_call(
-            self.mock_entity_info['availability_topic'], 'online', retain=True
+            self.mock_entity_info["availability_topic"], "online", retain=True
         )
 
     def test_enable_skips_update_entity_state_when_point_not_in_bulk_data(self):
@@ -508,14 +526,14 @@ class TestEnableDisableEntity(unittest.TestCase):
         bulk_data yet (first enable before first poll) — calling it would
         trigger the auto-disable path and immediately undo the enable."""
         del self.em.bulk_data[self.point_id]
-        with patch.object(self.em, '_update_entity_state') as mock_update:
+        with patch.object(self.em, "_update_entity_state") as mock_update:
             self.em.enable_entity(self.point_id)
         mock_update.assert_not_called()
 
     def test_enable_calls_update_entity_state_when_point_in_bulk_data(self):
         """Conversely, when the point IS present in bulk_data, the state
         update must actually be invoked."""
-        with patch.object(self.em, '_update_entity_state') as mock_update:
+        with patch.object(self.em, "_update_entity_state") as mock_update:
             self.em.enable_entity(self.point_id)
         mock_update.assert_called_once()
 
@@ -524,6 +542,7 @@ class TestEnableDisableEntity(unittest.TestCase):
         exact (mqtt_client, _NOTIF_NO_ENTITIES) pair on the first successful
         enable (mqtt_enabled_points size becomes 1)."""
         from nibe_entity_manager import _NOTIF_NO_ENTITIES
+
         self.em.enable_entity(self.point_id)
         self.em._dismiss.assert_called_once_with(self.em.mqtt, _NOTIF_NO_ENTITIES)
 
@@ -546,10 +565,12 @@ class TestEnableDisableEntity(unittest.TestCase):
             self.em.all_points_by_id[self.point_id], variableId=second_point_id
         )
         self.em.bulk_data[second_point_id] = dict(self.em.bulk_data[self.point_id])
-        second_entity_info = dict(self.mock_entity_info, point_id=second_point_id,
-                                   entity_id=f'nibe_{second_point_id}')
+        second_entity_info = dict(
+            self.mock_entity_info, point_id=second_point_id, entity_id=f"nibe_{second_point_id}"
+        )
         self.em._pub.publish_entity_discovery.side_effect = [
-            self.mock_entity_info, second_entity_info,
+            self.mock_entity_info,
+            second_entity_info,
         ]
         self.em.enable_entity(self.point_id)
         self.em._dismiss.reset_mock()
@@ -563,25 +584,31 @@ class TestEnableDisableEntityProperties(unittest.TestCase):
     def _seeded_em(self, pid):
         em = _make_em()
         em.all_points_by_id[pid] = {
-            'variableId':    pid,
-            'display_title': f'Point {pid}',
-            'entity_type':   'sensor',
-            'entity_category': 'diagnostic',
-            'is_writable':   False,
-            'is_dynamic':    False,
-            'description':   '',
-            'metadata': {
-                'unit': '', 'shortUnit': '',
-                'minValue': 0, 'maxValue': 100,
-                'modbusRegisterID': pid,
-                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                'variableType': 'integer', 'variableSize': 'u8',
-                'isWritable': False, 'divisor': 1, 'decimal': 0,
-                'intDefaultValue': 0, 'stringDefaultValue': '',
-                'change': 1,
+            "variableId": pid,
+            "display_title": f"Point {pid}",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "description": "",
+            "metadata": {
+                "unit": "",
+                "shortUnit": "",
+                "minValue": 0,
+                "maxValue": 100,
+                "modbusRegisterID": pid,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableType": "integer",
+                "variableSize": "u8",
+                "isWritable": False,
+                "divisor": 1,
+                "decimal": 0,
+                "intDefaultValue": 0,
+                "stringDefaultValue": "",
+                "change": 1,
             },
         }
-        em.bulk_data[pid] = {'raw_value': 0, 'is_ok': True}
+        em.bulk_data[pid] = {"raw_value": 0, "is_ok": True}
         return em
 
     @given(_nibe_point_id.filter(lambda p: p > 0))
@@ -604,13 +631,17 @@ class TestEnableDisableEntityProperties(unittest.TestCase):
         """Enabling an already-enabled point must not duplicate the entry."""
         em = self._seeded_em(pid)
         em.enable_entity(pid)
-        count_first = em.mqtt_enabled_points.count(pid) \
-            if hasattr(em.mqtt_enabled_points, 'count') \
+        count_first = (
+            em.mqtt_enabled_points.count(pid)
+            if hasattr(em.mqtt_enabled_points, "count")
             else (1 if pid in em.mqtt_enabled_points else 0)
+        )
         em.enable_entity(pid)
-        count_second = em.mqtt_enabled_points.count(pid) \
-            if hasattr(em.mqtt_enabled_points, 'count') \
+        count_second = (
+            em.mqtt_enabled_points.count(pid)
+            if hasattr(em.mqtt_enabled_points, "count")
             else (1 if pid in em.mqtt_enabled_points else 0)
+        )
         self.assertEqual(count_first, count_second)
 
     @given(_nibe_point_id.filter(lambda p: p > 0))
@@ -638,25 +669,31 @@ class EntityManagerMachine(RuleBasedStateMachine):
         self._known_pids = [100, 200, 300, 400, 500]
         for pid in self._known_pids:
             self.em.all_points_by_id[pid] = {
-                'variableId':     pid,
-                'display_title':  f'Point {pid}',
-                'entity_type':    'sensor',
-                'entity_category': 'diagnostic',
-                'is_writable':    False,
-                'is_dynamic':     False,
-                'description':    '',
-                'metadata': {
-                    'unit': '', 'shortUnit': '',
-                    'minValue': 0, 'maxValue': 100,
-                    'modbusRegisterID': pid,
-                    'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                    'variableType': 'integer', 'variableSize': 'u8',
-                    'isWritable': False, 'divisor': 1, 'decimal': 0,
-                    'intDefaultValue': 0, 'stringDefaultValue': '',
-                    'change': 1,
+                "variableId": pid,
+                "display_title": f"Point {pid}",
+                "entity_type": "sensor",
+                "entity_category": "diagnostic",
+                "is_writable": False,
+                "is_dynamic": False,
+                "description": "",
+                "metadata": {
+                    "unit": "",
+                    "shortUnit": "",
+                    "minValue": 0,
+                    "maxValue": 100,
+                    "modbusRegisterID": pid,
+                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                    "variableType": "integer",
+                    "variableSize": "u8",
+                    "isWritable": False,
+                    "divisor": 1,
+                    "decimal": 0,
+                    "intDefaultValue": 0,
+                    "stringDefaultValue": "",
+                    "change": 1,
                 },
             }
-            self.em.bulk_data[pid] = {'raw_value': 0, 'is_ok': True}
+            self.em.bulk_data[pid] = {"raw_value": 0, "is_ok": True}
 
     # ── Rules (operations) ───────────────────────────────────────────────────
 
@@ -668,15 +705,18 @@ class EntityManagerMachine(RuleBasedStateMachine):
     def disable(self, pid):
         self.em.disable_entity(pid)
 
-    @rule(pid=st.sampled_from([100, 200, 300, 400, 500]),
-          value=st.integers(min_value=0, max_value=100))
+    @rule(
+        pid=st.sampled_from([100, 200, 300, 400, 500]),
+        value=st.integers(min_value=0, max_value=100),
+    )
     def add_pending_write(self, pid, value):
         """Simulate a pending write entry as the write executor would create it."""
         import time as _time
+
         self.em.pending_writes[pid] = {
-            'value': value,
-            'time': _time.time(),
-            'entity_id': f'sensor.nibe_{pid}',
+            "value": value,
+            "time": _time.time(),
+            "entity_id": f"sensor.nibe_{pid}",
         }
 
     @rule()
@@ -685,27 +725,34 @@ class EntityManagerMachine(RuleBasedStateMachine):
         import time as _time
 
         from nibe_entity_manager import _STALE_WRITE_AGE_S
+
         now = _time.time()
-        stale = [p for p, v in self.em.pending_writes.items()
-                 if now - v['time'] > _STALE_WRITE_AGE_S]
+        stale = [
+            p for p, v in self.em.pending_writes.items() if now - v["time"] > _STALE_WRITE_AGE_S
+        ]
         for p in stale:
             self.em.pending_writes.pop(p, None)
 
-    @rule(added=st.lists(st.integers(min_value=1, max_value=9999), max_size=3),
-          removed=st.lists(st.integers(min_value=1, max_value=9999), max_size=3))
+    @rule(
+        added=st.lists(st.integers(min_value=1, max_value=9999), max_size=3),
+        removed=st.lists(st.integers(min_value=1, max_value=9999), max_size=3),
+    )
     def add_changelog_entry(self, added, removed):
         import time as _time
+
         self.em._last_prune_time = _time.time()  # suppress pruning during test
         # Production code stores dicts with id/title/type keys, not raw ints.
         # Using production-shaped data so the changelog_added_removed_are_lists
         # invariant and any downstream rendering code sees the correct structure.
-        added_dicts   = [{'id': p, 'title': f'Point {p}', 'type': 'sensor'}
-                         for p in added]
-        removed_dicts = [{'id': p, 'title': f'Point {p}', 'type': 'sensor'}
-                         for p in removed]
-        self.em._update_changelog_history({
-            'added': added_dicts, 'removed': removed_dicts, 'source': 'test',
-        })
+        added_dicts = [{"id": p, "title": f"Point {p}", "type": "sensor"} for p in added]
+        removed_dicts = [{"id": p, "title": f"Point {p}", "type": "sensor"} for p in removed]
+        self.em._update_changelog_history(
+            {
+                "added": added_dicts,
+                "removed": removed_dicts,
+                "source": "test",
+            }
+        )
 
     @rule()
     def mark_changelog_read(self):
@@ -714,7 +761,7 @@ class EntityManagerMachine(RuleBasedStateMachine):
     @rule(pid=st.sampled_from([100, 200, 300, 400, 500]))
     def update_bulk_value(self, pid):
         """Simulate a firmware poll updating a point's value."""
-        self.em.bulk_data[pid] = {'raw_value': 42, 'is_ok': True}
+        self.em.bulk_data[pid] = {"raw_value": 42, "is_ok": True}
 
     @rule(pid=st.sampled_from([100, 200, 300, 400, 500]))
     def clear_bulk_value(self, pid):
@@ -737,9 +784,7 @@ class EntityManagerMachine(RuleBasedStateMachine):
         active_pids = set(self.em.active_entities_by_id.keys())
         enabled_pids = set(self.em.mqtt_enabled_points)
         extra = active_pids - enabled_pids
-        assert not extra, (
-            f"Points in active_entities_by_id but NOT in mqtt_enabled_points: {extra}"
-        )
+        assert not extra, f"Points in active_entities_by_id but NOT in mqtt_enabled_points: {extra}"
 
     @invariant()
     def enabled_count_non_negative(self):
@@ -749,8 +794,8 @@ class EntityManagerMachine(RuleBasedStateMachine):
     def pending_writes_well_formed(self):
         """Every pending write entry must have 'value' and 'time' keys."""
         for pid, entry in self.em.pending_writes.items():
-            assert 'value' in entry, f"pending_writes[{pid}] missing 'value'"
-            assert 'time' in entry, f"pending_writes[{pid}] missing 'time'"
+            assert "value" in entry, f"pending_writes[{pid}] missing 'value'"
+            assert "time" in entry, f"pending_writes[{pid}] missing 'time'"
 
     @invariant()
     def history_seq_never_decreases(self):
@@ -769,13 +814,12 @@ class EntityManagerMachine(RuleBasedStateMachine):
     @invariant()
     def changelog_entries_have_required_keys(self):
         """Every changelog entry must have the required structural keys."""
-        required = {'id', 'timestamp', 'unread', 'added', 'removed'}
+        required = {"id", "timestamp", "unread", "added", "removed"}
         for entry in self.em.change_history:
             missing = required - set(entry.keys())
             assert not missing, f"Changelog entry missing keys: {missing}"
 
-
-# pytest discovers RuleBasedStateMachine via TestCase subclassing
+    # pytest discovers RuleBasedStateMachine via TestCase subclassing
     @rule()
     def suppress_enabled_state(self):
         """Increment the suppression depth counter."""
@@ -794,8 +838,7 @@ class EntityManagerMachine(RuleBasedStateMachine):
     @invariant()
     def suppression_depth_non_negative(self):
         assert self.em._suppress_enabled_state_depth >= 0, (
-            f"_suppress_enabled_state_depth went negative: "
-            f"{self.em._suppress_enabled_state_depth}"
+            f"_suppress_enabled_state_depth went negative: {self.em._suppress_enabled_state_depth}"
         )
 
     @invariant()
@@ -808,7 +851,7 @@ class EntityManagerMachine(RuleBasedStateMachine):
     @invariant()
     def changelog_entry_ids_well_formed(self):
         for entry in self.em.change_history:
-            assert entry['id'].startswith('change_'), (
+            assert entry["id"].startswith("change_"), (
                 f"Changelog entry id malformed: {entry['id']!r}"
             )
 
@@ -819,47 +862,51 @@ class EntityManagerMachine(RuleBasedStateMachine):
             f"mqtt_enabled_points is {type(self.em.mqtt_enabled_points).__name__}"
         )
 
-    @rule(pid=st.sampled_from([100, 200, 300, 400, 500]),
-          pending_value=st.integers(min_value=0, max_value=100),
-          bulk_value=st.integers(min_value=0, max_value=100))
+    @rule(
+        pid=st.sampled_from([100, 200, 300, 400, 500]),
+        pending_value=st.integers(min_value=0, max_value=100),
+        bulk_value=st.integers(min_value=0, max_value=100),
+    )
     def pending_write_suppresses_state_publish(self, pid, pending_value, bulk_value):
         """While a pending write exists and bulk value differs from written value,
         _update_entity_state must not publish to the state topic."""
         import time as _time
+
         if pending_value == bulk_value:
             return
         self.em.pending_writes[pid] = {
-            'value': pending_value, 'timestamp': _time.time(),
-            'time': _time.time(), 'cmd_id': 'test',
+            "value": pending_value,
+            "timestamp": _time.time(),
+            "time": _time.time(),
+            "cmd_id": "test",
         }
         self.em.bulk_data[pid] = {
-            'raw_value': bulk_value, 'is_ok': True, 'string_value': '',
-            'metadata': {'variableSize': 'u8', 'divisor': 1,
-                         'unit': '', 'change': 0, 'decimal': 0},
-            'title': f'Point {pid}',
+            "raw_value": bulk_value,
+            "is_ok": True,
+            "string_value": "",
+            "metadata": {"variableSize": "u8", "divisor": 1, "unit": "", "change": 0, "decimal": 0},
+            "title": f"Point {pid}",
         }
         entity_info = {
-            'point_id': pid, 'entity_type': 'sensor',
-            'availability_topic': f'nibe/avail/{pid}',
-            'state_topic': f'nibe/state/{pid}',
-            'command_topic': None, 'point_data': {},
+            "point_id": pid,
+            "entity_type": "sensor",
+            "availability_topic": f"nibe/avail/{pid}",
+            "state_topic": f"nibe/state/{pid}",
+            "command_topic": None,
+            "point_data": {},
         }
         self.em.active_entities_by_id[pid] = entity_info
         self.em.mqtt_enabled_points.add(pid)
         before = list(self.em.mqtt.publish.call_args_list)
         self.em._update_entity_state(entity_info)
         after = list(self.em.mqtt.publish.call_args_list)
-        state_publishes = [c for c in after[len(before):]
-                           if c.args[0] == f'nibe/state/{pid}']
-        assert not state_publishes, (
-            f"Published to nibe/state/{pid} while pending write active"
-        )
+        state_publishes = [c for c in after[len(before) :] if c.args[0] == f"nibe/state/{pid}"]
+        assert not state_publishes, f"Published to nibe/state/{pid} while pending write active"
         self.em.pending_writes.pop(pid, None)
         self.em.active_entities_by_id.pop(pid, None)
         self.em.mqtt_enabled_points.discard(pid)
 
-
-    @rule(mode=st.sampled_from(['none', 'all']))
+    @rule(mode=st.sampled_from(["none", "all"]))
     def apply_mode(self, mode):
         """apply_mode reconciles mqtt_enabled_points to the target mode.
 
@@ -872,7 +919,10 @@ class EntityManagerMachine(RuleBasedStateMachine):
 
     @rule(
         subset=st.lists(
-            st.sampled_from([100, 200, 300, 400, 500]), min_size=0, max_size=5, unique=True,
+            st.sampled_from([100, 200, 300, 400, 500]),
+            min_size=0,
+            max_size=5,
+            unique=True,
         ),
     )
     def apply_named_mode(self, subset):
@@ -887,11 +937,12 @@ class EntityManagerMachine(RuleBasedStateMachine):
         modes (nibe_entity_detection.py:65: 'Tests that need a concrete set
         patch MODES[...] directly') — to exercise that branch for real."""
         from nibe_entity_manager import MODES
+
         known = {100, 200, 300, 400, 500}
         before_enabled = set(self.em.mqtt_enabled_points) & known
         protected = set(self.em.active_dynamic_points) & known
-        with patch.dict(MODES, {'__test_named_mode__': frozenset(subset)}):
-            self.em.apply_mode('__test_named_mode__')
+        with patch.dict(MODES, {"__test_named_mode__": frozenset(subset)}):
+            self.em.apply_mode("__test_named_mode__")
         after_enabled = set(self.em.mqtt_enabled_points) & known
         # Points in the mode's target set get enabled; points previously
         # enabled but not in the target only survive if they're an active
@@ -903,30 +954,38 @@ class EntityManagerMachine(RuleBasedStateMachine):
             f"(before={before_enabled}, protected={protected})"
         )
 
-    @rule(pid=st.sampled_from([100, 200, 300, 400, 500]),
-          entity_type=st.sampled_from(['switch', 'number', 'sensor', 'select']),
-          raw_value=st.integers(min_value=0, max_value=10))
+    @rule(
+        pid=st.sampled_from([100, 200, 300, 400, 500]),
+        entity_type=st.sampled_from(["switch", "number", "sensor", "select"]),
+        raw_value=st.integers(min_value=0, max_value=10),
+    )
     def update_entity_state_writable(self, pid, entity_type, raw_value):
         """Exercise _update_entity_state for writable entity types (switch,
         number, select) — the existing machine only uses 'sensor'. Writable
         types have different command_topic and value-mapping paths."""
         self.em.bulk_data[pid] = {
-            'raw_value': raw_value, 'is_ok': True, 'string_value': '',
-            'metadata': {
-                'variableSize': 'u8', 'divisor': 1, 'unit': '',
-                'change': 0, 'decimal': 0,
-                'minValue': 0, 'maxValue': 10,
-                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+            "raw_value": raw_value,
+            "is_ok": True,
+            "string_value": "",
+            "metadata": {
+                "variableSize": "u8",
+                "divisor": 1,
+                "unit": "",
+                "change": 0,
+                "decimal": 0,
+                "minValue": 0,
+                "maxValue": 10,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
             },
-            'title': f'Point {pid}',
+            "title": f"Point {pid}",
         }
         entity_info = {
-            'point_id':            pid,
-            'entity_type':         entity_type,
-            'availability_topic':  f'nibe/avail/{pid}',
-            'state_topic':         f'nibe/state/{pid}',
-            'command_topic':       f'homeassistant/{entity_type}/nibe_{pid}/set',
-            'point_data':          {},
+            "point_id": pid,
+            "entity_type": entity_type,
+            "availability_topic": f"nibe/avail/{pid}",
+            "state_topic": f"nibe/state/{pid}",
+            "command_topic": f"homeassistant/{entity_type}/nibe_{pid}/set",
+            "point_data": {},
         }
         self.em.active_entities_by_id[pid] = entity_info
         self.em.mqtt_enabled_points.add(pid)
@@ -954,14 +1013,14 @@ class EntityManagerMachine(RuleBasedStateMachine):
         establishment, DynamicPointMap population) — not _fetch_bulk_data
         itself, which is the ~297-line function this project deliberately
         does not refactor and which has its own dedicated test coverage."""
-        with patch.object(self.em, '_fetch_bulk_data', return_value=True):
+        with patch.object(self.em, "_fetch_bulk_data", return_value=True):
             result = self.em.discover_points()
         assert result is True
         assert self.em.initial_discovery_complete is True
         assert self.em.baseline_point_ids == set(self._known_pids)
 
     @rule(
-        applied_mode=st.sampled_from([None, 'none', 'essential', 'all']),
+        applied_mode=st.sampled_from([None, "none", "essential", "all"]),
         mqtt_enabled_count=st.integers(min_value=0, max_value=3),
     )
     def complete_deferred_discovery(self, applied_mode, mqtt_enabled_count):
@@ -976,17 +1035,25 @@ class EntityManagerMachine(RuleBasedStateMachine):
         logic itself, exercised alongside arbitrary enable/disable/write
         state."""
         discovered = set(range(mqtt_enabled_count))
-        config_mode = 'essential'
-        with patch.object(self.em, 'discover_points', return_value=True), \
-             patch.object(self.em, 'scan_mqtt_discovery', return_value=discovered), \
-             patch.object(self.em, 'read_applied_mode', return_value=applied_mode), \
-             patch.object(self.em, 'restore_from_mqtt') as mock_restore, \
-             patch.object(self.em, 'apply_mode') as mock_apply, \
-             patch.object(self.em, 'record_applied_mode') as mock_record, \
-             patch.object(self.em, 'publish_enabled_state'), \
-             patch.object(self.em._api, 'fetch_device_info', return_value={
-                 'serial': '1', 'firmware': '1', 'model': 'S',
-             }):
+        config_mode = "essential"
+        with (
+            patch.object(self.em, "discover_points", return_value=True),
+            patch.object(self.em, "scan_mqtt_discovery", return_value=discovered),
+            patch.object(self.em, "read_applied_mode", return_value=applied_mode),
+            patch.object(self.em, "restore_from_mqtt") as mock_restore,
+            patch.object(self.em, "apply_mode") as mock_apply,
+            patch.object(self.em, "record_applied_mode") as mock_record,
+            patch.object(self.em, "publish_enabled_state"),
+            patch.object(
+                self.em._api,
+                "fetch_device_info",
+                return_value={
+                    "serial": "1",
+                    "firmware": "1",
+                    "model": "S",
+                },
+            ),
+        ):
             result = self.em.complete_deferred_discovery(config_mode)
 
         assert result is True
@@ -1011,7 +1078,10 @@ class EntityManagerMachine(RuleBasedStateMachine):
 
     @rule(
         retained_pids=st.lists(
-            st.sampled_from([100, 200, 300, 400, 500]), min_size=0, max_size=3, unique=True,
+            st.sampled_from([100, 200, 300, 400, 500]),
+            min_size=0,
+            max_size=3,
+            unique=True,
         ),
     )
     def scan_mqtt_discovery(self, retained_pids):
@@ -1025,21 +1095,24 @@ class EntityManagerMachine(RuleBasedStateMachine):
             callbacks[topic] = cb
 
         def fake_publish(topic, _payload, retain=False):
-            if 'scan_sentinel' in str(topic):
+            if "scan_sentinel" in str(topic):
                 import json as _json
+
                 for pid in retained_pids:
                     msg = MagicMock()
-                    msg.topic = f'homeassistant/sensor/nibe_{pid}/config'
-                    msg.payload = _json.dumps({'unique_id': f'nibe_{pid}'}).encode()
-                    cb = callbacks.get('homeassistant/+/+/config')
+                    msg.topic = f"homeassistant/sensor/nibe_{pid}/config"
+                    msg.payload = _json.dumps({"unique_id": f"nibe_{pid}"}).encode()
+                    cb = callbacks.get("homeassistant/+/+/config")
                     if cb:
                         cb(None, None, msg)
                 cb = callbacks.get(topic)
                 if cb:
                     cb(None, None, MagicMock())
 
-        with patch.object(self.em.mqtt, 'message_callback_add', side_effect=fake_callback_add), \
-             patch.object(self.em.mqtt, 'publish', side_effect=fake_publish):
+        with (
+            patch.object(self.em.mqtt, "message_callback_add", side_effect=fake_callback_add),
+            patch.object(self.em.mqtt, "publish", side_effect=fake_publish),
+        ):
             result = self.em.scan_mqtt_discovery()
 
         assert result == set(retained_pids), (
@@ -1062,7 +1135,10 @@ class EntityManagerMachine(RuleBasedStateMachine):
 
     @rule(
         pids=st.lists(
-            st.sampled_from([100, 200, 300, 400, 500]), min_size=0, max_size=3, unique=True,
+            st.sampled_from([100, 200, 300, 400, 500]),
+            min_size=0,
+            max_size=3,
+            unique=True,
         ),
     )
     def restore_from_mqtt(self, pids):
@@ -1079,22 +1155,23 @@ class EntityManagerMachine(RuleBasedStateMachine):
         expected_restored = len(self.em.mqtt_enabled_points)
 
         def fake_publish_discovery(point, _bulk_data):
-            pid = point['variableId']
+            pid = point["variableId"]
             # Shape matches real publish_entity_discovery output closely
             # enough for apply_mode's later _disable_entity_locked call
             # (nibe_entity_manager.py:859) to succeed on this entity.
             return {
-                'point_id':           pid,
-                'entity_id':          f'sensor.nibe_{pid}',
-                'entity_type':        'sensor',
-                'command_topic':      None,
-                'availability_topic': f'nibe/avail/{pid}',
-                'state_topic':        f'nibe/state/{pid}',
-                'is_dynamic':         False,
+                "point_id": pid,
+                "entity_id": f"sensor.nibe_{pid}",
+                "entity_type": "sensor",
+                "command_topic": None,
+                "availability_topic": f"nibe/avail/{pid}",
+                "state_topic": f"nibe/state/{pid}",
+                "is_dynamic": False,
             }
 
-        with patch.object(self.em._pub, 'publish_entity_discovery',
-                           side_effect=fake_publish_discovery):
+        with patch.object(
+            self.em._pub, "publish_entity_discovery", side_effect=fake_publish_discovery
+        ):
             restored = self.em.restore_from_mqtt()
 
         assert restored == expected_restored, (
@@ -1117,18 +1194,17 @@ class EntityManagerMachine(RuleBasedStateMachine):
         active_and_indexed = self.em.active_dynamic_points & indexed
         not_enabled = active_and_indexed - self.em.mqtt_enabled_points
         assert not not_enabled, (
-            f"Active dynamic points indexed but not in mqtt_enabled_points: "
-            f"{not_enabled}"
+            f"Active dynamic points indexed but not in mqtt_enabled_points: {not_enabled}"
         )
 
     @invariant()
     def changelog_added_removed_are_lists(self):
         """Every changelog entry's 'added' and 'removed' fields must be lists."""
         for entry in self.em.change_history:
-            assert isinstance(entry.get('added'), list), (
+            assert isinstance(entry.get("added"), list), (
                 f"Changelog 'added' is not a list: {type(entry.get('added'))}"
             )
-            assert isinstance(entry.get('removed'), list), (
+            assert isinstance(entry.get("removed"), list), (
                 f"Changelog 'removed' is not a list: {type(entry.get('removed'))}"
             )
 
@@ -1153,7 +1229,6 @@ EntityManagerStatefulTest = EntityManagerMachine.TestCase
 
 
 class TestSuppressEnabledState(unittest.TestCase):
-
     def test_depth_increments_inside_context(self):
         em = _make_em()
         self.assertEqual(em._suppress_enabled_state_depth, 0)
@@ -1201,10 +1276,9 @@ class TestHaDisableNotifIdProperties(unittest.TestCase):
         could pass many runs without ever generating a long string)."""
         em = _make_em()
         result = em.ha_disable_notif_id(ha_entity_id)
-        self.assertLessEqual(len(result), len('nibe_ha_disable_') + 60)
+        self.assertLessEqual(len(result), len("nibe_ha_disable_") + 60)
 
-    @given(st.text(alphabet=st.characters(blacklist_characters='.-'),
-                   min_size=1, max_size=50))
+    @given(st.text(alphabet=st.characters(blacklist_characters=".-"), min_size=1, max_size=50))
     def test_short_dot_dash_free_id_passes_through_unmodified(self, ha_entity_id):
         """For any entity_id short enough to avoid truncation and already
         free of '.'/'-', the safe_id portion must equal the input exactly
@@ -1212,10 +1286,10 @@ class TestHaDisableNotifIdProperties(unittest.TestCase):
         promises."""
         em = _make_em()
         result = em.ha_disable_notif_id(ha_entity_id)
-        self.assertEqual(result, f'nibe_ha_disable_{ha_entity_id}')
+        self.assertEqual(result, f"nibe_ha_disable_{ha_entity_id}")
 
     @given(st.text(min_size=1, max_size=300))
-    @example('switch.living_room-thermostat.setpoint-2')  # guarantees both '.' and '-' present
+    @example("switch.living_room-thermostat.setpoint-2")  # guarantees both '.' and '-' present
     def test_result_never_contains_a_literal_dot_or_dash(self, ha_entity_id):
         """'.' and '-' are both replaced with '_' — the notification_id is
         used as an HA notification identifier, where these characters are
@@ -1223,9 +1297,9 @@ class TestHaDisableNotifIdProperties(unittest.TestCase):
         that leak through would be a real correctness bug, not cosmetic."""
         em = _make_em()
         result = em.ha_disable_notif_id(ha_entity_id)
-        safe_id_part = result[len('nibe_ha_disable_'):]
-        self.assertNotIn('.', safe_id_part)
-        self.assertNotIn('-', safe_id_part)
+        safe_id_part = result[len("nibe_ha_disable_") :]
+        self.assertNotIn(".", safe_id_part)
+        self.assertNotIn("-", safe_id_part)
 
 
 class TestBuildDisableNotification(unittest.TestCase):
@@ -1238,68 +1312,83 @@ class TestBuildDisableNotification(unittest.TestCase):
     def test_reenabled_action_returns_reenabled_message(self):
         em = _make_em()
         title, message, _notif_id = em.build_disable_notification(
-            3920, 'switch.permit_heating', 're-enabled',
+            3920,
+            "switch.permit_heating",
+            "re-enabled",
         )
-        self.assertIn('re-enabled', title.lower())
-        self.assertIn('resume publishing', message)
+        self.assertIn("re-enabled", title.lower())
+        self.assertIn("resume publishing", message)
 
     def test_disabled_static_point_returns_standard_message(self):
         em = _make_em()
-        em.all_points_by_id[3920] = {'display_title': 'Permit heating', 'is_dynamic': False}
+        em.all_points_by_id[3920] = {"display_title": "Permit heating", "is_dynamic": False}
         title, message, _notif_id = em.build_disable_notification(
-            3920, 'switch.permit_heating', 'disabled',
+            3920,
+            "switch.permit_heating",
+            "disabled",
         )
-        self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')
-        self.assertIn('#3920 (Permit heating)', message)
-        self.assertIn('Entity Manager card', message)
+        self.assertEqual(title, "Nibe Bridge: Entity disabled in HA")
+        self.assertIn("#3920 (Permit heating)", message)
+        self.assertIn("Entity Manager card", message)
 
     def test_disabled_dynamic_point_returns_dynamic_specific_message(self):
         """Dynamic points get a different message explaining they'll
         disappear automatically — must not be conflated with the static
         'use the Entity Manager card' guidance, which doesn't apply to them."""
         em = _make_em()
-        em.all_points_by_id[50827] = {'display_title': 'Humidity', 'is_dynamic': True}
+        em.all_points_by_id[50827] = {"display_title": "Humidity", "is_dynamic": True}
         title, message, _notif_id = em.build_disable_notification(
-            50827, 'sensor.humidity', 'disabled',
+            50827,
+            "sensor.humidity",
+            "disabled",
         )
-        self.assertEqual(title, 'Nibe Bridge: Dynamic entity disabled in HA')
-        self.assertIn('firmware-controlled state change', message)
-        self.assertNotIn('Entity Manager card', message)
+        self.assertEqual(title, "Nibe Bridge: Dynamic entity disabled in HA")
+        self.assertIn("firmware-controlled state change", message)
+        self.assertNotIn("Entity Manager card", message)
 
     def test_disabled_dynamic_point_names_controlling_switch_when_known(self):
         """When the controlling switch/select is known in dynamic_point_map,
         the message must name it instead of the generic explanation."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
-        em.all_points_by_id[50827] = {'display_title': 'Humidity', 'is_dynamic': True}
+        em.all_points_by_id[50827] = {"display_title": "Humidity", "is_dynamic": True}
         em.dynamic_point_map._table[3920] = DynamicPointEntry(
-            point_id=3920, title='Additional heating enable', entity_type='switch',
+            point_id=3920,
+            title="Additional heating enable",
+            entity_type="switch",
             dynamic_points_by_value={1: [50827]},
         )
         _title, message, _notif_id = em.build_disable_notification(
-            50827, 'sensor.humidity', 'disabled',
+            50827,
+            "sensor.humidity",
+            "disabled",
         )
-        self.assertIn('Additional heating enable', message)
-        self.assertIn('#3920', message)
+        self.assertIn("Additional heating enable", message)
+        self.assertIn("#3920", message)
 
     def test_unknown_point_id_falls_back_to_hash_display(self):
         """The point isn't in all_points_by_id (stale data) — must not
         crash, falls back to a bare '#id' display."""
         em = _make_em()
         _title, message, _notif_id = em.build_disable_notification(
-            9999, 'switch.unknown', 'disabled',
+            9999,
+            "switch.unknown",
+            "disabled",
         )
-        self.assertIn('#9999', message)
+        self.assertIn("#9999", message)
 
     def test_none_point_id_falls_back_to_entity_id_display(self):
         """point_id itself is None (couldn't be resolved at all) — falls
         back to showing the raw HA entity_id instead of '#None'."""
         em = _make_em()
         _title, message, _notif_id = em.build_disable_notification(
-            None, 'switch.mystery_entity', 'disabled',
+            None,
+            "switch.mystery_entity",
+            "disabled",
         )
-        self.assertIn('switch.mystery_entity', message)
-        self.assertNotIn('#None', message)
+        self.assertIn("switch.mystery_entity", message)
+        self.assertNotIn("#None", message)
 
     def test_unknown_point_uses_static_message_not_dynamic(self):
         """When point_id isn't found in all_points_by_id, is_dynamic must
@@ -1309,37 +1398,41 @@ class TestBuildDisableNotification(unittest.TestCase):
         VARIANT is used; this pins that specifically."""
         em = _make_em()
         title, message, _notif_id = em.build_disable_notification(
-            None, 'switch.mystery_entity', 'disabled',
+            None,
+            "switch.mystery_entity",
+            "disabled",
         )
-        self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')
-        self.assertIn('Entity Manager card', message)
-        self.assertNotIn('firmware-controlled state change', message)
+        self.assertEqual(title, "Nibe Bridge: Entity disabled in HA")
+        self.assertIn("Entity Manager card", message)
+        self.assertNotIn("firmware-controlled state change", message)
 
     def test_notification_id_sanitises_dots_and_hyphens(self):
         """notif_id is used as an HA notification identifier — dots and
         hyphens from the entity_id must be replaced with underscores."""
         em = _make_em()
         _, _, notif_id = em.build_disable_notification(
-            3920, 'switch.some-entity.name', 'disabled',
+            3920,
+            "switch.some-entity.name",
+            "disabled",
         )
-        self.assertNotIn('.', notif_id)
-        self.assertNotIn('-', notif_id)
-        self.assertTrue(notif_id.startswith('nibe_ha_disable_'))
+        self.assertNotIn(".", notif_id)
+        self.assertNotIn("-", notif_id)
+        self.assertTrue(notif_id.startswith("nibe_ha_disable_"))
 
     def test_notification_id_truncated_to_safe_length(self):
         """A very long entity_id must not produce an unbounded notif_id —
         confirms the [:60] truncation is actually applied."""
         em = _make_em()
-        long_id = 'switch.' + 'a' * 200
-        _, _, notif_id = em.build_disable_notification(3920, long_id, 'disabled')
-        self.assertLessEqual(len(notif_id), len('nibe_ha_disable_') + 60)
+        long_id = "switch." + "a" * 200
+        _, _, notif_id = em.build_disable_notification(3920, long_id, "disabled")
+        self.assertLessEqual(len(notif_id), len("nibe_ha_disable_") + 60)
 
     def test_notification_id_distinct_per_entity(self):
         """Two different entities must produce two different notif_ids, so
         HA doesn't conflate or dedupe unrelated disable notifications."""
         em = _make_em()
-        _, _, id_a = em.build_disable_notification(1, 'switch.a', 'disabled')
-        _, _, id_b = em.build_disable_notification(2, 'switch.b', 'disabled')
+        _, _, id_a = em.build_disable_notification(1, "switch.a", "disabled")
+        _, _, id_b = em.build_disable_notification(2, "switch.b", "disabled")
         self.assertNotEqual(id_a, id_b)
 
     def test_display_falls_back_to_generic_point_label_when_no_title(self):
@@ -1347,11 +1440,13 @@ class TestBuildDisableNotification(unittest.TestCase):
         — falls back to a generic 'Point N' label rather than crashing or
         showing a blank title."""
         em = _make_em()
-        em.all_points_by_id[100] = {'is_dynamic': False}  # no display_title
+        em.all_points_by_id[100] = {"is_dynamic": False}  # no display_title
         _title, message, _notif_id = em.build_disable_notification(
-            100, 'switch.foo', 'disabled',
+            100,
+            "switch.foo",
+            "disabled",
         )
-        self.assertIn('Point 100', message)
+        self.assertIn("Point 100", message)
 
     def test_is_dynamic_defaults_to_static_when_key_absent(self):
         """point.get('is_dynamic', False) — when the point dict lacks the
@@ -1360,13 +1455,15 @@ class TestBuildDisableNotification(unittest.TestCase):
         'is_dynamic' key at all (unlike other tests, which always set it
         explicitly) is required to actually exercise the default value."""
         em = _make_em()
-        em.all_points_by_id[100] = {'display_title': 'No Dynamic Key'}  # key absent
+        em.all_points_by_id[100] = {"display_title": "No Dynamic Key"}  # key absent
         title, message, _notif_id = em.build_disable_notification(
-            100, 'switch.foo', 'disabled',
+            100,
+            "switch.foo",
+            "disabled",
         )
-        self.assertEqual(title, 'Nibe Bridge: Entity disabled in HA')
-        self.assertIn('Entity Manager card', message)
-        self.assertNotIn('firmware-controlled', message)
+        self.assertEqual(title, "Nibe Bridge: Entity disabled in HA")
+        self.assertIn("Entity Manager card", message)
+        self.assertNotIn("firmware-controlled", message)
 
     def test_reenabled_title_exact_case(self):
         """Pins the exact title string (not just a lowercased substring, as
@@ -1374,9 +1471,11 @@ class TestBuildDisableNotification(unittest.TestCase):
         literal is actually caught."""
         em = _make_em()
         title, _, _ = em.build_disable_notification(
-            3920, 'switch.permit_heating', 're-enabled',
+            3920,
+            "switch.permit_heating",
+            "re-enabled",
         )
-        self.assertEqual(title, 'Nibe Bridge: Entity re-enabled in HA')
+        self.assertEqual(title, "Nibe Bridge: Entity re-enabled in HA")
 
     def test_notification_id_exact_sanitisation(self):
         """Pins the exact sanitised notif_id for a known entity_id — the
@@ -1385,9 +1484,11 @@ class TestBuildDisableNotification(unittest.TestCase):
         '-' left) would slip past. Verify the precise expected string."""
         em = _make_em()
         _, _, notif_id = em.build_disable_notification(
-            3920, 'switch.some-entity.name', 'disabled',
+            3920,
+            "switch.some-entity.name",
+            "disabled",
         )
-        self.assertEqual(notif_id, 'nibe_ha_disable_switch_some_entity_name')
+        self.assertEqual(notif_id, "nibe_ha_disable_switch_some_entity_name")
 
     def test_dynamic_point_with_known_controller_exact_message(self):
         """Pins the exact wording of the dynamic-with-known-controller
@@ -1396,23 +1497,28 @@ class TestBuildDisableNotification(unittest.TestCase):
         mutations to the surrounding fixed text ('It will disappear
         automatically...')."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
-        em.all_points_by_id[50827] = {'display_title': 'Humidity', 'is_dynamic': True}
+        em.all_points_by_id[50827] = {"display_title": "Humidity", "is_dynamic": True}
         em.dynamic_point_map._table[3920] = DynamicPointEntry(
-            point_id=3920, title='Additional heating enable', entity_type='switch',
+            point_id=3920,
+            title="Additional heating enable",
+            entity_type="switch",
             dynamic_points_by_value={1: [50827]},
         )
         _, message, _ = em.build_disable_notification(
-            50827, 'sensor.humidity', 'disabled',
+            50827,
+            "sensor.humidity",
+            "disabled",
         )
         expected = (
-            'Dynamic data point #50827 (Humidity) was disabled via the HA entity settings. '
-            'The bridge has kept the entity enabled — it is still being polled.\n\n'
-            'Please go to Settings > Entities and re-enable it.\n\n'
-            'This entity appeared because of a change to '
+            "Dynamic data point #50827 (Humidity) was disabled via the HA entity settings. "
+            "The bridge has kept the entity enabled — it is still being polled.\n\n"
+            "Please go to Settings > Entities and re-enable it.\n\n"
+            "This entity appeared because of a change to "
             '"Additional heating enable" (#3920). '
-            'It will disappear automatically when that switch/select '
-            'is no longer in the state that activates it.'
+            "It will disappear automatically when that switch/select "
+            "is no longer in the state that activates it."
         )
         self.assertEqual(message, expected)
 
@@ -1420,17 +1526,19 @@ class TestBuildDisableNotification(unittest.TestCase):
         """Pins the exact wording of the dynamic-with-no-known-controller
         (generic firmware-controlled) message body."""
         em = _make_em()
-        em.all_points_by_id[50827] = {'display_title': 'Humidity', 'is_dynamic': True}
+        em.all_points_by_id[50827] = {"display_title": "Humidity", "is_dynamic": True}
         _, message, _ = em.build_disable_notification(
-            50827, 'sensor.humidity', 'disabled',
+            50827,
+            "sensor.humidity",
+            "disabled",
         )
         expected = (
-            'Dynamic data point #50827 (Humidity) was disabled via the HA entity settings. '
-            'The bridge has kept the entity enabled — it is still being polled.\n\n'
-            'Please go to Settings > Entities and re-enable it.\n\n'
-            'This entity appeared during a firmware-controlled state change. '
-            'It will disappear automatically when the operating mode that '
-            'activates it is no longer active.'
+            "Dynamic data point #50827 (Humidity) was disabled via the HA entity settings. "
+            "The bridge has kept the entity enabled — it is still being polled.\n\n"
+            "Please go to Settings > Entities and re-enable it.\n\n"
+            "This entity appeared during a firmware-controlled state change. "
+            "It will disappear automatically when the operating mode that "
+            "activates it is no longer active."
         )
         self.assertEqual(message, expected)
 
@@ -1443,8 +1551,8 @@ class TestDeindexPoint(unittest.TestCase):
         """A wrong key (e.g. None) would leave the real point_id still
         indexed forever, while popping an unrelated no-op entry."""
         em = _make_em()
-        em.all_points_by_id[100] = {'variableId': 100}
-        em.all_points_by_id[200] = {'variableId': 200}
+        em.all_points_by_id[100] = {"variableId": 100}
+        em.all_points_by_id[200] = {"variableId": 200}
         em._deindex_point(100)
         self.assertNotIn(100, em.all_points_by_id)
         self.assertIn(200, em.all_points_by_id)
@@ -1466,9 +1574,9 @@ class TestDecrementStats(unittest.TestCase):
         the starting count is above 1, since both -1 and -2 clamp to the
         same 0 from a starting count of 1."""
         em = _make_em()
-        em._stats_type_counts['sensor'] = 3
-        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
-        self.assertEqual(em._stats_type_counts['sensor'], 2)
+        em._stats_type_counts["sensor"] = 3
+        em._decrement_stats({"entity_type": "sensor", "entity_category": "diagnostic"})
+        self.assertEqual(em._stats_type_counts["sensor"], 2)
 
     def test_writable_count_default_false_when_key_absent(self):
         """A point dict missing 'is_writable' entirely must not decrement
@@ -1476,7 +1584,7 @@ class TestDecrementStats(unittest.TestCase):
         under-count writable entities on every point lacking the key."""
         em = _make_em()
         em._stats_writable_count = 5
-        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
+        em._decrement_stats({"entity_type": "sensor", "entity_category": "diagnostic"})
         self.assertEqual(em._stats_writable_count, 5)
 
     def test_writable_count_clamped_at_zero_not_one(self):
@@ -1484,8 +1592,9 @@ class TestDecrementStats(unittest.TestCase):
         max(1, ...) would leave a phantom writable entity counted forever."""
         em = _make_em()
         em._stats_writable_count = 1
-        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic',
-                             'is_writable': True})
+        em._decrement_stats(
+            {"entity_type": "sensor", "entity_category": "diagnostic", "is_writable": True}
+        )
         self.assertEqual(em._stats_writable_count, 0)
 
     @given(st.integers(min_value=0, max_value=1000))
@@ -1496,16 +1605,17 @@ class TestDecrementStats(unittest.TestCase):
         count=0 itself (already-clamped, must stay 0)."""
         em = _make_em()
         em._stats_writable_count = count
-        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic',
-                             'is_writable': True})
+        em._decrement_stats(
+            {"entity_type": "sensor", "entity_category": "diagnostic", "is_writable": True}
+        )
         self.assertEqual(em._stats_writable_count, max(0, count - 1))
 
     @given(st.integers(min_value=0, max_value=1000))
     def test_type_count_decrement_is_exactly_max_0_count_minus_1(self, count):
         em = _make_em()
-        em._stats_type_counts['sensor'] = count
-        em._decrement_stats({'entity_type': 'sensor', 'entity_category': 'diagnostic'})
-        self.assertEqual(em._stats_type_counts['sensor'], max(0, count - 1))
+        em._stats_type_counts["sensor"] = count
+        em._decrement_stats({"entity_type": "sensor", "entity_category": "diagnostic"})
+        self.assertEqual(em._stats_type_counts["sensor"], max(0, count - 1))
 
     def test_missing_entity_type_key_decrements_the_unknown_bucket(self):
         """_increment_stats and _decrement_stats must agree on the exact
@@ -1518,19 +1628,19 @@ class TestDecrementStats(unittest.TestCase):
         — every prior test always supplied 'entity_type' explicitly, so
         this fallback path had zero coverage."""
         em = _make_em()
-        em._increment_stats({'entity_category': 'diagnostic'})
-        self.assertEqual(em._stats_type_counts.get('unknown'), 1)
-        em._decrement_stats({'entity_category': 'diagnostic'})
-        self.assertEqual(em._stats_type_counts.get('unknown'), 0)
+        em._increment_stats({"entity_category": "diagnostic"})
+        self.assertEqual(em._stats_type_counts.get("unknown"), 1)
+        em._decrement_stats({"entity_category": "diagnostic"})
+        self.assertEqual(em._stats_type_counts.get("unknown"), 0)
 
     def test_missing_entity_category_key_decrements_the_none_bucket(self):
         """Same symmetry requirement as the entity_type case above, but
         for 'entity_category' and its 'none' fallback key."""
         em = _make_em()
-        em._increment_stats({'entity_type': 'sensor'})
-        self.assertEqual(em._stats_category_counts.get('none'), 1)
-        em._decrement_stats({'entity_type': 'sensor'})
-        self.assertEqual(em._stats_category_counts.get('none'), 0)
+        em._increment_stats({"entity_type": "sensor"})
+        self.assertEqual(em._stats_category_counts.get("none"), 1)
+        em._decrement_stats({"entity_type": "sensor"})
+        self.assertEqual(em._stats_category_counts.get("none"), 0)
 
 
 class TestAppliedModePersistence(unittest.TestCase):
@@ -1546,74 +1656,81 @@ class TestAppliedModePersistence(unittest.TestCase):
     def setUp(self):
         import os
         import tempfile
+
         self._tmp_dir = tempfile.mkdtemp()
-        self._tmp_path = os.path.join(self._tmp_dir, 'applied_mode')
+        self._tmp_path = os.path.join(self._tmp_dir, "applied_mode")
 
     def _deliver_retained(self, em, payload: bytes | None):
         """Make em.mqtt.message_callback_add synchronously invoke the
         stored callback with a fake retained message — simulating the
         broker responding before the .wait() timeout would otherwise fire."""
+
         def fake_callback_add(_topic, cb):
             if payload is None:
                 return  # simulate no retained message — real timeout path
             msg = MagicMock()
             msg.payload = payload
             cb(None, None, msg)
+
         em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
 
     def test_read_applied_mode_returns_mqtt_value(self):
         em = _make_em()
-        self._deliver_retained(em, b'menus')
-        self.assertEqual(em.read_applied_mode(), 'menus')
+        self._deliver_retained(em, b"menus")
+        self.assertEqual(em.read_applied_mode(), "menus")
 
     def test_read_applied_mode_invalid_utf8_payload_falls_back_to_file(self):
         """A malformed retained payload must not raise — decode failure is
         caught and treated as no MQTT value, falling through to the file."""
         em = _make_em()
-        self._deliver_retained(em, b'\xff\xfe\x00\x01')  # invalid UTF-8
-        with open(self._tmp_path, 'w') as f:
-            f.write('advanced')
-        with patch('nibe_entity_manager._APPLIED_MODE_FILE', self._tmp_path):
-            self.assertEqual(em.read_applied_mode(), 'advanced')
+        self._deliver_retained(em, b"\xff\xfe\x00\x01")  # invalid UTF-8
+        with open(self._tmp_path, "w") as f:
+            f.write("advanced")
+        with patch("nibe_entity_manager._APPLIED_MODE_FILE", self._tmp_path):
+            self.assertEqual(em.read_applied_mode(), "advanced")
 
     def test_read_applied_mode_strips_whitespace(self):
         em = _make_em()
-        self._deliver_retained(em, b'  advanced  \n')
-        self.assertEqual(em.read_applied_mode(), 'advanced')
+        self._deliver_retained(em, b"  advanced  \n")
+        self.assertEqual(em.read_applied_mode(), "advanced")
 
     def test_read_applied_mode_empty_payload_falls_back_to_file(self):
         """An empty retained payload (topic exists but was cleared) must be
         treated the same as no message — fall through to the file."""
         em = _make_em()
-        self._deliver_retained(em, b'')
-        with open(self._tmp_path, 'w') as f:
-            f.write('monitoring')
-        with patch('nibe_entity_manager._APPLIED_MODE_FILE', self._tmp_path):
-            self.assertEqual(em.read_applied_mode(), 'monitoring')
+        self._deliver_retained(em, b"")
+        with open(self._tmp_path, "w") as f:
+            f.write("monitoring")
+        with patch("nibe_entity_manager._APPLIED_MODE_FILE", self._tmp_path):
+            self.assertEqual(em.read_applied_mode(), "monitoring")
 
     def test_read_applied_mode_falls_back_to_file_when_no_mqtt_message(self):
         """The real migration-boundary / timeout path: no retained message
         arrives at all — timeout fires and file fallback is used."""
         em = _make_em()
         self._deliver_retained(em, None)
-        with open(self._tmp_path, 'w') as f:
-            f.write('all')
-        with patch('nibe_entity_manager._APPLIED_MODE_FILE', self._tmp_path), \
-             patch('nibe_entity_manager._APPLIED_MODE_TIMEOUT_S', 0):
-            self.assertEqual(em.read_applied_mode(), 'all')
+        with open(self._tmp_path, "w") as f:
+            f.write("all")
+        with (
+            patch("nibe_entity_manager._APPLIED_MODE_FILE", self._tmp_path),
+            patch("nibe_entity_manager._APPLIED_MODE_TIMEOUT_S", 0),
+        ):
+            self.assertEqual(em.read_applied_mode(), "all")
 
     def test_read_applied_mode_returns_none_when_neither_store_has_a_record(self):
         em = _make_em()
         self._deliver_retained(em, None)
-        with patch('nibe_entity_manager._APPLIED_MODE_FILE', self._tmp_path), \
-             patch('nibe_entity_manager._APPLIED_MODE_TIMEOUT_S', 0):
+        with (
+            patch("nibe_entity_manager._APPLIED_MODE_FILE", self._tmp_path),
+            patch("nibe_entity_manager._APPLIED_MODE_TIMEOUT_S", 0),
+        ):
             self.assertIsNone(em.read_applied_mode())  # tmp file doesn't exist
 
     def test_read_applied_mode_unsubscribes_after_wait(self):
         """Must always clean up its temporary subscription, whether or not
         a message arrived."""
         em = _make_em()
-        self._deliver_retained(em, b'menus')
+        self._deliver_retained(em, b"menus")
         em.read_applied_mode()
         em.mqtt.unsubscribe.assert_called_once()
         em.mqtt.message_callback_remove.assert_called_once()
@@ -1625,61 +1742,60 @@ class TestAppliedModePersistence(unittest.TestCase):
         up) the wrong topic, since a MagicMock accepts any argument
         silently and every other test here only checks call COUNTS."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
-        self._deliver_retained(em, b'menus')
+        self._deliver_retained(em, b"menus")
         em.read_applied_mode()
         em.mqtt.subscribe.assert_any_call(BrowserTopic.APPLIED_MODE)
-        em.mqtt.message_callback_add.assert_any_call(
-            BrowserTopic.APPLIED_MODE, unittest.mock.ANY)
+        em.mqtt.message_callback_add.assert_any_call(BrowserTopic.APPLIED_MODE, unittest.mock.ANY)
         em.mqtt.message_callback_remove.assert_any_call(BrowserTopic.APPLIED_MODE)
         em.mqtt.unsubscribe.assert_any_call(BrowserTopic.APPLIED_MODE)
 
     def test_persist_applied_mode_writes_file_then_mqtt(self):
         """Write-ahead: file first, then the retained MQTT topic."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
-        em._persist_applied_mode('essential', path=self._tmp_path)
+        em._persist_applied_mode("essential", path=self._tmp_path)
         with open(self._tmp_path) as f:
-            self.assertEqual(f.read(), 'essential')
-        em.mqtt.publish.assert_called_once_with(
-            BrowserTopic.APPLIED_MODE, 'essential', retain=True
-        )
+            self.assertEqual(f.read(), "essential")
+        em.mqtt.publish.assert_called_once_with(BrowserTopic.APPLIED_MODE, "essential", retain=True)
 
     def test_persist_applied_mode_tolerates_unwritable_file(self):
         """A failed file write (e.g. /data/ not present) must not prevent
         the MQTT publish — the file is a fallback, not the primary store."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
-        bad_path = '/nonexistent-dir/applied_mode'
-        em._persist_applied_mode('advanced', path=bad_path)  # must not raise
-        em.mqtt.publish.assert_called_once_with(
-            BrowserTopic.APPLIED_MODE, 'advanced', retain=True
-        )
+        bad_path = "/nonexistent-dir/applied_mode"
+        em._persist_applied_mode("advanced", path=bad_path)  # must not raise
+        em.mqtt.publish.assert_called_once_with(BrowserTopic.APPLIED_MODE, "advanced", retain=True)
 
     def test_read_applied_mode_from_file_defaults_to_production_path(self):
         """_read_applied_mode_from_file() with no explicit path must read
         from _APPLIED_MODE_FILE, not silently no-op."""
         from nibe_entity_manager import _APPLIED_MODE_FILE
+
         em = _make_em()
-        with patch('builtins.open', mock_open(read_data='menus')) as m:
+        with patch("builtins.open", mock_open(read_data="menus")) as m:
             result = em._read_applied_mode_from_file()
-        m.assert_called_once_with(_APPLIED_MODE_FILE, encoding='utf-8')
-        self.assertEqual(result, 'menus')
+        m.assert_called_once_with(_APPLIED_MODE_FILE, encoding="utf-8")
+        self.assertEqual(result, "menus")
 
     def test_read_applied_mode_from_file_returns_none_when_absent(self):
         em = _make_em()
-        self.assertIsNone(em._read_applied_mode_from_file('/nonexistent-dir/applied_mode'))
+        self.assertIsNone(em._read_applied_mode_from_file("/nonexistent-dir/applied_mode"))
 
     def test_read_applied_mode_from_file_strips_whitespace(self):
         em = _make_em()
-        with open(self._tmp_path, 'w') as f:
-            f.write('  menus\n')
-        self.assertEqual(em._read_applied_mode_from_file(self._tmp_path), 'menus')
+        with open(self._tmp_path, "w") as f:
+            f.write("  menus\n")
+        self.assertEqual(em._read_applied_mode_from_file(self._tmp_path), "menus")
 
     def test_read_applied_mode_from_file_empty_content_returns_none(self):
         em = _make_em()
-        with open(self._tmp_path, 'w') as f:
-            f.write('   ')
+        with open(self._tmp_path, "w") as f:
+            f.write("   ")
         self.assertIsNone(em._read_applied_mode_from_file(self._tmp_path))
 
     def test_persist_then_read_round_trip_through_a_real_file(self):
@@ -1693,11 +1809,12 @@ class TestAppliedModePersistence(unittest.TestCase):
         read back correctly. Uses two separate EntityManager instances to
         simulate that restart, not just two calls on the same one."""
         writer_em = _make_em()
-        writer_em._persist_applied_mode('advanced', path=self._tmp_path)
+        writer_em._persist_applied_mode("advanced", path=self._tmp_path)
 
         reader_em = _make_em()
         self.assertEqual(
-            reader_em._read_applied_mode_from_file(self._tmp_path), 'advanced',
+            reader_em._read_applied_mode_from_file(self._tmp_path),
+            "advanced",
         )
 
     def test_persist_then_read_round_trip_survives_repeated_writes(self):
@@ -1706,10 +1823,11 @@ class TestAppliedModePersistence(unittest.TestCase):
         corrupt the strip()ped read (e.g. 'essentialadvanced' or
         'advanced\\nessential' if the file weren't truncated on rewrite)."""
         em = _make_em()
-        em._persist_applied_mode('essential', path=self._tmp_path)
-        em._persist_applied_mode('advanced', path=self._tmp_path)
+        em._persist_applied_mode("essential", path=self._tmp_path)
+        em._persist_applied_mode("advanced", path=self._tmp_path)
         self.assertEqual(
-            em._read_applied_mode_from_file(self._tmp_path), 'advanced',
+            em._read_applied_mode_from_file(self._tmp_path),
+            "advanced",
         )
 
     def test_record_applied_mode_persists_without_touching_enabled_set(self):
@@ -1717,9 +1835,9 @@ class TestAppliedModePersistence(unittest.TestCase):
         record the baseline without enabling or disabling anything."""
         em = _make_em()
         em.mqtt_enabled_points = {1, 2, 3}
-        with patch.object(em, '_persist_applied_mode') as mock_persist:
-            em.record_applied_mode('essential')
-        mock_persist.assert_called_once_with('essential')
+        with patch.object(em, "_persist_applied_mode") as mock_persist:
+            em.record_applied_mode("essential")
+        mock_persist.assert_called_once_with("essential")
         self.assertEqual(em.mqtt_enabled_points, {1, 2, 3})  # unchanged
 
 
@@ -1733,7 +1851,7 @@ class TestApplyMode(unittest.TestCase):
     wrong and a mode change silently kills a live dynamic entity."""
 
     def _all_points(self, ids):
-        return {pid: {'title': f'Point {pid}'} for pid in ids}
+        return {pid: {"title": f"Point {pid}"} for pid in ids}
 
     def setUp(self):
         # Applied-mode persistence writes to /data/applied_mode as a file
@@ -1742,16 +1860,17 @@ class TestApplyMode(unittest.TestCase):
         # this keeps test output clean and hermetic).
         import os
         import tempfile
-        self._tmp_mode_file = os.path.join(tempfile.mkdtemp(), 'applied_mode')
-        patcher = patch('nibe_entity_manager._APPLIED_MODE_FILE', self._tmp_mode_file)
+
+        self._tmp_mode_file = os.path.join(tempfile.mkdtemp(), "applied_mode")
+        patcher = patch("nibe_entity_manager._APPLIED_MODE_FILE", self._tmp_mode_file)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_known_mode_enables_its_points(self):
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3])
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertEqual(em.mqtt_enabled_points, {1, 2})
 
     def test_nested_call_does_not_prematurely_clear_outer_suppression(self):
@@ -1767,8 +1886,8 @@ class TestApplyMode(unittest.TestCase):
         em.all_points_by_id = self._all_points([1, 2])
         # Simulate an outer caller already holding suppression (depth=1).
         em._suppress_enabled_state_depth = 1
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         # apply_mode must leave the depth exactly as the outer caller left
         # it — neither incremented (it should skip that, since already
         # suppressed) nor decremented below what the outer caller expects.
@@ -1792,7 +1911,7 @@ class TestApplyMode(unittest.TestCase):
         em.mqtt_enabled_points = {2}
         em._suppress_enabled_state_depth = 1  # outer caller already suppressing
         observed_depths = []
-        original_enable  = em._enable_entity_locked
+        original_enable = em._enable_entity_locked
         original_disable = em._disable_entity_locked
 
         def spy_enable(point_id):
@@ -1803,10 +1922,12 @@ class TestApplyMode(unittest.TestCase):
             observed_depths.append(em._suppress_enabled_state_depth)
             return original_disable(point_id)
 
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1})}), \
-             patch.object(em, '_enable_entity_locked', side_effect=spy_enable), \
-             patch.object(em, '_disable_entity_locked', side_effect=spy_disable):
-            em.apply_mode('essential')
+        with (
+            patch("nibe_entity_manager.MODES", {"essential": frozenset({1})}),
+            patch.object(em, "_enable_entity_locked", side_effect=spy_enable),
+            patch.object(em, "_disable_entity_locked", side_effect=spy_disable),
+        ):
+            em.apply_mode("essential")
 
         # The depth must stay exactly at the outer caller's value (1)
         # throughout the loop — apply_mode must not touch it at all since
@@ -1821,8 +1942,8 @@ class TestApplyMode(unittest.TestCase):
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3, 4])
         em.mqtt_enabled_points = {3, 4}  # enabled under a previous mode
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertEqual(em.mqtt_enabled_points, {1, 2})
 
     def test_mode_switch_behavior_replace_is_the_default(self):
@@ -1831,7 +1952,7 @@ class TestApplyMode(unittest.TestCase):
         this post-construction if cfg.mode_switch_behavior differs, so the
         default itself must already be the safe, existing prune behaviour."""
         em = _make_em()
-        self.assertEqual(em.mode_switch_behavior, 'replace')
+        self.assertEqual(em.mode_switch_behavior, "replace")
 
     def test_mode_switch_behavior_merge_does_not_disable_anything(self):
         """With mode_switch_behavior='merge', points enabled under a
@@ -1840,9 +1961,9 @@ class TestApplyMode(unittest.TestCase):
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3, 4])
         em.mqtt_enabled_points = {3, 4}
-        em.mode_switch_behavior = 'merge'
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        em.mode_switch_behavior = "merge"
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertEqual(em.mqtt_enabled_points, {1, 2, 3, 4})
 
     def test_mode_switch_behavior_merge_still_enables_new_points(self):
@@ -1851,9 +1972,9 @@ class TestApplyMode(unittest.TestCase):
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3])
         em.mqtt_enabled_points = {3}
-        em.mode_switch_behavior = 'merge'
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        em.mode_switch_behavior = "merge"
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertEqual(em.mqtt_enabled_points, {1, 2, 3})
 
     def test_active_dynamic_points_protected_from_disable(self):
@@ -1865,8 +1986,8 @@ class TestApplyMode(unittest.TestCase):
         em.all_points_by_id = self._all_points([1, 2, 99])
         em.mqtt_enabled_points = {2, 99}
         em.active_dynamic_points = {99}  # live dynamic entity, not in target
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1})}):
+            em.apply_mode("essential")
         self.assertIn(99, em.mqtt_enabled_points, "dynamic point must survive the mode change")
         self.assertNotIn(2, em.mqtt_enabled_points)
         self.assertIn(1, em.mqtt_enabled_points)
@@ -1875,9 +1996,11 @@ class TestApplyMode(unittest.TestCase):
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2])
         em.mqtt_enabled_points = {1}
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}), \
-             patch.object(em, '_enable_entity_locked', wraps=em._enable_entity_locked) as spy:
-            em.apply_mode('essential')
+        with (
+            patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}),
+            patch.object(em, "_enable_entity_locked", wraps=em._enable_entity_locked) as spy,
+        ):
+            em.apply_mode("essential")
         spy.assert_called_once_with(2)
 
     def test_all_mode_enables_every_known_point(self):
@@ -1886,8 +2009,8 @@ class TestApplyMode(unittest.TestCase):
         being silently treated as 'enable nothing'."""
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3])
-        with patch('nibe_entity_manager.MODES', {'all': None}):
-            em.apply_mode('all')
+        with patch("nibe_entity_manager.MODES", {"all": None}):
+            em.apply_mode("all")
         self.assertEqual(em.mqtt_enabled_points, {1, 2, 3})
 
     def test_unrecognized_mode_name_disables_everything_except_dynamic(self):
@@ -1901,8 +2024,8 @@ class TestApplyMode(unittest.TestCase):
         em.all_points_by_id = self._all_points([1, 2, 3])
         em.mqtt_enabled_points = {1, 2}
         em.active_dynamic_points = {2}
-        with patch('nibe_entity_manager.MODES', {}):
-            em.apply_mode('totally_unknown_mode')
+        with patch("nibe_entity_manager.MODES", {}):
+            em.apply_mode("totally_unknown_mode")
         self.assertEqual(em.mqtt_enabled_points, {2})  # only the protected dynamic point survives
 
     def test_empty_frozenset_mode_enables_nothing_new(self):
@@ -1910,8 +2033,8 @@ class TestApplyMode(unittest.TestCase):
         missing key, must also result in zero new enables without error."""
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3])
-        with patch('nibe_entity_manager.MODES', {'none': frozenset()}):
-            em.apply_mode('none')
+        with patch("nibe_entity_manager.MODES", {"none": frozenset()}):
+            em.apply_mode("none")
         self.assertEqual(em.mqtt_enabled_points, set())
 
     def test_publish_enabled_state_called_once_at_end(self):
@@ -1920,9 +2043,11 @@ class TestApplyMode(unittest.TestCase):
         actually wrapping the enable+disable loop."""
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2, 3])
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2, 3})}), \
-             patch.object(em, 'publish_enabled_state') as mock_publish:
-            em.apply_mode('essential')
+        with (
+            patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2, 3})}),
+            patch.object(em, "publish_enabled_state") as mock_publish,
+        ):
+            em.apply_mode("essential")
         mock_publish.assert_called_once()
 
     def test_suppression_active_during_enable_and_disable_loop(self):
@@ -1936,24 +2061,26 @@ class TestApplyMode(unittest.TestCase):
         em.all_points_by_id = self._all_points([1, 2])
         em.mqtt_enabled_points = {2}
         observed = {}
-        original_enable  = em._enable_entity_locked
+        original_enable = em._enable_entity_locked
         original_disable = em._disable_entity_locked
 
         def spy_enable(point_id):
-            observed['suppressed_during_enable'] = em._is_suppressed()
+            observed["suppressed_during_enable"] = em._is_suppressed()
             return original_enable(point_id)
 
         def spy_disable(point_id):
-            observed['suppressed_during_disable'] = em._is_suppressed()
+            observed["suppressed_during_disable"] = em._is_suppressed()
             return original_disable(point_id)
 
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1})}), \
-             patch.object(em, '_enable_entity_locked', side_effect=spy_enable), \
-             patch.object(em, '_disable_entity_locked', side_effect=spy_disable):
-            em.apply_mode('essential')
+        with (
+            patch("nibe_entity_manager.MODES", {"essential": frozenset({1})}),
+            patch.object(em, "_enable_entity_locked", side_effect=spy_enable),
+            patch.object(em, "_disable_entity_locked", side_effect=spy_disable),
+        ):
+            em.apply_mode("essential")
 
-        self.assertTrue(observed['suppressed_during_enable'])
-        self.assertTrue(observed['suppressed_during_disable'])
+        self.assertTrue(observed["suppressed_during_enable"])
+        self.assertTrue(observed["suppressed_during_disable"])
         self.assertFalse(em._is_suppressed())  # released after the call
 
     def test_point_not_in_all_points_by_id_skipped_gracefully(self):
@@ -1963,8 +2090,8 @@ class TestApplyMode(unittest.TestCase):
         intersected with all_points_by_id before diffing."""
         em = _make_em()
         em.all_points_by_id = self._all_points([1])  # 2 deliberately absent
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')  # must not raise
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")  # must not raise
         self.assertIn(1, em.mqtt_enabled_points)
         self.assertNotIn(2, em.mqtt_enabled_points)
 
@@ -1973,12 +2100,13 @@ class TestApplyMode(unittest.TestCase):
         retained BrowserTopic.APPLIED_MODE topic — this is what
         decide_startup_action reads on the next restart."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
         em.all_points_by_id = self._all_points([1])
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1})}):
+            em.apply_mode("essential")
         published = {c.args[0]: c.args[1] for c in em.mqtt.publish.call_args_list}
-        self.assertEqual(published.get(BrowserTopic.APPLIED_MODE), 'essential')
+        self.assertEqual(published.get(BrowserTopic.APPLIED_MODE), "essential")
 
     def test_enabled_points_are_marked_wanted(self):
         """Points apply_mode enables must join _wanted_points so they're
@@ -1986,8 +2114,8 @@ class TestApplyMode(unittest.TestCase):
         outside the dynamic-tracking mechanism and reappear."""
         em = _make_em()
         em.all_points_by_id = self._all_points([1, 2])
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertEqual(em._wanted_points, {1, 2})
 
     def test_mode_driven_disable_removes_from_wanted(self):
@@ -1999,8 +2127,8 @@ class TestApplyMode(unittest.TestCase):
         em.all_points_by_id = self._all_points([1, 2, 3])
         em.mqtt_enabled_points = {3}
         em._wanted_points = {3}
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1, 2})}):
-            em.apply_mode('essential')
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1, 2})}):
+            em.apply_mode("essential")
         self.assertNotIn(3, em._wanted_points)
         self.assertEqual(em._wanted_points, {1, 2})
 
@@ -2015,31 +2143,32 @@ class TestWantedPointsPersistence(unittest.TestCase):
     def setUp(self):
         import os
         import tempfile
+
         self._tmp_dir = tempfile.mkdtemp()
-        self._tmp_path = os.path.join(self._tmp_dir, 'wanted_points.json')
+        self._tmp_path = os.path.join(self._tmp_dir, "wanted_points.json")
 
     def test_persist_writes_file_then_mqtt(self):
         """Write-ahead: file first, then the retained MQTT topic."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
         em._wanted_points = {3, 1, 2}
         em._persist_wanted_points(path=self._tmp_path)
         with open(self._tmp_path) as f:
             self.assertEqual(json.loads(f.read()), [1, 2, 3])
         em.mqtt.publish.assert_called_once_with(
-            BrowserTopic.WANTED_POINTS, '[1, 2, 3]', retain=True
+            BrowserTopic.WANTED_POINTS, "[1, 2, 3]", retain=True
         )
 
     def test_persist_tolerates_unwritable_file(self):
         """A failed file write (e.g. /data/ not present) must not prevent
         the MQTT publish — the broker is the primary store."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
         em._wanted_points = {5}
-        em._persist_wanted_points(path='/nonexistent-dir/wanted_points.json')
-        em.mqtt.publish.assert_called_once_with(
-            BrowserTopic.WANTED_POINTS, '[5]', retain=True
-        )
+        em._persist_wanted_points(path="/nonexistent-dir/wanted_points.json")
+        em.mqtt.publish.assert_called_once_with(BrowserTopic.WANTED_POINTS, "[5]", retain=True)
 
     def test_mark_wanted_adds_and_persists_once(self):
         em = _make_em()
@@ -2063,28 +2192,28 @@ class TestWantedPointsPersistence(unittest.TestCase):
 
     def test_enable_entity_marks_wanted(self):
         em = _make_em()
-        em.all_points_by_id = {1: {'variableId': 1, 'title': 'Point 1'}}
-        with patch.object(em, '_enable_entity_locked', return_value=True):
+        em.all_points_by_id = {1: {"variableId": 1, "title": "Point 1"}}
+        with patch.object(em, "_enable_entity_locked", return_value=True):
             em.enable_entity(1)
         self.assertIn(1, em._wanted_points)
 
     def test_enable_entity_failure_does_not_mark_wanted(self):
         em = _make_em()
-        with patch.object(em, '_enable_entity_locked', return_value=False):
+        with patch.object(em, "_enable_entity_locked", return_value=False):
             em.enable_entity(99)
         self.assertNotIn(99, em._wanted_points)
 
     def test_disable_entity_default_removes_wanted(self):
         em = _make_em()
         em._wanted_points = {1}
-        with patch.object(em, '_disable_entity_locked', return_value=True):
+        with patch.object(em, "_disable_entity_locked", return_value=True):
             em.disable_entity(1)
         self.assertNotIn(1, em._wanted_points)
 
     def test_disable_entity_remove_from_wanted_false_keeps_wanted(self):
         em = _make_em()
         em._wanted_points = {1}
-        with patch.object(em, '_disable_entity_locked', return_value=True):
+        with patch.object(em, "_disable_entity_locked", return_value=True):
             em.disable_entity(1, remove_from_wanted=False)
         self.assertIn(1, em._wanted_points)
 
@@ -2092,7 +2221,7 @@ class TestWantedPointsPersistence(unittest.TestCase):
         em = _make_em()
         em._wanted_points = {1, 2}
         em.mqtt_enabled_points = set()
-        with patch.object(em, '_enable_entity_locked', return_value=True) as mock_enable:
+        with patch.object(em, "_enable_entity_locked", return_value=True) as mock_enable:
             em._reconcile_wanted_points({1})
         mock_enable.assert_called_once_with(1)
 
@@ -2100,7 +2229,7 @@ class TestWantedPointsPersistence(unittest.TestCase):
         em = _make_em()
         em._wanted_points = {1}
         em.mqtt_enabled_points = {1}
-        with patch.object(em, '_enable_entity_locked') as mock_enable:
+        with patch.object(em, "_enable_entity_locked") as mock_enable:
             em._reconcile_wanted_points({1})
         mock_enable.assert_not_called()
 
@@ -2108,7 +2237,7 @@ class TestWantedPointsPersistence(unittest.TestCase):
         em = _make_em()
         em._wanted_points = {1}
         em.mqtt_enabled_points = set()
-        with patch.object(em, '_enable_entity_locked') as mock_enable:
+        with patch.object(em, "_enable_entity_locked") as mock_enable:
             em._reconcile_wanted_points(set())
         mock_enable.assert_not_called()
 
@@ -2118,11 +2247,11 @@ class TestApplyModeNone(unittest.TestCase):
 
     def test_none_mode_leaves_dynamic_points_enabled(self):
         em = _make_em()
-        em.all_points_by_id = {1: {'title': 'Static1'}, 2: {'title': 'Dynamic'}}
+        em.all_points_by_id = {1: {"title": "Static1"}, 2: {"title": "Dynamic"}}
         em.mqtt_enabled_points = {1, 2}
         em.active_dynamic_points = {2}
-        with patch('nibe_entity_manager.MODES', {'none': frozenset()}):
-            em.apply_mode('none')
+        with patch("nibe_entity_manager.MODES", {"none": frozenset()}):
+            em.apply_mode("none")
         self.assertEqual(em.mqtt_enabled_points, {2})
         self.assertNotIn(1, em.mqtt_enabled_points)
 
@@ -2135,21 +2264,22 @@ class TestEnableEntityMissingPointLogLevel(unittest.TestCase):
 
     def test_missing_point_logs_warning_not_error(self):
         em = _make_em()
-        with self.assertLogs('nibe.entities', level='WARNING') as cm:
+        with self.assertLogs("nibe.entities", level="WARNING") as cm:
             result = em.enable_entity(99999)
         self.assertFalse(result)
         # Must be WARNING, not ERROR
-        self.assertTrue(any('WARNING' in line for line in cm.output),
-            "Missing point must log at WARNING level")
-        self.assertFalse(any('ERROR' in line for line in cm.output),
-            "Missing point must NOT log at ERROR level")
+        self.assertTrue(
+            any("WARNING" in line for line in cm.output), "Missing point must log at WARNING level"
+        )
+        self.assertFalse(
+            any("ERROR" in line for line in cm.output), "Missing point must NOT log at ERROR level"
+        )
 
     def test_missing_point_message_mentions_conditional(self):
         em = _make_em()
-        with self.assertLogs('nibe.entities', level='WARNING') as cm:
+        with self.assertLogs("nibe.entities", level="WARNING") as cm:
             em.enable_entity(99999)
-        self.assertTrue(any('bulk data' in line or 'conditional' in line
-                             for line in cm.output))
+        self.assertTrue(any("bulk data" in line or "conditional" in line for line in cm.output))
 
 
 class TestRepublishAvailability(unittest.TestCase):
@@ -2159,25 +2289,24 @@ class TestRepublishAvailability(unittest.TestCase):
     def test_publishes_online_for_all_active_entities(self):
         em = _make_em()
         em.active_entities_by_id[100] = {
-            'availability_topic': 'homeassistant/sensor/nibe_100/available'
+            "availability_topic": "homeassistant/sensor/nibe_100/available"
         }
         em.active_entities_by_id[200] = {
-            'availability_topic': 'homeassistant/sensor/nibe_200/available'
+            "availability_topic": "homeassistant/sensor/nibe_200/available"
         }
         em.republish_availability()
         topics = [c[0][0] for c in em.mqtt.publish.call_args_list]
-        self.assertIn('homeassistant/sensor/nibe_100/available', topics)
-        self.assertIn('homeassistant/sensor/nibe_200/available', topics)
+        self.assertIn("homeassistant/sensor/nibe_100/available", topics)
+        self.assertIn("homeassistant/sensor/nibe_200/available", topics)
 
     def test_all_published_as_online(self):
         em = _make_em()
         em.active_entities_by_id[100] = {
-            'availability_topic': 'homeassistant/sensor/nibe_100/available'
+            "availability_topic": "homeassistant/sensor/nibe_100/available"
         }
         em.republish_availability()
-        avail_calls = [c for c in em.mqtt.publish.call_args_list
-                       if 'available' in c[0][0]]
-        self.assertTrue(all(c[0][1] == 'online' for c in avail_calls))
+        avail_calls = [c for c in em.mqtt.publish.call_args_list if "available" in c[0][0]]
+        self.assertTrue(all(c[0][1] == "online" for c in avail_calls))
 
     def test_no_publish_when_no_active_entities(self):
         em = _make_em()
@@ -2188,12 +2317,12 @@ class TestRepublishAvailability(unittest.TestCase):
     def test_mgmt_avail_topic_published_when_set(self):
         em = _make_em()
         em.active_entities_by_id[100] = {
-            'availability_topic': 'homeassistant/sensor/nibe_100/available'
+            "availability_topic": "homeassistant/sensor/nibe_100/available"
         }
-        em._mgmt_avail_topic = 'homeassistant/nibe/management/available'
+        em._mgmt_avail_topic = "homeassistant/nibe/management/available"
         em.republish_availability()
         topics = [c[0][0] for c in em.mqtt.publish.call_args_list]
-        self.assertIn('homeassistant/nibe/management/available', topics)
+        self.assertIn("homeassistant/nibe/management/available", topics)
 
     def test_entity_availability_published_with_retain_true(self):
         """Availability must be retained — otherwise HA (which may itself
@@ -2202,29 +2331,35 @@ class TestRepublishAvailability(unittest.TestCase):
         unavailable in the meantime."""
         em = _make_em()
         em.active_entities_by_id[100] = {
-            'availability_topic': 'homeassistant/sensor/nibe_100/available'
+            "availability_topic": "homeassistant/sensor/nibe_100/available"
         }
         em.republish_availability()
-        avail_calls = [c for c in em.mqtt.publish.call_args_list
-                       if c.args[0] == 'homeassistant/sensor/nibe_100/available']
+        avail_calls = [
+            c
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] == "homeassistant/sensor/nibe_100/available"
+        ]
         self.assertTrue(avail_calls)
         for c in avail_calls:
-            retain = c.kwargs.get('retain', c.args[2] if len(c.args) > 2 else None)
+            retain = c.kwargs.get("retain", c.args[2] if len(c.args) > 2 else None)
             self.assertTrue(retain)
 
     def test_mgmt_avail_topic_published_as_online_with_retain_true(self):
         em = _make_em()
         em.active_entities_by_id[100] = {
-            'availability_topic': 'homeassistant/sensor/nibe_100/available'
+            "availability_topic": "homeassistant/sensor/nibe_100/available"
         }
-        em._mgmt_avail_topic = 'homeassistant/nibe/management/available'
+        em._mgmt_avail_topic = "homeassistant/nibe/management/available"
         em.republish_availability()
-        mgmt_calls = [c for c in em.mqtt.publish.call_args_list
-                      if c.args[0] == 'homeassistant/nibe/management/available']
+        mgmt_calls = [
+            c
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] == "homeassistant/nibe/management/available"
+        ]
         self.assertTrue(mgmt_calls)
         for c in mgmt_calls:
-            self.assertEqual(c.args[1], 'online')
-            retain = c.kwargs.get('retain', c.args[2] if len(c.args) > 2 else None)
+            self.assertEqual(c.args[1], "online")
+            retain = c.kwargs.get("retain", c.args[2] if len(c.args) > 2 else None)
             self.assertTrue(retain)
 
 
@@ -2235,7 +2370,7 @@ class TestPublishEnabledStateCallbackException(unittest.TestCase):
         em = _make_em()
         em._on_enabled_state_change = MagicMock(side_effect=RuntimeError("boom"))
         em.mqtt_enabled_points.add(1)
-        em.publish_enabled_state()   # must not raise
+        em.publish_enabled_state()  # must not raise
         em._on_enabled_state_change.assert_called_once()
 
 
@@ -2318,22 +2453,25 @@ class TestResubscribeAll(unittest.TestCase):
 
     def _make_em_with_resubscribe(self):
         """EM with real resubscribe_all (not patched out)."""
-        with patch('nibe_entity_manager.EntityManager._setup_history_loading'), \
-             patch('nibe_entity_manager.EntityManager._setup_dynamic_map_loading'):
+        with (
+            patch("nibe_entity_manager.EntityManager._setup_history_loading"),
+            patch("nibe_entity_manager.EntityManager._setup_dynamic_map_loading"),
+        ):
             from nibe_entity_manager import EntityManager
+
             em = EntityManager(
-                api_client  = MagicMock(),
-                publisher   = MagicMock(),
-                notify_fn   = MagicMock(),
-                dismiss_fn  = MagicMock(),
-                mqtt_client = MagicMock(),
+                api_client=MagicMock(),
+                publisher=MagicMock(),
+                notify_fn=MagicMock(),
+                dismiss_fn=MagicMock(),
+                mqtt_client=MagicMock(),
             )
         em.device_info = {}
-        em.device_name = 'Test'
+        em.device_name = "Test"
         # Wire up minimal callback stubs that resubscribe_all references
-        em._on_history_message  = MagicMock()
-        em._on_unread_message   = MagicMock()
-        em._on_dynamic_map_message    = MagicMock()
+        em._on_history_message = MagicMock()
+        em._on_unread_message = MagicMock()
+        em._on_dynamic_map_message = MagicMock()
         em._on_active_dynamic_message = MagicMock()
         return em
 
@@ -2376,22 +2514,25 @@ class TestResubscribeAll(unittest.TestCase):
             )
 
         # Lock released — resubscribe_all() must now complete promptly.
-        self.assertTrue(finished.wait(timeout=5),
-                        "resubscribe_all() never completed after _em_lock was released")
+        self.assertTrue(
+            finished.wait(timeout=5),
+            "resubscribe_all() never completed after _em_lock was released",
+        )
         t.join(timeout=5)
         self.assertFalse(t.is_alive())
 
     def test_resubscribes_entity_command_topics(self):
         em = self._make_em_with_resubscribe()
         entity_info = {
-            'point_id': 100, 'entity_type': 'switch',
-            'command_topic': 'nibe/cmd/100',
-            'availability_topic': 'nibe/avail/100',
-            'state_topic': 'nibe/state/100',
+            "point_id": 100,
+            "entity_type": "switch",
+            "command_topic": "nibe/cmd/100",
+            "availability_topic": "nibe/avail/100",
+            "state_topic": "nibe/state/100",
         }
         em.active_entities_by_id[100] = entity_info
         em.resubscribe_all()
-        em.mqtt.subscribe.assert_any_call('nibe/cmd/100', qos=1)
+        em.mqtt.subscribe.assert_any_call("nibe/cmd/100", qos=1)
 
     def test_value_cache_reset_to_functional_instance(self):
         """value_cache must be reset to a genuinely usable ValueCache, not
@@ -2410,8 +2551,8 @@ class TestResubscribeAll(unittest.TestCase):
         em = self._make_em_with_resubscribe()
         em._mgmt_subscriptions = []
         handler = MagicMock()
-        em.register_mgmt_subscription('nibe/mgmt/force_poll', handler, qos=2)
-        self.assertEqual(em._mgmt_subscriptions, [('nibe/mgmt/force_poll', handler, 2)])
+        em.register_mgmt_subscription("nibe/mgmt/force_poll", handler, qos=2)
+        self.assertEqual(em._mgmt_subscriptions, [("nibe/mgmt/force_poll", handler, 2)])
 
     def test_register_mgmt_subscription_default_qos_is_one(self):
         """When qos is omitted, register_mgmt_subscription must default to
@@ -2419,18 +2560,19 @@ class TestResubscribeAll(unittest.TestCase):
         em = self._make_em_with_resubscribe()
         em._mgmt_subscriptions = []
         handler = MagicMock()
-        em.register_mgmt_subscription('nibe/mgmt/force_poll', handler)
-        self.assertEqual(em._mgmt_subscriptions, [('nibe/mgmt/force_poll', handler, 1)])
+        em.register_mgmt_subscription("nibe/mgmt/force_poll", handler)
+        self.assertEqual(em._mgmt_subscriptions, [("nibe/mgmt/force_poll", handler, 1)])
 
     def test_resubscribes_management_topics(self):
         em = self._make_em_with_resubscribe()
         handler = MagicMock()
-        em._mgmt_subscriptions = [('nibe/mgmt/aid_mode', handler, 1)]
+        em._mgmt_subscriptions = [("nibe/mgmt/aid_mode", handler, 1)]
         em.resubscribe_all()
-        em.mqtt.subscribe.assert_any_call('nibe/mgmt/aid_mode', qos=1)
+        em.mqtt.subscribe.assert_any_call("nibe/mgmt/aid_mode", qos=1)
 
     def test_resubscribes_changelog_and_dynamic_topics(self):
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_resubscribe()
         em.resubscribe_all()
         subscribed = [c.args[0] for c in em.mqtt.subscribe.call_args_list]
@@ -2443,26 +2585,29 @@ class TestResubscribeAll(unittest.TestCase):
         """The MQTT command callback registered by resubscribe_all must invoke
         _handle_command when called (line 2300)."""
         em = self._make_em_with_resubscribe()
-        cmd_topic = 'nibe/cmd/200'
+        cmd_topic = "nibe/cmd/200"
         entity_info = {
-            'point_id': 200, 'entity_type': 'switch',
-            'command_topic': cmd_topic,
-            'availability_topic': 'nibe/avail/200',
-            'state_topic': 'nibe/state/200',
+            "point_id": 200,
+            "entity_type": "switch",
+            "command_topic": cmd_topic,
+            "availability_topic": "nibe/avail/200",
+            "state_topic": "nibe/state/200",
         }
         em.active_entities_by_id[200] = entity_info
 
         stored_cb = {}
+
         def fake_callback_add(topic, cb):
             stored_cb[topic] = cb
+
         em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
 
         em.resubscribe_all()
         self.assertIn(cmd_topic, stored_cb)
 
         msg = MagicMock()
-        msg.payload = b'1'
-        with patch.object(em, '_handle_command') as mock_handle:
+        msg.payload = b"1"
+        with patch.object(em, "_handle_command") as mock_handle:
             stored_cb[cmd_topic](None, None, msg)
         # Must dispatch with the SAME entity_info bound in the closure and
         # the SAME message object — not e.g. None substituted for either
@@ -2472,15 +2617,15 @@ class TestResubscribeAll(unittest.TestCase):
     def test_entity_without_command_topic_skipped(self):
         em = self._make_em_with_resubscribe()
         entity_info = {
-            'point_id': 200, 'entity_type': 'sensor',
-            'command_topic': None,
-            'availability_topic': 'nibe/avail/200',
-            'state_topic': 'nibe/state/200',
+            "point_id": 200,
+            "entity_type": "sensor",
+            "command_topic": None,
+            "availability_topic": "nibe/avail/200",
+            "state_topic": "nibe/state/200",
         }
         em.active_entities_by_id[200] = entity_info
         em.resubscribe_all()
-        cmd_subs = [c for c in em.mqtt.subscribe.call_args_list
-                    if c.args[0] == 'nibe/cmd/200']
+        cmd_subs = [c for c in em.mqtt.subscribe.call_args_list if c.args[0] == "nibe/cmd/200"]
         self.assertEqual(cmd_subs, [])
 
     def test_entity_without_command_topic_does_not_abort_remaining_entities(self):
@@ -2490,23 +2635,28 @@ class TestResubscribeAll(unittest.TestCase):
         skip-worthy one is iterated first (dict preserves insertion order)."""
         em = self._make_em_with_resubscribe()
         skip_entity = {
-            'point_id': 1, 'entity_type': 'sensor',
-            'command_topic': None,
-            'availability_topic': 'nibe/avail/1',
-            'state_topic': 'nibe/state/1',
+            "point_id": 1,
+            "entity_type": "sensor",
+            "command_topic": None,
+            "availability_topic": "nibe/avail/1",
+            "state_topic": "nibe/state/1",
         }
         keep_entity = {
-            'point_id': 2, 'entity_type': 'switch',
-            'command_topic': 'nibe/cmd/2',
-            'availability_topic': 'nibe/avail/2',
-            'state_topic': 'nibe/state/2',
+            "point_id": 2,
+            "entity_type": "switch",
+            "command_topic": "nibe/cmd/2",
+            "availability_topic": "nibe/avail/2",
+            "state_topic": "nibe/state/2",
         }
         em.active_entities_by_id[1] = skip_entity
         em.active_entities_by_id[2] = keep_entity
         em.resubscribe_all()
         subscribed_topics = [c.args[0] for c in em.mqtt.subscribe.call_args_list]
-        self.assertIn('nibe/cmd/2', subscribed_topics,
-                       "an entity after a skipped one must still be subscribed")
+        self.assertIn(
+            "nibe/cmd/2",
+            subscribed_topics,
+            "an entity after a skipped one must still be subscribed",
+        )
 
     def test_last_bulk_fetch_reset_to_zero(self):
         """last_bulk_fetch must be reset to the literal 0 (falsy timestamp
@@ -2528,46 +2678,57 @@ class TestResubscribeAll(unittest.TestCase):
         be counted) and 3 mgmt subscriptions."""
         em = self._make_em_with_resubscribe()
         em.active_entities_by_id[1] = {
-            'point_id': 1, 'entity_type': 'switch', 'command_topic': 'nibe/cmd/1',
-            'availability_topic': 'nibe/avail/1', 'state_topic': 'nibe/state/1',
+            "point_id": 1,
+            "entity_type": "switch",
+            "command_topic": "nibe/cmd/1",
+            "availability_topic": "nibe/avail/1",
+            "state_topic": "nibe/state/1",
         }
         em.active_entities_by_id[2] = {
-            'point_id': 2, 'entity_type': 'switch', 'command_topic': 'nibe/cmd/2',
-            'availability_topic': 'nibe/avail/2', 'state_topic': 'nibe/state/2',
+            "point_id": 2,
+            "entity_type": "switch",
+            "command_topic": "nibe/cmd/2",
+            "availability_topic": "nibe/avail/2",
+            "state_topic": "nibe/state/2",
         }
         em.active_entities_by_id[3] = {
-            'point_id': 3, 'entity_type': 'sensor', 'command_topic': None,
-            'availability_topic': 'nibe/avail/3', 'state_topic': 'nibe/state/3',
+            "point_id": 3,
+            "entity_type": "sensor",
+            "command_topic": None,
+            "availability_topic": "nibe/avail/3",
+            "state_topic": "nibe/state/3",
         }
         em._mgmt_subscriptions = [
-            ('nibe/mgmt/a', MagicMock(), 1),
-            ('nibe/mgmt/b', MagicMock(), 1),
-            ('nibe/mgmt/c', MagicMock(), 0),
+            ("nibe/mgmt/a", MagicMock(), 1),
+            ("nibe/mgmt/b", MagicMock(), 1),
+            ("nibe/mgmt/c", MagicMock(), 0),
         ]
-        with patch('nibe_entity_manager.log_mqtt') as mock_log:
+        with patch("nibe_entity_manager.log_mqtt") as mock_log:
             em.resubscribe_all()
         mock_log.info.assert_called_once()
         args = mock_log.info.call_args.args
         # args[0] is the format string; the trailing two positional args are
         # entity_count and mgmt_count per the source's log_mqtt.info(fmt, entity_count, mgmt_count).
         self.assertEqual(args[-2], 2, "entity_count must count only entities with a command_topic")
-        self.assertEqual(args[-1], 3, "mgmt_count must equal the number of registered mgmt subscriptions")
+        self.assertEqual(
+            args[-1], 3, "mgmt_count must equal the number of registered mgmt subscriptions"
+        )
 
     def test_mgmt_subscription_callback_registered_with_correct_handler(self):
         """Each management subscription's own handler must be passed to
         message_callback_add verbatim, paired with its own topic — not a
         mismatched or dropped topic/handler."""
         em = self._make_em_with_resubscribe()
-        handler_a = MagicMock(name='handler_a')
-        handler_b = MagicMock(name='handler_b')
+        handler_a = MagicMock(name="handler_a")
+        handler_b = MagicMock(name="handler_b")
         em._mgmt_subscriptions = [
-            ('nibe/mgmt/a', handler_a, 1),
-            ('nibe/mgmt/b', handler_b, 1),
+            ("nibe/mgmt/a", handler_a, 1),
+            ("nibe/mgmt/b", handler_b, 1),
         ]
         em.resubscribe_all()
         calls = {c.args[0]: c.args[1] for c in em.mqtt.message_callback_add.call_args_list}
-        self.assertIs(calls['nibe/mgmt/a'], handler_a)
-        self.assertIs(calls['nibe/mgmt/b'], handler_b)
+        self.assertIs(calls["nibe/mgmt/a"], handler_a)
+        self.assertIs(calls["nibe/mgmt/b"], handler_b)
 
     def test_changelog_and_dynamic_map_callbacks_registered_with_correct_topic_and_handler(self):
         """Each of the four retained-topic re-subscriptions (changelog
@@ -2576,6 +2737,7 @@ class TestResubscribeAll(unittest.TestCase):
         mutation swapping in None for either argument, or the wrong topic
         constant, must be caught here."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_resubscribe()
         em.resubscribe_all()
         calls = {c.args[0]: c.args[1] for c in em.mqtt.message_callback_add.call_args_list}
@@ -2595,9 +2757,13 @@ class TestDisableEntityUsesDiscard(unittest.TestCase):
         em = _make_em()
         # Set up a minimal enabled entity
         entity_info = {
-            'point_id': 100, 'entity_type': 'sensor', 'entity_id': 'nibe_100',
-            'state_topic': 'nibe/state/100', 'availability_topic': 'nibe/avail/100',
-            'command_topic': None, 'attributes_topic': None,
+            "point_id": 100,
+            "entity_type": "sensor",
+            "entity_id": "nibe_100",
+            "state_topic": "nibe/state/100",
+            "availability_topic": "nibe/avail/100",
+            "command_topic": None,
+            "attributes_topic": None,
         }
         em.active_entities_by_id[100] = entity_info
         em.mqtt_enabled_points.add(100)
@@ -2605,7 +2771,7 @@ class TestDisableEntityUsesDiscard(unittest.TestCase):
         em.disable_entity(100)
         self.assertNotIn(100, em.mqtt_enabled_points)
         # Second disable on a point not in the set must not raise
-        em.disable_entity(100)   # would raise KeyError with .remove()
+        em.disable_entity(100)  # would raise KeyError with .remove()
 
     def test_discard_is_used_not_remove(self):
         """Verify the implementation uses discard, not remove, by inspecting
@@ -2613,9 +2779,13 @@ class TestDisableEntityUsesDiscard(unittest.TestCase):
         import inspect
 
         from nibe_entity_manager import EntityManager
+
         # disable_entity is a thin _em_lock wrapper; the implementation
         # (and the discard call) lives in _disable_entity_locked.
         src = inspect.getsource(EntityManager._disable_entity_locked)
-        self.assertNotIn('mqtt_enabled_points.remove', src,
-            "_disable_entity_locked must use .discard() not .remove() to be thread-safe")
-        self.assertIn('mqtt_enabled_points.discard', src)
+        self.assertNotIn(
+            "mqtt_enabled_points.remove",
+            src,
+            "_disable_entity_locked must use .discard() not .remove() to be thread-safe",
+        )
+        self.assertIn("mqtt_enabled_points.discard", src)

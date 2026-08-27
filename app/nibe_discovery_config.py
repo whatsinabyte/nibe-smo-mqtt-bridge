@@ -30,7 +30,9 @@ from nibe_entity_detection import (
 log_entities = logging.getLogger("nibe.entities")
 
 #: HA device classes that accumulate over time (total_increasing state class).
-_ACCUMULATING_CLASSES: frozenset[str] = frozenset({"energy", "gas", "water", "volume"})  # pragma: no mutate
+_ACCUMULATING_CLASSES: frozenset[str] = frozenset(
+    {"energy", "gas", "water", "volume"}
+)  # pragma: no mutate
 
 #: Point ID for the date sensor (days since 2010-01-01 → ISO date string).
 _DATE_SENSOR_POINT_ID = 2685
@@ -41,11 +43,11 @@ def build_button_config(config: dict, command_topic: str) -> None:
 
 
 def build_switch_config(config: dict, state_topic: str, command_topic: str) -> None:
-    config["state_topic"]   = state_topic
+    config["state_topic"] = state_topic
     config["command_topic"] = command_topic
-    config["payload_on"]    = "1"
-    config["payload_off"]   = "0"
-    config["optimistic"]    = False
+    config["payload_on"] = "1"
+    config["payload_off"] = "0"
+    config["optimistic"] = False
 
 
 def build_number_config(
@@ -59,20 +61,22 @@ def build_number_config(
     bulk_data: dict,
     range_warnings_issued: set[int],
 ) -> None:
-    config["state_topic"]   = state_topic
+    config["state_topic"] = state_topic
     config["command_topic"] = command_topic
-    config["optimistic"]    = False
+    config["optimistic"] = False
 
-    min_val     = metadata.get('minValue')
-    max_val     = metadata.get('maxValue')
+    min_val = metadata.get("minValue")
+    max_val = metadata.get("maxValue")
     # `or 1` masks any falsy divisor default (None/0/dropped) — only a
     # truthy-but-wrong default is observable.
-    divisor     = metadata.get('divisor', 1) or 1
-    cached      = bulk_data.get(point_id, {})
-    current_raw = cached.get('raw_value')
+    divisor = metadata.get("divisor", 1) or 1
+    cached = bulk_data.get(point_id, {})
+    current_raw = cached.get("raw_value")
 
     if min_val is not None and max_val is not None:
-        unit_str = f" {unit}" if unit else ""  # pragma: no mutate — only used in the pragma'd warning log below
+        unit_str = (
+            f" {unit}" if unit else ""
+        )  # pragma: no mutate — only used in the pragma'd warning log below
 
         if min_val == max_val:
             # Degenerate range: firmware reports min==max for this register.
@@ -86,33 +90,42 @@ def build_number_config(
                 log_entities.warning(
                     "Point %d (%s): degenerate range %g–%g (min==max) "
                     "— write-side range checks bypassed.",
-                    point_id, title, min_val, max_val,
+                    point_id,
+                    title,
+                    min_val,
+                    max_val,
                 )
                 # pragma: no mutate end
                 range_warnings_issued.add(point_id)
             if current_raw is not None:
-                anchor       = current_raw / divisor
+                anchor = current_raw / divisor
                 fallback_min = min(anchor, -100)
-                fallback_max = max(anchor,  100)
+                fallback_max = max(anchor, 100)
             else:
                 fallback_min = -32768 / divisor
-                fallback_max =  32767 / divisor
-            config["min"]              = fallback_min
-            config["max"]              = fallback_max
+                fallback_max = 32767 / divisor
+            config["min"] = fallback_min
+            config["max"] = fallback_max
             config["_degenerate_range"] = True
         else:
             config["min"] = min_val / divisor
             config["max"] = max_val / divisor
-            if (current_raw is not None
-                    and point_id not in range_warnings_issued
-                    and (current_raw < min_val or current_raw > max_val)):
+            if (
+                current_raw is not None
+                and point_id not in range_warnings_issued
+                and (current_raw < min_val or current_raw > max_val)
+            ):
                 # pragma: no mutate start
                 log_entities.warning(
                     "Point %d (%s): current value %g%s outside firmware range "
                     "%g–%g%s — writes restricted to firmware range.",
-                    point_id, title,
-                    current_raw / divisor, unit_str,
-                    min_val / divisor, max_val / divisor, unit_str,
+                    point_id,
+                    title,
+                    current_raw / divisor,
+                    unit_str,
+                    min_val / divisor,
+                    max_val / divisor,
+                    unit_str,
                 )
                 # pragma: no mutate end
                 range_warnings_issued.add(point_id)
@@ -136,9 +149,9 @@ def build_select_config(
     point_id: int,
     description: str,
 ) -> None:
-    config["state_topic"]   = state_topic
+    config["state_topic"] = state_topic
     config["command_topic"] = command_topic
-    config["optimistic"]    = False
+    config["optimistic"] = False
     options = get_entity_options(point_id, description)
     if options:
         config["options"] = options
@@ -146,7 +159,7 @@ def build_select_config(
 
 def build_binary_sensor_config(config: dict, state_topic: str, title: str) -> None:
     config["state_topic"] = state_topic
-    config["payload_on"]  = "ON"
+    config["payload_on"] = "ON"
     config["payload_off"] = "OFF"
     # map_device_class always returns None when entity_type == "binary_sensor"
     # (dedicated early-return branch), and any mutation of this call's
@@ -175,14 +188,12 @@ def build_sensor_config(
     if unit:
         config["unit_of_measurement"] = unit
 
-    device_class = DEVICE_CLASS_OVERRIDES.get(
-        point_id, map_device_class("sensor", unit, title)
-    )
+    device_class = DEVICE_CLASS_OVERRIDES.get(point_id, map_device_class("sensor", unit, title))
     is_instant = (
         point_id not in DEVICE_CLASS_OVERRIDES
         and unit == "kWh"
-        and metadata.get('divisor') == 100
-        and metadata.get('maxValue') == 0
+        and metadata.get("divisor") == 100
+        and metadata.get("maxValue") == 0
         # ⚠ Heuristic: maxValue==0 is used as a proxy for "instantaneous power
         # reading" (e.g. compressor input power) rather than a lifetime energy
         # accumulator.  This works for the known Nibe register set but may
@@ -194,7 +205,7 @@ def build_sensor_config(
 
     if device_class in _ACCUMULATING_CLASSES and not is_instant:
         config["device_class"] = device_class
-        config["state_class"]  = "total_increasing"
+        config["state_class"] = "total_increasing"
     # `and`->`or` here is unobservable: is_instant requires unit == "kWh"
     # and point_id not in DEVICE_CLASS_OVERRIDES, and "kWh" always maps to
     # device_class "energy" (an accumulating class) via map_device_class's
@@ -205,7 +216,7 @@ def build_sensor_config(
         config["state_class"] = "measurement"
     elif device_class:
         config["device_class"] = device_class
-        config["state_class"]  = "measurement"
+        config["state_class"] = "measurement"
     elif has_numeric_value:
         config["state_class"] = "measurement"
 
@@ -216,6 +227,6 @@ def build_sensor_config(
     # causes HA to reject every state update with a ValueError, since
     # the state is text but the sensor now claims to be numeric.
     if has_numeric_value:
-        decimal = metadata.get('decimal', 0)
+        decimal = metadata.get("decimal", 0)
         if decimal is not None:
             config["suggested_display_precision"] = int(decimal)

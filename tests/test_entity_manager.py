@@ -32,12 +32,14 @@ class TestCompressDecompressProperties(unittest.TestCase):
     @given(_data_strategy)
     def test_compress_never_raises(self, data):
         from nibe_entity_manager import _compress_payload
+
         result = _compress_payload(data)
         self.assertIsInstance(result, str)
 
     @given(_data_strategy)
     def test_compress_output_starts_with_sentinel(self, data):
         from nibe_entity_manager import _GZIP_SENTINEL, _compress_payload
+
         result = _compress_payload(data)
         self.assertTrue(result.startswith(_GZIP_SENTINEL))
 
@@ -45,8 +47,9 @@ class TestCompressDecompressProperties(unittest.TestCase):
     def test_compress_output_is_ascii(self, data):
         """Compressed payload must be plain ASCII — safe for paho MQTT publish."""
         from nibe_entity_manager import _compress_payload
+
         result = _compress_payload(data)
-        result.encode('ascii')  # must not raise
+        result.encode("ascii")  # must not raise
 
     @given(_data_strategy)
     def test_roundtrip_recovers_original_data(self, data):
@@ -54,9 +57,10 @@ class TestCompressDecompressProperties(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import _compress_payload, _decompress_payload
+
         compressed = _compress_payload(data)
         recovered_bytes = _decompress_payload(compressed)
-        recovered = _json.loads(recovered_bytes.decode('utf-8'))
+        recovered = _json.loads(recovered_bytes.decode("utf-8"))
         self.assertEqual(recovered, data)
 
     @given(_data_strategy)
@@ -65,9 +69,10 @@ class TestCompressDecompressProperties(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import _compress_payload, _decompress_payload
+
         compressed = _compress_payload(data)
-        recovered_bytes = _decompress_payload(compressed.encode('utf-8'))
-        recovered = _json.loads(recovered_bytes.decode('utf-8'))
+        recovered_bytes = _decompress_payload(compressed.encode("utf-8"))
+        recovered = _json.loads(recovered_bytes.decode("utf-8"))
         self.assertEqual(recovered, data)
 
     @given(_data_strategy)
@@ -79,6 +84,7 @@ class TestCompressDecompressProperties(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import _compress_payload, _decompress_payload
+
         r1 = _json.loads(_decompress_payload(_compress_payload(data)))
         r2 = _json.loads(_decompress_payload(_compress_payload(data)))
         self.assertEqual(r1, data)
@@ -94,10 +100,11 @@ class TestCompressDecompressProperties(unittest.TestCase):
         import gzip as _gzip
 
         from nibe_entity_manager import _GZIP_SENTINEL, _compress_payload
-        result = _compress_payload({'a': 1, 'b': 2})
-        raw_json = _gzip.decompress(
-            _base64.b64decode(result[len(_GZIP_SENTINEL):])
-        ).decode('utf-8')
+
+        result = _compress_payload({"a": 1, "b": 2})
+        raw_json = _gzip.decompress(_base64.b64decode(result[len(_GZIP_SENTINEL) :])).decode(
+            "utf-8"
+        )
         self.assertEqual(raw_json, '{"a":1,"b":2}')
 
     def test_compress_uses_compresslevel_6(self):
@@ -105,12 +112,13 @@ class TestCompressDecompressProperties(unittest.TestCase):
         verified by mocking gzip.compress and inspecting the call args
         against the literal constant 6, not by reading the constant back
         off the same call."""
-        with patch('nibe_entity_manager.gzip.compress') as mock_compress:
-            mock_compress.return_value = b'x'
+        with patch("nibe_entity_manager.gzip.compress") as mock_compress:
+            mock_compress.return_value = b"x"
             from nibe_entity_manager import _compress_payload
-            _compress_payload({'k': 'v'})
+
+            _compress_payload({"k": "v"})
         mock_compress.assert_called_once()
-        self.assertEqual(mock_compress.call_args.kwargs.get('compresslevel'), 6)
+        self.assertEqual(mock_compress.call_args.kwargs.get("compresslevel"), 6)
 
     def test_decompress_replaces_invalid_utf8_bytes_instead_of_raising(self):
         """When the (post-sentinel-stripped) input bytes contain invalid
@@ -137,7 +145,7 @@ class TestCompressDecompressProperties(unittest.TestCase):
         # raise UnicodeDecodeError instead — so the exception TYPE is what
         # distinguishes correct behaviour from the mutant, not merely
         # whether something raises.
-        malformed = _GZIP_SENTINEL.encode('ascii') + b'\xff\xff'
+        malformed = _GZIP_SENTINEL.encode("ascii") + b"\xff\xff"
         try:
             _nem._decompress_payload(malformed)
             self.fail("expected a downstream base64 error for this malformed input")
@@ -153,9 +161,6 @@ class TestCompressDecompressProperties(unittest.TestCase):
             )
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any non-UnicodeDecodeError failure downstream is expected
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +180,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
     def test_arbitrary_bytes_never_raises(self, data):
         """_decompress_payload must never raise for any byte sequence."""
         from nibe_entity_manager import _decompress_payload
+
         try:
             _decompress_payload(data)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
@@ -187,9 +193,10 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import _decompress_payload
+
         result = None
         try:
-            raw  = _decompress_payload(data)
+            raw = _decompress_payload(data)
             result = _json.loads(raw)
         except Exception:  # noqa: BLE001 — deliberate fuzz test, any non-crash outcome is acceptable
             result = None
@@ -200,6 +207,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
     def test_arbitrary_string_never_raises(self, text):
         """_decompress_payload must never raise for any string input."""
         from nibe_entity_manager import _decompress_payload
+
         try:
             _decompress_payload(text)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
@@ -210,16 +218,18 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         """Even if someone crafts bytes starting with the sentinel,
         corrupt compressed data must not crash."""
         from nibe_entity_manager import _GZIP_SENTINEL, _decompress_payload
+
         payload = _GZIP_SENTINEL.encode() + suffix
         try:
             _decompress_payload(payload)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # graceful failure expected
 
-    @example(data=b'')
+    @example(data=b"")
     @given(st.binary(max_size=10))
     def test_very_short_binary_never_crashes(self, data):
         from nibe_entity_manager import _decompress_payload
+
         try:
             _decompress_payload(data)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
@@ -243,67 +253,76 @@ class TestTimeParsingFromRegex(unittest.TestCase):
 
     def _ei(self, pid=100):
         return {
-            'point_id': pid, 'entity_type': 'time',
-            'metadata': {
-                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                'isWritable': True, 'divisor': 1, 'decimal': 0,
-                'minValue': 0, 'maxValue': 86399,
-                'variableType': 'integer', 'variableSize': 's32',
-                'unit': '', 'shortUnit': '',
-                'intDefaultValue': 0, 'stringDefaultValue': '',
-                'change': 1,
+            "point_id": pid,
+            "entity_type": "time",
+            "metadata": {
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "isWritable": True,
+                "divisor": 1,
+                "decimal": 0,
+                "minValue": 0,
+                "maxValue": 86399,
+                "variableType": "integer",
+                "variableSize": "s32",
+                "unit": "",
+                "shortUnit": "",
+                "intDefaultValue": 0,
+                "stringDefaultValue": "",
+                "change": 1,
             },
-            'point_data': {},
+            "point_data": {},
         }
 
-    @given(st.from_regex(r'[01][0-9]:[0-5][0-9]', fullmatch=True))
-    @example(payload='00:00')   # midnight
-    @example(payload='23:59')   # last minute of day
-    @example(payload='12:00')   # noon
+    @given(st.from_regex(r"[01][0-9]:[0-5][0-9]", fullmatch=True))
+    @example(payload="00:00")  # midnight
+    @example(payload="23:59")  # last minute of day
+    @example(payload="12:00")  # noon
     def test_valid_hhmm_always_returns_int(self, payload):
         """Any valid HH:MM string must always return a non-negative int."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIsInstance(result, int)
         self.assertGreaterEqual(result, 0)
 
-    @given(st.from_regex(r'2[0-3]:[0-5][0-9]', fullmatch=True))
+    @given(st.from_regex(r"2[0-3]:[0-5][0-9]", fullmatch=True))
     def test_valid_hhmm_evening_always_returns_int(self, payload):
         """Evening times (20-23 hour) always parse correctly."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIsInstance(result, int)
 
-    @given(st.from_regex(r'\d{2}:\d{2}:\d{2}', fullmatch=True))
-    @example(payload='00:00:00')
-    @example(payload='23:59:59')
+    @given(st.from_regex(r"\d{2}:\d{2}:\d{2}", fullmatch=True))
+    @example(payload="00:00:00")
+    @example(payload="23:59:59")
     def test_hhmmss_format_always_returns_int(self, payload):
         """HH:MM:SS format (including invalid ranges) returns int or None."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIn(type(result), (int, type(None)))
 
-    @given(st.from_regex(r'[3-9]\d:\d{2}', fullmatch=True))
+    @given(st.from_regex(r"[3-9]\d:\d{2}", fullmatch=True))
     def test_out_of_range_hour_returns_none_or_int(self, payload):
         """Hours >= 30 are invalid — must return None or handle gracefully."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIn(type(result), (int, type(None)))
 
-    @given(st.from_regex(r'\d{2}:[6-9]\d', fullmatch=True))
+    @given(st.from_regex(r"\d{2}:[6-9]\d", fullmatch=True))
     def test_out_of_range_minute_returns_none_or_int(self, payload):
         """Minutes >= 60 are invalid — must not raise."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIn(type(result), (int, type(None)))
 
-    @given(st.text(max_size=20).filter(
-        lambda s: ':' not in s or not all(p.strip().isdigit() for p in s.split(':')[:2])
-    ))
+    @given(
+        st.text(max_size=20).filter(
+            lambda s: ":" not in s or not all(p.strip().isdigit() for p in s.split(":")[:2])
+        )
+    )
     def test_non_time_string_always_returns_none(self, payload):
         """Non-time strings must always return None without raising."""
         em = self._em()
-        result = em._parse_command_payload(payload, self._ei(), 'test')
+        result = em._parse_command_payload(payload, self._ei(), "test")
         self.assertIsNone(result)
 
 
@@ -326,10 +345,13 @@ class TestCrossConstantConsistencyProperties(unittest.TestCase):
             _BINARY_SENSOR_EXCLUSIONS,
             ENTITY_TYPE_OVERRIDES,
         )
+
         overlap = set(ENTITY_TYPE_OVERRIDES.keys()) & _BINARY_SENSOR_EXCLUSIONS
-        self.assertEqual(overlap, set(),
-            f"Points appear in both ENTITY_TYPE_OVERRIDES and "
-            f"_BINARY_SENSOR_EXCLUSIONS: {overlap}")
+        self.assertEqual(
+            overlap,
+            set(),
+            f"Points appear in both ENTITY_TYPE_OVERRIDES and _BINARY_SENSOR_EXCLUSIONS: {overlap}",
+        )
 
     def test_value_mappings_holding_and_overrides_disjoint(self):
         """VALUE_MAPPINGS holding entries and ENTITY_TYPE_OVERRIDES must be disjoint.
@@ -338,67 +360,82 @@ class TestCrossConstantConsistencyProperties(unittest.TestCase):
         An override on the same point is unreachable dead code.
         """
         from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, VALUE_MAPPINGS
-        vm_holding = set(VALUE_MAPPINGS.get('holding', {}).keys())
+
+        vm_holding = set(VALUE_MAPPINGS.get("holding", {}).keys())
         overlap = vm_holding & set(ENTITY_TYPE_OVERRIDES.keys())
-        self.assertEqual(overlap, set(),
-            f"Points appear in both VALUE_MAPPINGS holding and "
-            f"ENTITY_TYPE_OVERRIDES: {overlap}")
+        self.assertEqual(
+            overlap,
+            set(),
+            f"Points appear in both VALUE_MAPPINGS holding and ENTITY_TYPE_OVERRIDES: {overlap}",
+        )
 
     def test_retry_base_leq_retry_max(self):
         """_RETRY_BASE_S must always be ≤ _RETRY_MAX_S."""
         from nibe_api import _RETRY_BASE_S, _RETRY_MAX_S
+
         self.assertLessEqual(_RETRY_BASE_S, _RETRY_MAX_S)
 
     def test_retry_delay_bounded_by_max(self):
         """Every _retry_delay() call must return a value ≤ _RETRY_MAX_S."""
         from nibe_api import _RETRY_MAX_S, _retry_delay
+
         for _ in range(50):
             self.assertLessEqual(_retry_delay(), _RETRY_MAX_S)
 
     def test_retry_delay_always_non_negative(self):
         """Every _retry_delay() call must return a non-negative value."""
         from nibe_api import _retry_delay
+
         for _ in range(50):
             self.assertGreaterEqual(_retry_delay(), 0.0)
 
     def test_changelog_min_leq_max_entries(self):
         """_CHANGELOG_MIN_ENTRIES must be ≤ _CHANGELOG_MAX_ENTRIES."""
         from nibe_entity_manager import _CHANGELOG_MAX_ENTRIES, _CHANGELOG_MIN_ENTRIES
+
         self.assertLessEqual(_CHANGELOG_MIN_ENTRIES, _CHANGELOG_MAX_ENTRIES)
 
     def test_gzip_sentinel_is_nonempty_string(self):
         """_GZIP_SENTINEL must be a non-empty string."""
         from nibe_entity_manager import _GZIP_SENTINEL
+
         self.assertIsInstance(_GZIP_SENTINEL, str)
         self.assertGreater(len(_GZIP_SENTINEL), 0)
 
     def test_compress_output_starts_with_sentinel(self):
         """_compress_payload output must always start with _GZIP_SENTINEL."""
         from nibe_entity_manager import _GZIP_SENTINEL, _compress_payload
-        for data in [{}, {'key': 'value'}, {'n': 42}]:
+
+        for data in [{}, {"key": "value"}, {"n": 42}]:
             result = _compress_payload(data)
-            self.assertTrue(result.startswith(_GZIP_SENTINEL),
-                f"_compress_payload output does not start with sentinel: {result[:20]!r}")
+            self.assertTrue(
+                result.startswith(_GZIP_SENTINEL),
+                f"_compress_payload output does not start with sentinel: {result[:20]!r}",
+            )
 
     def test_text_register_max_len_positive(self):
         """_TEXT_REGISTER_MAX_LEN must be a positive integer."""
         from nibe_entity_manager import _TEXT_REGISTER_MAX_LEN
+
         self.assertIsInstance(_TEXT_REGISTER_MAX_LEN, int)
         self.assertGreater(_TEXT_REGISTER_MAX_LEN, 0)
 
     def test_stale_write_age_positive(self):
         """_STALE_WRITE_AGE_S must be positive (defines write guard timeout)."""
         from nibe_entity_manager import _STALE_WRITE_AGE_S
+
         self.assertGreater(_STALE_WRITE_AGE_S, 0)
 
     def test_post_write_scan_positive(self):
         """_POST_WRITE_SCAN_S must be positive (defines dynamic detection window)."""
         from nibe_entity_manager import _POST_WRITE_SCAN_S
+
         self.assertGreater(_POST_WRITE_SCAN_S, 0)
 
     def test_cmd_id_length_positive(self):
         """_CMD_ID_LENGTH must be a positive integer."""
         from nibe_entity_manager import _CMD_ID_LENGTH
+
         self.assertIsInstance(_CMD_ID_LENGTH, int)
         self.assertGreater(_CMD_ID_LENGTH, 0)
 
@@ -410,12 +447,17 @@ class TestCrossConstantConsistencyProperties(unittest.TestCase):
             _NOTIF_NO_ENTITIES,
             _NOTIF_WRITE_ERROR,
         )
-        for notif_id in (_NOTIF_API_UNREACHABLE, _NOTIF_WRITE_ERROR,
-                         _NOTIF_NO_ENTITIES, _NOTIF_DISCOVERY_INCOMPLETE):
+
+        for notif_id in (
+            _NOTIF_API_UNREACHABLE,
+            _NOTIF_WRITE_ERROR,
+            _NOTIF_NO_ENTITIES,
+            _NOTIF_DISCOVERY_INCOMPLETE,
+        ):
             self.assertIsInstance(notif_id, str)
             self.assertGreater(len(notif_id), 0)
             # Must be safe as MQTT topic segment — no spaces or special chars
-            self.assertNotIn(' ', notif_id)
+            self.assertNotIn(" ", notif_id)
 
     def test_notification_id_constants_are_unique(self):
         """All _NOTIF_* constants must be distinct."""
@@ -425,14 +467,21 @@ class TestCrossConstantConsistencyProperties(unittest.TestCase):
             _NOTIF_NO_ENTITIES,
             _NOTIF_WRITE_ERROR,
         )
-        notif_ids = [_NOTIF_API_UNREACHABLE, _NOTIF_WRITE_ERROR,
-                     _NOTIF_NO_ENTITIES, _NOTIF_DISCOVERY_INCOMPLETE]
-        self.assertEqual(len(notif_ids), len(set(notif_ids)),
-            "Duplicate _NOTIF_* constant values detected")
+
+        notif_ids = [
+            _NOTIF_API_UNREACHABLE,
+            _NOTIF_WRITE_ERROR,
+            _NOTIF_NO_ENTITIES,
+            _NOTIF_DISCOVERY_INCOMPLETE,
+        ]
+        self.assertEqual(
+            len(notif_ids), len(set(notif_ids)), "Duplicate _NOTIF_* constant values detected"
+        )
 
     def test_applied_mode_timeout_positive(self):
         """_APPLIED_MODE_TIMEOUT_S must be positive."""
         from nibe_entity_manager import _APPLIED_MODE_TIMEOUT_S
+
         self.assertGreater(_APPLIED_MODE_TIMEOUT_S, 0)
 
     def test_mqtt_scan_timeout_positive(self):
@@ -442,86 +491,107 @@ class TestCrossConstantConsistencyProperties(unittest.TestCase):
 class TestBuildPointDefaultsProperties(unittest.TestCase):
     """Hypothesis properties for _build_point_defaults."""
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_never_raises(self, all_points_by_id):
         from nibe_lovelace import _build_point_defaults
+
         _build_point_defaults(all_points_by_id)
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_always_returns_dict(self, all_points_by_id):
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         self.assertIsInstance(result, dict)
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_keys_are_ints_from_input(self, all_points_by_id):
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         for k in result:
             self.assertIsInstance(k, int)
             self.assertIn(k, all_points_by_id)
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_values_are_strings(self, all_points_by_id):
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         for v in result.values():
             self.assertIsInstance(v, str)
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_non_writable_points_excluded(self, all_points_by_id):
         """Non-writable points must never appear in the result."""
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         for pid in result:
-            meta = all_points_by_id[pid]['metadata']
-            self.assertTrue(meta['isWritable'])
+            meta = all_points_by_id[pid]["metadata"]
+            self.assertTrue(meta["isWritable"])
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_non_holding_register_excluded(self, all_points_by_id):
         """Non-HOLDING register points must never appear in the result."""
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         for pid in result:
-            meta = all_points_by_id[pid]['metadata']
-            self.assertEqual(meta['modbusRegisterType'], 'MODBUS_HOLDING_REGISTER')
+            meta = all_points_by_id[pid]["metadata"]
+            self.assertEqual(meta["modbusRegisterType"], "MODBUS_HOLDING_REGISTER")
 
-    @given(st.dictionaries(
-        st.integers(min_value=1, max_value=99999),
-        _point_entry,
-        max_size=10,
-    ))
+    @given(
+        st.dictionaries(
+            st.integers(min_value=1, max_value=99999),
+            _point_entry,
+            max_size=10,
+        )
+    )
     def test_degenerate_range_excluded(self, all_points_by_id):
         """Points with min==max (degenerate range) must never appear."""
         from nibe_lovelace import _build_point_defaults
+
         result = _build_point_defaults(all_points_by_id)
         for pid in result:
-            meta = all_points_by_id[pid]['metadata']
-            self.assertNotEqual(meta['minValue'], meta['maxValue'])
+            meta = all_points_by_id[pid]["metadata"]
+            self.assertNotEqual(meta["minValue"], meta["maxValue"])
 
 
 # ---------------------------------------------------------------------------
@@ -532,89 +602,99 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
 class TestBuildDeviceInfoProperties(unittest.TestCase):
     """Hypothesis properties for _build_device_info."""
 
-    _api_response = st.fixed_dictionaries({
-        'product': st.fixed_dictionaries({
-            'name':         st.text(max_size=30),
-            'manufacturer': st.text(max_size=20),
-            'firmwareId':   st.text(max_size=10),
-            'serialNumber': st.text(max_size=20),
-        }),
-    })
+    _api_response = st.fixed_dictionaries(
+        {
+            "product": st.fixed_dictionaries(
+                {
+                    "name": st.text(max_size=30),
+                    "manufacturer": st.text(max_size=20),
+                    "firmwareId": st.text(max_size=10),
+                    "serialNumber": st.text(max_size=20),
+                }
+            ),
+        }
+    )
 
-    @given(_api_response, st.text(max_size=20), st.text(max_size=30),
-           st.text(max_size=50))
+    @given(_api_response, st.text(max_size=20), st.text(max_size=30), st.text(max_size=50))
     def test_never_raises(self, api_response, device_id, device_name, base_url):
         from nibe_entity_manager import _build_device_info
+
         _build_device_info(api_response, device_id, device_name, base_url)
 
-    @given(_api_response, st.text(max_size=20), st.text(max_size=30),
-           st.text(max_size=50))
+    @given(_api_response, st.text(max_size=20), st.text(max_size=30), st.text(max_size=50))
     def test_always_returns_dict(self, api_response, device_id, device_name, base_url):
         from nibe_entity_manager import _build_device_info
+
         result = _build_device_info(api_response, device_id, device_name, base_url)
         self.assertIsInstance(result, dict)
 
-    @given(_api_response, st.text(min_size=1, max_size=20),
-           st.text(max_size=30), st.text(max_size=50))
-    def test_identifiers_contains_device_id(self, api_response, device_id,
-                                             device_name, base_url):
+    @given(
+        _api_response, st.text(min_size=1, max_size=20), st.text(max_size=30), st.text(max_size=50)
+    )
+    def test_identifiers_contains_device_id(self, api_response, device_id, device_name, base_url):
         from nibe_entity_manager import _build_device_info
-        result = _build_device_info(api_response, device_id, device_name, base_url)
-        self.assertIn(device_id, result.get('identifiers', []))
 
-    @given(_api_response, st.text(max_size=20),
-           st.text(min_size=1, max_size=30).filter(lambda s: s != 'Nibe SMO S40'),
-           st.text(max_size=50))
-    def test_custom_device_name_always_used(self, api_response, device_id,
-                                            device_name, base_url):
+        result = _build_device_info(api_response, device_id, device_name, base_url)
+        self.assertIn(device_id, result.get("identifiers", []))
+
+    @given(
+        _api_response,
+        st.text(max_size=20),
+        st.text(min_size=1, max_size=30).filter(lambda s: s != "Nibe SMO S40"),
+        st.text(max_size=50),
+    )
+    def test_custom_device_name_always_used(self, api_response, device_id, device_name, base_url):
         """Non-default device_name must always appear as 'name' in result."""
         from nibe_entity_manager import _build_device_info
+
         result = _build_device_info(api_response, device_id, device_name, base_url)
-        self.assertEqual(result.get('name'), device_name)
+        self.assertEqual(result.get("name"), device_name)
 
     @given(_api_response, st.text(max_size=20), st.text(max_size=50))
-    def test_default_name_prefers_api_name_when_available(self, api_response,
-                                                           device_id, base_url):
+    def test_default_name_prefers_api_name_when_available(self, api_response, device_id, base_url):
         """When device_name is the default and API provides a name, use API name."""
         from nibe_entity_manager import _build_device_info
-        api_name = api_response.get('product', {}).get('name', '').strip()
-        result = _build_device_info(api_response, device_id, 'Nibe SMO S40', base_url)
-        if api_name:
-            self.assertEqual(result.get('name'), api_name)
 
-    @given(_api_response, st.text(max_size=20), st.text(max_size=30),
-           st.text(max_size=50))
-    def test_model_uses_api_product_name_when_present(self, api_response,
-                                                       device_id, device_name, base_url):
+        api_name = api_response.get("product", {}).get("name", "").strip()
+        result = _build_device_info(api_response, device_id, "Nibe SMO S40", base_url)
+        if api_name:
+            self.assertEqual(result.get("name"), api_name)
+
+    @given(_api_response, st.text(max_size=20), st.text(max_size=30), st.text(max_size=50))
+    def test_model_uses_api_product_name_when_present(
+        self, api_response, device_id, device_name, base_url
+    ):
         """The 'model' field must reflect the API's real product name when
         available — previously untested; only 'name' (device_name) had
         coverage, letting a broken model_name computation go uncaught."""
         from nibe_entity_manager import _build_device_info
-        api_name = api_response.get('product', {}).get('name', '').strip()
+
+        api_name = api_response.get("product", {}).get("name", "").strip()
         result = _build_device_info(api_response, device_id, device_name, base_url)
         if api_name:
-            self.assertEqual(result.get('model'), api_name)
+            self.assertEqual(result.get("model"), api_name)
 
     def test_model_falls_back_to_nibe_s_series_when_api_name_empty(self):
         """When the API provides no product name, 'model' must fall back
         to the literal 'Nibe S-series' string, not None or the API's
         empty value."""
         from nibe_entity_manager import _build_device_info
-        api_response = {'product': {'name': '', 'manufacturer': '',
-                                     'firmwareId': '', 'serialNumber': ''}}
-        result = _build_device_info(api_response, 'dev1', 'My Device', 'http://x')
-        self.assertEqual(result.get('model'), 'Nibe S-series')
 
-    @given(_api_response, st.text(max_size=20), st.text(max_size=30),
-           st.text(max_size=50))
-    def test_no_empty_string_values(self, api_response, device_id,
-                                    device_name, base_url):
+        api_response = {
+            "product": {"name": "", "manufacturer": "", "firmwareId": "", "serialNumber": ""}
+        }
+        result = _build_device_info(api_response, "dev1", "My Device", "http://x")
+        self.assertEqual(result.get("model"), "Nibe S-series")
+
+    @given(_api_response, st.text(max_size=20), st.text(max_size=30), st.text(max_size=50))
+    def test_no_empty_string_values(self, api_response, device_id, device_name, base_url):
         """Empty strings must be stripped from the result dict."""
         from nibe_entity_manager import _build_device_info
+
         result = _build_device_info(api_response, device_id, device_name, base_url)
         for v in result.values():
             if isinstance(v, str):
-                self.assertNotEqual(v, '')
+                self.assertNotEqual(v, "")
 
     def test_manufacturer_model_id_serial_number_from_product(self):
         """When present in the API response, manufacturer/firmwareId/serialNumber
@@ -623,18 +703,19 @@ class TestBuildDeviceInfoProperties(unittest.TestCase):
         Hypothesis strategy generating overlapping/blank field values would not
         reliably distinguish."""
         from nibe_entity_manager import _build_device_info
+
         api_response = {
-            'product': {
-                'name':         'ProductX',
-                'manufacturer': 'ACME Corp',
-                'firmwareId':   'FW123',
-                'serialNumber': 'SN456',
+            "product": {
+                "name": "ProductX",
+                "manufacturer": "ACME Corp",
+                "firmwareId": "FW123",
+                "serialNumber": "SN456",
             }
         }
-        result = _build_device_info(api_response, 'dev1', 'My Device', 'http://x')
-        self.assertEqual(result.get('manufacturer'), 'ACME Corp')
-        self.assertEqual(result.get('model_id'), 'FW123')
-        self.assertEqual(result.get('serial_number'), 'SN456')
+        result = _build_device_info(api_response, "dev1", "My Device", "http://x")
+        self.assertEqual(result.get("manufacturer"), "ACME Corp")
+        self.assertEqual(result.get("model_id"), "FW123")
+        self.assertEqual(result.get("serial_number"), "SN456")
 
     def test_manufacturer_model_id_serial_number_defaults_when_absent(self):
         """When the API response's product dict omits manufacturer/firmwareId/
@@ -644,11 +725,12 @@ class TestBuildDeviceInfoProperties(unittest.TestCase):
         `v != ""` filter and leak a None value into the MQTT discovery
         payload."""
         from nibe_entity_manager import _build_device_info
-        api_response = {'product': {}}
-        result = _build_device_info(api_response, 'dev1', 'My Device', 'http://x')
-        self.assertEqual(result.get('manufacturer'), 'NIBE')
-        self.assertNotIn('model_id', result)
-        self.assertNotIn('serial_number', result)
+
+        api_response = {"product": {}}
+        result = _build_device_info(api_response, "dev1", "My Device", "http://x")
+        self.assertEqual(result.get("manufacturer"), "NIBE")
+        self.assertNotIn("model_id", result)
+        self.assertNotIn("serial_number", result)
 
     def test_configuration_url_splits_on_last_api_v1_devices_segment(self):
         """configuration_url must be everything before the LAST occurrence of
@@ -658,10 +740,11 @@ class TestBuildDeviceInfoProperties(unittest.TestCase):
         rsplit(2) all produce distinct results, so any of those mutations is
         caught."""
         from nibe_entity_manager import _build_device_info
-        api_response = {'product': {}}
-        base_url = 'http://host/api/v1/devices/outer/api/v1/devices/47'
-        result = _build_device_info(api_response, 'dev1', 'My Device', base_url)
-        self.assertEqual(result.get('configuration_url'), 'http://host/api/v1/devices/outer')
+
+        api_response = {"product": {}}
+        base_url = "http://host/api/v1/devices/outer/api/v1/devices/47"
+        result = _build_device_info(api_response, "dev1", "My Device", base_url)
+        self.assertEqual(result.get("configuration_url"), "http://host/api/v1/devices/outer")
 
 
 class TestPublishBridgeAlertProperties(unittest.TestCase):
@@ -669,10 +752,13 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
 
     def _pub(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
         mqtt = MagicMock()
         pub = MqttDiscoveryPublisher(
-            mqtt_client=mqtt, device_info={},
-            device_id='test', device_name='Test',
+            mqtt_client=mqtt,
+            device_info={},
+            device_id="test",
+            device_name="Test",
         )
         return pub, mqtt
 
@@ -680,8 +766,8 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
         import json as _json
 
         from nibe_mqtt_publisher import BrowserTopic
-        calls = [c for c in mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.BRIDGE_ALERT]
+
+        calls = [c for c in mqtt.publish.call_args_list if c.args[0] == BrowserTopic.BRIDGE_ALERT]
         self.assertTrue(calls, "No BRIDGE_ALERT publish found")
         return _json.loads(calls[-1].args[1])
 
@@ -696,7 +782,7 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message)
         payload = self._get_payload(mqtt)
-        for key in ('alert_type', 'severity', 'message', 'timestamp', 'context'):
+        for key in ("alert_type", "severity", "message", "timestamp", "context"):
             self.assertIn(key, payload)
 
     @given(st.text(max_size=30), st.text(max_size=30), st.text(max_size=100))
@@ -704,20 +790,22 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message)
         payload = self._get_payload(mqtt)
-        self.assertEqual(payload['alert_type'], alert_type)
-        self.assertEqual(payload['severity'],   severity)
-        self.assertEqual(payload['message'],    message)
+        self.assertEqual(payload["alert_type"], alert_type)
+        self.assertEqual(payload["severity"], severity)
+        self.assertEqual(payload["message"], message)
 
     @given(st.text(max_size=30), st.text(max_size=30), st.text(max_size=100))
     def test_always_published_non_retained(self, alert_type, severity, message):
         """retain=False is mandatory — alerts must not replay on reconnect."""
         from nibe_mqtt_publisher import BrowserTopic
+
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message)
-        calls = [c for c in mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.BRIDGE_ALERT]
+        calls = [c for c in mqtt.publish.call_args_list if c.args[0] == BrowserTopic.BRIDGE_ALERT]
         self.assertTrue(calls)
-        retain = calls[-1].kwargs.get('retain', calls[-1].args[2] if len(calls[-1].args) > 2 else True)
+        retain = calls[-1].kwargs.get(
+            "retain", calls[-1].args[2] if len(calls[-1].args) > 2 else True
+        )
         self.assertFalse(retain)
 
     @given(st.text(max_size=30), st.text(max_size=30), st.text(max_size=100))
@@ -726,16 +814,20 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message, context=None)
         payload = self._get_payload(mqtt)
-        self.assertEqual(payload['context'], {})
+        self.assertEqual(payload["context"], {})
 
-    @given(st.text(max_size=30), st.text(max_size=30), st.text(max_size=100),
-           st.dictionaries(st.text(max_size=10), st.text(max_size=20), max_size=5))
+    @given(
+        st.text(max_size=30),
+        st.text(max_size=30),
+        st.text(max_size=100),
+        st.dictionaries(st.text(max_size=10), st.text(max_size=20), max_size=5),
+    )
     def test_context_dict_preserved(self, alert_type, severity, message, context):
         """Provided context dict is always preserved exactly in payload."""
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message, context=context)
         payload = self._get_payload(mqtt)
-        self.assertEqual(payload['context'], context)
+        self.assertEqual(payload["context"], context)
 
     @given(st.text(max_size=30), st.text(max_size=30), st.text(max_size=100))
     def test_timestamp_is_positive_float(self, alert_type, severity, message):
@@ -743,7 +835,7 @@ class TestPublishBridgeAlertProperties(unittest.TestCase):
         pub, mqtt = self._pub()
         pub.publish_bridge_alert(alert_type, severity, message)
         payload = self._get_payload(mqtt)
-        self.assertGreater(payload['timestamp'], 0)
+        self.assertGreater(payload["timestamp"], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -757,76 +849,87 @@ class TestBuildPointMetadataDictExtendedProperties(unittest.TestCase):
 
     def _pub(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
         return MqttDiscoveryPublisher(
-            mqtt_client=MagicMock(), device_info={},
-            device_id='test', device_name='Test',
+            mqtt_client=MagicMock(),
+            device_info={},
+            device_id="test",
+            device_name="Test",
         )
 
     def _point(self, pid, **meta_overrides):
         meta = {
-            'unit': '', 'shortUnit': 'X',
-            'minValue': 0, 'maxValue': 100,
-            'modbusRegisterID': pid,
-            'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-            'variableType': 'integer', 'variableSize': 'u8',
-            'isWritable': False, 'divisor': 1, 'decimal': 0,
-            'intDefaultValue': None, 'stringDefaultValue': '',
-            'change': 1,
+            "unit": "",
+            "shortUnit": "X",
+            "minValue": 0,
+            "maxValue": 100,
+            "modbusRegisterID": pid,
+            "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+            "variableType": "integer",
+            "variableSize": "u8",
+            "isWritable": False,
+            "divisor": 1,
+            "decimal": 0,
+            "intDefaultValue": None,
+            "stringDefaultValue": "",
+            "change": 1,
         }
         meta.update(meta_overrides)
         return {
-            'variableId': pid, 'display_title': f'P{pid}',
-            'entity_type': 'sensor', 'entity_category': 'diagnostic',
-            'is_writable': False, 'is_dynamic': False, 'description': '',
-            'metadata': meta,
+            "variableId": pid,
+            "display_title": f"P{pid}",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "description": "",
+            "metadata": meta,
         }
 
     @given(_nibe_point_id, st.integers(min_value=0, max_value=10000))
     def test_divisor_preserved(self, pid, divisor):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, divisor=divisor))
-        self.assertEqual(result['divisor'], divisor)
+        self.assertEqual(result["divisor"], divisor)
 
     @given(_nibe_point_id, st.integers(min_value=0, max_value=6))
     def test_decimal_preserved(self, pid, decimal):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, decimal=decimal))
-        self.assertEqual(result['decimal'], decimal)
+        self.assertEqual(result["decimal"], decimal)
 
     @given(_nibe_point_id, st.integers(min_value=0, max_value=100))
     def test_change_preserved(self, pid, change):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, change=change))
-        self.assertEqual(result['change'], change)
+        self.assertEqual(result["change"], change)
 
-    @given(_nibe_point_id,
-           st.sampled_from(['integer', 'floating-point', 'string', 'time', 'date']))
+    @given(_nibe_point_id, st.sampled_from(["integer", "floating-point", "string", "time", "date"]))
     def test_variable_type_preserved(self, pid, var_type):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, variableType=var_type))
-        self.assertEqual(result['variableType'], var_type)
+        self.assertEqual(result["variableType"], var_type)
 
-    @given(_nibe_point_id,
-           st.sampled_from(['u8', 'u16', 's16', 's32', 'u32']))
+    @given(_nibe_point_id, st.sampled_from(["u8", "u16", "s16", "s32", "u32"]))
     def test_variable_size_preserved(self, pid, var_size):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, variableSize=var_size))
-        self.assertEqual(result['variableSize'], var_size)
+        self.assertEqual(result["variableSize"], var_size)
 
-    @given(_nibe_point_id,
-           st.sampled_from(['MODBUS_INPUT_REGISTER', 'MODBUS_HOLDING_REGISTER',
-                            'MODBUS_NO_REGISTER']))
+    @given(
+        _nibe_point_id,
+        st.sampled_from(["MODBUS_INPUT_REGISTER", "MODBUS_HOLDING_REGISTER", "MODBUS_NO_REGISTER"]),
+    )
     def test_modbus_register_type_preserved(self, pid, reg_type):
         pub = self._pub()
-        result = pub._build_point_metadata_dict(
-            self._point(pid, modbusRegisterType=reg_type))
-        self.assertEqual(result['modbusRegisterType'], reg_type)
+        result = pub._build_point_metadata_dict(self._point(pid, modbusRegisterType=reg_type))
+        self.assertEqual(result["modbusRegisterType"], reg_type)
 
     @given(_nibe_point_id, st.text(max_size=10))
     def test_short_unit_preserved(self, pid, short_unit):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid, shortUnit=short_unit))
-        self.assertEqual(result['shortUnit'], short_unit)
+        self.assertEqual(result["shortUnit"], short_unit)
 
     @given(_nibe_point_id)
     def test_divisor_zero_uses_default_of_1(self, pid):
@@ -835,41 +938,51 @@ class TestBuildPointMetadataDictExtendedProperties(unittest.TestCase):
         # The metadata field itself: divisor=0 is stored as-is in metadata_dict
         result = pub._build_point_metadata_dict(self._point(pid, divisor=0))
         # What matters: divisor in output matches what's in metadata
-        self.assertEqual(result['divisor'], 0)
+        self.assertEqual(result["divisor"], 0)
 
-    @given(_nibe_point_id,
-           st.integers(min_value=1, max_value=10000),
-           st.integers(min_value=-32768, max_value=32767),
-           st.text(max_size=5))
+    @given(
+        _nibe_point_id,
+        st.integers(min_value=1, max_value=10000),
+        st.integers(min_value=-32768, max_value=32767),
+        st.text(max_size=5),
+    )
     def test_default_value_field_uses_apply_divisor(self, pid, divisor, int_default, unit):
         """When intDefaultValue is set, default_value uses apply_divisor formatting."""
         from nibe_entity_detection import apply_divisor
+
         pub = self._pub()
         point = self._point(pid, divisor=divisor, unit=unit)
-        point['metadata']['intDefaultValue'] = int_default
+        point["metadata"]["intDefaultValue"] = int_default
         result = pub._build_point_metadata_dict(point)
-        if 'default_value' in result:
+        if "default_value" in result:
             expected_display = apply_divisor(int_default, divisor)
-            self.assertIn(expected_display, result['default_value'])
+            self.assertIn(expected_display, result["default_value"])
 
 
 class TestBuildMenuViewProperties(unittest.TestCase):
     """Hypothesis properties for _build_menu_view."""
 
-    _menu_strategy = st.fixed_dictionaries({
-        'id':    st.text(max_size=10),
-        'title': st.text(max_size=30),
-        'settings': st.lists(st.fixed_dictionaries({
-            'point_id': st.one_of(st.none(),
-                                   st.integers(min_value=1, max_value=9999)),
-            'label':    st.text(max_size=20),
-        }), max_size=5),
-        'submenus': st.just([]),
-    })
+    _menu_strategy = st.fixed_dictionaries(
+        {
+            "id": st.text(max_size=10),
+            "title": st.text(max_size=30),
+            "settings": st.lists(
+                st.fixed_dictionaries(
+                    {
+                        "point_id": st.one_of(st.none(), st.integers(min_value=1, max_value=9999)),
+                        "label": st.text(max_size=20),
+                    }
+                ),
+                max_size=5,
+            ),
+            "submenus": st.just([]),
+        }
+    )
 
     @given(_menu_strategy)
     def test_always_returns_list(self, menu):
         from nibe_lovelace import _build_menu_view
+
         rw = MagicMock()
         rw.entity_id_for.return_value = None
         result = _build_menu_view(menu, rw)
@@ -878,6 +991,7 @@ class TestBuildMenuViewProperties(unittest.TestCase):
     @given(_menu_strategy)
     def test_never_raises(self, menu):
         from nibe_lovelace import _build_menu_view
+
         rw = MagicMock()
         rw.entity_id_for.return_value = None
         _build_menu_view(menu, rw)  # must not raise
@@ -886,9 +1000,10 @@ class TestBuildMenuViewProperties(unittest.TestCase):
     def test_none_known_dynamic_defaults_safely(self, menu):
         """known_dynamic=None must be handled identically to empty set."""
         from nibe_lovelace import _build_menu_view
+
         rw = MagicMock()
         rw.entity_id_for.return_value = None
-        result_none  = _build_menu_view(menu, rw, known_dynamic=None)
+        result_none = _build_menu_view(menu, rw, known_dynamic=None)
         result_empty = _build_menu_view(menu, rw, known_dynamic=set())
         self.assertEqual(result_none, result_empty)
 
@@ -896,9 +1011,10 @@ class TestBuildMenuViewProperties(unittest.TestCase):
     def test_none_point_defaults_defaults_safely(self, menu):
         """point_defaults=None must be handled identically to empty dict."""
         from nibe_lovelace import _build_menu_view
+
         rw = MagicMock()
         rw.entity_id_for.return_value = None
-        result_none  = _build_menu_view(menu, rw, point_defaults=None)
+        result_none = _build_menu_view(menu, rw, point_defaults=None)
         result_empty = _build_menu_view(menu, rw, point_defaults={})
         self.assertEqual(result_none, result_empty)
 
@@ -916,27 +1032,29 @@ class TestGetCachedEntityType(unittest.TestCase):
         their own distinct keys — a hardcoded/None key would make the second
         point's lookup collide with (or ignore) the first's cached entry."""
         em = _make_em()
-        with patch('nibe_entity_manager.detect_entity_type') as mock_detect:
+        with patch("nibe_entity_manager.detect_entity_type") as mock_detect:
             mock_detect.side_effect = lambda pd: (
-                f"type_{pd['variableId']}", f"cat_{pd['variableId']}"
+                f"type_{pd['variableId']}",
+                f"cat_{pd['variableId']}",
             )
-            result_a = em._get_cached_entity_type({'variableId': 111})
-            result_b = em._get_cached_entity_type({'variableId': 222})
-        self.assertEqual(result_a, ('type_111', 'cat_111'))
-        self.assertEqual(result_b, ('type_222', 'cat_222'))
+            result_a = em._get_cached_entity_type({"variableId": 111})
+            result_b = em._get_cached_entity_type({"variableId": 222})
+        self.assertEqual(result_a, ("type_111", "cat_111"))
+        self.assertEqual(result_b, ("type_222", "cat_222"))
         # Both must genuinely be cached under their own point_id, not a
         # shared/None key that would make one overwrite the other.
-        self.assertEqual(em._entity_type_cache.get(111), ('type_111', 'cat_111'))
-        self.assertEqual(em._entity_type_cache.get(222), ('type_222', 'cat_222'))
+        self.assertEqual(em._entity_type_cache.get(111), ("type_111", "cat_111"))
+        self.assertEqual(em._entity_type_cache.get(222), ("type_222", "cat_222"))
 
     def test_second_call_for_same_point_does_not_recompute(self):
         """A repeated call for the same point_id must be served from cache —
         detect_entity_type must be invoked exactly once across two calls."""
         em = _make_em()
-        with patch('nibe_entity_manager.detect_entity_type',
-                   return_value=('sensor', 'diagnostic')) as mock_detect:
-            em._get_cached_entity_type({'variableId': 55})
-            em._get_cached_entity_type({'variableId': 55})
+        with patch(
+            "nibe_entity_manager.detect_entity_type", return_value=("sensor", "diagnostic")
+        ) as mock_detect:
+            em._get_cached_entity_type({"variableId": 55})
+            em._get_cached_entity_type({"variableId": 55})
         self.assertEqual(mock_detect.call_count, 1)
 
     def test_computed_result_is_stored_verbatim_in_cache(self):
@@ -945,10 +1063,11 @@ class TestGetCachedEntityType(unittest.TestCase):
         reading the cache directly (independent of the return value of the
         call under test) after a single populating call."""
         em = _make_em()
-        with patch('nibe_entity_manager.detect_entity_type',
-                   return_value=('binary_sensor', 'config')):
-            em._get_cached_entity_type({'variableId': 77})
-        self.assertEqual(em._entity_type_cache.get(77), ('binary_sensor', 'config'))
+        with patch(
+            "nibe_entity_manager.detect_entity_type", return_value=("binary_sensor", "config")
+        ):
+            em._get_cached_entity_type({"variableId": 77})
+        self.assertEqual(em._entity_type_cache.get(77), ("binary_sensor", "config"))
 
 
 # ---------------------------------------------------------------------------
@@ -965,66 +1084,75 @@ class TestResolvePointFromEntityIdProperties(unittest.TestCase):
       3. unique_id registry map
     """
 
-    @given(st.text(max_size=50).filter(lambda s: '.' not in s))
+    @given(st.text(max_size=50).filter(lambda s: "." not in s))
     def test_no_dot_always_returns_none(self, entity_id):
         """No '.' in entity_id → always None (not a valid HA entity_id)."""
         em = _make_em()
         self.assertIsNone(em.resolve_point_from_entity_id(entity_id))
 
-    @given(st.integers(min_value=0, max_value=99999),
-           st.sampled_from(['sensor', 'switch', 'number', 'binary_sensor',
-                            'select', 'button']))
+    @given(
+        st.integers(min_value=0, max_value=99999),
+        st.sampled_from(["sensor", "switch", "number", "binary_sensor", "select", "button"]),
+    )
     def test_nibe_prefixed_slug_returns_correct_pid(self, pid, domain):
         """domain.nibe_{pid} always resolves to pid."""
         em = _make_em()
-        entity_id = f'{domain}.nibe_{pid}'
+        entity_id = f"{domain}.nibe_{pid}"
         result = em.resolve_point_from_entity_id(entity_id)
         self.assertEqual(result, pid)
 
-    @given(st.sampled_from(['sensor', 'switch', 'number']),
-           st.text(min_size=1, max_size=20).filter(_cannot_be_int))
+    @given(
+        st.sampled_from(["sensor", "switch", "number"]),
+        st.text(min_size=1, max_size=20).filter(_cannot_be_int),
+    )
     def test_nibe_prefix_with_non_int_returns_none(self, domain, suffix):
         """domain.nibe_{non-int} must return None.
         Filter uses int() directly to match production — catches '0\\r' etc.
         """
         em = _make_em()
-        entity_id = f'{domain}.nibe_{suffix}'
+        entity_id = f"{domain}.nibe_{suffix}"
         result = em.resolve_point_from_entity_id(entity_id)
         self.assertIsNone(result)
 
     def test_empty_nibe_slug_returns_none(self):
         """domain.nibe_ (empty after prefix) must return None."""
         em = _make_em()
-        self.assertIsNone(em.resolve_point_from_entity_id('sensor.nibe_'))
+        self.assertIsNone(em.resolve_point_from_entity_id("sensor.nibe_"))
 
     @given(st.integers(min_value=0, max_value=99999))
     def test_nibe_zero_returns_zero(self, _n):
         """nibe_0 must resolve to 0 — zero is a valid point_id."""
         em = _make_em()
-        self.assertEqual(em.resolve_point_from_entity_id('sensor.nibe_0'), 0)
+        self.assertEqual(em.resolve_point_from_entity_id("sensor.nibe_0"), 0)
 
     def test_non_nibe_slug_without_match_returns_none(self):
         """entity_id without nibe_ slug and no active entity match → None."""
         em = _make_em()
-        for entity_id in ['sensor.other_entity', 'switch.my_device',
-                          'number.some_point', 'sensor.']:
+        for entity_id in [
+            "sensor.other_entity",
+            "switch.my_device",
+            "number.some_point",
+            "sensor.",
+        ]:
             result = em.resolve_point_from_entity_id(entity_id)
             self.assertIsNone(result, f"Expected None for {entity_id!r}")
 
-    @given(st.integers(min_value=1, max_value=99999),
-           st.sampled_from(['sensor', 'switch', 'number']))
+    @given(
+        st.integers(min_value=1, max_value=99999), st.sampled_from(["sensor", "switch", "number"])
+    )
     def test_result_always_int_or_none(self, pid, domain):
         """resolve_point_from_entity_id always returns int or None."""
         em = _make_em()
-        result = em.resolve_point_from_entity_id(f'{domain}.nibe_{pid}')
+        result = em.resolve_point_from_entity_id(f"{domain}.nibe_{pid}")
         self.assertIn(type(result), (int, type(None)))
 
     @given(st.integers(min_value=0, max_value=99999))
     def test_nibe_slug_roundtrip_with_create_entity_id(self, pid):
         """create_entity_id(pid) always resolves back to pid."""
         from nibe_entity_detection import create_entity_id
+
         em = _make_em()
-        entity_id = f'sensor.{create_entity_id(pid)}'
+        entity_id = f"sensor.{create_entity_id(pid)}"
         result = em.resolve_point_from_entity_id(entity_id)
         self.assertEqual(result, pid)
 
@@ -1043,7 +1171,7 @@ class TestResolvePointFromEntityIdProperties(unittest.TestCase):
         pass and returns None.
         """
         em = _make_em()
-        result = em.resolve_point_from_entity_id('nibe_3.sensor.nibe_9')
+        result = em.resolve_point_from_entity_id("nibe_3.sensor.nibe_9")
         self.assertIsNone(result)
 
     def test_unique_id_map_requires_both_entity_id_match_and_nibe_prefix(self):
@@ -1055,9 +1183,9 @@ class TestResolvePointFromEntityIdProperties(unittest.TestCase):
         would incorrectly return the point_id from the nibe_-prefixed
         unique_id regardless of the entity_id mismatch."""
         em = _make_em()
-        unique_id_map = {'nibe_42': 'sensor.completely_different_entity'}
+        unique_id_map = {"nibe_42": "sensor.completely_different_entity"}
         result = em.resolve_point_from_entity_id(
-            'sensor.unmatched_entity', unique_id_map=unique_id_map
+            "sensor.unmatched_entity", unique_id_map=unique_id_map
         )
         self.assertIsNone(result)
 
@@ -1075,7 +1203,7 @@ class TestAllPointsActiveEntitiesProperties(unittest.TestCase):
         """len(all_points) always equals len(all_points_by_id)."""
         em = _make_em()
         for i in range(n):
-            em.all_points_by_id[i] = {'variableId': i}
+            em.all_points_by_id[i] = {"variableId": i}
         self.assertEqual(len(em.all_points), n)
 
     @given(st.integers(min_value=0, max_value=50))
@@ -1083,21 +1211,21 @@ class TestAllPointsActiveEntitiesProperties(unittest.TestCase):
         """len(active_entities) always equals len(active_entities_by_id)."""
         em = _make_em()
         for i in range(n):
-            em.active_entities_by_id[i] = {'point_id': i}
+            em.active_entities_by_id[i] = {"point_id": i}
         self.assertEqual(len(em.active_entities), n)
 
     @given(st.integers(min_value=0, max_value=100))
     def test_all_points_always_returns_list(self, n):
         em = _make_em()
         for i in range(n):
-            em.all_points_by_id[i] = {'variableId': i}
+            em.all_points_by_id[i] = {"variableId": i}
         self.assertIsInstance(em.all_points, list)
 
     @given(st.integers(min_value=0, max_value=50))
     def test_active_entities_always_returns_list(self, n):
         em = _make_em()
         for i in range(n):
-            em.active_entities_by_id[i] = {'point_id': i}
+            em.active_entities_by_id[i] = {"point_id": i}
         self.assertIsInstance(em.active_entities, list)
 
     @given(st.integers(min_value=1, max_value=50))
@@ -1105,7 +1233,7 @@ class TestAllPointsActiveEntitiesProperties(unittest.TestCase):
         """all_points must contain every value in all_points_by_id."""
         em = _make_em()
         for i in range(n):
-            em.all_points_by_id[i] = {'variableId': i, 'label': f'p{i}'}
+            em.all_points_by_id[i] = {"variableId": i, "label": f"p{i}"}
         all_pts = em.all_points
         for v in em.all_points_by_id.values():
             self.assertIn(v, all_pts)
@@ -1115,7 +1243,7 @@ class TestAllPointsActiveEntitiesProperties(unittest.TestCase):
         """Two consecutive calls to all_points return equal results."""
         em = _make_em()
         for i in range(n):
-            em.all_points_by_id[i] = {'variableId': i}
+            em.all_points_by_id[i] = {"variableId": i}
         self.assertEqual(em.all_points, em.all_points)
 
     def test_empty_em_all_points_is_empty_list(self):
@@ -1139,52 +1267,58 @@ class TestCompression(unittest.TestCase):
             _compress_payload,
             _decompress_payload,
         )
-        self.compress   = _compress_payload
+
+        self.compress = _compress_payload
         self.decompress = _decompress_payload
-        self.sentinel   = _GZIP_SENTINEL
+        self.sentinel = _GZIP_SENTINEL
 
     def test_round_trip(self):
-        data   = {'history': [{'id': 1}] * 10, '_seq': 5}
+        data = {"history": [{"id": 1}] * 10, "_seq": 5}
         result = json.loads(self.decompress(self.compress(data)))
-        self.assertEqual(result['_seq'], 5)
-        self.assertEqual(len(result['history']), 10)
+        self.assertEqual(result["_seq"], 5)
+        self.assertEqual(len(result["history"]), 10)
 
     def test_output_is_ascii_string(self):
-        self.compress({'a': 1}).encode('ascii')   # must not raise
+        self.compress({"a": 1}).encode("ascii")  # must not raise
 
     def test_sentinel_prefix(self):
-        self.assertTrue(self.compress({'x': 1}).startswith(self.sentinel))
+        self.assertTrue(self.compress({"x": 1}).startswith(self.sentinel))
 
     def test_smaller_than_raw_json(self):
-        data = {'history': [{'title': f't{i}', 'v': i} for i in range(100)]}
+        data = {"history": [{"title": f"t{i}", "v": i} for i in range(100)]}
         self.assertLess(len(self.compress(data)), len(json.dumps(data)))
 
     def test_bytes_with_sentinel(self):
-        compressed = self.compress({'ok': True}).encode('utf-8')
-        self.assertTrue(json.loads(self.decompress(compressed))['ok'])
+        compressed = self.compress({"ok": True}).encode("utf-8")
+        self.assertTrue(json.loads(self.decompress(compressed))["ok"])
 
     def test_empty_dict(self):
         self.assertEqual(json.loads(self.decompress(self.compress({}))), {})
 
     def test_large_payload_under_5kb(self):
         entries = [
-            {'id': f'c{i}', 'timestamp': 1.0 + i, 'iso_timestamp': '2024',
-             'added': [{'id': 6983}], 'removed': [], 'unread': False}
+            {
+                "id": f"c{i}",
+                "timestamp": 1.0 + i,
+                "iso_timestamp": "2024",
+                "added": [{"id": 6983}],
+                "removed": [],
+                "unread": False,
+            }
             for i in range(200)
         ]
-        self.assertLess(len(self.compress({'history': entries})), 5000)
+        self.assertLess(len(self.compress({"history": entries})), 5000)
 
 
 class TestPointToMenuMap(unittest.TestCase):
-
     def test_starts_empty(self):
         em = _make_em()
         self.assertEqual(em.point_to_menu_map, {})
 
     def test_can_be_populated(self):
         em = _make_em()
-        em.point_to_menu_map[6984] = ('7.1.6.3', 'Power at DOT')
-        self.assertEqual(em.point_to_menu_map[6984], ('7.1.6.3', 'Power at DOT'))
+        em.point_to_menu_map[6984] = ("7.1.6.3", "Power at DOT")
+        self.assertEqual(em.point_to_menu_map[6984], ("7.1.6.3", "Power at DOT"))
 
     def test_lookup_returns_none_for_unknown(self):
         em = _make_em()
@@ -1206,20 +1340,20 @@ class TestResolvePointFromEntityId(unittest.TestCase):
     def test_no_dot_returns_none(self):
         """Malformed input (no domain separator) — must not crash."""
         em = _make_em()
-        self.assertIsNone(em.resolve_point_from_entity_id('not_a_valid_entity_id'))
+        self.assertIsNone(em.resolve_point_from_entity_id("not_a_valid_entity_id"))
 
     def test_pass1_nibe_prefixed_slug_resolves_directly(self):
         """The fast path: entity_id literally encodes the point_id, e.g.
         switch.nibe_3920 -> 3920. No registry lookup needed."""
         em = _make_em()
-        self.assertEqual(em.resolve_point_from_entity_id('switch.nibe_3920'), 3920)
+        self.assertEqual(em.resolve_point_from_entity_id("switch.nibe_3920"), 3920)
 
     def test_pass1_non_numeric_suffix_falls_through_not_crashes(self):
         """A slug starting with 'nibe_' but not followed by a valid int
         (e.g. a custom-renamed entity) must fall through to pass 2/3
         rather than raising ValueError."""
         em = _make_em()
-        result = em.resolve_point_from_entity_id('switch.nibe_custom_name')
+        result = em.resolve_point_from_entity_id("switch.nibe_custom_name")
         self.assertIsNone(result)  # no other match available either
 
     def test_pass2_matches_via_active_entities_config_topic(self):
@@ -1228,9 +1362,10 @@ class TestResolvePointFromEntityId(unittest.TestCase):
         known discovery config topic built from entity_type + entity_id."""
         em = _make_em()
         em.active_entities_by_id[3920] = {
-            'entity_type': 'switch', 'entity_id': 'permit_heating',
+            "entity_type": "switch",
+            "entity_id": "permit_heating",
         }
-        result = em.resolve_point_from_entity_id('switch.permit_heating')
+        result = em.resolve_point_from_entity_id("switch.permit_heating")
         self.assertEqual(result, 3920)
 
     def test_pass2_does_not_match_wrong_domain(self):
@@ -1238,9 +1373,10 @@ class TestResolvePointFromEntityId(unittest.TestCase):
         slug as a switch must not be confused for it."""
         em = _make_em()
         em.active_entities_by_id[3920] = {
-            'entity_type': 'switch', 'entity_id': 'permit_heating',
+            "entity_type": "switch",
+            "entity_id": "permit_heating",
         }
-        result = em.resolve_point_from_entity_id('sensor.permit_heating')
+        result = em.resolve_point_from_entity_id("sensor.permit_heating")
         self.assertIsNone(result)
 
     def test_pass3_unique_id_map_used_when_provided(self):
@@ -1248,9 +1384,10 @@ class TestResolvePointFromEntityId(unittest.TestCase):
         final fallback — used when neither the fast prefix path nor the
         active_entities scan resolves the entity."""
         em = _make_em()
-        unique_id_map = {'nibe_4527': 'switch.some_renamed_entity'}
+        unique_id_map = {"nibe_4527": "switch.some_renamed_entity"}
         result = em.resolve_point_from_entity_id(
-            'switch.some_renamed_entity', unique_id_map=unique_id_map,
+            "switch.some_renamed_entity",
+            unique_id_map=unique_id_map,
         )
         self.assertEqual(result, 4527)
 
@@ -1258,24 +1395,27 @@ class TestResolvePointFromEntityId(unittest.TestCase):
         """A unique_id_map entry not prefixed 'nibe_' belongs to a
         different integration and must not be matched."""
         em = _make_em()
-        unique_id_map = {'other_integration_id': 'switch.some_entity'}
+        unique_id_map = {"other_integration_id": "switch.some_entity"}
         result = em.resolve_point_from_entity_id(
-            'switch.some_entity', unique_id_map=unique_id_map,
+            "switch.some_entity",
+            unique_id_map=unique_id_map,
         )
         self.assertIsNone(result)
 
     def test_pass3_malformed_unique_id_suffix_does_not_crash(self):
         em = _make_em()
-        unique_id_map = {'nibe_not_a_number': 'switch.some_entity'}
+        unique_id_map = {"nibe_not_a_number": "switch.some_entity"}
         result = em.resolve_point_from_entity_id(
-            'switch.some_entity', unique_id_map=unique_id_map,
+            "switch.some_entity",
+            unique_id_map=unique_id_map,
         )
         self.assertIsNone(result)
 
     def test_no_match_anywhere_returns_none(self):
         em = _make_em()
         result = em.resolve_point_from_entity_id(
-            'switch.totally_unknown', unique_id_map={},
+            "switch.totally_unknown",
+            unique_id_map={},
         )
         self.assertIsNone(result)
 
@@ -1288,9 +1428,10 @@ class TestResolvePointFromEntityId(unittest.TestCase):
         # Set up a conflicting active_entities entry that would resolve
         # to a DIFFERENT point_id if pass 2 were reached.
         em.active_entities_by_id[9999] = {
-            'entity_type': 'switch', 'entity_id': 'nibe_3920',
+            "entity_type": "switch",
+            "entity_id": "nibe_3920",
         }
-        result = em.resolve_point_from_entity_id('switch.nibe_3920')
+        result = em.resolve_point_from_entity_id("switch.nibe_3920")
         self.assertEqual(result, 3920)  # fast path wins, not 9999
 
 
@@ -1300,13 +1441,21 @@ class TestEntityManagerProperties(unittest.TestCase):
 
     def _point(self, pid):
         return {
-            'variableId': pid, 'display_title': f'Point {pid}',
-            'metadata': {'isWritable': False, 'divisor': 1,
-                         'minValue': 0, 'maxValue': 100,
-                         'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                         'variableType': 'integer', 'variableSize': 's16',
-                         'unit': '', 'decimal': 0},
-            'title': f'Point {pid}', 'description': '',
+            "variableId": pid,
+            "display_title": f"Point {pid}",
+            "metadata": {
+                "isWritable": False,
+                "divisor": 1,
+                "minValue": 0,
+                "maxValue": 100,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableType": "integer",
+                "variableSize": "s16",
+                "unit": "",
+                "decimal": 0,
+            },
+            "title": f"Point {pid}",
+            "description": "",
         }
 
     def test_all_points_empty(self):
@@ -1320,7 +1469,7 @@ class TestEntityManagerProperties(unittest.TestCase):
         result = em.all_points
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 2)
-        pids = {p['variableId'] for p in result}
+        pids = {p["variableId"] for p in result}
         self.assertEqual(pids, {100, 200})
 
     def test_all_points_is_a_copy(self):
@@ -1337,15 +1486,15 @@ class TestEntityManagerProperties(unittest.TestCase):
 
     def test_active_entities_returns_list_of_values(self):
         em = _make_em()
-        em.active_entities_by_id[100] = {'variableId': 100}
-        em.active_entities_by_id[200] = {'variableId': 200}
+        em.active_entities_by_id[100] = {"variableId": 100}
+        em.active_entities_by_id[200] = {"variableId": 200}
         result = em.active_entities
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 2)
 
     def test_active_entities_is_a_copy(self):
         em = _make_em()
-        em.active_entities_by_id[100] = {'variableId': 100}
+        em.active_entities_by_id[100] = {"variableId": 100}
         result = em.active_entities
         result.clear()
 
@@ -1355,23 +1504,25 @@ class TestBuildDeviceInfoApiNameFallback(unittest.TestCase):
 
     def test_api_name_used_when_config_is_default(self):
         from nibe_entity_manager import _build_device_info
+
         result = _build_device_info(
-            api_response={'product': {'name': 'S1255-6', 'manufacturer': 'NIBE'}},
-            device_id='abc123',
-            device_name='Nibe SMO S40',    # default name
-            base_url='https://192.168.1.1/api/v1/devices/abc123',
+            api_response={"product": {"name": "S1255-6", "manufacturer": "NIBE"}},
+            device_id="abc123",
+            device_name="Nibe SMO S40",  # default name
+            base_url="https://192.168.1.1/api/v1/devices/abc123",
         )
-        self.assertEqual(result['name'], 'S1255-6')
+        self.assertEqual(result["name"], "S1255-6")
 
     def test_user_name_kept_when_not_default(self):
         from nibe_entity_manager import _build_device_info
+
         result = _build_device_info(
-            api_response={'product': {'name': 'S1255-6', 'manufacturer': 'NIBE'}},
-            device_id='abc123',
-            device_name='My Heat Pump',   # user-set name
-            base_url='https://192.168.1.1/api/v1/devices/abc123',
+            api_response={"product": {"name": "S1255-6", "manufacturer": "NIBE"}},
+            device_id="abc123",
+            device_name="My Heat Pump",  # user-set name
+            base_url="https://192.168.1.1/api/v1/devices/abc123",
         )
-        self.assertEqual(result['name'], 'My Heat Pump')
+        self.assertEqual(result["name"], "My Heat Pump")
 
 
 class TestGetMemoryUsage(unittest.TestCase):
@@ -1381,40 +1532,48 @@ class TestGetMemoryUsage(unittest.TestCase):
     def test_returns_expected_keys(self):
         em = _make_em()
         stats = em.get_memory_usage()
-        for key in ['total_points', 'active_entities', 'mqtt_enabled_points',
-                    'active_dynamic_points', 'value_cache_size', 'last_states_size',
-                    'point_string_cache_size', 'pending_writes', 'estimated_memory_mb',
-                    'point_string_cache_hit_rate']:
+        for key in [
+            "total_points",
+            "active_entities",
+            "mqtt_enabled_points",
+            "active_dynamic_points",
+            "value_cache_size",
+            "last_states_size",
+            "point_string_cache_size",
+            "pending_writes",
+            "estimated_memory_mb",
+            "point_string_cache_hit_rate",
+        ]:
             self.assertIn(key, stats, f"Expected key '{key}' missing from get_memory_usage()")
 
     def test_point_string_cache_hit_rate_reflects_cache_stats(self):
         """point_string_cache_hit_rate must match the underlying
         LRUCache.get_stats()['hit_rate'] — not just be present."""
         em = _make_em()
-        em._point_string_cache.put('a', 'value')
-        em._point_string_cache.get('a')       # hit
-        em._point_string_cache.get('missing')  # miss
+        em._point_string_cache.put("a", "value")
+        em._point_string_cache.get("a")  # hit
+        em._point_string_cache.get("missing")  # miss
         stats = em.get_memory_usage()
-        expected = em._point_string_cache.get_stats()['hit_rate']
-        self.assertAlmostEqual(stats['point_string_cache_hit_rate'], round(expected, 3))
+        expected = em._point_string_cache.get_stats()["hit_rate"]
+        self.assertAlmostEqual(stats["point_string_cache_hit_rate"], round(expected, 3))
 
     def test_point_string_cache_hit_rate_zero_when_empty(self):
         em = _make_em()
         stats = em.get_memory_usage()
-        self.assertEqual(stats['point_string_cache_hit_rate'], 0)
+        self.assertEqual(stats["point_string_cache_hit_rate"], 0)
 
     def test_counts_reflect_state(self):
         em = _make_em()
-        em.all_points_by_id[100] = {'variableId': 100}
+        em.all_points_by_id[100] = {"variableId": 100}
         em.mqtt_enabled_points.add(100)
         stats = em.get_memory_usage()
-        self.assertEqual(stats['total_points'], 1)
-        self.assertEqual(stats['mqtt_enabled_points'], 1)
+        self.assertEqual(stats["total_points"], 1)
+        self.assertEqual(stats["mqtt_enabled_points"], 1)
 
     def test_estimated_memory_mb_is_non_negative(self):
         em = _make_em()
         stats = em.get_memory_usage()
-        self.assertGreaterEqual(stats['estimated_memory_mb'], 0)
+        self.assertGreaterEqual(stats["estimated_memory_mb"], 0)
 
     def test_estimated_memory_mb_matches_exact_formula(self):
         """Pins the exact estimated_bytes formula (total_points*100 +
@@ -1430,19 +1589,19 @@ class TestGetMemoryUsage(unittest.TestCase):
         for pid in range(50):
             em.active_entities_by_id[pid] = {}
         for pid in range(2000):
-            em._point_string_cache.put(pid, ('t', 'd', 'ct', 'cd'))
+            em._point_string_cache.put(pid, ("t", "d", "ct", "cd"))
         stats = em.get_memory_usage()
         expected_bytes = 100 * 100 + 50 * 500 + 2000 * 50
         expected_mb = round(expected_bytes / (1024 * 1024), 2)
-        self.assertEqual(stats['estimated_memory_mb'], expected_mb)
+        self.assertEqual(stats["estimated_memory_mb"], expected_mb)
 
     def test_actual_object_size_none_when_getsizeof_raises(self):
         """If sys.getsizeof raises, actual_object_size_mb is None rather
         than propagating the exception (lines 2971-2972)."""
         em = _make_em()
-        with patch('nibe_entity_manager.sys.getsizeof', side_effect=TypeError("unsupported")):
+        with patch("nibe_entity_manager.sys.getsizeof", side_effect=TypeError("unsupported")):
             stats = em.get_memory_usage()
-        self.assertIsNone(stats['actual_object_size_mb'])
+        self.assertIsNone(stats["actual_object_size_mb"])
 
     def test_hit_rate_rounded_to_3_decimals_not_4(self):
         """point_string_cache_hit_rate must be rounded to exactly 3 decimal
@@ -1450,13 +1609,13 @@ class TestGetMemoryUsage(unittest.TestCase):
         round(x, 3) from round(x, 4) — a fixture with an exact 0.5 hit rate
         (as used elsewhere) cannot, since both roundings agree there."""
         em = _make_em()
-        em._point_string_cache.put('a', 'value')
-        em._point_string_cache.get('a')        # 1 hit
-        em._point_string_cache.get('miss1')     # 2 misses
-        em._point_string_cache.get('miss2')
+        em._point_string_cache.put("a", "value")
+        em._point_string_cache.get("a")  # 1 hit
+        em._point_string_cache.get("miss1")  # 2 misses
+        em._point_string_cache.get("miss2")
         stats = em.get_memory_usage()
         # 1 hit / 3 lookups = 0.333333...; round(_, 3) == 0.333, round(_, 4) == 0.3333
-        self.assertEqual(stats['point_string_cache_hit_rate'], 0.333)
+        self.assertEqual(stats["point_string_cache_hit_rate"], 0.333)
 
     def test_estimated_bytes_total_points_multiplier_is_100(self):
         """The total_points term must use a 100-bytes-per-point multiplier —
@@ -1467,7 +1626,7 @@ class TestGetMemoryUsage(unittest.TestCase):
             em.all_points_by_id[pid] = {}
         stats = em.get_memory_usage()
         expected_mb = round(200_000 * 100 / (1024 * 1024), 2)
-        self.assertEqual(stats['estimated_memory_mb'], expected_mb)
+        self.assertEqual(stats["estimated_memory_mb"], expected_mb)
 
     def test_estimated_bytes_active_entities_multiplier_is_500(self):
         """The active_entities term must use a 500-bytes-per-entity
@@ -1477,7 +1636,7 @@ class TestGetMemoryUsage(unittest.TestCase):
             em.active_entities_by_id[pid] = {}
         stats = em.get_memory_usage()
         expected_mb = round(40_000 * 500 / (1024 * 1024), 2)
-        self.assertEqual(stats['estimated_memory_mb'], expected_mb)
+        self.assertEqual(stats["estimated_memory_mb"], expected_mb)
 
     def test_estimated_bytes_cache_sizes_multiplier_is_50(self):
         """The combined cache-size term (value_cache + last_states +
@@ -1488,7 +1647,7 @@ class TestGetMemoryUsage(unittest.TestCase):
             em.last_states[pid] = "0"
         stats = em.get_memory_usage()
         expected_mb = round(200_000 * 50 / (1024 * 1024), 2)
-        self.assertEqual(stats['estimated_memory_mb'], expected_mb)
+        self.assertEqual(stats["estimated_memory_mb"], expected_mb)
 
     def test_estimated_memory_mb_divides_by_1024_squared_not_a_nearby_value(self):
         """estimated_bytes must be divided by 1024*1024 (MiB), not
@@ -1501,7 +1660,7 @@ class TestGetMemoryUsage(unittest.TestCase):
         stats = em.get_memory_usage()
         expected_bytes = 300_000 * 100
         expected_mb = round(expected_bytes / (1024 * 1024), 2)
-        self.assertEqual(stats['estimated_memory_mb'], expected_mb)
+        self.assertEqual(stats["estimated_memory_mb"], expected_mb)
         # Sanity: confirm this fixture size actually distinguishes the
         # correct divisor from the nearby off-by-one-factor mutants.
         self.assertNotEqual(expected_mb, round(expected_bytes / (1025 * 1024), 2))
@@ -1519,7 +1678,7 @@ class TestGetMemoryUsage(unittest.TestCase):
         two_places = round(expected_bytes / (1024 * 1024), 2)
         three_places = round(expected_bytes / (1024 * 1024), 3)
         self.assertNotEqual(two_places, three_places)  # sanity: fixture is discriminating
-        self.assertEqual(stats['estimated_memory_mb'], two_places)
+        self.assertEqual(stats["estimated_memory_mb"], two_places)
 
     def test_actual_object_size_mb_uses_getsizeof_of_self_not_none(self):
         """actual_object_size_mb must be computed from sys.getsizeof(self),
@@ -1530,12 +1689,11 @@ class TestGetMemoryUsage(unittest.TestCase):
         an exact-power-of-1024 value would make those mutations coincide
         with the correct answer after rounding, hiding the bug."""
         em = _make_em()
-        with patch('nibe_entity_manager.sys.getsizeof',
-                  return_value=10_000_000) as mock_getsizeof:
+        with patch("nibe_entity_manager.sys.getsizeof", return_value=10_000_000) as mock_getsizeof:
             stats = em.get_memory_usage()
         mock_getsizeof.assert_called_once_with(em)
-        self.assertEqual(stats['actual_object_size_mb'], 9.54)
-        self.assertIsInstance(stats['actual_object_size_mb'], float)
+        self.assertEqual(stats["actual_object_size_mb"], 9.54)
+        self.assertIsInstance(stats["actual_object_size_mb"], float)
 
     def test_actual_object_size_mb_key_name_is_exact(self):
         """The result key must be literally 'actual_object_size_mb' —
@@ -1543,7 +1701,7 @@ class TestGetMemoryUsage(unittest.TestCase):
         or renamed key, silently breaking any dashboard reading this key."""
         em = _make_em()
         stats = em.get_memory_usage()
-        self.assertIn('actual_object_size_mb', stats)
+        self.assertIn("actual_object_size_mb", stats)
 
 
 class TestEmLockAttributes(unittest.TestCase):
@@ -1559,6 +1717,7 @@ class TestEmLockAttributes(unittest.TestCase):
         apply_mode, _publish_dynamic_changes, and _reconcile_dynamic_points,
         all of which acquire _em_lock before calling the locked variants."""
         import threading
+
         em = _make_em()
         self.assertIsInstance(
             em._em_lock,
@@ -1570,6 +1729,7 @@ class TestEmLockAttributes(unittest.TestCase):
         """_post_write_lock guards post_write_active and _post_write_until
         against a TOCTOU race between the write executor and main thread."""
         import threading
+
         em = _make_em()
         self.assertIsInstance(
             em._post_write_lock,
@@ -1582,7 +1742,7 @@ class TestEmLockAttributes(unittest.TestCase):
         internal callers that already hold _em_lock."""
         em = _make_em()
         self.assertTrue(
-            callable(getattr(em, '_enable_entity_locked', None)),
+            callable(getattr(em, "_enable_entity_locked", None)),
             "_enable_entity_locked must be a callable method",
         )
 
@@ -1591,7 +1751,7 @@ class TestEmLockAttributes(unittest.TestCase):
         internal callers that already hold _em_lock."""
         em = _make_em()
         self.assertTrue(
-            callable(getattr(em, '_disable_entity_locked', None)),
+            callable(getattr(em, "_disable_entity_locked", None)),
             "_disable_entity_locked must be a callable method",
         )
 
@@ -1604,12 +1764,19 @@ class TestEmLockAttributes(unittest.TestCase):
         can re-acquire it without blocking."""
         em = _make_em()
         em.all_points_by_id = {
-            1: {'variableId': 1, 'display_title': 'P1', 'entity_type': 'sensor',
-                'entity_category': 'none', 'is_writable': False, 'is_dynamic': False,
-                'description': '', 'metadata': {}},
+            1: {
+                "variableId": 1,
+                "display_title": "P1",
+                "entity_type": "sensor",
+                "entity_category": "none",
+                "is_writable": False,
+                "is_dynamic": False,
+                "description": "",
+                "metadata": {},
+            },
         }
-        with patch('nibe_entity_manager.MODES', {'essential': frozenset({1})}):
-            em.apply_mode('essential')   # must not deadlock
+        with patch("nibe_entity_manager.MODES", {"essential": frozenset({1})}):
+            em.apply_mode("essential")  # must not deadlock
         self.assertIn(1, em.mqtt_enabled_points)
 
 
@@ -1630,33 +1797,41 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         self.point_id = 4
 
         self.em.all_points_by_id[self.point_id] = {
-            'variableId':      self.point_id,
-            'display_title':   'Outdoor temperature',
-            'entity_type':     'sensor',
-            'entity_category': 'diagnostic',
-            'is_writable':     False,
-            'is_dynamic':      False,
-            'metadata': {
-                'divisor': 10, 'unit': '°C', 'minValue': -400, 'maxValue': 400,
-                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
+            "variableId": self.point_id,
+            "display_title": "Outdoor temperature",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "metadata": {
+                "divisor": 10,
+                "unit": "°C",
+                "minValue": -400,
+                "maxValue": 400,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
             },
         }
         import time as _time
+
         self.em.bulk_data[self.point_id] = {
-            'raw_value': 119, 'string_value': '', 'is_ok': True,
-            'metadata': {'divisor': 10}, 'title': 'Outdoor temperature',
-            'description': '', 'timestamp': _time.time(),
+            "raw_value": 119,
+            "string_value": "",
+            "is_ok": True,
+            "metadata": {"divisor": 10},
+            "title": "Outdoor temperature",
+            "description": "",
+            "timestamp": _time.time(),
         }
 
         self.mock_entity_info = {
-            'point_id':          self.point_id,
-            'entity_type':       'sensor',
-            'entity_id':         f'nibe_{self.point_id}',
-            'state_topic':       f'homeassistant/sensor/nibe_{self.point_id}/state',
-            'availability_topic': f'homeassistant/sensor/nibe_{self.point_id}/availability',
-            'attributes_topic':  f'homeassistant/sensor/nibe_{self.point_id}/attributes',
-            'command_topic':     None,   # read-only sensor — no command topic
-            'metadata':          {'divisor': 10},
+            "point_id": self.point_id,
+            "entity_type": "sensor",
+            "entity_id": f"nibe_{self.point_id}",
+            "state_topic": f"homeassistant/sensor/nibe_{self.point_id}/state",
+            "availability_topic": f"homeassistant/sensor/nibe_{self.point_id}/availability",
+            "attributes_topic": f"homeassistant/sensor/nibe_{self.point_id}/attributes",
+            "command_topic": None,  # read-only sensor — no command topic
+            "metadata": {"divisor": 10},
         }
         self.em._pub.publish_entity_discovery.return_value = self.mock_entity_info
 
@@ -1668,27 +1843,27 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         dicts must be keyed under the literal defaults 'unknown'/'none' —
         not None or some other placeholder — otherwise the memory-usage /
         dashboard stats silently lose these points under an unexpected key."""
-        del self.em.all_points_by_id[self.point_id]['entity_type']
-        del self.em.all_points_by_id[self.point_id]['entity_category']
+        del self.em.all_points_by_id[self.point_id]["entity_type"]
+        del self.em.all_points_by_id[self.point_id]["entity_category"]
         self.em.enable_entity(self.point_id)
-        self.assertEqual(self.em._stats_type_counts.get('unknown'), 1)
-        self.assertEqual(self.em._stats_category_counts.get('none'), 1)
+        self.assertEqual(self.em._stats_type_counts.get("unknown"), 1)
+        self.assertEqual(self.em._stats_category_counts.get("none"), 1)
 
     def test_enable_increments_existing_type_and_category_counts_by_exactly_one(self):
         """Stats counters must increment the *existing* count by exactly 1,
         not overwrite it or jump by 2 — verified against independently
         pre-seeded starting values."""
-        self.em._stats_type_counts['sensor'] = 5
-        self.em._stats_category_counts['diagnostic'] = 7
+        self.em._stats_type_counts["sensor"] = 5
+        self.em._stats_category_counts["diagnostic"] = 7
         self.em.enable_entity(self.point_id)
-        self.assertEqual(self.em._stats_type_counts['sensor'], 6)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 8)
+        self.assertEqual(self.em._stats_type_counts["sensor"], 6)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 8)
 
     def test_enable_missing_is_writable_key_does_not_increment_writable_count(self):
         """point.get('is_writable', False) must default to False (falsy) when
         the key is absent — not True, which would silently mark every
         conditional/legacy point missing this key as writable."""
-        del self.em.all_points_by_id[self.point_id]['is_writable']
+        del self.em.all_points_by_id[self.point_id]["is_writable"]
         before = self.em._stats_writable_count
         self.em.enable_entity(self.point_id)
         self.assertEqual(self.em._stats_writable_count, before)
@@ -1696,8 +1871,8 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
     def test_enable_subscribes_command_topic_with_qos_1(self):
         """The command topic subscription must use QoS 1 specifically (at
         least once delivery) — not QoS 2 or any other value."""
-        cmd_topic = f'homeassistant/switch/nibe_{self.point_id}/set'
-        self.mock_entity_info['command_topic'] = cmd_topic
+        cmd_topic = f"homeassistant/switch/nibe_{self.point_id}/set"
+        self.mock_entity_info["command_topic"] = cmd_topic
         self.em.enable_entity(self.point_id)
         self.em.mqtt.subscribe.assert_called_once_with(cmd_topic, qos=1)
 
@@ -1716,10 +1891,10 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         of what _enable_entity_locked's own publish line did, letting 4
         mutations of that line survive. Patching out _update_entity_state
         isolates the call this test actually means to verify."""
-        with patch.object(self.em, '_update_entity_state'):
+        with patch.object(self.em, "_update_entity_state"):
             self.em.enable_entity(self.point_id)
         self.em.mqtt.publish.assert_any_call(
-            self.mock_entity_info['availability_topic'], 'online', retain=True
+            self.mock_entity_info["availability_topic"], "online", retain=True
         )
 
     def test_enable_skips_update_entity_state_when_point_not_in_bulk_data(self):
@@ -1727,14 +1902,14 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         bulk_data yet (first enable before first poll) — calling it would
         trigger the auto-disable path and immediately undo the enable."""
         del self.em.bulk_data[self.point_id]
-        with patch.object(self.em, '_update_entity_state') as mock_update:
+        with patch.object(self.em, "_update_entity_state") as mock_update:
             self.em.enable_entity(self.point_id)
         mock_update.assert_not_called()
 
     def test_enable_calls_update_entity_state_when_point_in_bulk_data(self):
         """Conversely, when the point IS present in bulk_data, the state
         update must actually be invoked."""
-        with patch.object(self.em, '_update_entity_state') as mock_update:
+        with patch.object(self.em, "_update_entity_state") as mock_update:
             self.em.enable_entity(self.point_id)
         mock_update.assert_called_once()
 
@@ -1743,6 +1918,7 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         exact (mqtt_client, _NOTIF_NO_ENTITIES) pair on the first successful
         enable (mqtt_enabled_points size becomes 1)."""
         from nibe_entity_manager import _NOTIF_NO_ENTITIES
+
         self.em.enable_entity(self.point_id)
         self.em._dismiss.assert_called_once_with(self.em.mqtt, _NOTIF_NO_ENTITIES)
 
@@ -1765,10 +1941,12 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
             self.em.all_points_by_id[self.point_id], variableId=second_point_id
         )
         self.em.bulk_data[second_point_id] = dict(self.em.bulk_data[self.point_id])
-        second_entity_info = dict(self.mock_entity_info, point_id=second_point_id,
-                                   entity_id=f'nibe_{second_point_id}')
+        second_entity_info = dict(
+            self.mock_entity_info, point_id=second_point_id, entity_id=f"nibe_{second_point_id}"
+        )
         self.em._pub.publish_entity_discovery.side_effect = [
-            self.mock_entity_info, second_entity_info,
+            self.mock_entity_info,
+            second_entity_info,
         ]
         self.em.enable_entity(self.point_id)
         self.em._dismiss.reset_mock()
@@ -1785,7 +1963,8 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         from nibe_mqtt_publisher import t_config
-        expected_topic = t_config('sensor', f'nibe_{self.point_id}')
+
+        expected_topic = t_config("sensor", f"nibe_{self.point_id}")
         self.em.mqtt.publish.assert_any_call(expected_topic, "", retain=True)
 
     def test_disable_invalidates_config_hash_for_the_correct_point(self):
@@ -1801,33 +1980,36 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
     def test_disable_clears_attributes_topic_when_present(self):
         """When entity_info has an attributes_topic, disable must publish an
         empty retained payload to that EXACT topic — not a wrong/None one."""
-        self.mock_entity_info['attributes_topic'] = f'homeassistant/sensor/nibe_{self.point_id}/attributes'
+        self.mock_entity_info["attributes_topic"] = (
+            f"homeassistant/sensor/nibe_{self.point_id}/attributes"
+        )
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         self.em.mqtt.publish.assert_any_call(
-            f'homeassistant/sensor/nibe_{self.point_id}/attributes', "", retain=True
+            f"homeassistant/sensor/nibe_{self.point_id}/attributes", "", retain=True
         )
 
     def test_disable_no_attributes_topic_publishes_no_attributes_clear(self):
         """When attributes_topic is absent/None, no clearing publish for it
         should occur at all — the .get() guard must not be bypassed."""
-        self.mock_entity_info['attributes_topic'] = None
+        self.mock_entity_info["attributes_topic"] = None
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
         attr_calls = [
-            c for c in self.em.mqtt.publish.call_args_list
-            if 'attributes' in str(c.args[0] if c.args else '')
+            c
+            for c in self.em.mqtt.publish.call_args_list
+            if "attributes" in str(c.args[0] if c.args else "")
         ]
         self.assertEqual(attr_calls, [])
 
     def test_disable_unsubscribes_and_removes_callback_for_command_topic(self):
         """When entity_info has a command_topic, disable must remove the
         message callback and unsubscribe using THAT exact topic string."""
-        cmd_topic = f'homeassistant/switch/nibe_{self.point_id}/set'
-        self.mock_entity_info['command_topic'] = cmd_topic
-        self.mock_entity_info['entity_type'] = 'switch'
+        cmd_topic = f"homeassistant/switch/nibe_{self.point_id}/set"
+        self.mock_entity_info["command_topic"] = cmd_topic
+        self.mock_entity_info["entity_type"] = "switch"
         self.em.enable_entity(self.point_id)
         self.em.mqtt.reset_mock()
         self.em.disable_entity(self.point_id)
@@ -1841,10 +2023,10 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         wrong/None key mutant that would pop nothing (or the wrong thing)."""
         other_pid = self.point_id + 100
         self.em.enable_entity(self.point_id)
-        self.em._point_string_cache.put(self.point_id, ('sensor', 'diagnostic'))
-        self.em._point_string_cache.put(other_pid, ('sensor', 'diagnostic'))
-        self.em._entity_type_cache.put(self.point_id, ('sensor', 'diagnostic'))
-        self.em._entity_type_cache.put(other_pid, ('sensor', 'diagnostic'))
+        self.em._point_string_cache.put(self.point_id, ("sensor", "diagnostic"))
+        self.em._point_string_cache.put(other_pid, ("sensor", "diagnostic"))
+        self.em._entity_type_cache.put(self.point_id, ("sensor", "diagnostic"))
+        self.em._entity_type_cache.put(other_pid, ("sensor", "diagnostic"))
         self.em.disable_entity(self.point_id)
         self.assertIsNone(self.em._point_string_cache.get(self.point_id))
         self.assertIsNotNone(self.em._point_string_cache.get(other_pid))
@@ -1857,10 +2039,10 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         entries must survive. Distinguishes the real point_id key from a
         None-key mutant that would pop nothing."""
         other_pid = self.point_id + 100
-        self.em.all_points_by_id[self.point_id] = {'variableId': self.point_id}
-        self.em.all_points_by_id[other_pid] = {'variableId': other_pid}
-        self.em._point_string_cache.put(self.point_id, ('sensor', 'diagnostic'))
-        self.em._point_string_cache.put(other_pid, ('sensor', 'diagnostic'))
+        self.em.all_points_by_id[self.point_id] = {"variableId": self.point_id}
+        self.em.all_points_by_id[other_pid] = {"variableId": other_pid}
+        self.em._point_string_cache.put(self.point_id, ("sensor", "diagnostic"))
+        self.em._point_string_cache.put(other_pid, ("sensor", "diagnostic"))
         self.em._deindex_point(self.point_id)
         self.assertNotIn(self.point_id, self.em.all_points_by_id)
         self.assertIn(other_pid, self.em.all_points_by_id)
@@ -1873,23 +2055,23 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         independently-chosen starting value distinct from any hardcoded
         default in the source."""
         self.em.enable_entity(self.point_id)
-        self.em._stats_category_counts['diagnostic'] = 9
+        self.em._stats_category_counts["diagnostic"] = 9
         self.em.disable_entity(self.point_id)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 8)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 8)
 
     def test_disable_category_stat_clamped_at_zero_not_left_at_one(self):
         """max(0, count - 1) must clamp to 0 when count is already 0/1 —
         not to 1, which would leave a phantom positive count forever after
         repeated disables (a real bug if the cap constant is mutated)."""
         self.em.enable_entity(self.point_id)
-        self.em._stats_category_counts['diagnostic'] = 0
+        self.em._stats_category_counts["diagnostic"] = 0
         self.em.disable_entity(self.point_id)
-        self.assertEqual(self.em._stats_category_counts['diagnostic'], 0)
+        self.assertEqual(self.em._stats_category_counts["diagnostic"], 0)
 
     def test_disable_writable_count_decrements_when_point_is_writable(self):
         """A writable point's disable must decrement _stats_writable_count
         by exactly 1 from an independently-seeded starting value."""
-        self.em.all_points_by_id[self.point_id]['is_writable'] = True
+        self.em.all_points_by_id[self.point_id]["is_writable"] = True
         self.em.enable_entity(self.point_id)
         self.em._stats_writable_count = 4
         self.em.disable_entity(self.point_id)
@@ -1900,7 +2082,7 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         suppression block — the guard is 'if not suppressed', not
         'if suppressed'."""
         self.em.enable_entity(self.point_id)
-        with patch.object(self.em, 'publish_enabled_state') as mock_publish:
+        with patch.object(self.em, "publish_enabled_state") as mock_publish:
             self.em.disable_entity(self.point_id)
         mock_publish.assert_called_once()
 
@@ -1910,10 +2092,6 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
         self.em.enable_entity(self.point_id)
         result = self.em.disable_entity(self.point_id)
         self.assertTrue(result)
-
-
-
-
 
 
 class TestInitAttributeDefaults(unittest.TestCase):
@@ -2035,16 +2213,19 @@ class TestInitAttributeDefaults(unittest.TestCase):
         mutation to None would crash the first .get('model', ...) call
         (line ~1753) if anything reads device_info before main() populates
         it via _build_device_info()."""
-        with patch('nibe_entity_manager.EntityManager.resubscribe_all'), \
-             patch('nibe_entity_manager.EntityManager._setup_history_loading'), \
-             patch('nibe_entity_manager.EntityManager._setup_dynamic_map_loading'):
+        with (
+            patch("nibe_entity_manager.EntityManager.resubscribe_all"),
+            patch("nibe_entity_manager.EntityManager._setup_history_loading"),
+            patch("nibe_entity_manager.EntityManager._setup_dynamic_map_loading"),
+        ):
             from nibe_entity_manager import EntityManager
+
             em = EntityManager(
-                api_client  = MagicMock(),
-                publisher   = MagicMock(),
-                notify_fn   = MagicMock(),
-                dismiss_fn  = MagicMock(),
-                mqtt_client = MagicMock(),
+                api_client=MagicMock(),
+                publisher=MagicMock(),
+                notify_fn=MagicMock(),
+                dismiss_fn=MagicMock(),
+                mqtt_client=MagicMock(),
             )
         self.assertEqual(em.device_info, {})
 

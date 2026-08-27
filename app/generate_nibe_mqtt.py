@@ -58,7 +58,9 @@ import sys
 import threading
 import time
 import urllib.error
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import yaml
 
@@ -72,6 +74,7 @@ except ImportError:
     sys.exit(1)
 
 
+import contextlib
 
 from nibe_api import NibeApiClient
 from nibe_entity_detection import MODES
@@ -124,18 +127,19 @@ def _load_bridge_version() -> str:
     for local/dev runs and sandboxed test environments outside the container.
     """
     candidates = [
-        '/config.yaml',
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml'),
-        '/mnt/project/config.yaml',
+        "/config.yaml",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.yaml"),
+        "/mnt/project/config.yaml",
     ]
     for path in candidates:
         try:
-            with open(path, encoding='utf-8') as f:
-                return yaml.safe_load(f)['version']
+            with open(path, encoding="utf-8") as f:
+                version: str = yaml.safe_load(f)["version"]
+                return version
         except (OSError, KeyError, TypeError, yaml.YAMLError):
             continue
     raise RuntimeError(
-        'Could not determine BRIDGE_VERSION: config.yaml not found at any known path'
+        "Could not determine BRIDGE_VERSION: config.yaml not found at any known path"
     )
 
 
@@ -163,21 +167,21 @@ class BridgeConfig:
     """
 
     # Connection
-    api_host:   str = "192.168.2.201"
-    api_port:   int = 8443
+    api_host: str = "192.168.2.201"
+    api_port: int = 8443
     mqtt_broker: str = "core-mosquitto"
-    mqtt_port:  int = 1883
+    mqtt_port: int = 1883
 
     # Credentials
-    mqtt_username:   str | None = None
-    mqtt_password:   str | None = None
-    nibe_username:   str | None = None
-    nibe_password:   str | None = None
+    mqtt_username: str | None = None
+    mqtt_password: str | None = None
+    nibe_username: str | None = None
+    nibe_password: str | None = None
     nibe_basic_auth: str | None = None
 
     # Identity
     device_name: str = "Nibe SMO S40"
-    device_id:   str = "nibe_heatpump_001"
+    device_id: str = "nibe_heatpump_001"
 
     # Query language for the Nibe REST API (BCP-47 tag, e.g. "nl"). "auto"
     # (config.yaml's default) means "not explicitly set" — load_config()
@@ -186,11 +190,11 @@ class BridgeConfig:
     language: str = "auto"
 
     # Behaviour
-    poll_interval:        int = 30
-    log_level:            str = "info"
-    mode:                 str = "essential"
+    poll_interval: int = 30
+    log_level: str = "info"
+    mode: str = "essential"
     mode_switch_behavior: str = "replace"
-    debug_mode:            bool = False
+    debug_mode: bool = False
     api_failure_threshold: int = 3
     changelog_retention_days: int = 90
 
@@ -205,20 +209,22 @@ class BridgeConfig:
 
     # MQTT TLS — optional; set mqtt_tls=True and optionally mqtt_ca_cert to
     # encrypt broker traffic and protect MQTT credentials in transit.
-    mqtt_tls:    bool         = False
+    mqtt_tls: bool = False
     mqtt_ca_cert: str | None = None
 
     # Derived — populated by load_config(), not set by callers
     api_base_url: str = ""
-    nibe_auth:    str | None = None
+    nibe_auth: str | None = None
 
     # Deferred log warnings collected before logging was ready
     warnings: list[str] = field(default_factory=list)
 
     def __repr__(self) -> str:
         """Return a log-safe representation — all credential fields are redacted."""
+
         def _mask(val: str | None) -> str:
             return "***" if val else "None"
+
         return (
             f"BridgeConfig("
             f"api={self.api_host}:{self.api_port}, "
@@ -236,7 +242,7 @@ class BridgeConfig:
         )
 
 
-def load_config(cli_args=None) -> BridgeConfig:
+def load_config(cli_args: Any = None) -> BridgeConfig:
     """Resolve runtime configuration from all sources into a BridgeConfig.
 
     Sources are applied lowest-to-highest priority — each step unconditionally
@@ -290,78 +296,77 @@ def load_config(cli_args=None) -> BridgeConfig:
     # Supports nibe_basic_auth (pre-encoded Basic token) and mqtt credentials.
     # Values may contain any character including '#' — quoted values have
     # their surrounding quotes stripped; unquoted values are read to end of line.
-    for path in ['/config/secrets.yaml', '/homeassistant/secrets.yaml', './secrets.yaml']:
+    for path in ["/config/secrets.yaml", "/homeassistant/secrets.yaml", "./secrets.yaml"]:
         try:
             if not os.path.exists(path):
                 continue
             with open(path) as f:
                 _secrets_content = f.read()
 
-            def _yaml_val(key, _src=_secrets_content):
+            def _yaml_val(key: str, _src: str = _secrets_content) -> str | None:
                 # Match: key: "value" or key: 'value' or key: bare_value
                 # Quoted: captures everything between the quotes (allows # and spaces).
                 # Unquoted: captures to end of line (no comment stripping — a bare
                 # value containing # is taken literally, which is correct YAML
                 # behaviour for scalars that are not followed by whitespace+#).
                 m = re.search(
-                    rf'^{re.escape(key)}:\s*'
-                    rf'(?:"([^"]*)"'        # double-quoted value
-                    rf"|'([^']*)'"          # single-quoted value
-                    rf'|([^\n]*))',          # bare value (rest of line)
-                    _src, re.MULTILINE,
+                    rf"^{re.escape(key)}:\s*"
+                    rf'(?:"([^"]*)"'  # double-quoted value
+                    rf"|'([^']*)'"  # single-quoted value
+                    rf"|([^\n]*))",  # bare value (rest of line)
+                    _src,
+                    re.MULTILINE,
                 )
                 if not m:
                     return None
                 # Return whichever capture group matched, stripped of whitespace.
-                return (m.group(1) or m.group(2) or m.group(3) or '').strip() or None
+                return (m.group(1) or m.group(2) or m.group(3) or "").strip() or None
 
-            cfg.mqtt_username   = _yaml_val('mqtt_user')      or cfg.mqtt_username
-            cfg.mqtt_password   = _yaml_val('mqtt_password')  or cfg.mqtt_password
-            cfg.nibe_basic_auth = _yaml_val('nibe_basic_auth') or cfg.nibe_basic_auth
+            cfg.mqtt_username = _yaml_val("mqtt_user") or cfg.mqtt_username
+            cfg.mqtt_password = _yaml_val("mqtt_password") or cfg.mqtt_password
+            cfg.nibe_basic_auth = _yaml_val("nibe_basic_auth") or cfg.nibe_basic_auth
             break
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             deferred_warnings.append(f"Could not read secrets file {path}: {e}")
 
     # ── 2. HA add-on options.json ──────────────────────────────────────────
     try:
-        if os.path.exists('/data/options.json'):
-            with open('/data/options.json') as f:
+        if os.path.exists("/data/options.json"):
+            with open("/data/options.json") as f:
                 opts = json.load(f)
-            cfg.api_host      = _opt_str(opts, 'nibe_host')     or cfg.api_host
-            cfg.api_port      = _opt_int(opts, 'nibe_port')     or cfg.api_port
-            cfg.mqtt_broker   = _opt_str(opts, 'mqtt_host')     or cfg.mqtt_broker
-            cfg.mqtt_port     = _opt_int(opts, 'mqtt_port')     or cfg.mqtt_port
-            cfg.mqtt_username = _opt_str(opts, 'mqtt_username') or cfg.mqtt_username
-            cfg.mqtt_password = _opt_str(opts, 'mqtt_password') or cfg.mqtt_password
-            cfg.nibe_username = _opt_str(opts, 'nibe_username') or cfg.nibe_username
-            cfg.nibe_password = _opt_str(opts, 'nibe_password') or cfg.nibe_password
-            cfg.device_name   = _opt_str(opts, 'device_name')   or cfg.device_name
-            cfg.language      = _opt_str(opts, 'language')      or cfg.language
-            cfg.log_level     = _opt_str(opts, 'log_level')     or cfg.log_level
-            cfg.mode          = _opt_str(opts, 'mode')          or cfg.mode
+            cfg.api_host = _opt_str(opts, "nibe_host") or cfg.api_host
+            cfg.api_port = _opt_int(opts, "nibe_port") or cfg.api_port
+            cfg.mqtt_broker = _opt_str(opts, "mqtt_host") or cfg.mqtt_broker
+            cfg.mqtt_port = _opt_int(opts, "mqtt_port") or cfg.mqtt_port
+            cfg.mqtt_username = _opt_str(opts, "mqtt_username") or cfg.mqtt_username
+            cfg.mqtt_password = _opt_str(opts, "mqtt_password") or cfg.mqtt_password
+            cfg.nibe_username = _opt_str(opts, "nibe_username") or cfg.nibe_username
+            cfg.nibe_password = _opt_str(opts, "nibe_password") or cfg.nibe_password
+            cfg.device_name = _opt_str(opts, "device_name") or cfg.device_name
+            cfg.language = _opt_str(opts, "language") or cfg.language
+            cfg.log_level = _opt_str(opts, "log_level") or cfg.log_level
+            cfg.mode = _opt_str(opts, "mode") or cfg.mode
             cfg.mode_switch_behavior = (
-                _opt_str(opts, 'mode_switch_behavior') or cfg.mode_switch_behavior
+                _opt_str(opts, "mode_switch_behavior") or cfg.mode_switch_behavior
             )
-            if 'debug_mode' in opts:
-                cfg.debug_mode = bool(opts['debug_mode'])
-            if opts.get('poll_interval'):
-                cfg.poll_interval = _validated_poll(
-                    int(opts['poll_interval']), "options.json"
-                )
-            if opts.get('api_failure_threshold'):
+            if "debug_mode" in opts:
+                cfg.debug_mode = bool(opts["debug_mode"])
+            if opts.get("poll_interval"):
+                cfg.poll_interval = _validated_poll(int(opts["poll_interval"]), "options.json")
+            if opts.get("api_failure_threshold"):
                 # Upper bound (100) mirrors config.yaml's schema: int(1,100).
-                cfg.api_failure_threshold = max(1, min(100, int(opts['api_failure_threshold'])))
-            if opts.get('changelog_retention_days'):
+                cfg.api_failure_threshold = max(1, min(100, int(opts["api_failure_threshold"])))
+            if opts.get("changelog_retention_days"):
                 # Upper bound (3650) mirrors config.yaml's schema: int(1,3650).
                 cfg.changelog_retention_days = max(
-                    1, min(3650, int(opts['changelog_retention_days']))
+                    1, min(3650, int(opts["changelog_retention_days"]))
                 )
-            if opts.get('nibe_ca_cert'):
-                cfg.nibe_ca_cert = str(opts['nibe_ca_cert'])
-            if opts.get('mqtt_tls') is True:
+            if opts.get("nibe_ca_cert"):
+                cfg.nibe_ca_cert = str(opts["nibe_ca_cert"])
+            if opts.get("mqtt_tls") is True:
                 cfg.mqtt_tls = True
-            if opts.get('mqtt_ca_cert'):
-                cfg.mqtt_ca_cert = str(opts['mqtt_ca_cert'])
+            if opts.get("mqtt_ca_cert"):
+                cfg.mqtt_ca_cert = str(opts["mqtt_ca_cert"])
     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
         deferred_warnings.append(f"Could not read /data/options.json: {e}")
 
@@ -372,25 +377,25 @@ def load_config(cli_args=None) -> BridgeConfig:
     # Supervisor Services API — these are Supervisor-injected values, not
     # user-provided secrets, and are treated as infrastructure plumbing.
     env = os.environ
-    if env.get('NIBE_API_HOST'):
-        cfg.api_host = env['NIBE_API_HOST']
-    if env.get('NIBE_MQTT_BROKER'):
-        cfg.mqtt_broker = env['NIBE_MQTT_BROKER']
-    if env.get('NIBE_MQTT_SVC_USERNAME'):
-        cfg.mqtt_username = env['NIBE_MQTT_SVC_USERNAME']
-    if env.get('NIBE_MQTT_SVC_PASSWORD'):
-        cfg.mqtt_password = env['NIBE_MQTT_SVC_PASSWORD']
-    if env.get('NIBE_DEVICE_NAME'):
-        cfg.device_name = env['NIBE_DEVICE_NAME']
-    if env.get('NIBE_LOG_LEVEL'):
-        cfg.log_level = env['NIBE_LOG_LEVEL']
-    if env.get('NIBE_MODE'):
-        cfg.mode = env['NIBE_MODE']
-    if env.get('NIBE_MODE_SWITCH_BEHAVIOR'):
-        cfg.mode_switch_behavior = env['NIBE_MODE_SWITCH_BEHAVIOR']
-    if env.get('NIBE_LANGUAGE'):
-        cfg.language = env['NIBE_LANGUAGE']
-    if env.get('NIBE_REMOVE_FRONTEND') == '1':
+    if env.get("NIBE_API_HOST"):
+        cfg.api_host = env["NIBE_API_HOST"]
+    if env.get("NIBE_MQTT_BROKER"):
+        cfg.mqtt_broker = env["NIBE_MQTT_BROKER"]
+    if env.get("NIBE_MQTT_SVC_USERNAME"):
+        cfg.mqtt_username = env["NIBE_MQTT_SVC_USERNAME"]
+    if env.get("NIBE_MQTT_SVC_PASSWORD"):
+        cfg.mqtt_password = env["NIBE_MQTT_SVC_PASSWORD"]
+    if env.get("NIBE_DEVICE_NAME"):
+        cfg.device_name = env["NIBE_DEVICE_NAME"]
+    if env.get("NIBE_LOG_LEVEL"):
+        cfg.log_level = env["NIBE_LOG_LEVEL"]
+    if env.get("NIBE_MODE"):
+        cfg.mode = env["NIBE_MODE"]
+    if env.get("NIBE_MODE_SWITCH_BEHAVIOR"):
+        cfg.mode_switch_behavior = env["NIBE_MODE_SWITCH_BEHAVIOR"]
+    if env.get("NIBE_LANGUAGE"):
+        cfg.language = env["NIBE_LANGUAGE"]
+    if env.get("NIBE_REMOVE_FRONTEND") == "1":
         cfg.remove_frontend = True
     # Numeric env vars get their own try/except, unlike the plain string
     # settings above — a misconfigured/non-numeric value here must not crash
@@ -398,18 +403,16 @@ def load_config(cli_args=None) -> BridgeConfig:
     # handling is installed), matching the defensive pattern already used
     # for options.json above.
     try:
-        if env.get('NIBE_API_PORT'):
-            cfg.api_port = int(env['NIBE_API_PORT'])
-        if env.get('NIBE_MQTT_PORT'):
-            cfg.mqtt_port = int(env['NIBE_MQTT_PORT'])
-        if env.get('NIBE_POLL_INTERVAL'):
+        if env.get("NIBE_API_PORT"):
+            cfg.api_port = int(env["NIBE_API_PORT"])
+        if env.get("NIBE_MQTT_PORT"):
+            cfg.mqtt_port = int(env["NIBE_MQTT_PORT"])
+        if env.get("NIBE_POLL_INTERVAL"):
             cfg.poll_interval = _validated_poll(
-                max(15, int(env['NIBE_POLL_INTERVAL'])), "NIBE_POLL_INTERVAL"
+                max(15, int(env["NIBE_POLL_INTERVAL"])), "NIBE_POLL_INTERVAL"
             )
-        if env.get('NIBE_API_FAILURE_THRESHOLD'):
-            cfg.api_failure_threshold = max(
-                1, min(100, int(env['NIBE_API_FAILURE_THRESHOLD']))
-            )
+        if env.get("NIBE_API_FAILURE_THRESHOLD"):
+            cfg.api_failure_threshold = max(1, min(100, int(env["NIBE_API_FAILURE_THRESHOLD"])))
     except (ValueError, TypeError) as e:
         deferred_warnings.append(f"Could not parse numeric environment variable: {e}")
 
@@ -417,9 +420,9 @@ def load_config(cli_args=None) -> BridgeConfig:
     # run.sh passes --log-level and --mode; other settings come from
     # options.json so the add-on UI remains the single source of truth.
     if cli_args:
-        if getattr(cli_args, 'log_level', None):
+        if getattr(cli_args, "log_level", None):
             cfg.log_level = cli_args.log_level
-        if getattr(cli_args, 'mode', None):
+        if getattr(cli_args, "mode", None):
             cfg.mode = cli_args.mode
 
     # ── Validate mode/log_level against the same sets config.yaml's schema
@@ -437,8 +440,7 @@ def load_config(cli_args=None) -> BridgeConfig:
         cfg.mode = "essential"
     if cfg.log_level.lower() not in _VALID_LOG_LEVELS:
         deferred_warnings.append(
-            f"log_level={cfg.log_level!r} is not valid {sorted(_VALID_LOG_LEVELS)} "
-            f"— using 'info'"
+            f"log_level={cfg.log_level!r} is not valid {sorted(_VALID_LOG_LEVELS)} — using 'info'"
         )
         cfg.log_level = "info"
     _VALID_MODE_SWITCH_BEHAVIORS = {"replace", "merge"}
@@ -455,7 +457,7 @@ def load_config(cli_args=None) -> BridgeConfig:
     # options.json or NIBE_LANGUAGE, which bypass the schema) do we ask HA's
     # own configured language via the Supervisor API — same precedence
     # pattern as mqtt_host's auto-discovery.
-    if cfg.language in ('', 'auto'):
+    if cfg.language in ("", "auto"):
         cfg.language = _get_ha_language()
 
     # ── Derived values ─────────────────────────────────────────────────────
@@ -463,11 +465,9 @@ def load_config(cli_args=None) -> BridgeConfig:
 
     if cfg.nibe_basic_auth:
         token = cfg.nibe_basic_auth
-        cfg.nibe_auth = token if token.startswith('Basic ') else f"Basic {token}"
+        cfg.nibe_auth = token if token.startswith("Basic ") else f"Basic {token}"
     elif cfg.nibe_username and cfg.nibe_password:
-        token = base64.b64encode(
-            f"{cfg.nibe_username}:{cfg.nibe_password}".encode()
-        ).decode()
+        token = base64.b64encode(f"{cfg.nibe_username}:{cfg.nibe_password}".encode()).decode()
         cfg.nibe_auth = f"Basic {token}"
 
     cfg.warnings = deferred_warnings
@@ -478,6 +478,7 @@ def load_config(cli_args=None) -> BridgeConfig:
 # LOGGING
 # ============================================================================
 
+
 def _build_logging(level: str = "info") -> None:
     # Any mutation of this default (case-flip, garbled text) is
     # unobservable — verified empirically: getattr(logging, ..., INFO)
@@ -485,7 +486,7 @@ def _build_logging(level: str = "info") -> None:
     # and an invalid one, so every candidate default resolves to the
     # identical numeric level.
     numeric = getattr(logging, level.upper(), logging.INFO)
-    root    = logging.getLogger("nibe")
+    root = logging.getLogger("nibe")
     if root.handlers:
         root.setLevel(numeric)
         return
@@ -494,7 +495,7 @@ def _build_logging(level: str = "info") -> None:
     handler.setLevel(logging.DEBUG)
 
     class _Formatter(logging.Formatter):
-        def format(self, record):
+        def format(self, record: logging.LogRecord) -> str:
             ct = datetime.datetime.fromtimestamp(record.created).astimezone()
             ts = ct.strftime("%H:%M:%S") + f".{ct.microsecond // 1000:03d}"
             return f"{ts} [{record.levelname:<8}] {record.name}: {record.getMessage()}"
@@ -503,22 +504,23 @@ def _build_logging(level: str = "info") -> None:
     root.addHandler(handler)
 
 
-log_api      = logging.getLogger("nibe.api")
-log_mqtt     = logging.getLogger("nibe.mqtt")
-log_restore  = logging.getLogger("nibe.restore")
-log_startup  = logging.getLogger("nibe.startup")
+log_api = logging.getLogger("nibe.api")
+log_mqtt = logging.getLogger("nibe.mqtt")
+log_restore = logging.getLogger("nibe.restore")
+log_startup = logging.getLogger("nibe.startup")
 log_entities = logging.getLogger("nibe.entities")
 
-_ALARM_POLL_INTERVAL = 10   # seconds — fixed, not user-configurable
-_SHUTDOWN_TIMEOUT    = 35   # seconds to wait for executors on clean shutdown
-                            # (slightly longer than the 30s API request timeout)
+_ALARM_POLL_INTERVAL = 10  # seconds — fixed, not user-configurable
+_SHUTDOWN_TIMEOUT = 35  # seconds to wait for executors on clean shutdown
+# (slightly longer than the 30s API request timeout)
 
 
 # ============================================================================
 # CLI ARGUMENT PARSING
 # ============================================================================
 
-def parse_arguments():
+
+def parse_arguments() -> argparse.Namespace:
     """Parse CLI arguments for log level and mode.
 
     Both flags default to None, not their eventual runtime default
@@ -534,18 +536,25 @@ def parse_arguments():
     """
     # description= only affects --help text, never asserted on — not
     # pragma'd, the flags/choices themselves are real/tested.
-    parser = argparse.ArgumentParser(description='Nibe S-Series MQTT Bridge')
+    parser = argparse.ArgumentParser(description="Nibe S-Series MQTT Bridge")
     # dest='log_level' and both default=None are what argparse already
     # derives/uses on its own (dest from '--log-level' with '-' -> '_';
     # default is None when omitted) — dropping them, or passing dest=None
     # explicitly, is unobservable. Verified empirically, not pragma'd
     # since the flag names/choices themselves are real/tested.
-    parser.add_argument('-l', '--log-level',
-                        choices=['debug', 'info', 'warning', 'error'],
-                        default=None, dest='log_level')
-    parser.add_argument('-m', '--mode',
-                        choices=['essential', 'monitoring', 'advanced', 'menus', 'all', 'none'],
-                        default=None)
+    parser.add_argument(
+        "-l",
+        "--log-level",
+        choices=["debug", "info", "warning", "error"],
+        default=None,
+        dest="log_level",
+    )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        choices=["essential", "monitoring", "advanced", "menus", "all", "none"],
+        default=None,
+    )
     return parser.parse_args()
 
 
@@ -553,7 +562,8 @@ def parse_arguments():
 # CARD FILE HELPERS
 # ============================================================================
 
-def _cleanup_mqtt_retained(mqtt_client) -> None:
+
+def _cleanup_mqtt_retained(mqtt_client: Any) -> None:
     """Remove all retained MQTT messages published by this bridge.
 
     The bridge owns two topic namespaces:
@@ -576,13 +586,13 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
         The connected paho MQTT client instance.
     """
     _SCAN_TIMEOUT = 15
-    _SENTINEL     = BrowserTopic.SCAN_SENTINEL.value
+    _SENTINEL = BrowserTopic.SCAN_SENTINEL.value
 
     log_startup.info("Collecting retained MQTT topics for cleanup...")
     retained_topics = set()
     sentinel_received = threading.Event()
 
-    def _on_retained(_client, _userdata, message):
+    def _on_retained(_client: Any, _userdata: Any, message: Any) -> None:
         topic = message.topic
         if not message.retain or not message.payload or topic == _SENTINEL:
             return
@@ -590,12 +600,14 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
         # Bridge HA topics follow the pattern homeassistant/<domain>/nibe_<id>/<suffix>
         # so the third segment always starts with "nibe_".
         # The nibe/browser/# namespace is always ours so no filter needed there.
-        parts = topic.split('/')
-        if topic.startswith("homeassistant/") and (len(parts) < 3 or not parts[2].startswith("nibe_")):
+        parts = topic.split("/")
+        if topic.startswith("homeassistant/") and (
+            len(parts) < 3 or not parts[2].startswith("nibe_")
+        ):
             return
         retained_topics.add(topic)
 
-    def _on_sentinel(_client, _userdata, _message):
+    def _on_sentinel(_client: Any, _userdata: Any, _message: Any) -> None:
         sentinel_received.set()
 
     # Subscribe to both bridge namespaces with wildcards.
@@ -603,12 +615,12 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
     # valid. We use "homeassistant/+/+/+" to collect all discovery topics and
     # then only clear the ones that belong to this bridge (unique_id starts
     # with "nibe_"), relying on the payload filter in _on_retained.
-    ha_wildcard      = "homeassistant/+/+/+"
+    ha_wildcard = "homeassistant/+/+/+"
     browser_wildcard = f"{MQTT_PREFIX}/#"
 
     mqtt_client.subscribe(ha_wildcard)
     mqtt_client.subscribe(browser_wildcard)
-    mqtt_client.message_callback_add(ha_wildcard,      _on_retained)
+    mqtt_client.message_callback_add(ha_wildcard, _on_retained)
     mqtt_client.message_callback_add(browser_wildcard, _on_retained)
     mqtt_client.subscribe(_SENTINEL)
     mqtt_client.message_callback_add(_SENTINEL, _on_sentinel)
@@ -621,7 +633,8 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
     if not sentinel_received.wait(timeout=_SCAN_TIMEOUT):
         log_startup.warning(
             "Sentinel timeout after %ds during MQTT cleanup — "
-            "some retained messages may not have been collected", _SCAN_TIMEOUT
+            "some retained messages may not have been collected",
+            _SCAN_TIMEOUT,
         )
 
     # Tear down callbacks and subscriptions
@@ -658,13 +671,15 @@ def _cleanup_mqtt_retained(mqtt_client) -> None:
             # failure (e.g. disconnected mid-publish).
             log_startup.warning("Could not confirm clear for %s: %s", topic, e)
 
-    log_startup.info("MQTT cleanup complete — cleared %d/%d retained topics",
-                     cleared, len(retained_topics))
+    log_startup.info(
+        "MQTT cleanup complete — cleared %d/%d retained topics", cleared, len(retained_topics)
+    )
 
 
 # ===========================================================================
 # Startup helpers — extracted from main() for testability
 # ===========================================================================
+
 
 def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     """Build an SSL context for the Nibe API connection.
@@ -676,16 +691,14 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     """
     if ca_cert_path and os.path.exists(ca_cert_path):
         ctx = ssl.create_default_context(cafile=ca_cert_path)
-        log_startup.info(
-            "Nibe API TLS: verification enabled using CA cert %s", ca_cert_path
-        )
+        log_startup.info("Nibe API TLS: verification enabled using CA cert %s", ca_cert_path)
         return ctx
 
     ctx = ssl.create_default_context()
     # check_hostname = None is unobservable — verified empirically:
     # SSLContext's setter coerces any falsy value to False.
     ctx.check_hostname = False
-    ctx.verify_mode    = ssl.CERT_NONE
+    ctx.verify_mode = ssl.CERT_NONE
     # Verification is already off above, so these don't weaken security —
     # they widen compatibility with the Nibe controller's old embedded TLS
     # stack, which can offer ciphers below OpenSSL's default SECLEVEL=2 or
@@ -699,7 +712,7 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     return ctx
 
 
-_DEVICE_ID_FILE = '/data/device_id'
+_DEVICE_ID_FILE = "/data/device_id"
 
 
 def _derive_device_id(response: dict, fallback: str, persist_path: str | None = None) -> str:
@@ -741,24 +754,25 @@ def _derive_device_id(response: dict, fallback: str, persist_path: str | None = 
         device_id = f"nibe_{safe}"
         log_startup.info("Device ID derived from serial number: %s", device_id)
         try:
-            with open(persist_path, 'w', encoding='utf-8') as f:
+            with open(persist_path, "w", encoding="utf-8") as f:
                 f.write(device_id)
         except OSError as e:
             log_startup.warning(
                 "Could not persist device_id to %s: %s — a future startup during "
                 "a transient outage may fall back to the generic default instead.",
-                persist_path, e,
+                persist_path,
+                e,
             )
         return device_id
 
     try:
-        with open(persist_path, encoding='utf-8') as f:
+        with open(persist_path, encoding="utf-8") as f:
             persisted = f.read().strip()
     except OSError:
         # Only ever read via `if persisted:` — None is equally falsy, so
         # that alternative default is unobservable. Verified empirically,
         # not pragma'd since the read/.strip() themselves are real/tested.
-        persisted = ''
+        persisted = ""
     if persisted:
         log_startup.warning(
             "Serial number not available this startup (device unreachable?) — "
@@ -776,9 +790,10 @@ def _derive_device_id(response: dict, fallback: str, persist_path: str | None = 
     return fallback
 
 
-def _resolve_initial_mode(args, cfg) -> str:
+def _resolve_initial_mode(args: argparse.Namespace, cfg: "BridgeConfig") -> str:
     """Return the effective entity mode: CLI flag takes priority over config."""
-    return args.mode if args.mode else cfg.mode
+    result: str = args.mode if args.mode else cfg.mode
+    return result
 
 
 def _build_mqtt_client_id(device_id: str) -> str:
@@ -790,7 +805,7 @@ def _build_mqtt_client_id(device_id: str) -> str:
     return device_id[:23]
 
 
-def _configure_mqtt_tls(mqtt_client, cfg) -> None:
+def _configure_mqtt_tls(mqtt_client: Any, cfg: "BridgeConfig") -> None:
     """Apply TLS settings to *mqtt_client* according to *cfg*.
 
     Four cases:
@@ -800,11 +815,7 @@ def _configure_mqtt_tls(mqtt_client, cfg) -> None:
     - TLS off + no credentials       → silent (nothing to protect)
     """
     if cfg.mqtt_tls:
-        ca = (
-            cfg.mqtt_ca_cert
-            if (cfg.mqtt_ca_cert and os.path.exists(cfg.mqtt_ca_cert))
-            else None
-        )
+        ca = cfg.mqtt_ca_cert if (cfg.mqtt_ca_cert and os.path.exists(cfg.mqtt_ca_cert)) else None
         mqtt_client.tls_set(ca_certs=ca)
         log_mqtt.info(
             "MQTT TLS enabled%s",
@@ -819,7 +830,7 @@ def _configure_mqtt_tls(mqtt_client, cfg) -> None:
 
 
 def _run_scan_with_retry(
-    entity_manager,
+    entity_manager: EntityManager,
     retries: int = 3,
     backoffs: list[int] | None = None,
 ) -> set[int]:
@@ -840,7 +851,10 @@ def _run_scan_with_retry(
             break
         log_restore.warning(
             "Scan returned 0 configs (attempt %d/%d) — broker may still be "
-            "loading. Retrying in %ds...", attempt, retries, wait,
+            "loading. Retrying in %ds...",
+            attempt,
+            retries,
+            wait,
         )
         time.sleep(wait)
         result = entity_manager.scan_mqtt_discovery()
@@ -848,11 +862,11 @@ def _run_scan_with_retry(
 
 
 def _execute_startup_action(
-    entity_manager,
+    entity_manager: EntityManager,
     startup_action: str,
     applied_mode: str | None,
     initial_mode: str,
-    mqtt_client,
+    mqtt_client: Any,
     device_name: str,
 ) -> None:
     """Execute the startup action determined by decide_startup_action().
@@ -867,16 +881,15 @@ def _execute_startup_action(
     reconcile — mode changed: restore then apply new mode to reconcile set.
     """
     if startup_action == "apply":
-        log_restore.info(
-            "No existing MQTT configs — applying initial mode: %s", initial_mode
-        )
+        log_restore.info("No existing MQTT configs — applying initial mode: %s", initial_mode)
     elif startup_action == "restore":
-        pass   # apply_startup_action logs the applied-mode baseline message if needed
+        pass  # apply_startup_action logs the applied-mode baseline message if needed
     else:  # "reconcile"
         log_restore.info(
             "Entity mode changed from '%s' to '%s' — restoring then reconciling "
             "the enabled set to the new mode.",
-            applied_mode, initial_mode,
+            applied_mode,
+            initial_mode,
         )
 
     entity_manager.apply_startup_action(startup_action, applied_mode, initial_mode)
@@ -917,7 +930,7 @@ class _ApiAuthError(Exception):
     """Raised by _fetch_api_response when the Nibe API rejects credentials."""
 
 
-def _fetch_api_response(api_client) -> dict:
+def _fetch_api_response(api_client: NibeApiClient) -> dict:
     """Fetch device info from the Nibe API and return the response dict.
 
     Returns an empty dict when the device is unreachable (offline at startup
@@ -968,21 +981,20 @@ def _load_menu_structure(app_dir: str, log_if_mode: bool = True) -> tuple[dict, 
     try:
         menu_path = os.path.join(app_dir, "menu_structure.yaml")
         point_to_menu = _build_point_to_menu(_load_menu_structure_yaml(menu_path))
-        menu_points   = build_menu_points(menu_path)
+        menu_points = build_menu_points(menu_path)
         if log_if_mode:
             log_startup.debug("Built point→menu map: %d entries", len(point_to_menu))
             log_startup.debug("MODES['menus'] populated: %d points", len(menu_points))
         return point_to_menu, menu_points
     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-        log_startup.warning(
-            "Could not build point→menu map / MODES['menus']: %s", e
-        )
+        log_startup.warning("Could not build point→menu map / MODES['menus']: %s", e)
         return {}, frozenset()
 
 
 # ============================================================================
 # INFRASTRUCTURE — build API client, MQTT client, establish connections
 # ============================================================================
+
 
 def _build_infrastructure(
     cfg: BridgeConfig,
@@ -1016,22 +1028,23 @@ def _build_infrastructure(
     except ssl.SSLError as e:
         log_startup.error("Could not build TLS context for the Nibe API connection: %s", e)
         sys.exit(1)
-    api_client  = NibeApiClient(cfg.api_base_url, cfg.nibe_auth, ssl_context, cfg.language)
+    api_client = NibeApiClient(cfg.api_base_url, cfg.nibe_auth, ssl_context, cfg.language)
 
     log_startup.info("Bridge version: %s", BRIDGE_VERSION)
     copy_card_file()
     log_startup.info(
         "Config: API=%s  MQTT=%s:%d  device='%s'",
-        cfg.api_base_url, cfg.mqtt_broker, cfg.mqtt_port, cfg.device_name,
+        cfg.api_base_url,
+        cfg.mqtt_broker,
+        cfg.mqtt_port,
+        cfg.device_name,
     )
 
     # ── Test API connection ───────────────────────────────────────────────────
     try:
         response = _fetch_api_response(api_client)
     except _ApiAuthError as e:
-        log_startup.error(
-            "Nibe API authentication failed (HTTP %s) — check credentials.", e
-        )
+        log_startup.error("Nibe API authentication failed (HTTP %s) — check credentials.", e)
         sys.exit(1)
 
     device_id = _derive_device_id(response, cfg.device_id)
@@ -1062,18 +1075,22 @@ def _build_infrastructure(
     # _em holds entity_manager once it is built (after this function returns)
     # so the on_connect callback can call resubscribe_all / republish_availability
     # on reconnection without needing a forward reference.
-    _em:           list          = []
-    _auth_failed:  threading.Event = threading.Event()
-    shutting_down: list[bool]    = [False]   # returned to caller
+    _em: list = []
+    _auth_failed: threading.Event = threading.Event()
+    shutting_down: list[bool] = [False]  # returned to caller
     _FATAL_RC = {4, 5}
     keepalive = _keepalive_from_config(cfg.poll_interval)
 
-    def on_connect(_client, _userdata, _flags, reason_code, _properties):
-        rc_value = reason_code.value if hasattr(reason_code, 'value') else int(reason_code)
+    def on_connect(
+        _client: Any, _userdata: Any, _flags: Any, reason_code: Any, _properties: Any
+    ) -> None:
+        rc_value = reason_code.value if hasattr(reason_code, "value") else int(reason_code)
         if rc_value == 0:
             log_mqtt.info(
                 "MQTT connected to %s:%d (keepalive %ds)",
-                cfg.mqtt_broker, cfg.mqtt_port, keepalive,
+                cfg.mqtt_broker,
+                cfg.mqtt_port,
+                keepalive,
             )
             if _em:
                 _em[0].resubscribe_all()
@@ -1082,19 +1099,25 @@ def _build_infrastructure(
             log_mqtt.error(
                 "MQTT broker %s:%d refused the connection (reason %d) — "
                 "check mqtt_username and mqtt_password in the add-on options.",
-                cfg.mqtt_broker, cfg.mqtt_port, rc_value,
+                cfg.mqtt_broker,
+                cfg.mqtt_port,
+                rc_value,
             )
             _auth_failed.set()
         else:
             log_mqtt.error(
                 "MQTT connection to %s:%d failed: %s",
-                cfg.mqtt_broker, cfg.mqtt_port, reason_code,
+                cfg.mqtt_broker,
+                cfg.mqtt_port,
+                reason_code,
             )
 
-    def on_disconnect(_client, _userdata, _disconnect_flags, reason_code, _properties):
+    def on_disconnect(
+        _client: Any, _userdata: Any, _disconnect_flags: Any, reason_code: Any, _properties: Any
+    ) -> None:
         if shutting_down[0]:
             return
-        rc_value = reason_code.value if hasattr(reason_code, 'value') else int(reason_code)
+        rc_value = reason_code.value if hasattr(reason_code, "value") else int(reason_code)
         _DISCONNECT_LABELS = {
             0: "clean disconnect or connection lost",
             1: "connection refused — wrong protocol version",
@@ -1106,10 +1129,12 @@ def _build_infrastructure(
         label = _DISCONNECT_LABELS.get(rc_value, str(reason_code))
         log_mqtt.warning(
             "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
-            cfg.mqtt_broker, cfg.mqtt_port, label,
+            cfg.mqtt_broker,
+            cfg.mqtt_port,
+            label,
         )
 
-    mqtt_client.on_connect    = on_connect
+    mqtt_client.on_connect = on_connect
     mqtt_client.on_disconnect = on_disconnect
 
     try:
@@ -1135,14 +1160,16 @@ def _build_infrastructure(
             "Check that the broker is running and that 'mqtt_host' and 'mqtt_port' "
             "are correctly set in the add-on configuration. "
             "If using the Mosquitto add-on, the default host is 'core-mosquitto'.",
-            cfg.mqtt_broker, cfg.mqtt_port, e,
+            cfg.mqtt_broker,
+            cfg.mqtt_port,
+            e,
         )
         sys.exit(1)
 
     # Returns a callable so the caller can wire entity_manager into the
     # on_connect callback after construction, without attaching anything
     # to the paho client object.
-    def _set_entity_manager(em) -> None:
+    def _set_entity_manager(em: EntityManager) -> None:
         _em.append(em)
 
     return api_client, mqtt_client, response, device_id, shutting_down, _set_entity_manager
@@ -1152,14 +1179,15 @@ def _build_infrastructure(
 # STARTUP SEQUENCE — assemble subsystems, restore state, start threads
 # ============================================================================
 
+
 def _run_startup_sequence(
-    cfg:                  BridgeConfig,
-    api_client,
-    mqtt_client,
-    response:             dict,
-    device_id:            str,
-    initial_mode:         str,
-    set_entity_manager,
+    cfg: BridgeConfig,
+    api_client: NibeApiClient,
+    mqtt_client: Any,
+    response: dict,
+    device_id: str,
+    initial_mode: str,
+    set_entity_manager: Callable,
 ) -> tuple:
     """Assemble all subsystems and bring the bridge to ready state.
 
@@ -1200,11 +1228,11 @@ def _run_startup_sequence(
         mqtt_client=mqtt_client,
     )
 
-    entity_manager.bulk_interval            = cfg.poll_interval
-    entity_manager.api_failure_threshold    = cfg.api_failure_threshold
+    entity_manager.bulk_interval = cfg.poll_interval
+    entity_manager.api_failure_threshold = cfg.api_failure_threshold
     entity_manager.changelog_retention_days = cfg.changelog_retention_days
-    entity_manager.mode_switch_behavior     = cfg.mode_switch_behavior
-    entity_manager.device_info              = device_info
+    entity_manager.mode_switch_behavior = cfg.mode_switch_behavior
+    entity_manager.device_info = device_info
 
     # Wire entity_manager into the on_connect reconnection callback.
     set_entity_manager(entity_manager)
@@ -1213,8 +1241,8 @@ def _run_startup_sequence(
     # Done eagerly before the Lovelace thread starts so point_to_menu_map is
     # available for dynamic-change notifications from the first poll cycle.
     _app_dir = os.path.dirname(__file__)
-    entity_manager.point_to_menu_map, MODES['menus'] = _load_menu_structure(
-        _app_dir, log_if_mode=(initial_mode == 'menus')
+    entity_manager.point_to_menu_map, MODES["menus"] = _load_menu_structure(
+        _app_dir, log_if_mode=(initial_mode == "menus")
     )
 
     log_startup.debug(
@@ -1259,10 +1287,16 @@ def _run_startup_sequence(
     # automations on every restart.
     if debug_mode:
         _json = json
-        mqtt_client.publish(MgmtTopic.RUN_TESTS_ATTRS, _json.dumps({
-            "status": "ready",
-            "summary": "No test run since last restart.",
-        }), retain=True)
+        mqtt_client.publish(
+            MgmtTopic.RUN_TESTS_ATTRS,
+            _json.dumps(
+                {
+                    "status": "ready",
+                    "summary": "No test run since last restart.",
+                }
+            ),
+            retain=True,
+        )
 
     mgmt_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="nibe_mgmt"
@@ -1271,23 +1305,33 @@ def _run_startup_sequence(
         max_workers=1, thread_name_prefix="nibe_test_runner"
     )
     ManagementCommandHandler(
-        mqtt_client, entity_manager, publisher, mgmt_executor, test_executor,
-        ca_cert_path=cfg.nibe_ca_cert if cfg.nibe_ca_cert and os.path.exists(cfg.nibe_ca_cert) else None,
+        mqtt_client,
+        entity_manager,
+        publisher,
+        mgmt_executor,
+        test_executor,
+        ca_cert_path=cfg.nibe_ca_cert
+        if cfg.nibe_ca_cert and os.path.exists(cfg.nibe_ca_cert)
+        else None,
     ).register_all()
     entity_manager._mgmt_avail_topic = MGMT_AVAIL_TOPIC
 
     # ── Scan / restore / apply mode ──────────────────────────────────────────
     mqtt_enabled_points = _run_scan_with_retry(entity_manager)
 
-    applied_mode   = entity_manager.read_applied_mode() if mqtt_enabled_points else None
+    applied_mode = entity_manager.read_applied_mode() if mqtt_enabled_points else None
     startup_action = decide_startup_action(
         has_existing_entities=bool(mqtt_enabled_points),
         applied_mode=applied_mode,
         config_mode=initial_mode,
     )
     _execute_startup_action(
-        entity_manager, startup_action, applied_mode, initial_mode,
-        mqtt_client, cfg.device_name,
+        entity_manager,
+        startup_action,
+        applied_mode,
+        initial_mode,
+        mqtt_client,
+        cfg.device_name,
     )
 
     entity_manager.publish_enabled_state()
@@ -1313,7 +1357,9 @@ def _run_startup_sequence(
 
     if initial_mode == "menus":
         schedule_menu_dashboard_regen(
-            entity_manager, registry_watcher, debug_mode,
+            entity_manager,
+            registry_watcher,
+            debug_mode,
             lovelace_thread=lovelace_thread,
         )
     else:
@@ -1339,9 +1385,10 @@ def _run_startup_sequence(
 # POLL LOOP — runs until KeyboardInterrupt (SIGTERM/SIGHUP via signal handler)
 # ============================================================================
 
+
 def _poll_loop(
-    entity_manager,
-    publisher,
+    entity_manager: EntityManager,
+    publisher: MqttDiscoveryPublisher,
     initial_mode: str,
 ) -> None:
     """Run the main polling loop until KeyboardInterrupt is raised.
@@ -1354,14 +1401,14 @@ def _poll_loop(
     backed off exponentially — the loop never exits on its own.
     Raises KeyboardInterrupt to signal the caller to begin shutdown.
     """
-    last_update             = 0.0
-    last_alarm_check        = 0.0
-    last_memory_log         = 0.0
+    last_update = 0.0
+    last_alarm_check = 0.0
+    last_memory_log = 0.0
     _loop_consecutive_errors = 0
 
     while True:
         try:
-            current_time    = time.time()
+            current_time = time.time()
             effective_outer = (
                 entity_manager.post_write_interval
                 if entity_manager.post_write_active
@@ -1374,8 +1421,10 @@ def _poll_loop(
                 # Only ever consumed via `if deferred_ran:` below — None and
                 # False are indistinguishable there. Verified empirically.
                 deferred_ran = False
-                if (not entity_manager.initial_discovery_complete
-                        and entity_manager.api_consecutive_failures == 0):
+                if (
+                    not entity_manager.initial_discovery_complete
+                    and entity_manager.api_consecutive_failures == 0
+                ):
                     deferred_ran = entity_manager.complete_deferred_discovery(initial_mode)
 
                 if deferred_ran:
@@ -1392,8 +1441,8 @@ def _poll_loop(
                 update_device_modes(entity_manager, publisher)
                 entity_manager._check_memory_and_cleanup()
 
-                last_update              = current_time
-                _loop_consecutive_errors = 0   # reset on a clean cycle
+                last_update = current_time
+                _loop_consecutive_errors = 0  # reset on a clean cycle
 
                 # Log memory usage periodically (every 10 minutes).
                 if current_time - last_memory_log >= 600:
@@ -1402,12 +1451,12 @@ def _poll_loop(
                         log_startup.debug(
                             "Memory usage: %d points, %d active entities, ~%.2f MB "
                             "(cache sizes: value=%d, states=%d, strings=%d)",
-                            memory_stats.get('total_points', 0),
-                            memory_stats.get('active_entities', 0),
-                            memory_stats.get('estimated_memory_mb', 0),
-                            memory_stats.get('value_cache_size', 0),
-                            memory_stats.get('last_states_size', 0),
-                            memory_stats.get('point_string_cache_size', 0),
+                            memory_stats.get("total_points", 0),
+                            memory_stats.get("active_entities", 0),
+                            memory_stats.get("estimated_memory_mb", 0),
+                            memory_stats.get("value_cache_size", 0),
+                            memory_stats.get("last_states_size", 0),
+                            memory_stats.get("point_string_cache_size", 0),
                         )
                     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
                         log_startup.error("Memory logging error: %s", e)
@@ -1426,20 +1475,21 @@ def _poll_loop(
             backoff = min(5 * _loop_consecutive_errors, 60)
             log_startup.exception(
                 "Unexpected error in main loop (occurrence %d, backing off %ds)",
-                _loop_consecutive_errors, backoff,
+                _loop_consecutive_errors,
+                backoff,
             )
             if _loop_consecutive_errors >= 5:
                 try:
                     publisher.publish_bridge_alert(
-                        alert_type = "main_loop_error",
-                        severity   = "error",
-                        message    = (
+                        alert_type="main_loop_error",
+                        severity="error",
+                        message=(
                             f"Bridge main loop has crashed {_loop_consecutive_errors} "
                             f"times consecutively. Last error: {e}"
                         ),
-                        context    = {
+                        context={
                             "consecutive_errors": _loop_consecutive_errors,
-                            "error":              str(e),
+                            "error": str(e),
                         },
                     )
                 except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged
@@ -1451,16 +1501,17 @@ def _poll_loop(
 # SHUTDOWN — drain executors, publish offline, disconnect cleanly
 # ============================================================================
 
+
 def _shutdown(
-    entity_manager,
-    publisher,
-    mqtt_client,
-    registry_watcher,
-    mgmt_executor,
-    test_executor,
-    shutting_down:    list[bool],
-    atexit_cleanup_fn,
-    remove_frontend:  bool = False,
+    entity_manager: EntityManager,
+    publisher: MqttDiscoveryPublisher,
+    mqtt_client: Any,
+    registry_watcher: HAEntityRegistryWatcher,
+    mgmt_executor: concurrent.futures.ThreadPoolExecutor,
+    test_executor: concurrent.futures.ThreadPoolExecutor,
+    shutting_down: list[bool],
+    atexit_cleanup_fn: Callable,
+    remove_frontend: bool = False,
 ) -> None:
     """Execute a clean shutdown sequence.
 
@@ -1494,8 +1545,8 @@ def _shutdown(
     shutdown_deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
     for executor, name in [
         (entity_manager._write_executor, "write"),
-        (mgmt_executor,                  "management"),
-        (test_executor,                  "test suite"),
+        (mgmt_executor, "management"),
+        (test_executor, "test suite"),
     ]:
         t = threading.Thread(
             target=executor.shutdown, kwargs={"wait": True, "cancel_futures": False}
@@ -1507,20 +1558,19 @@ def _shutdown(
             log_startup.warning(
                 "%s executor did not finish within the shared %ds shutdown "
                 "budget — proceeding with shutdown",
-                name, _SHUTDOWN_TIMEOUT,
+                name,
+                _SHUTDOWN_TIMEOUT,
             )
 
     log_startup.info("Publishing offline availability...")
     pending_publishes = []
     with entity_manager._active_entities_lock:
         for entity_info in entity_manager.active_entities:
-            avail_topic = entity_info.get('availability_topic')
+            avail_topic = entity_info.get("availability_topic")
             if avail_topic:
                 result = mqtt_client.publish(avail_topic, "offline", retain=True)
                 pending_publishes.append(result)
-    pending_publishes.append(
-        mqtt_client.publish(MGMT_AVAIL_TOPIC, "offline", retain=True)
-    )
+    pending_publishes.append(mqtt_client.publish(MGMT_AVAIL_TOPIC, "offline", retain=True))
 
     for pub in pending_publishes:
         try:
@@ -1549,7 +1599,8 @@ def _shutdown(
 # MAIN — thin orchestrator: parse, configure, call the four phases
 # ============================================================================
 
-def main():  # pragma: no cover
+
+def main() -> None:  # pragma: no cover
     """Initialise all subsystems and run the polling loop.
 
     Startup sequence:
@@ -1565,8 +1616,8 @@ def main():  # pragma: no cover
     itself would require a live-ish integration harness for signal handling
     and process lifecycle, for little incremental value over the phase tests.
     """
-    args      = parse_arguments()
-    cfg       = load_config(cli_args=args)
+    args = parse_arguments()
+    cfg = load_config(cli_args=args)
     log_level = args.log_level if args.log_level else cfg.log_level
     _build_logging(level=log_level)
 
@@ -1579,11 +1630,12 @@ def main():  # pragma: no cover
     log_startup.info("Initial mode: %s", initial_mode)
 
     # ── Phase 1: infrastructure ───────────────────────────────────────────────
-    api_client, mqtt_client, response, device_id, shutting_down, set_entity_manager = \
+    api_client, mqtt_client, response, device_id, shutting_down, set_entity_manager = (
         _build_infrastructure(cfg)
+    )
 
     # ── Atexit guard: best-effort cleanup if we crash before clean shutdown ───
-    def _atexit_cleanup():
+    def _atexit_cleanup() -> None:
         try:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
@@ -1593,34 +1645,44 @@ def main():  # pragma: no cover
     atexit.register(_atexit_cleanup)
 
     # ── Phase 2: startup sequence ─────────────────────────────────────────────
-    entity_manager, publisher, registry_watcher, mgmt_executor, test_executor = \
+    entity_manager, publisher, registry_watcher, mgmt_executor, test_executor = (
         _run_startup_sequence(
-            cfg, api_client, mqtt_client, response, device_id,
-            initial_mode, set_entity_manager,
+            cfg,
+            api_client,
+            mqtt_client,
+            response,
+            device_id,
+            initial_mode,
+            set_entity_manager,
         )
+    )
 
     # ── Signal handlers: convert SIGTERM/SIGHUP into KeyboardInterrupt ────────
     # The add-on runs as a supervised container — no terminal, no Ctrl-C.
     # KeyboardInterrupt is used purely as a lightweight internal shutdown signal.
-    def _sigterm_handler(signum, _frame):
+    def _sigterm_handler(signum: int, _frame: Any) -> None:
         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGHUP"
         log_startup.info("%s received — shutting down cleanly...", sig_name)
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
-    signal.signal(signal.SIGHUP,  _sigterm_handler)
+    signal.signal(signal.SIGHUP, _sigterm_handler)
 
     # ── Phase 3: poll loop ────────────────────────────────────────────────────
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         _poll_loop(entity_manager, publisher, initial_mode)
-    except KeyboardInterrupt:
-        pass
 
     # ── Phase 4: shutdown ─────────────────────────────────────────────────────
     _shutdown(
-        entity_manager, publisher, mqtt_client,
-        registry_watcher, mgmt_executor, test_executor,
-        shutting_down, _atexit_cleanup, cfg.remove_frontend,
+        entity_manager,
+        publisher,
+        mqtt_client,
+        registry_watcher,
+        mgmt_executor,
+        test_executor,
+        shutting_down,
+        _atexit_cleanup,
+        cfg.remove_frontend,
     )
 
 

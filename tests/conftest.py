@@ -24,6 +24,7 @@ database=None
     st.text() strategies generating Unicode surrogates that hash non-deterministically
     on Python 3.12 — making replay of cached examples unreliable.
 """
+
 import os
 from unittest.mock import MagicMock, patch
 
@@ -38,7 +39,7 @@ try:
     #   multiple times from the same interpreter — exactly what mutmut 3.x does
     #   during its stats-collection and clean-test phases. Safe to suppress here.
     _suppress = [HealthCheck.too_slow]
-    if hasattr(HealthCheck, 'differing_executors'):
+    if hasattr(HealthCheck, "differing_executors"):
         _suppress.append(HealthCheck.differing_executors)
 
     settings.register_profile(
@@ -81,20 +82,24 @@ except ImportError:
 # as generate_nibe_mqtt.py does at startup.
 # ---------------------------------------------------------------------------
 
+
 def _make_em():
-    with patch('nibe_entity_manager.EntityManager.resubscribe_all'), \
-         patch('nibe_entity_manager.EntityManager._setup_history_loading'), \
-         patch('nibe_entity_manager.EntityManager._setup_dynamic_map_loading'):
+    with (
+        patch("nibe_entity_manager.EntityManager.resubscribe_all"),
+        patch("nibe_entity_manager.EntityManager._setup_history_loading"),
+        patch("nibe_entity_manager.EntityManager._setup_dynamic_map_loading"),
+    ):
         from nibe_entity_manager import EntityManager
+
         em = EntityManager(
-            api_client  = MagicMock(),
-            publisher   = MagicMock(),
-            notify_fn   = MagicMock(),
-            dismiss_fn  = MagicMock(),
-            mqtt_client = MagicMock(),
+            api_client=MagicMock(),
+            publisher=MagicMock(),
+            notify_fn=MagicMock(),
+            dismiss_fn=MagicMock(),
+            mqtt_client=MagicMock(),
         )
     em.device_info = {}
-    em.device_name = 'Test'
+    em.device_name = "Test"
     em._api.last_error = None
     return em
 
@@ -119,7 +124,7 @@ try:
     from hypothesis import strategies as st
 
     _nibe_raw_value = st.integers(min_value=-32768, max_value=32767)
-    _nibe_divisor   = st.integers(min_value=0, max_value=10000)
+    _nibe_divisor = st.integers(min_value=0, max_value=10000)
 
     # Nibe point ID strategy — designed to exercise both known and unknown IDs:
     #
@@ -135,11 +140,11 @@ try:
     # The combination catches both future unknown IDs and known tricky IDs.
     def _make_nibe_point_id_strategy():
         from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, VALUE_MAPPINGS
-        known_pids = list({
-            pid
-            for reg in VALUE_MAPPINGS.values()
-            for pid in reg
-        } | set(ENTITY_TYPE_OVERRIDES.keys()))
+
+        known_pids = list(
+            {pid for reg in VALUE_MAPPINGS.values() for pid in reg}
+            | set(ENTITY_TYPE_OVERRIDES.keys())
+        )
         return st.one_of(
             st.integers(min_value=0, max_value=65535),
             st.sampled_from(known_pids) if known_pids else st.nothing(),
@@ -147,98 +152,111 @@ try:
 
     _nibe_point_id = _make_nibe_point_id_strategy()
 
-    _unicode_text      = st.text(min_size=0, max_size=200)
-    _safe_entity_id    = st.text(
-        alphabet=st.characters(categories=['L', 'N'],
-                               include_characters='_'),
-        min_size=1, max_size=30,
+    _unicode_text = st.text(min_size=0, max_size=200)
+    _safe_entity_id = st.text(
+        alphabet=st.characters(categories=["L", "N"], include_characters="_"),
+        min_size=1,
+        max_size=30,
     )
-    _nibe_title_chars  = st.text(
+    _nibe_title_chars = st.text(
         alphabet=st.characters(
-            categories=['L', 'N', 'P', 'S', 'Z'],
-            include_characters='\u00ad\u00c2\u00a0\xa0',
+            categories=["L", "N", "P", "S", "Z"],
+            include_characters="\u00ad\u00c2\u00a0\xa0",
         ),
-        min_size=0, max_size=100,
+        min_size=0,
+        max_size=100,
     )
 
     # Strategy: build a DynamicPointMap with a controlled set of entries
-    _dyn_map_entry = st.fixed_dictionaries({
-        'point_id':    st.integers(min_value=1, max_value=500),
-        'title':       st.text(max_size=20),
-        'entity_type': st.sampled_from(['switch', 'select']),
-        'dynamic_points_by_value': st.dictionaries(
-            st.integers(min_value=0, max_value=5),
-            st.lists(st.integers(min_value=1000, max_value=2000), min_size=0, max_size=3),
-            max_size=4,
-        ),
-    })
+    _dyn_map_entry = st.fixed_dictionaries(
+        {
+            "point_id": st.integers(min_value=1, max_value=500),
+            "title": st.text(max_size=20),
+            "entity_type": st.sampled_from(["switch", "select"]),
+            "dynamic_points_by_value": st.dictionaries(
+                st.integers(min_value=0, max_value=5),
+                st.lists(st.integers(min_value=1000, max_value=2000), min_size=0, max_size=3),
+                max_size=4,
+            ),
+        }
+    )
 
     # Strategy: a point dict shaped like EntityManager's all_points_by_id values
-    _bulk_point = st.fixed_dictionaries({
-        'variableId':    st.integers(min_value=1, max_value=9999),
-        'display_title': st.text(max_size=20),
-        'metadata': st.fixed_dictionaries({
-            'minValue': st.integers(min_value=0, max_value=5),
-            'maxValue': st.integers(min_value=0, max_value=5),
-        }),
-    })
+    _bulk_point = st.fixed_dictionaries(
+        {
+            "variableId": st.integers(min_value=1, max_value=9999),
+            "display_title": st.text(max_size=20),
+            "metadata": st.fixed_dictionaries(
+                {
+                    "minValue": st.integers(min_value=0, max_value=5),
+                    "maxValue": st.integers(min_value=0, max_value=5),
+                }
+            ),
+        }
+    )
 
-    _point_metadata = st.fixed_dictionaries({
-        'isWritable': st.booleans(),
-        'modbusRegisterType': st.sampled_from([
-            'MODBUS_HOLDING_REGISTER', 'MODBUS_INPUT_REGISTER', 'MODBUS_NO_REGISTER'
-        ]),
-        'minValue': st.integers(min_value=-100, max_value=100),
-        'maxValue': st.integers(min_value=-100, max_value=100),
-        'intDefaultValue': st.one_of(st.none(), st.integers(min_value=-100, max_value=100)),
-        'divisor': st.integers(min_value=0, max_value=100),
-        'unit': st.text(max_size=5),
-        'shortUnit': st.text(max_size=5),
-    })
+    _point_metadata = st.fixed_dictionaries(
+        {
+            "isWritable": st.booleans(),
+            "modbusRegisterType": st.sampled_from(
+                ["MODBUS_HOLDING_REGISTER", "MODBUS_INPUT_REGISTER", "MODBUS_NO_REGISTER"]
+            ),
+            "minValue": st.integers(min_value=-100, max_value=100),
+            "maxValue": st.integers(min_value=-100, max_value=100),
+            "intDefaultValue": st.one_of(st.none(), st.integers(min_value=-100, max_value=100)),
+            "divisor": st.integers(min_value=0, max_value=100),
+            "unit": st.text(max_size=5),
+            "shortUnit": st.text(max_size=5),
+        }
+    )
 
-    _point_entry = st.fixed_dictionaries({
-        'metadata': _point_metadata,
-        'variableId': st.integers(min_value=1, max_value=99999),
-    })
+    _point_entry = st.fixed_dictionaries(
+        {
+            "metadata": _point_metadata,
+            "variableId": st.integers(min_value=1, max_value=99999),
+        }
+    )
 
 except ImportError:
     # Hypothesis not installed — strategies won't be available but the
     # non-Hypothesis tests will still run.
     _nibe_raw_value = None
-    _nibe_divisor   = None
-    _nibe_point_id  = None
-    _unicode_text   = None
+    _nibe_divisor = None
+    _nibe_point_id = None
+    _unicode_text = None
     _safe_entity_id = None
     _nibe_title_chars = None
-    _dyn_map_entry  = None
-    _bulk_point     = None
+    _dyn_map_entry = None
+    _bulk_point = None
     _point_metadata = None
-    _point_entry    = None
+    _point_entry = None
 
 
 # ---------------------------------------------------------------------------
 # Path constants — derived from module location so tests work both in the
 # dev container (/home/claude/tests/) and on the Odroid (/app/)
 # ---------------------------------------------------------------------------
-_APP_DIR  = os.path.dirname(os.path.abspath(__file__))
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # Production modules may live in app/ (repo layout) or alongside tests
 # (flat layout) — probe several candidate locations in priority order.
 _REPO_DIR = os.path.dirname(_APP_DIR)
 
 # Candidate: sister app/ directory (new repo layout: tests/ + app/)
-if os.path.isdir(os.path.join(_APP_DIR, '..', 'app')):
-    _APP_DIR = os.path.normpath(os.path.join(_APP_DIR, '..', 'app'))
+if os.path.isdir(os.path.join(_APP_DIR, "..", "app")):
+    _APP_DIR = os.path.normpath(os.path.join(_APP_DIR, "..", "app"))
 
 # Candidate: /mnt/project/ (dev container — production code lives there)
-if not os.path.exists(os.path.join(_APP_DIR, 'menu_structure.yaml')) and os.path.isdir('/mnt/project'):
-    _APP_DIR = '/mnt/project'
+if not os.path.exists(os.path.join(_APP_DIR, "menu_structure.yaml")) and os.path.isdir(
+    "/mnt/project"
+):
+    _APP_DIR = "/mnt/project"
 
 # Resolve menu_structure.yaml — lives in app/ relative to repo root.
-_MENU_YAML = os.path.join(_APP_DIR, 'menu_structure.yaml')
+_MENU_YAML = os.path.join(_APP_DIR, "menu_structure.yaml")
 if not os.path.exists(_MENU_YAML):
-    _MENU_YAML = os.path.join(_REPO_DIR, 'app', 'menu_structure.yaml')
+    _MENU_YAML = os.path.join(_REPO_DIR, "app", "menu_structure.yaml")
 if not os.path.exists(_MENU_YAML):
-    _MENU_YAML = os.path.join(_REPO_DIR, 'menu_structure.yaml')
+    _MENU_YAML = os.path.join(_REPO_DIR, "menu_structure.yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +276,7 @@ if not os.path.exists(_MENU_YAML):
 @pytest.fixture(autouse=True)
 def _reset_menu_structure_cache():
     import nibe_lovelace as nl
+
     nl._reset_menu_structure_cache()
     yield
     nl._reset_menu_structure_cache()
@@ -273,6 +292,7 @@ def _reset_menu_structure_cache():
 @pytest.fixture(autouse=True)
 def _reset_description_mapping_cache():
     import nibe_entity_detection as ned
+
     ned._description_mapping_cache.clear()
     yield
     ned._description_mapping_cache.clear()
@@ -295,7 +315,8 @@ def _reset_description_mapping_cache():
 @pytest.fixture(autouse=True)
 def _isolate_device_id_persistence(tmp_path):
     import generate_nibe_mqtt as gn
+
     original = gn._DEVICE_ID_FILE
-    gn._DEVICE_ID_FILE = str(tmp_path / 'device_id')
+    gn._DEVICE_ID_FILE = str(tmp_path / "device_id")
     yield
     gn._DEVICE_ID_FILE = original

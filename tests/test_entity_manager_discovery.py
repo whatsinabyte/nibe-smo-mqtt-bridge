@@ -20,12 +20,13 @@ from hypothesis import strategies as st
 class TestDecideStartupActionProperties(unittest.TestCase):
     """Hypothesis properties for decide_startup_action."""
 
-    _VALID_ACTIONS = frozenset({'apply', 'restore', 'reconcile'})
+    _VALID_ACTIONS = frozenset({"apply", "restore", "reconcile"})
     _mode_str = st.text(min_size=1, max_size=20)
 
     @given(st.booleans(), st.one_of(st.none(), _mode_str), _mode_str)
     def test_always_returns_valid_action(self, has_existing, applied, config):
         from nibe_entity_manager import decide_startup_action
+
         result = decide_startup_action(has_existing, applied, config)
         self.assertIn(result, self._VALID_ACTIONS)
 
@@ -33,30 +34,34 @@ class TestDecideStartupActionProperties(unittest.TestCase):
     def test_no_existing_entities_always_apply(self, applied, config):
         """No existing entities → always 'apply', regardless of modes."""
         from nibe_entity_manager import decide_startup_action
-        self.assertEqual(decide_startup_action(False, applied, config), 'apply')
+
+        self.assertEqual(decide_startup_action(False, applied, config), "apply")
 
     @given(_mode_str)
     def test_same_mode_gives_restore(self, mode):
         """Same applied and config mode → 'restore'."""
         from nibe_entity_manager import decide_startup_action
-        self.assertEqual(decide_startup_action(True, mode, mode), 'restore')
+
+        self.assertEqual(decide_startup_action(True, mode, mode), "restore")
 
     def test_none_applied_gives_restore(self):
         """applied_mode=None (migration boundary) → 'restore'."""
         from nibe_entity_manager import decide_startup_action
-        self.assertEqual(decide_startup_action(True, None, 'essential'), 'restore')
+
+        self.assertEqual(decide_startup_action(True, None, "essential"), "restore")
 
     @given(_mode_str, _mode_str)
     def test_different_modes_gives_reconcile(self, applied, config):
         """Different known applied and config modes → 'reconcile'."""
         from nibe_entity_manager import decide_startup_action
+
         if applied != config:
-            self.assertEqual(
-                decide_startup_action(True, applied, config), 'reconcile')
+            self.assertEqual(decide_startup_action(True, applied, config), "reconcile")
 
     @given(st.booleans(), st.one_of(st.none(), _mode_str), _mode_str)
     def test_result_is_always_string(self, has_existing, applied, config):
         from nibe_entity_manager import decide_startup_action
+
         result = decide_startup_action(has_existing, applied, config)
         self.assertIsInstance(result, str)
 
@@ -66,25 +71,40 @@ class TestPublishPointMetadataProperties(unittest.TestCase):
 
     def _pub(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
         mqtt = MagicMock()
         pub = MqttDiscoveryPublisher(
-            mqtt_client=mqtt, device_info={},
-            device_id='test', device_name='Test',
+            mqtt_client=mqtt,
+            device_info={},
+            device_id="test",
+            device_name="Test",
         )
         return pub, mqtt
 
     def _point(self, pid):
         return {
-            'variableId': pid, 'display_title': f'Point {pid}',
-            'entity_type': 'sensor', 'entity_category': 'diagnostic',
-            'is_writable': False, 'is_dynamic': False, 'description': '',
-            'metadata': {
-                'unit': '', 'shortUnit': '', 'minValue': 0, 'maxValue': 100,
-                'modbusRegisterID': pid,
-                'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                'variableType': 'integer', 'variableSize': 'u8',
-                'isWritable': False, 'divisor': 1, 'decimal': 0,
-                'intDefaultValue': None, 'stringDefaultValue': '', 'change': 1,
+            "variableId": pid,
+            "display_title": f"Point {pid}",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "description": "",
+            "metadata": {
+                "unit": "",
+                "shortUnit": "",
+                "minValue": 0,
+                "maxValue": 100,
+                "modbusRegisterID": pid,
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableType": "integer",
+                "variableSize": "u8",
+                "isWritable": False,
+                "divisor": 1,
+                "decimal": 0,
+                "intDefaultValue": None,
+                "stringDefaultValue": "",
+                "change": 1,
             },
         }
 
@@ -92,27 +112,29 @@ class TestPublishPointMetadataProperties(unittest.TestCase):
     def test_publishes_to_correct_browser_topic(self, pid):
         """publish_point_metadata must always publish to the per-point browser topic."""
         from nibe_mqtt_publisher import BrowserTopic
+
         pub, mqtt = self._pub()
         pub.publish_point_metadata(self._point(pid))
         expected_topic = BrowserTopic.META_TEMPLATE.format(id=pid)
-        calls = [c for c in mqtt.publish.call_args_list
-                 if c.args[0] == expected_topic]
+        calls = [c for c in mqtt.publish.call_args_list if c.args[0] == expected_topic]
         self.assertTrue(calls, f"No publish to {expected_topic!r} for pid={pid}")
 
     @given(_nibe_point_id)
     def test_payload_contains_point_id(self, pid):
         """Payload must contain the point_id."""
         import json as _json
+
         pub, mqtt = self._pub()
         pub.publish_point_metadata(self._point(pid))
         calls = list(mqtt.publish.call_args_list)
         self.assertTrue(calls)
         payload = _json.loads(calls[-1].args[1])
-        self.assertEqual(payload['id'], pid)
+        self.assertEqual(payload["id"], pid)
 
     @given(_nibe_point_id)
     def test_payload_always_valid_json(self, pid):
         import json as _json
+
         pub, mqtt = self._pub()
         pub.publish_point_metadata(self._point(pid))
         calls = list(mqtt.publish.call_args_list)
@@ -125,8 +147,9 @@ class TestPublishPointMetadataProperties(unittest.TestCase):
         pub.publish_point_metadata(self._point(pid))
         calls = list(mqtt.publish.call_args_list)
         self.assertTrue(calls)
-        retain = calls[-1].kwargs.get('retain',
-                 calls[-1].args[2] if len(calls[-1].args) > 2 else False)
+        retain = calls[-1].kwargs.get(
+            "retain", calls[-1].args[2] if len(calls[-1].args) > 2 else False
+        )
         self.assertTrue(retain)
 
 
@@ -142,18 +165,23 @@ class TestDiscoverPoints(unittest.TestCase):
         def fake_fetch(**_kw):
             for pid in point_ids:
                 em.all_points_by_id[pid] = {
-                    'variableId': pid,
-                    'display_title': f'Point {pid}',
-                    'entity_type': 'sensor',
-                    'is_writable': False,
-                    'metadata': {
-                        'isWritable': False, 'divisor': 1,
-                        'minValue': 0, 'maxValue': 100,
-                        'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                        'variableType': 'integer', 'variableSize': 's16',
-                        'unit': '', 'decimal': 0,
+                    "variableId": pid,
+                    "display_title": f"Point {pid}",
+                    "entity_type": "sensor",
+                    "is_writable": False,
+                    "metadata": {
+                        "isWritable": False,
+                        "divisor": 1,
+                        "minValue": 0,
+                        "maxValue": 100,
+                        "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                        "variableType": "integer",
+                        "variableSize": "s16",
+                        "unit": "",
+                        "decimal": 0,
                     },
-                    'title': f'Point {pid}', 'description': '',
+                    "title": f"Point {pid}",
+                    "description": "",
                 }
             return True
 
@@ -206,9 +234,10 @@ class TestDiscoverPoints(unittest.TestCase):
     def test_dynamic_map_populated_after_discovery(self):
         """populate_from_bulk should be called and return a count."""
         em = self._make_em_with_bulk()
-        with patch.object(em.dynamic_point_map, 'populate_from_bulk',
-                          return_value=2) as mock_pop, \
-             patch.object(em.dynamic_point_map, 'restore_from_bulk'):
+        with (
+            patch.object(em.dynamic_point_map, "populate_from_bulk", return_value=2) as mock_pop,
+            patch.object(em.dynamic_point_map, "restore_from_bulk"),
+        ):
             em.discover_points()
             mock_pop.assert_called_once()
 
@@ -217,8 +246,9 @@ class TestDiscoverPoints(unittest.TestCase):
         freshly-established baseline_point_ids, so switches/selects removed
         by a firmware update get flagged."""
         em = self._make_em_with_bulk(point_ids=(100, 200, 300))
-        with patch.object(em.dynamic_point_map, 'mark_absent_as_firmware_removed',
-                          return_value=set()) as mock_mark:
+        with patch.object(
+            em.dynamic_point_map, "mark_absent_as_firmware_removed", return_value=set()
+        ) as mock_mark:
             em.discover_points()
             mock_mark.assert_called_once_with({100, 200, 300})
 
@@ -226,10 +256,13 @@ class TestDiscoverPoints(unittest.TestCase):
         """End-to-end: a switch tracked in the map but absent from the new
         bulk fetch must have firmware_removed=True after discover_points."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = self._make_em_with_bulk(point_ids=(100, 200, 300))
         # 999 was previously a tracked controlling switch — no longer in bulk.
         em.dynamic_point_map._table[999] = DynamicPointEntry(
-            point_id=999, title='Removed switch', entity_type='switch',
+            point_id=999,
+            title="Removed switch",
+            entity_type="switch",
         )
         em.discover_points()
         self.assertTrue(em.dynamic_point_map[999].firmware_removed)
@@ -238,9 +271,12 @@ class TestDiscoverPoints(unittest.TestCase):
         """A tracked switch still present in the bulk fetch must not be
         flagged as firmware_removed."""
         from nibe_dynamic_map import DynamicPointEntry
+
         em = self._make_em_with_bulk(point_ids=(100, 200, 300))
         em.dynamic_point_map._table[100] = DynamicPointEntry(
-            point_id=100, title='Still present', entity_type='switch',
+            point_id=100,
+            title="Still present",
+            entity_type="switch",
         )
         em.discover_points()
         self.assertFalse(em.dynamic_point_map[100].firmware_removed)
@@ -249,12 +285,12 @@ class TestDiscoverPoints(unittest.TestCase):
         """If dynamic_point_map is empty after MQTT load, try file fallback."""
         em = self._make_em_with_bulk()
         # Ensure map reports as empty
-        with patch.object(em.dynamic_point_map, '__len__', return_value=0), \
-             patch.object(em.dynamic_point_map, 'from_file',
-                          return_value=5) as mock_file, \
-             patch.object(em.dynamic_point_map, 'populate_from_bulk',
-                          return_value=0), \
-             patch.object(em.dynamic_point_map, 'restore_from_bulk'):
+        with (
+            patch.object(em.dynamic_point_map, "__len__", return_value=0),
+            patch.object(em.dynamic_point_map, "from_file", return_value=5) as mock_file,
+            patch.object(em.dynamic_point_map, "populate_from_bulk", return_value=0),
+            patch.object(em.dynamic_point_map, "restore_from_bulk"),
+        ):
             em.discover_points()
             mock_file.assert_called_once()
 
@@ -264,10 +300,12 @@ class TestDiscoverPoints(unittest.TestCase):
         em = _make_em()
         self.assertEqual(len(em.dynamic_point_map), 0)
 
-        with patch.object(em.dynamic_point_map, 'from_file', return_value=3) as mock_file, \
-             patch.object(em, '_fetch_bulk_data', return_value=True), \
-             patch.object(em, 'scan_mqtt_discovery', return_value=set()), \
-             patch.object(em, 'restore_from_mqtt', return_value=0):
+        with (
+            patch.object(em.dynamic_point_map, "from_file", return_value=3) as mock_file,
+            patch.object(em, "_fetch_bulk_data", return_value=True),
+            patch.object(em, "scan_mqtt_discovery", return_value=set()),
+            patch.object(em, "restore_from_mqtt", return_value=0),
+        ):
             em.discover_points()
 
         mock_file.assert_called_once()
@@ -287,22 +325,23 @@ class TestDiscoverPoints(unittest.TestCase):
         other key/default) when absent. This directly exercises the
         dict-comprehension `pt.get('entity_type', '')`."""
         em = self._make_em_with_bulk(point_ids=())
-        em.all_points_by_id[100] = {'variableId': 100, 'entity_type': 'switch'}
-        em.all_points_by_id[200] = {'variableId': 200}  # no entity_type key at all
-        with patch.object(em.dynamic_point_map, 'populate_from_bulk',
-                          return_value=0) as mock_pop, \
-             patch.object(em.dynamic_point_map, 'restore_from_bulk'):
+        em.all_points_by_id[100] = {"variableId": 100, "entity_type": "switch"}
+        em.all_points_by_id[200] = {"variableId": 200}  # no entity_type key at all
+        with (
+            patch.object(em.dynamic_point_map, "populate_from_bulk", return_value=0) as mock_pop,
+            patch.object(em.dynamic_point_map, "restore_from_bulk"),
+        ):
             em.discover_points()
             args, _kwargs = mock_pop.call_args
             entity_types = args[1]
-            self.assertEqual(entity_types[100], 'switch')
-            self.assertEqual(entity_types[200], '')
+            self.assertEqual(entity_types[100], "switch")
+            self.assertEqual(entity_types[200], "")
 
     def test_restore_from_bulk_called_with_baseline_point_ids(self):
         """restore_from_bulk must receive the freshly established
         baseline_point_ids set, not None or some other value."""
         em = self._make_em_with_bulk(point_ids=(100, 200, 300))
-        with patch.object(em.dynamic_point_map, 'restore_from_bulk') as mock_restore:
+        with patch.object(em.dynamic_point_map, "restore_from_bulk") as mock_restore:
             em.discover_points()
             mock_restore.assert_called_once_with({100, 200, 300})
 
@@ -312,7 +351,7 @@ class TestDiscoverPoints(unittest.TestCase):
         em = self._make_em_with_bulk(point_ids=(100, 200))
         em.discover_points()
         args, _kwargs = em._pub.publish_all_metadata.call_args
-        published_ids = {p['variableId'] for p in args[0]}
+        published_ids = {p["variableId"] for p in args[0]}
         self.assertEqual(published_ids, {100, 200})
 
     def test_publish_point_list_called_with_all_points_by_id(self):
@@ -333,28 +372,30 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         """Return an em where discover_points succeeds and the mocked
         scan/read-applied-mode drive decide_startup_action's branch."""
         em = _make_em()
-        em.discover_points     = MagicMock(return_value=True)
+        em.discover_points = MagicMock(return_value=True)
         em.scan_mqtt_discovery = MagicMock(
             return_value=set(range(mqtt_enabled_count)) if mqtt_enabled_count else set()
         )
-        em.read_applied_mode      = MagicMock(return_value=applied_mode)
-        em.restore_from_mqtt      = MagicMock()
-        em.apply_mode             = MagicMock()
-        em.record_applied_mode    = MagicMock()
-        em.publish_enabled_state  = MagicMock()
+        em.read_applied_mode = MagicMock(return_value=applied_mode)
+        em.restore_from_mqtt = MagicMock()
+        em.apply_mode = MagicMock()
+        em.record_applied_mode = MagicMock()
+        em.publish_enabled_state = MagicMock()
         em._api.fetch_device_info.return_value = {
-            'serial': '12345', 'firmware': '4.12', 'model': 'S-series'
+            "serial": "12345",
+            "firmware": "4.12",
+            "model": "S-series",
         }
         return em
 
     def test_returns_true_on_success(self):
         em = self._make_em_ready()
-        self.assertTrue(em.complete_deferred_discovery('essential'))
+        self.assertTrue(em.complete_deferred_discovery("essential"))
 
     def test_returns_false_when_discover_fails(self):
         em = self._make_em_ready()
         em.discover_points.return_value = False
-        self.assertFalse(em.complete_deferred_discovery('essential'))
+        self.assertFalse(em.complete_deferred_discovery("essential"))
 
     def test_rebuilt_device_info_keeps_real_device_id(self):
         """device_info's 'identifiers' field must be rebuilt with the
@@ -363,31 +404,31 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         an API-unreachable-at-startup reconnect, instead of recognizing
         the existing device registration."""
         em = self._make_em_ready()
-        em._pub.device_id = 'nibe_test_device_id'
-        em.complete_deferred_discovery('essential')
-        self.assertEqual(em.device_info['identifiers'], ['nibe_test_device_id'])
-        self.assertEqual(em._pub.device_info['identifiers'], ['nibe_test_device_id'])
+        em._pub.device_id = "nibe_test_device_id"
+        em.complete_deferred_discovery("essential")
+        self.assertEqual(em.device_info["identifiers"], ["nibe_test_device_id"])
+        self.assertEqual(em._pub.device_info["identifiers"], ["nibe_test_device_id"])
 
     def test_restore_called_when_mqtt_configs_found_and_mode_unchanged(self):
-        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
-        em.complete_deferred_discovery('essential')
+        em = self._make_em_ready(applied_mode="essential", mqtt_enabled_count=5)
+        em.complete_deferred_discovery("essential")
         em.restore_from_mqtt.assert_called_once()
         em.apply_mode.assert_not_called()
 
     def test_apply_mode_called_when_no_mqtt_configs(self):
         em = self._make_em_ready(mqtt_enabled_count=0)
-        em.complete_deferred_discovery('essential')
-        em.apply_mode.assert_called_once_with('essential')
+        em.complete_deferred_discovery("essential")
+        em.apply_mode.assert_called_once_with("essential")
         em.restore_from_mqtt.assert_not_called()
 
     def test_reconcile_when_applied_mode_differs(self):
         """A deliberate mode change detected across a restart: restore
         first (to establish real broker state), then reconcile to the
         newly configured mode."""
-        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
-        em.complete_deferred_discovery('menus')
+        em = self._make_em_ready(applied_mode="essential", mqtt_enabled_count=5)
+        em.complete_deferred_discovery("menus")
         em.restore_from_mqtt.assert_called_once()
-        em.apply_mode.assert_called_once_with('menus')
+        em.apply_mode.assert_called_once_with("menus")
 
     def test_migration_boundary_restores_and_records_baseline(self):
         """When no applied-mode record exists yet (read_applied_mode()
@@ -396,20 +437,20 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         configured mode as the new baseline so a future genuine mode
         change becomes detectable."""
         em = self._make_em_ready(applied_mode=None, mqtt_enabled_count=5)
-        em.complete_deferred_discovery('essential')
+        em.complete_deferred_discovery("essential")
         em.restore_from_mqtt.assert_called_once()
         em.apply_mode.assert_not_called()
-        em.record_applied_mode.assert_called_once_with('essential')
+        em.record_applied_mode.assert_called_once_with("essential")
 
     def test_publish_enabled_state_called_on_success(self):
         em = self._make_em_ready()
-        em.complete_deferred_discovery('essential')
+        em.complete_deferred_discovery("essential")
         em.publish_enabled_state.assert_called_once()
 
     def test_publish_enabled_state_not_called_on_failure(self):
         em = self._make_em_ready()
         em.discover_points.return_value = False
-        em.complete_deferred_discovery('essential')
+        em.complete_deferred_discovery("essential")
         em.publish_enabled_state.assert_not_called()
 
     def test_apply_branch_logs_fresh_install_message(self):
@@ -417,8 +458,8 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         apply_mode/restore_from_mqtt calls happen via apply_startup_action,
         driven by `action` directly) but must still name the real mode."""
         em = self._make_em_ready(mqtt_enabled_count=0)
-        with self.assertLogs('nibe.restore', level='WARNING') as cm:
-            em.complete_deferred_discovery('essential')
+        with self.assertLogs("nibe.restore", level="WARNING") as cm:
+            em.complete_deferred_discovery("essential")
         self.assertEqual(len(cm.output), 1)
         self.assertIn(
             "Deferred MQTT scan found 0 existing discovery configs — "
@@ -427,16 +468,16 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         )
 
     def test_restore_branch_logs_restoring_message(self):
-        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
-        with self.assertLogs('nibe.restore', level='INFO') as cm:
-            em.complete_deferred_discovery('essential')
+        em = self._make_em_ready(applied_mode="essential", mqtt_enabled_count=5)
+        with self.assertLogs("nibe.restore", level="INFO") as cm:
+            em.complete_deferred_discovery("essential")
         self.assertEqual(len(cm.output), 1)
         self.assertIn("Restoring entities from MQTT database...", cm.output[0])
 
     def test_reconcile_branch_logs_differs_message_with_real_mode(self):
-        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
-        with self.assertLogs('nibe.restore', level='INFO') as cm:
-            em.complete_deferred_discovery('menus')
+        em = self._make_em_ready(applied_mode="essential", mqtt_enabled_count=5)
+        with self.assertLogs("nibe.restore", level="INFO") as cm:
+            em.complete_deferred_discovery("menus")
         self.assertEqual(len(cm.output), 1)
         self.assertIn(
             "Deferred discovery: applied mode differs from configured mode 'menus' — "
@@ -447,16 +488,18 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
     def test_device_info_updated_from_api(self):
         em = self._make_em_ready()
         em._api.fetch_device_info.return_value = {
-            'serial': '99999', 'firmware': '4.12', 'model': 'S-series'
+            "serial": "99999",
+            "firmware": "4.12",
+            "model": "S-series",
         }
-        em.complete_deferred_discovery('essential')
+        em.complete_deferred_discovery("essential")
         em._api.fetch_device_info.assert_called_once()
 
     def test_proceeds_when_device_info_unavailable(self):
         """If device info fetch fails, discovery still continues."""
         em = self._make_em_ready()
         em._api.fetch_device_info.return_value = None
-        result = em.complete_deferred_discovery('essential')
+        result = em.complete_deferred_discovery("essential")
         self.assertTrue(result)
         em.discover_points.assert_called_once()
 
@@ -465,20 +508,20 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         the publisher, not None — otherwise the fallback/naming logic in
         _build_device_info would incorrectly treat the device as unnamed."""
         em = self._make_em_ready()
-        em._pub.device_name = 'My Real Heat Pump'
+        em._pub.device_name = "My Real Heat Pump"
         em._api.fetch_device_info.return_value = {
-            'product': {'name': ''},
+            "product": {"name": ""},
         }
-        em.complete_deferred_discovery('essential')
-        self.assertEqual(em.device_info['name'], 'My Real Heat Pump')
+        em.complete_deferred_discovery("essential")
+        self.assertEqual(em.device_info["name"], "My Real Heat Pump")
 
     def test_restore_receives_real_applied_mode_not_none(self):
         """apply_startup_action must be called with the actual applied_mode
         returned by read_applied_mode(), not a hardcoded None — otherwise
         an existing applied-mode baseline would be spuriously re-recorded
         via record_applied_mode on every deferred-discovery restore."""
-        em = self._make_em_ready(applied_mode='essential', mqtt_enabled_count=5)
-        em.complete_deferred_discovery('essential')
+        em = self._make_em_ready(applied_mode="essential", mqtt_enabled_count=5)
+        em.complete_deferred_discovery("essential")
         em.record_applied_mode.assert_not_called()
 
 
@@ -502,13 +545,14 @@ class TestScanMqttDiscovery(unittest.TestCase):
         def fake_publish(topic, payload, retain=False):
             # When the sentinel is published, fire all retained config messages
             # first, then fire the sentinel callback if requested.
-            if 'scan_sentinel' in topic:
+            if "scan_sentinel" in topic:
                 for p in retained_payloads:
                     import json as _json
+
                     msg = MagicMock()
-                    msg.topic = 'homeassistant/sensor/nibe_1234/config'
+                    msg.topic = "homeassistant/sensor/nibe_1234/config"
                     msg.payload = _json.dumps(p).encode()
-                    cb = callbacks.get('homeassistant/+/+/config')
+                    cb = callbacks.get("homeassistant/+/+/config")
                     if cb:
                         cb(None, None, msg)
                 if sentinel_fires:
@@ -521,19 +565,19 @@ class TestScanMqttDiscovery(unittest.TestCase):
         return em
 
     def test_discovers_nibe_point_ids(self):
-        payload = {'unique_id': 'nibe_1234', 'name': 'Test'}
+        payload = {"unique_id": "nibe_1234", "name": "Test"}
         em = self._make_em_with_sentinel([payload])
         result = em.scan_mqtt_discovery()
         self.assertIn(1234, result)
 
     def test_ignores_non_nibe_unique_ids(self):
-        payload = {'unique_id': 'other_device_42', 'name': 'Other'}
+        payload = {"unique_id": "other_device_42", "name": "Other"}
         em = self._make_em_with_sentinel([payload])
         result = em.scan_mqtt_discovery()
         self.assertEqual(len(result), 0)
 
     def test_ignores_non_numeric_nibe_ids(self):
-        payload = {'unique_id': 'nibe_notanumber', 'name': 'Test'}
+        payload = {"unique_id": "nibe_notanumber", "name": "Test"}
         em = self._make_em_with_sentinel([payload])
         result = em.scan_mqtt_discovery()
         self.assertEqual(len(result), 0)
@@ -546,11 +590,11 @@ class TestScanMqttDiscovery(unittest.TestCase):
             callbacks[topic] = cb
 
         def fake_publish(topic, payload, retain=False):
-            if 'scan_sentinel' in topic:
+            if "scan_sentinel" in topic:
                 msg = MagicMock()
-                msg.topic = 'homeassistant/sensor/nibe_1234/config'
-                msg.payload = b'not valid json'
-                cb = callbacks.get('homeassistant/+/+/config')
+                msg.topic = "homeassistant/sensor/nibe_1234/config"
+                msg.payload = b"not valid json"
+                cb = callbacks.get("homeassistant/+/+/config")
                 if cb:
                     cb(None, None, msg)
                 cb = callbacks.get(topic)
@@ -565,14 +609,14 @@ class TestScanMqttDiscovery(unittest.TestCase):
     def test_sentinel_timeout_still_returns_discovered(self):
         """When sentinel never fires, method falls through after timeout
         and still returns whatever was discovered before the timeout."""
-        payload = {'unique_id': 'nibe_9999', 'name': 'Test'}
+        payload = {"unique_id": "nibe_9999", "name": "Test"}
         em = self._make_em_with_sentinel([payload], sentinel_fires=False)
-        with patch('nibe_entity_manager._MQTT_SCAN_TIMEOUT_S', 0):
+        with patch("nibe_entity_manager._MQTT_SCAN_TIMEOUT_S", 0):
             result = em.scan_mqtt_discovery()
         self.assertIn(9999, result)
 
     def test_updates_mqtt_enabled_points(self):
-        payload = {'unique_id': 'nibe_5555', 'name': 'Test'}
+        payload = {"unique_id": "nibe_5555", "name": "Test"}
         em = self._make_em_with_sentinel([payload])
         em.scan_mqtt_discovery()
         self.assertIn(5555, em.mqtt_enabled_points)
@@ -585,13 +629,16 @@ class TestScanMqttDiscovery(unittest.TestCase):
 
     def _capture_discovery_debug(self, em):
         import logging
+
         records = []
+
         class CapHandler(logging.Handler):
             def emit(self, record):
                 records.append(record)
+
         cap = CapHandler()
         cap.setLevel(logging.DEBUG)
-        logger = logging.getLogger('nibe.discovery')
+        logger = logging.getLogger("nibe.discovery")
         logger.addHandler(cap)
         original_level = logger.level
         logger.setLevel(logging.DEBUG)
@@ -605,7 +652,7 @@ class TestScanMqttDiscovery(unittest.TestCase):
     def test_summary_log_exact_message_on_clean_scan(self):
         """The final summary log's suffix must be empty (not the partial-scan
         note) when the sentinel arrived on time."""
-        payload = {'unique_id': 'nibe_1234', 'name': 'Test'}
+        payload = {"unique_id": "nibe_1234", "name": "Test"}
         em = self._make_em_with_sentinel([payload])
         messages = self._capture_discovery_debug(em)
         self.assertIn("Found 1 existing MQTT discovery configs", messages)
@@ -613,13 +660,12 @@ class TestScanMqttDiscovery(unittest.TestCase):
     def test_summary_log_exact_message_on_partial_scan(self):
         """The final summary log's suffix must be the exact partial-scan note
         when the sentinel timed out — not present (or altered) when it did."""
-        payload = {'unique_id': 'nibe_9999', 'name': 'Test'}
+        payload = {"unique_id": "nibe_9999", "name": "Test"}
         em = self._make_em_with_sentinel([payload], sentinel_fires=False)
-        with patch('nibe_entity_manager._MQTT_SCAN_TIMEOUT_S', 0):
+        with patch("nibe_entity_manager._MQTT_SCAN_TIMEOUT_S", 0):
             messages = self._capture_discovery_debug(em)
         self.assertIn(
-            "Found 1 existing MQTT discovery configs"
-            " (scan may be partial — sentinel timed out)",
+            "Found 1 existing MQTT discovery configs (scan may be partial — sentinel timed out)",
             messages,
         )
 
@@ -641,12 +687,13 @@ class TestScanMqttDiscovery(unittest.TestCase):
             callbacks[topic] = cb
 
         def fake_publish(topic, payload, retain=False):
-            if 'scan_sentinel' in topic:
+            if "scan_sentinel" in topic:
                 msg = MagicMock()
-                msg.topic = 'other/sensor/nibe_1234/config'  # ends /config, wrong prefix
+                msg.topic = "other/sensor/nibe_1234/config"  # ends /config, wrong prefix
                 import json as _json
-                msg.payload = _json.dumps({'unique_id': 'nibe_1234'}).encode()
-                cb = callbacks.get('homeassistant/+/+/config')
+
+                msg.payload = _json.dumps({"unique_id": "nibe_1234"}).encode()
+                cb = callbacks.get("homeassistant/+/+/config")
                 if cb:
                     cb(None, None, msg)
                 cb = callbacks.get(topic)
@@ -662,7 +709,7 @@ class TestScanMqttDiscovery(unittest.TestCase):
         """A retained config payload with no 'unique_id' key at all must be
         safely ignored (default '' does not start with 'nibe_'), not raise
         an uncaught AttributeError from calling .startswith() on None."""
-        payload = {'name': 'No unique id here'}
+        payload = {"name": "No unique id here"}
         em = self._make_em_with_sentinel([payload])
         result = em.scan_mqtt_discovery()  # must not raise
         self.assertEqual(result, set())
@@ -674,13 +721,14 @@ class TestScanMqttDiscovery(unittest.TestCase):
         em = self._make_em_with_sentinel([])
         em.scan_mqtt_discovery()
         subscribed_topics = [call.args[0] for call in em.mqtt.subscribe.call_args_list]
-        self.assertIn('homeassistant/+/+/config', subscribed_topics)
+        self.assertIn("homeassistant/+/+/config", subscribed_topics)
 
     def test_subscribes_to_sentinel_topic(self):
         """The scan must also subscribe to the real sentinel topic, not
         None — otherwise the sentinel publish below would never be
         delivered back and every scan would time out."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_sentinel([])
         em.scan_mqtt_discovery()
         subscribed_topics = [call.args[0] for call in em.mqtt.subscribe.call_args_list]
@@ -691,6 +739,7 @@ class TestScanMqttDiscovery(unittest.TestCase):
         real sentinel-topic string and a real (non-None) handler function
         — both are required for the sentinel round-trip to work."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_sentinel([])
         em.scan_mqtt_discovery()
         calls = em.mqtt.message_callback_add.call_args_list
@@ -705,13 +754,14 @@ class TestScanMqttDiscovery(unittest.TestCase):
         message on the broker that could trigger false sentinel-received
         events on the *next* scan before real configs have arrived."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_sentinel([])
         em.scan_mqtt_discovery()
         calls = em.mqtt.publish.call_args_list
         sentinel_calls = [c for c in calls if c.args[0] == BrowserTopic.SCAN_SENTINEL]
         self.assertEqual(len(sentinel_calls), 1)
-        self.assertEqual(sentinel_calls[0].args[1], 'scan')
-        self.assertEqual(sentinel_calls[0].kwargs.get('retain'), False)
+        self.assertEqual(sentinel_calls[0].args[1], "scan")
+        self.assertEqual(sentinel_calls[0].kwargs.get("retain"), False)
 
     def test_seeds_entity_type_from_retained_config_topic(self):
         """A retained config found at homeassistant/sensor/.../config must
@@ -720,10 +770,10 @@ class TestScanMqttDiscovery(unittest.TestCase):
         publish_entity_discovery() call for the same point_id can detect a
         type change across a restart and clear the old topic instead of
         leaving an orphaned ghost entity behind."""
-        payload = {'unique_id': 'nibe_1234', 'name': 'Test'}
+        payload = {"unique_id": "nibe_1234", "name": "Test"}
         em = self._make_em_with_sentinel([payload])
         em.scan_mqtt_discovery()
-        em._pub.seed_entity_type_from_retained.assert_called_once_with(1234, 'sensor')
+        em._pub.seed_entity_type_from_retained.assert_called_once_with(1234, "sensor")
 
     def test_cleanup_removes_callbacks_and_unsubscribes_both_topics(self):
         """After the scan, both the config-topic and sentinel-topic
@@ -731,13 +781,14 @@ class TestScanMqttDiscovery(unittest.TestCase):
         strings, not None — leaving a None cleanup call would leave the
         real subscription dangling."""
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_em_with_sentinel([])
         em.scan_mqtt_discovery()
         removed = [c.args[0] for c in em.mqtt.message_callback_remove.call_args_list]
         unsubscribed = [c.args[0] for c in em.mqtt.unsubscribe.call_args_list]
-        self.assertIn('homeassistant/+/+/config', removed)
+        self.assertIn("homeassistant/+/+/config", removed)
         self.assertIn(BrowserTopic.SCAN_SENTINEL, removed)
-        self.assertIn('homeassistant/+/+/config', unsubscribed)
+        self.assertIn("homeassistant/+/+/config", unsubscribed)
         self.assertIn(BrowserTopic.SCAN_SENTINEL, unsubscribed)
 
 
@@ -749,30 +800,42 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em = _make_em()
         for pid in point_ids:
             em.all_points_by_id[pid] = {
-                'variableId': pid, 'display_title': f'Point {pid}',
-                'title': f'Point {pid}', 'description': '',
-                'entity_type': 'sensor', 'entity_category': 'diagnostic',
-                'is_writable': False, 'is_dynamic': False,
-                'metadata': {
-                    'isWritable': False, 'divisor': 1, 'decimal': 0,
-                    'unit': '', 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                    'variableType': 'integer', 'variableSize': 's16',
-                    'minValue': 0, 'maxValue': 100,
-                    'intDefaultValue': 0, 'stringDefaultValue': '',
-                    'change': 1, 'shortUnit': '', 'modbusRegisterID': pid,
+                "variableId": pid,
+                "display_title": f"Point {pid}",
+                "title": f"Point {pid}",
+                "description": "",
+                "entity_type": "sensor",
+                "entity_category": "diagnostic",
+                "is_writable": False,
+                "is_dynamic": False,
+                "metadata": {
+                    "isWritable": False,
+                    "divisor": 1,
+                    "decimal": 0,
+                    "unit": "",
+                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                    "variableType": "integer",
+                    "variableSize": "s16",
+                    "minValue": 0,
+                    "maxValue": 100,
+                    "intDefaultValue": 0,
+                    "stringDefaultValue": "",
+                    "change": 1,
+                    "shortUnit": "",
+                    "modbusRegisterID": pid,
                 },
             }
         return em
 
     def _entity_info(self, pid):
         return {
-            'point_id': pid,
-            'variableId': pid,
-            'entity_type': 'sensor',
-            'availability_topic': f'homeassistant/sensor/nibe_{pid}/available',
-            'state_topic': f'homeassistant/sensor/nibe_{pid}/state',
-            'command_topic': None,
-            'unique_id': f'nibe_{pid}',
+            "point_id": pid,
+            "variableId": pid,
+            "entity_type": "sensor",
+            "availability_topic": f"homeassistant/sensor/nibe_{pid}/available",
+            "state_topic": f"homeassistant/sensor/nibe_{pid}/state",
+            "command_topic": None,
+            "unique_id": f"nibe_{pid}",
         }
 
     def test_returns_zero_when_no_enabled_points(self):
@@ -785,7 +848,8 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em = self._make_em_with_points([100, 200])
         em.mqtt_enabled_points.update({100, 200})
         em._pub.publish_entity_discovery.side_effect = [
-            self._entity_info(100), self._entity_info(200)
+            self._entity_info(100),
+            self._entity_info(200),
         ]
         result = em.restore_from_mqtt()
         self.assertEqual(result, 2)
@@ -805,22 +869,20 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em = self._make_em_with_points([100, 200, 300])
         # 999 is not in all_points_by_id — deliberately missing metadata.
         em.mqtt_enabled_points.update({1, 100, 200, 300, 999})
-        em._pub.publish_entity_discovery.side_effect = lambda point, bulk: (
-            self._entity_info(point['variableId'])
+        em._pub.publish_entity_discovery.side_effect = lambda point, bulk: self._entity_info(
+            point["variableId"]
         )
         result = em.restore_from_mqtt()
         self.assertEqual(result, 3)
-        self.assertEqual(
-            set(em.active_entities_by_id.keys()), {100, 200, 300}
-        )
+        self.assertEqual(set(em.active_entities_by_id.keys()), {100, 200, 300})
 
     def test_online_published_for_restored_entities(self):
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
-        avail_topic = 'homeassistant/sensor/nibe_100/available'
-        em.mqtt.publish.assert_any_call(avail_topic, 'online', retain=True)
+        avail_topic = "homeassistant/sensor/nibe_100/available"
+        em.mqtt.publish.assert_any_call(avail_topic, "online", retain=True)
 
     def test_entity_added_to_active_entities(self):
         em = self._make_em_with_points([100])
@@ -843,12 +905,12 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
-        self.assertEqual(em._stats_type_counts.get('sensor'), 1)
-        self.assertEqual(em._stats_category_counts.get('diagnostic'), 1)
+        self.assertEqual(em._stats_type_counts.get("sensor"), 1)
+        self.assertEqual(em._stats_category_counts.get("diagnostic"), 1)
 
     def test_restore_increments_writable_count_for_writable_points(self):
         em = self._make_em_with_points([100])
-        em.all_points_by_id[100]['is_writable'] = True
+        em.all_points_by_id[100]["is_writable"] = True
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
@@ -865,10 +927,10 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
         ei = self._entity_info(100)
-        ei['command_topic'] = 'homeassistant/sensor/nibe_100/set'
+        ei["command_topic"] = "homeassistant/sensor/nibe_100/set"
         em._pub.publish_entity_discovery.return_value = ei
         em.restore_from_mqtt()
-        em.mqtt.subscribe.assert_any_call(ei['command_topic'], qos=1)
+        em.mqtt.subscribe.assert_any_call(ei["command_topic"], qos=1)
 
     def test_publish_entity_discovery_failure_skips_point(self):
         em = self._make_em_with_points([100])
@@ -896,11 +958,11 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
-        em.bulk_data = {'sentinel': 'real-bulk-data-marker'}
+        em.bulk_data = {"sentinel": "real-bulk-data-marker"}
         em.restore_from_mqtt()
         args, _kwargs = em._pub.publish_entity_discovery.call_args
         self.assertEqual(args[0], em.all_points_by_id[100])
-        self.assertEqual(args[1], {'sentinel': 'real-bulk-data-marker'})
+        self.assertEqual(args[1], {"sentinel": "real-bulk-data-marker"})
 
     def test_active_entities_stores_real_entity_info_not_none(self):
         """active_entities_by_id must be populated with the actual
@@ -919,7 +981,7 @@ class TestRestoreFromMqtt(unittest.TestCase):
         default to False (not add it to active_dynamic_points) — matching
         get('is_dynamic', False), not some other default."""
         em = self._make_em_with_points([100])
-        del em.all_points_by_id[100]['is_dynamic']
+        del em.all_points_by_id[100]["is_dynamic"]
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
@@ -929,7 +991,7 @@ class TestRestoreFromMqtt(unittest.TestCase):
         """restore_from_mqtt: is_dynamic=True points are added to
         active_dynamic_points (line 721)."""
         em = self._make_em_with_points([100])
-        em.all_points_by_id[100]['is_dynamic'] = True
+        em.all_points_by_id[100]["is_dynamic"] = True
         em.mqtt_enabled_points.add(100)
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
@@ -940,22 +1002,24 @@ class TestRestoreFromMqtt(unittest.TestCase):
         must invoke _handle_command when called (line 803)."""
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
-        cmd_topic = 'homeassistant/switch/nibe_100/set'
+        cmd_topic = "homeassistant/switch/nibe_100/set"
         entity = self._entity_info(100)
-        entity['command_topic'] = cmd_topic
+        entity["command_topic"] = cmd_topic
         em._pub.publish_entity_discovery.return_value = entity
 
         stored_cb = {}
+
         def fake_callback_add(topic, cb):
             stored_cb[topic] = cb
+
         em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
 
         em.restore_from_mqtt()
         self.assertIn(cmd_topic, stored_cb)
 
         msg = MagicMock()
-        msg.payload = b'1'
-        with patch.object(em, '_handle_command') as mock_handle:
+        msg.payload = b"1"
+        with patch.object(em, "_handle_command") as mock_handle:
             stored_cb[cmd_topic](None, None, msg)
         # Must be called with the actual entity_info and the actual message
         # object it received — not None or the wrong positional value.
@@ -966,7 +1030,7 @@ class TestRestoreFromMqtt(unittest.TestCase):
         it must be added to active_dynamic_points."""
         em = self._make_em_with_points([100])
         em.mqtt_enabled_points.add(100)
-        em.all_points_by_id[100]['is_dynamic'] = True  # set on the point dict
+        em.all_points_by_id[100]["is_dynamic"] = True  # set on the point dict
         em._pub.publish_entity_discovery.return_value = self._entity_info(100)
         em.restore_from_mqtt()
         self.assertIn(100, em.active_dynamic_points)
@@ -1007,30 +1071,44 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
     a fresh EntityManager AND a fresh MqttDiscoveryPublisher, simulating
     an actual restart."""
 
-    def _point(self, pid=100, title='Outdoor Temp'):
+    def _point(self, pid=100, title="Outdoor Temp"):
         return {
-            'variableId': pid, 'display_title': title, 'title': title,
-            'entity_type': 'sensor', 'entity_category': 'diagnostic',
-            'is_writable': False, 'is_dynamic': False, 'description': '',
-            'metadata': {
-                'isWritable': False, 'divisor': 10, 'decimal': 1,
-                'unit': '°C', 'modbusRegisterType': 'MODBUS_INPUT_REGISTER',
-                'variableType': 'integer', 'variableSize': 's16',
-                'minValue': -300, 'maxValue': 300,
-                'intDefaultValue': 0, 'stringDefaultValue': '',
-                'change': 1, 'shortUnit': '°C', 'modbusRegisterID': pid,
+            "variableId": pid,
+            "display_title": title,
+            "title": title,
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "description": "",
+            "metadata": {
+                "isWritable": False,
+                "divisor": 10,
+                "decimal": 1,
+                "unit": "°C",
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableType": "integer",
+                "variableSize": "s16",
+                "minValue": -300,
+                "maxValue": 300,
+                "intDefaultValue": 0,
+                "stringDefaultValue": "",
+                "change": 1,
+                "shortUnit": "°C",
+                "modbusRegisterID": pid,
             },
         }
 
     def _real_publisher(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
         mqtt = MagicMock()
         mqtt.publish.return_value = MagicMock(rc=0)
         pub = MqttDiscoveryPublisher(
             mqtt_client=mqtt,
-            device_info={'identifiers': ['nibe_test'], 'name': 'Test'},
-            device_id='nibe_test',
-            device_name='Test Device',
+            device_info={"identifiers": ["nibe_test"], "name": "Test"},
+            device_id="nibe_test",
+            device_name="Test Device",
         )
         return pub, mqtt
 
@@ -1048,7 +1126,7 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
         matching = [c for c in mqtt_mock.publish.call_args_list if c.args[0] == topic]
         self.assertEqual(len(matching), 1, f"expected exactly one publish to {topic}")
         payload = matching[0].args[1]
-        return payload.encode('utf-8') if isinstance(payload, str) else payload
+        return payload.encode("utf-8") if isinstance(payload, str) else payload
 
     def _restart_and_restore(self, retained_payload, live_point):
         """Fresh EntityManager + fresh real MqttDiscoveryPublisher — a
@@ -1066,11 +1144,11 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
             callbacks[topic] = cb
 
         def fake_em_publish(topic, payload, retain=False):
-            if 'scan_sentinel' in topic:
+            if "scan_sentinel" in topic:
                 msg = MagicMock()
                 msg.topic = f"homeassistant/sensor/nibe_{live_point['variableId']}/config"
                 msg.payload = retained_payload
-                cb = callbacks.get('homeassistant/+/+/config')
+                cb = callbacks.get("homeassistant/+/+/config")
                 if cb:
                     cb(None, None, msg)
                 cb = callbacks.get(topic)
@@ -1081,41 +1159,48 @@ class TestConfigDedupSurvivesRestart(unittest.TestCase):
         em.mqtt.publish = MagicMock(side_effect=fake_em_publish)
 
         em.scan_mqtt_discovery()
-        em.all_points_by_id[live_point['variableId']] = live_point
+        em.all_points_by_id[live_point["variableId"]] = live_point
         real_pub_mqtt.publish.reset_mock()
         em.restore_from_mqtt()
         return real_pub_mqtt
 
     def test_unchanged_config_is_not_republished_across_simulated_restart(self):
         from nibe_mqtt_publisher import t_config
+
         point = self._point()
         writer_pub, writer_mqtt = self._real_publisher()
         writer_pub.publish_entity_discovery(point, bulk_data={})
-        config_topic     = t_config('sensor', 'nibe_100')
+        config_topic = t_config("sensor", "nibe_100")
         retained_payload = self._retained_bytes_from_publish_call(writer_mqtt, config_topic)
 
         real_pub_mqtt = self._restart_and_restore(retained_payload, point)
-        config_calls = [c for c in real_pub_mqtt.publish.call_args_list
-                        if c.args[0] == config_topic]
-        self.assertEqual(config_calls, [],
+        config_calls = [
+            c for c in real_pub_mqtt.publish.call_args_list if c.args[0] == config_topic
+        ]
+        self.assertEqual(
+            config_calls,
+            [],
             "unchanged discovery config was republished across a simulated "
-            "restart — the hash-dedup cache was not seeded correctly")
+            "restart — the hash-dedup cache was not seeded correctly",
+        )
 
     def test_changed_config_is_still_republished_across_simulated_restart(self):
         """The fix must not accidentally suppress a genuine change — only
         a byte-identical config may be skipped."""
         from nibe_mqtt_publisher import t_config
+
         point = self._point()
         writer_pub, writer_mqtt = self._real_publisher()
         writer_pub.publish_entity_discovery(point, bulk_data={})
-        config_topic     = t_config('sensor', 'nibe_100')
+        config_topic = t_config("sensor", "nibe_100")
         retained_payload = self._retained_bytes_from_publish_call(writer_mqtt, config_topic)
 
-        changed_point = self._point(title='Changed Title')
+        changed_point = self._point(title="Changed Title")
 
         real_pub_mqtt = self._restart_and_restore(retained_payload, changed_point)
-        config_calls = [c for c in real_pub_mqtt.publish.call_args_list
-                        if c.args[0] == config_topic]
+        config_calls = [
+            c for c in real_pub_mqtt.publish.call_args_list if c.args[0] == config_topic
+        ]
         self.assertEqual(len(config_calls), 1)
 
 
@@ -1164,12 +1249,12 @@ class TestHandleApiFailure(unittest.TestCase):
         A wrong/None model would show a broken message like 'The Nibe
         None REST API has not responded...' directly to the user."""
         em = _make_em()
-        em.device_info = {'model': 'S320'}
+        em.device_info = {"model": "S320"}
         em.api_consecutive_failures = 2
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn('The Nibe S320 REST API', call_kwargs['message'])
+        self.assertIn("The Nibe S320 REST API", call_kwargs["message"])
 
     def test_notification_model_falls_back_when_unknown(self):
         em = _make_em()
@@ -1178,7 +1263,7 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn('The Nibe S-series REST API', call_kwargs['message'])
+        self.assertIn("The Nibe S-series REST API", call_kwargs["message"])
 
     def test_alert_type_is_api_unreachable(self):
         em = _make_em()
@@ -1186,8 +1271,9 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._pub.publish_bridge_alert.call_args
-        self.assertEqual(call_kwargs.kwargs.get('alert_type') or
-                         call_kwargs.args[0], 'api_unreachable')
+        self.assertEqual(
+            call_kwargs.kwargs.get("alert_type") or call_kwargs.args[0], "api_unreachable"
+        )
 
     def test_api_notification_active_set_after_threshold(self):
         em = _make_em()
@@ -1202,14 +1288,15 @@ class TestHandleApiFailure(unittest.TestCase):
         placeholders — otherwise the HA notification would fail to post
         or use the wrong dedup id (breaking auto-dismiss on recovery)."""
         from nibe_entity_manager import _NOTIF_API_UNREACHABLE
+
         em = _make_em()
         em.api_consecutive_failures = 2
         em.api_failure_threshold = 3
         em._handle_api_failure()
         args, kwargs = em._notify.call_args
         self.assertIs(args[0], em.mqtt)
-        self.assertEqual(kwargs['title'], 'Nibe Bridge: API Unreachable')
-        self.assertEqual(kwargs['notification_id'], _NOTIF_API_UNREACHABLE)
+        self.assertEqual(kwargs["title"], "Nibe Bridge: API Unreachable")
+        self.assertEqual(kwargs["notification_id"], _NOTIF_API_UNREACHABLE)
 
     def test_notification_seconds_computed_as_product_not_quotient(self):
         """The elapsed-seconds figure in the notification text must be
@@ -1222,7 +1309,7 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn('(30s)', call_kwargs['message'])
+        self.assertIn("(30s)", call_kwargs["message"])
 
     def test_bridge_alert_severity_message_and_context_fields(self):
         """publish_bridge_alert must receive severity='error', the real
@@ -1233,15 +1320,15 @@ class TestHandleApiFailure(unittest.TestCase):
         em = _make_em()
         em.api_consecutive_failures = 4  # will become 5
         em.api_failure_threshold = 5
-        em._api.base_url = 'http://192.0.2.5'
+        em._api.base_url = "http://192.0.2.5"
         em._handle_api_failure()
         call_kwargs = em._pub.publish_bridge_alert.call_args.kwargs
-        self.assertEqual(call_kwargs['severity'], 'error')
-        self.assertIn('The Nibe', call_kwargs['message'])
-        context = call_kwargs['context']
-        self.assertEqual(context['consecutive_failures'], 5)
-        self.assertEqual(context['failure_threshold'], 5)
-        self.assertEqual(context['api_url'], 'http://192.0.2.5')
+        self.assertEqual(call_kwargs["severity"], "error")
+        self.assertIn("The Nibe", call_kwargs["message"])
+        context = call_kwargs["context"]
+        self.assertEqual(context["consecutive_failures"], 5)
+        self.assertEqual(context["failure_threshold"], 5)
+        self.assertEqual(context["api_url"], "http://192.0.2.5")
 
     def test_notification_includes_last_error_when_present(self):
         """When the API client recorded a diagnostic reason for its most
@@ -1254,7 +1341,7 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn("Last error: timed out waiting for a response.", call_kwargs['message'])
+        self.assertIn("Last error: timed out waiting for a response.", call_kwargs["message"])
 
     def test_explicit_last_error_argument_wins_over_api_attribute(self):
         """Regression: self._api is shared with the write-command executor
@@ -1270,9 +1357,10 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure("the actual poll failure, captured at the time")
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn("Last error: the actual poll failure, captured at the time.",
-                       call_kwargs['message'])
-        self.assertNotIn("unrelated write-thread error", call_kwargs['message'])
+        self.assertIn(
+            "Last error: the actual poll failure, captured at the time.", call_kwargs["message"]
+        )
+        self.assertNotIn("unrelated write-thread error", call_kwargs["message"])
 
     def test_notification_points_to_test_connection_button(self):
         """The ongoing API-unreachable notification must also point at the
@@ -1284,8 +1372,8 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertIn('Test API Connection', call_kwargs['message'])
-        self.assertIn('Debug mode', call_kwargs['message'])
+        self.assertIn("Test API Connection", call_kwargs["message"])
+        self.assertIn("Debug mode", call_kwargs["message"])
 
     def test_notification_omits_last_error_line_when_absent(self):
         """No last_error recorded (e.g. a fresh client, or a test double
@@ -1297,7 +1385,7 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_failure_threshold = 3
         em._handle_api_failure()
         call_kwargs = em._notify.call_args.kwargs
-        self.assertNotIn("Last error", call_kwargs['message'])
+        self.assertNotIn("Last error", call_kwargs["message"])
 
     def test_bridge_alert_context_includes_last_error(self):
         """The structured MQTT alert context must carry last_error too, so
@@ -1308,9 +1396,9 @@ class TestHandleApiFailure(unittest.TestCase):
         em.api_consecutive_failures = 2
         em.api_failure_threshold = 3
         em._handle_api_failure()
-        context = em._pub.publish_bridge_alert.call_args.kwargs['context']
+        context = em._pub.publish_bridge_alert.call_args.kwargs["context"]
         self.assertEqual(
-            context['last_error'],
+            context["last_error"],
             "HTTP 500 from https://192.0.2.5/api/v1/devices/0/points",
         )
 
@@ -1336,28 +1424,41 @@ class TestHandleApiFailure(unittest.TestCase):
         em.mqtt = MagicMock()
         point_id = 100
         em.all_points_by_id[point_id] = {
-            'variableId': point_id, 'display_title': 'Test',
-            'entity_type': 'switch', 'entity_category': 'config',
-            'is_writable': True, 'is_dynamic': False,
-            'metadata': {'variableSize': 'u8', 'divisor': 1, 'decimal': 0,
-                         'unit': '', 'shortUnit': '',
-                         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                         'modbusRegisterID': point_id,
-                         'variableType': 'integer', 'minValue': 0, 'maxValue': 1,
-                         'intDefaultValue': 0, 'stringDefaultValue': '',
-                         'change': 1, 'isWritable': True},
-            'description': '',
+            "variableId": point_id,
+            "display_title": "Test",
+            "entity_type": "switch",
+            "entity_category": "config",
+            "is_writable": True,
+            "is_dynamic": False,
+            "metadata": {
+                "variableSize": "u8",
+                "divisor": 1,
+                "decimal": 0,
+                "unit": "",
+                "shortUnit": "",
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "modbusRegisterID": point_id,
+                "variableType": "integer",
+                "minValue": 0,
+                "maxValue": 1,
+                "intDefaultValue": 0,
+                "stringDefaultValue": "",
+                "change": 1,
+                "isWritable": True,
+            },
+            "description": "",
         }
         em.mqtt_enabled_points.add(point_id)
         entity_info = {
-            'point_id': point_id, 'entity_type': 'switch',
-            'state_topic': f'nibe/state/{point_id}',
-            'command_topic': f'nibe/cmd/{point_id}',
-            'availability_topic': f'nibe/avail/{point_id}',
+            "point_id": point_id,
+            "entity_type": "switch",
+            "state_topic": f"nibe/state/{point_id}",
+            "command_topic": f"nibe/cmd/{point_id}",
+            "availability_topic": f"nibe/avail/{point_id}",
         }
         em.active_entities_by_id[point_id] = entity_info
-        with patch.object(em, '_run_learning_detection'):
-            em._handle_command_worker(entity_info, 1, '1', 'test')
+        with patch.object(em, "_run_learning_detection"):
+            em._handle_command_worker(entity_info, 1, "1", "test")
         em._dismiss.assert_called()
 
     def test_write_failure_skips_bridge_alert_when_pub_is_none(self):
@@ -1371,27 +1472,40 @@ class TestHandleApiFailure(unittest.TestCase):
         em.mqtt = MagicMock()
         point_id = 100
         em.all_points_by_id[point_id] = {
-            'variableId': point_id, 'display_title': 'Test',
-            'entity_type': 'switch', 'entity_category': 'config',
-            'is_writable': True, 'is_dynamic': False,
-            'metadata': {'variableSize': 'u8', 'divisor': 1, 'decimal': 0,
-                         'unit': '', 'shortUnit': '',
-                         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
-                         'modbusRegisterID': point_id,
-                         'variableType': 'integer', 'minValue': 0, 'maxValue': 1,
-                         'intDefaultValue': 0, 'stringDefaultValue': '',
-                         'change': 1, 'isWritable': True},
-            'description': '',
+            "variableId": point_id,
+            "display_title": "Test",
+            "entity_type": "switch",
+            "entity_category": "config",
+            "is_writable": True,
+            "is_dynamic": False,
+            "metadata": {
+                "variableSize": "u8",
+                "divisor": 1,
+                "decimal": 0,
+                "unit": "",
+                "shortUnit": "",
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "modbusRegisterID": point_id,
+                "variableType": "integer",
+                "minValue": 0,
+                "maxValue": 1,
+                "intDefaultValue": 0,
+                "stringDefaultValue": "",
+                "change": 1,
+                "isWritable": True,
+            },
+            "description": "",
         }
         em.mqtt_enabled_points.add(point_id)
         entity_info = {
-            'point_id': point_id, 'entity_type': 'switch',
-            'state_topic': f'nibe/state/{point_id}',
-            'command_topic': f'nibe/cmd/{point_id}',
-            'availability_topic': f'nibe/avail/{point_id}',
+            "point_id": point_id,
+            "entity_type": "switch",
+            "state_topic": f"nibe/state/{point_id}",
+            "command_topic": f"nibe/cmd/{point_id}",
+            "availability_topic": f"nibe/avail/{point_id}",
         }
         em.active_entities_by_id[point_id] = entity_info
-        em._handle_command_worker(entity_info, 1, '1', 'test')
+        em._handle_command_worker(entity_info, 1, "1", "test")
         self.assertTrue(em._write_notification_active)
 
 
@@ -1406,16 +1520,23 @@ class TestDiscoverPointsMapNonEmpty(unittest.TestCase):
         em = _make_em()
         # Pre-populate the dynamic_point_map so len > 0
         from nibe_dynamic_map import DynamicPointEntry
+
         em.dynamic_point_map._table[999] = DynamicPointEntry(
-            point_id=999, title='X', entity_type='switch',
-            processed_values=set(), unprocessed_values=set(),
-            is_controlling=None, dynamic_points_by_value={},
+            point_id=999,
+            title="X",
+            entity_type="switch",
+            processed_values=set(),
+            unprocessed_values=set(),
+            is_controlling=None,
+            dynamic_points_by_value={},
         )
         self.assertGreater(len(em.dynamic_point_map), 0)
-        with patch.object(em.dynamic_point_map, 'from_file') as mock_file, \
-             patch.object(em, '_fetch_bulk_data', return_value=True), \
-             patch.object(em, 'scan_mqtt_discovery', return_value=set()), \
-             patch.object(em, 'restore_from_mqtt', return_value=0):
+        with (
+            patch.object(em.dynamic_point_map, "from_file") as mock_file,
+            patch.object(em, "_fetch_bulk_data", return_value=True),
+            patch.object(em, "scan_mqtt_discovery", return_value=set()),
+            patch.object(em, "restore_from_mqtt", return_value=0),
+        ):
             em.discover_points()
         mock_file.assert_not_called()
 
@@ -1436,12 +1557,12 @@ class TestScanMqttDiscoveryEmptyPayload(unittest.TestCase):
             callbacks[topic] = cb
 
         def fake_publish(topic, payload, retain=False):
-            if 'scan_sentinel' in topic:
+            if "scan_sentinel" in topic:
                 # Deliver a config message with an empty payload
                 msg = MagicMock()
-                msg.topic = 'homeassistant/sensor/nibe_1234/config'
-                msg.payload = b''     # empty — should be skipped
-                cb = callbacks.get('homeassistant/+/+/config')
+                msg.topic = "homeassistant/sensor/nibe_1234/config"
+                msg.payload = b""  # empty — should be skipped
+                cb = callbacks.get("homeassistant/+/+/config")
                 if cb:
                     cb(None, None, msg)
                 # Fire sentinel to end the scan
@@ -1469,11 +1590,11 @@ class TestScanMqttPartialWarning(unittest.TestCase):
     def setUp(self):
         self.em = _make_em()
         # Wire up no-op MQTT stubs so scan_mqtt_discovery runs without a broker
-        self.em.mqtt.subscribe    = MagicMock()
-        self.em.mqtt.unsubscribe  = MagicMock()
-        self.em.mqtt.message_callback_add    = MagicMock()
+        self.em.mqtt.subscribe = MagicMock()
+        self.em.mqtt.unsubscribe = MagicMock()
+        self.em.mqtt.message_callback_add = MagicMock()
         self.em.mqtt.message_callback_remove = MagicMock()
-        self.em.mqtt.publish      = MagicMock()
+        self.em.mqtt.publish = MagicMock()
 
     def test_sentinel_timeout_emits_warning_with_partial_count(self):
         """When sentinel.wait returns False the warning message must include
@@ -1481,27 +1602,28 @@ class TestScanMqttPartialWarning(unittest.TestCase):
         import logging
 
         records = []
+
         class CapHandler(logging.Handler):
             def emit(self, record):
                 records.append(record)
+
         cap = CapHandler()
         cap.setLevel(logging.WARNING)
-        logging.getLogger('nibe.discovery').addHandler(cap)
+        logging.getLogger("nibe.discovery").addHandler(cap)
         try:
-            with patch('threading.Event.wait', return_value=False):
+            with patch("threading.Event.wait", return_value=False):
                 self.em.scan_mqtt_discovery()
         finally:
-            logging.getLogger('nibe.discovery').removeHandler(cap)
+            logging.getLogger("nibe.discovery").removeHandler(cap)
 
         warnings = [r for r in records if r.levelno >= logging.WARNING]
         self.assertTrue(
-            any('Sentinel timeout' in r.getMessage() for r in warnings),
-            "Must emit a warning containing 'Sentinel timeout'"
+            any("Sentinel timeout" in r.getMessage() for r in warnings),
+            "Must emit a warning containing 'Sentinel timeout'",
         )
         self.assertTrue(
             any(
-                'partial' in r.getMessage().lower()
-                or 'incomplete' in r.getMessage().lower()
+                "partial" in r.getMessage().lower() or "incomplete" in r.getMessage().lower()
                 for r in warnings
             ),
             "Warning must mention 'partial' or 'incomplete' to diagnose missed configs",
@@ -1517,17 +1639,19 @@ class TestScanMqttPartialWarning(unittest.TestCase):
         from nibe_entity_manager import _MQTT_SCAN_TIMEOUT_S
 
         records = []
+
         class CapHandler(logging.Handler):
             def emit(self, record):
                 records.append(record)
+
         cap = CapHandler()
         cap.setLevel(logging.WARNING)
-        logging.getLogger('nibe.discovery').addHandler(cap)
+        logging.getLogger("nibe.discovery").addHandler(cap)
         try:
-            with patch('threading.Event.wait', return_value=False):
+            with patch("threading.Event.wait", return_value=False):
                 self.em.scan_mqtt_discovery()
         finally:
-            logging.getLogger('nibe.discovery').removeHandler(cap)
+            logging.getLogger("nibe.discovery").removeHandler(cap)
 
         warnings = [r for r in records if r.levelno >= logging.WARNING]
         self.assertEqual(len(warnings), 1)
@@ -1543,24 +1667,28 @@ class TestScanMqttPartialWarning(unittest.TestCase):
         import logging
 
         records = []
+
         class CapHandler(logging.Handler):
             def emit(self, record):
                 records.append(record)
+
         cap = CapHandler()
         cap.setLevel(logging.WARNING)
-        logging.getLogger('nibe.discovery').addHandler(cap)
+        logging.getLogger("nibe.discovery").addHandler(cap)
         try:
-            with patch('threading.Event.wait', return_value=True):
+            with patch("threading.Event.wait", return_value=True):
                 self.em.scan_mqtt_discovery()
         finally:
-            logging.getLogger('nibe.discovery').removeHandler(cap)
+            logging.getLogger("nibe.discovery").removeHandler(cap)
 
         sentinel_warnings = [
-            r for r in records
-            if r.levelno >= logging.WARNING and 'Sentinel timeout' in r.getMessage()
+            r
+            for r in records
+            if r.levelno >= logging.WARNING and "Sentinel timeout" in r.getMessage()
         ]
         self.assertEqual(
-            len(sentinel_warnings), 0,
+            len(sentinel_warnings),
+            0,
             "No Sentinel-timeout warning should appear when sentinel arrives on time",
         )
 
@@ -1578,19 +1706,28 @@ class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
 
     def _real_publisher(self):
         from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
         mqtt = MagicMock()
         mqtt.publish.return_value = MagicMock(rc=0)
         pub = MqttDiscoveryPublisher(
             mqtt_client=mqtt,
-            device_info={'identifiers': ['nibe_test'], 'name': 'Test'},
-            device_id='nibe_test',
-            device_name='Test Device',
+            device_info={"identifiers": ["nibe_test"], "name": "Test"},
+            device_id="nibe_test",
+            device_name="Test Device",
         )
         return pub, mqtt
 
-    def _raw_api_response(self, point_id, title, unit, min_value, max_value,
-                           divisor=10, is_writable=False,
-                           modbus_type='MODBUS_INPUT_REGISTER'):
+    def _raw_api_response(
+        self,
+        point_id,
+        title,
+        unit,
+        min_value,
+        max_value,
+        divisor=10,
+        is_writable=False,
+        modbus_type="MODBUS_INPUT_REGISTER",
+    ):
         """Shaped exactly like a real /points bulk response entry — the
         same field names _fetch_bulk_data() actually reads (value.
         integerValue/stringValue/isOk, metadata.*), not a pre-classified
@@ -1600,24 +1737,24 @@ class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
         _detect_input_entity()/_detect_holding_entity()."""
         return {
             str(point_id): {
-                'title': title,
-                'description': '',
-                'value': {'integerValue': 255, 'stringValue': '', 'isOk': True},
-                'metadata': {
-                    'modbusRegisterType': modbus_type,
-                    'variableType':  'integer',
-                    'variableSize':  's16',
-                    'minValue':      min_value,
-                    'maxValue':      max_value,
-                    'divisor':       divisor,
-                    'decimal':       1,
-                    'unit':          unit,
-                    'shortUnit':     unit,
-                    'isWritable':    is_writable,
-                    'intDefaultValue': 0,
-                    'stringDefaultValue': '',
-                    'change':        1,
-                    'modbusRegisterID': point_id,
+                "title": title,
+                "description": "",
+                "value": {"integerValue": 255, "stringValue": "", "isOk": True},
+                "metadata": {
+                    "modbusRegisterType": modbus_type,
+                    "variableType": "integer",
+                    "variableSize": "s16",
+                    "minValue": min_value,
+                    "maxValue": max_value,
+                    "divisor": divisor,
+                    "decimal": 1,
+                    "unit": unit,
+                    "shortUnit": unit,
+                    "isWritable": is_writable,
+                    "intDefaultValue": 0,
+                    "stringDefaultValue": "",
+                    "change": 1,
+                    "modbusRegisterID": point_id,
                 },
             }
         }
@@ -1627,8 +1764,11 @@ class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
         em = _make_em()
         em._pub, real_mqtt = self._real_publisher()
         em._api.fetch_bulk_points.return_value = self._raw_api_response(
-            point_id, title='  BT1 Outdoor  Temperature  ', unit='°C',
-            min_value=-400, max_value=400,
+            point_id,
+            title="  BT1 Outdoor  Temperature  ",
+            unit="°C",
+            min_value=-400,
+            max_value=400,
         )
 
         ok = em._fetch_bulk_data(detect_changes=False)
@@ -1636,22 +1776,23 @@ class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
 
         point = em.all_points_by_id.get(point_id)
         self.assertIsNotNone(point, "raw API point never made it into all_points_by_id")
-        self.assertEqual(point['entity_type'], 'sensor')
+        self.assertEqual(point["entity_type"], "sensor")
 
         entity_info = em._pub.publish_entity_discovery(point, em.bulk_data)
         self.assertIsNotNone(entity_info)
 
-        config_call = next(c for c in real_mqtt.publish.call_args_list
-                            if c.args[0].endswith('/config'))
+        config_call = next(
+            c for c in real_mqtt.publish.call_args_list if c.args[0].endswith("/config")
+        )
         published_config = json.loads(config_call.args[1])
 
         # clean_string() collapses the raw title's doubled/leading/trailing
         # whitespace — this is the real classification pipeline's own
         # cleaning, not something the test pre-processes.
-        self.assertEqual(published_config['name'], 'BT1 Outdoor Temperature')
-        self.assertEqual(published_config['unit_of_measurement'], '°C')
-        self.assertEqual(published_config['unique_id'], f'nibe_{point_id}')
-        self.assertTrue(config_call.args[0].startswith('homeassistant/sensor/'))
+        self.assertEqual(published_config["name"], "BT1 Outdoor Temperature")
+        self.assertEqual(published_config["unit_of_measurement"], "°C")
+        self.assertEqual(published_config["unique_id"], f"nibe_{point_id}")
+        self.assertTrue(config_call.args[0].startswith("homeassistant/sensor/"))
 
     def test_writable_raw_point_becomes_a_number_entity_end_to_end(self):
         """isWritable=True in the raw API metadata must survive
@@ -1662,25 +1803,31 @@ class TestRawApiResponseToFinalDiscoveryPayload(unittest.TestCase):
         em = _make_em()
         em._pub, real_mqtt = self._real_publisher()
         em._api.fetch_bulk_points.return_value = self._raw_api_response(
-            point_id, title='Room Setpoint', unit='°C',
-            min_value=50, max_value=300, divisor=10, is_writable=True,
-            modbus_type='MODBUS_HOLDING_REGISTER',
+            point_id,
+            title="Room Setpoint",
+            unit="°C",
+            min_value=50,
+            max_value=300,
+            divisor=10,
+            is_writable=True,
+            modbus_type="MODBUS_HOLDING_REGISTER",
         )
 
         em._fetch_bulk_data(detect_changes=False)
         point = em.all_points_by_id.get(point_id)
-        self.assertEqual(point['entity_type'], 'number')
-        self.assertTrue(point['is_writable'])
+        self.assertEqual(point["entity_type"], "number")
+        self.assertTrue(point["is_writable"])
 
         em._pub.publish_entity_discovery(point, em.bulk_data)
-        config_call = next(c for c in real_mqtt.publish.call_args_list
-                            if c.args[0].endswith('/config'))
+        config_call = next(
+            c for c in real_mqtt.publish.call_args_list if c.args[0].endswith("/config")
+        )
         published_config = json.loads(config_call.args[1])
 
-        self.assertTrue(config_call.args[0].startswith('homeassistant/number/'))
-        self.assertIn('command_topic', published_config)
-        self.assertIsNotNone(published_config['command_topic'])
+        self.assertTrue(config_call.args[0].startswith("homeassistant/number/"))
+        self.assertIn("command_topic", published_config)
+        self.assertIsNotNone(published_config["command_topic"])
         # Raw minValue=50/maxValue=300 with divisor=10 must reach the final
         # config scaled, not as the raw un-divided integers.
-        self.assertEqual(published_config['min'], 5.0)
-        self.assertEqual(published_config['max'], 30.0)
+        self.assertEqual(published_config["min"], 5.0)
+        self.assertEqual(published_config["max"], 30.0)

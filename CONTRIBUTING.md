@@ -110,8 +110,17 @@ HYPOTHESIS_PROFILE=thorough pytest tests/ --cov=app --cov-report=term-missing
 **Parallel run** (requires pytest-xdist):
 
 ```bash
-pytest tests/ -n auto --cov=app --cov-report=term-missing
+pytest tests/ -n auto --dist=loadscope --cov=app --cov-report=term-missing
 ```
+
+`--dist=loadscope` is required, not optional: several test classes in
+`test_entity_manager_snapshots.py` share one hardcoded `/tmp/...` path
+across all their own test methods, and xdist's default distribution can
+send two tests from the same class to different worker processes, which
+then race on that shared file. `--dist=loadscope` keeps same-class tests
+on one worker, avoiding the race. Confirmed flake-free across repeated
+runs with the flag; without it, the default distribution reproducibly
+failed different tests in that file on 3 of 4 runs.
 
 **Replay a specific Hypothesis failure** — when a test fails, Hypothesis prints a `--randomly-seed` value. Replay with:
 

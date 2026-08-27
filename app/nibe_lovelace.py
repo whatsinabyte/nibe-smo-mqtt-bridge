@@ -25,9 +25,16 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from nibe_entity_detection import clean_string, clean_unit
+
+if TYPE_CHECKING:
+    from nibe_dynamic_map import DynamicPointMap
+    from nibe_entity_manager import EntityManager
+    from nibe_ha_integration import HAEntityRegistryWatcher
 
 log_startup = logging.getLogger("nibe.startup")
 
@@ -67,9 +74,9 @@ def _load_menu_structure_yaml(yaml_path: str) -> list:
 
 def _copy_card_file() -> bool:
     """Copy the Lovelace card JS file to the HA www directory."""
-    src     = "/app/nibe-entity-manager-card.js"
+    src = "/app/nibe-entity-manager-card.js"
     dst_dir = "/homeassistant/www"
-    dst     = os.path.join(dst_dir, "nibe-entity-manager-card.js")
+    dst = os.path.join(dst_dir, "nibe-entity-manager-card.js")
     try:
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy2(src, dst)
@@ -78,6 +85,7 @@ def _copy_card_file() -> bool:
     except OSError as e:
         log_startup.warning("Could not copy card file to %s: %s", dst, e)
         return False
+
 
 # ============================================================================
 # LOVELACE SETUP  — resource registration + dashboard provisioning
@@ -112,16 +120,16 @@ def _copy_card_file() -> bool:
 # The dashboard is created in "storage" mode (not yaml) so that
 # lovelace/config/save applies.  A yaml-mode dashboard ignores save calls.
 
-_DASHBOARD_SLUG  = "nibe-bridge"
+_DASHBOARD_SLUG = "nibe-bridge"
 _DASHBOARD_TITLE = "Nibe Bridge"
-_DASHBOARD_ICON  = "mdi:heat-pump"
-_CARD_TYPE       = "custom:nibe-entity-manager-card"
+_DASHBOARD_ICON = "mdi:heat-pump"
+_CARD_TYPE = "custom:nibe-entity-manager-card"
 
 
-_MENU_DASHBOARD_SLUG  = "nibe-menus"
+_MENU_DASHBOARD_SLUG = "nibe-menus"
 _MENU_DASHBOARD_TITLE = "Nibe Menus"
-_MENU_DASHBOARD_FLAG  = "/data/lovelace_menus_provisioned"
-_LOVELACE_FLAG        = "/data/lovelace_provisioned"
+_MENU_DASHBOARD_FLAG = "/data/lovelace_menus_provisioned"
+_LOVELACE_FLAG = "/data/lovelace_provisioned"
 
 
 def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
@@ -136,33 +144,33 @@ def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
     """
     defaults: dict[int, str] = {}
     for point_id, point in all_points_by_id.items():
-        meta = point.get('metadata', {})
-        if not meta.get('isWritable'):
+        meta = point.get("metadata", {})
+        if not meta.get("isWritable"):
             continue
-        if meta.get('modbusRegisterType') != 'MODBUS_HOLDING_REGISTER':
+        if meta.get("modbusRegisterType") != "MODBUS_HOLDING_REGISTER":
             continue
-        min_val = meta.get('minValue', 0)
-        max_val = meta.get('maxValue', 0)
+        min_val = meta.get("minValue", 0)
+        max_val = meta.get("maxValue", 0)
         if min_val == max_val:
             continue
-        int_default = meta.get('intDefaultValue')
+        int_default = meta.get("intDefaultValue")
         if int_default is None:
             continue
         if int_default == 0 and min_val == 0 and max_val > 1:
             continue
         # `or 1` masks any falsy divisor default (None/0/dropped) — only a
         # truthy-but-wrong default (e.g. 2) is observable.
-        divisor = meta.get('divisor', 1) or 1
+        divisor = meta.get("divisor", 1) or 1
         display = f"{int_default / divisor:g}"
-        unit    = clean_unit(meta.get('unit') or meta.get('shortUnit'))
+        unit = clean_unit(meta.get("unit") or meta.get("shortUnit"))
         defaults[point_id] = f"{display} {unit}".strip() if unit else display
     return defaults
 
 
 def _build_dynamic_injection(
-    dynamic_point_map,
+    dynamic_point_map: "DynamicPointMap",
     active_dynamic_points: set[int],
-    registry_watcher,
+    registry_watcher: "HAEntityRegistryWatcher",
     all_points_by_id: dict,
     point_defaults: dict[int, str] | None = None,
 ) -> dict[int, list[tuple[str, str, str, str]]]:
@@ -179,12 +187,12 @@ def _build_dynamic_injection(
             eid = registry_watcher.entity_id_for(dyn_pid)
             if eid:
                 point = all_points_by_id.get(dyn_pid, {})
-                title = point.get('display_title') or point.get('title') or f'Point {dyn_pid}'
-                meta  = point.get('metadata', {})
+                title = point.get("display_title") or point.get("title") or f"Point {dyn_pid}"
+                meta = point.get("metadata", {})
                 # Any falsy .get() default here (None, dropped) is masked
                 # by the trailing `or 1` — only a truthy non-1 default
                 # (e.g. 2) would be observable. Verified empirically.
-                div   = meta.get('divisor', 1) or 1
+                div = meta.get("divisor", 1) or 1
                 # `or 0` (not just a .get default) also covers the API
                 # sending an explicit "minValue"/"maxValue": null — .get()'s
                 # default only applies when the key is absent, so a
@@ -192,11 +200,11 @@ def _build_dynamic_injection(
                 # below as None and raise TypeError. Same falsy-default
                 # masking as divisor above applies to the .get() defaults
                 # themselves (0 vs None/dropped) — verified empirically.
-                mn    = (meta.get('minValue', 0) or 0) / div
-                mx    = (meta.get('maxValue', 0) or 0) / div
-                unit  = clean_unit(meta.get('unit'))
-                rng   = f'{mn:g} – {mx:g}{" " + unit if unit else ""}'
-                dflt  = (point_defaults or {}).get(dyn_pid, '')
+                mn = (meta.get("minValue", 0) or 0) / div
+                mx = (meta.get("maxValue", 0) or 0) / div
+                unit = clean_unit(meta.get("unit"))
+                rng = f"{mn:g} – {mx:g}{' ' + unit if unit else ''}"
+                dflt = (point_defaults or {}).get(dyn_pid, "")
                 items.append((eid, title, rng, dflt))
         if items:
             injection[entry.point_id] = items
@@ -204,9 +212,9 @@ def _build_dynamic_injection(
 
 
 def _build_menu_view(
-    menu:           dict,
-    registry_watcher,
-    known_dynamic:  set[int] | None = None,
+    menu: dict,
+    registry_watcher: "HAEntityRegistryWatcher",
+    known_dynamic: set[int] | None = None,
     point_defaults: dict[int, str] | None = None,
     dynamic_injection: dict[int, list[tuple[str, str, str, str]]] | None = None,
 ) -> list:
@@ -230,9 +238,9 @@ def _build_menu_view(
                      injected below the controlling entity row in the card,
                      labelled with a ↳ indent to show the relationship.
     """
-    known_dynamic      = known_dynamic      or set()
-    point_defaults     = point_defaults     or {}
-    dynamic_injection  = dynamic_injection  or {}
+    known_dynamic = known_dynamic or set()
+    point_defaults = point_defaults or {}
+    dynamic_injection = dynamic_injection or {}
     cards = []
 
     def _alert(alert_type: str, title: str, text: str) -> str:
@@ -283,7 +291,13 @@ def _build_menu_view(
 
         # Items not available via local API
         if m.get("local_api") is False:
-            md_lines.append(_alert("info", "Not available via local API", "This feature is configured on the controller display and has no local API register."))
+            md_lines.append(
+                _alert(
+                    "info",
+                    "Not available via local API",
+                    "This feature is configured on the controller display and has no local API register.",
+                )
+            )
             md_lines.append("")
             if md_lines:
                 cards.append({"type": "markdown", "content": "\n".join(md_lines)})
@@ -292,13 +306,13 @@ def _build_menu_view(
         # Collect per-setting callouts BEFORE appending the markdown card
         # so they are included in the same card as the section description.
         for s in m.get("settings", []):
-            label     = s.get("label", "")
+            label = s.get("label", "")
             # s_warning/s_note/s_tip's None/dropped defaults are masked —
             # only ever checked via truthiness (`if`/`elif`), where None
             # and '' are equally falsy. Verified empirically.
             s_warning = s.get("warning", "")
-            s_note    = s.get("note", "")
-            s_tip     = s.get("tip", "")
+            s_note = s.get("note", "")
+            s_tip = s.get("tip", "")
             if s_warning:
                 md_lines.append(_alert("warning", label, s_warning))
                 md_lines.append("")
@@ -317,11 +331,11 @@ def _build_menu_view(
         entities_rows = []
 
         for s in m.get("settings", []):
-            point_id  = s.get("point_id")
-            label     = s.get("label", "")
+            point_id = s.get("point_id")
+            label = s.get("label", "")
             # None/dropped default is masked — only ever checked via
             # `if rng:` below. Verified empirically.
-            rng       = s.get("range", "")
+            rng = s.get("range", "")
 
             # Dynamic points: skip entirely regardless of active state.
             # When active they appear via injection below the controlling point.
@@ -337,32 +351,40 @@ def _build_menu_view(
                 section_label += f"  ·  {rng}"
             if point_id is not None and point_id in point_defaults:
                 section_label += f"  ·  default: {point_defaults[point_id]}"
-            entities_rows.append({
-                "type":  "section",
-                "label": section_label,
-            })
+            entities_rows.append(
+                {
+                    "type": "section",
+                    "label": section_label,
+                }
+            )
 
             if point_id is not None:
                 entity_id = registry_watcher.entity_id_for(point_id)
                 if entity_id:
                     entities_rows.append({"entity": entity_id})
-                    for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in dynamic_injection.get(point_id, []):
+                    for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in dynamic_injection.get(
+                        point_id, []
+                    ):
                         divider = f"↳ {dyn_title}  ·  {dyn_rng}"
                         if dyn_dflt:
                             divider += f"  ·  default: {dyn_dflt}"
                         entities_rows.append({"type": "section", "label": divider})
                         entities_rows.append({"entity": dyn_entity_id})
                 elif point_id not in known_dynamic:
-                    entities_rows.append({
-                        "type":  "section",
-                        "label": "↳ not enabled",
-                    })
+                    entities_rows.append(
+                        {
+                            "type": "section",
+                            "label": "↳ not enabled",
+                        }
+                    )
 
         if entities_rows:
-            cards.append({
-                "type":     "entities",
-                "entities": entities_rows,  # type: ignore[dict-item]
-            })
+            cards.append(
+                {
+                    "type": "entities",
+                    "entities": entities_rows,  # type: ignore[dict-item]
+                }
+            )
 
         # Recurse into submenus
         for sub in m.get("submenus", []):
@@ -371,19 +393,21 @@ def _build_menu_view(
     _render_section(menu, depth=2)
 
     # Footer
-    cards.append({
-        "type":    "markdown",
-        "content": "---\n*Source: NIBE SMO S40 installer manual — Chapter 9, Control – Menus*",
-    })
+    cards.append(
+        {
+            "type": "markdown",
+            "content": "---\n*Source: NIBE SMO S40 installer manual — Chapter 9, Control – Menus*",
+        }
+    )
 
     return cards
 
 
 def _build_unplaced_view(
-    bulk_data:         dict[int, dict],
-    menu_yaml_points:  set[int],
-    registry_watcher,
-    point_defaults:    dict[int, str],
+    bulk_data: dict[int, dict],
+    menu_yaml_points: set[int],
+    registry_watcher: "HAEntityRegistryWatcher",
+    point_defaults: dict[int, str],
 ) -> dict | None:
     """Build a debug-only 'Unplaced settings' view.
 
@@ -404,65 +428,65 @@ def _build_unplaced_view(
     # pattern here is unobservable — only a change to the pattern text
     # itself (e.g. an XX-wrap) would alter what actually matches.
     _GROUP_PATTERNS = [
-        r'climate system [2-8]',
-        r'zone \d+',
-        r'ECS\d+',
-        r'FLM [2-4]',
-        r'EB1[0-9][2-9]',
-        r'ERS [5-8]',
-        r'RMU',
-        r'smart energy source',
-        r'tariff',
-        r'return time fan',
-        r'filter replacement',
-        r'desired room temperature for zone',
+        r"climate system [2-8]",
+        r"zone \d+",
+        r"ECS\d+",
+        r"FLM [2-4]",
+        r"EB1[0-9][2-9]",
+        r"ERS [5-8]",
+        r"RMU",
+        r"smart energy source",
+        r"tariff",
+        r"return time fan",
+        r"filter replacement",
+        r"desired room temperature for zone",
     ]
 
-    unplaced_writable  = []
-    unplaced_grouped   = []
-    unplaced_readonly  = []
+    unplaced_writable = []
+    unplaced_grouped = []
+    unplaced_readonly = []
 
     for point_id, point_data in sorted(bulk_data.items()):
         if point_id in menu_yaml_points:
             continue
-        meta = point_data.get('metadata', {})
+        meta = point_data.get("metadata", {})
         # A None/dropped default is unobservable — reg is only ever
         # checked via `not in (...)`, which a wrong-but-still-absent value
         # also fails. Verified empirically.
-        reg  = meta.get('modbusRegisterType', '')
-        if reg not in ('MODBUS_HOLDING_REGISTER', 'MODBUS_INPUT_REGISTER'):
+        reg = meta.get("modbusRegisterType", "")
+        if reg not in ("MODBUS_HOLDING_REGISTER", "MODBUS_INPUT_REGISTER"):
             continue
         # `or 0` also covers an explicit "minValue"/"maxValue": null from
         # the API — .get()'s default only applies when the key is absent.
         # A None/dropped default for minValue is masked by `or 0` the same
         # way — verified empirically. maxValue's default is NOT masked by
         # any `or`, so a wrong non-0 default there is real/tested.
-        mn   = meta.get('minValue', 0) or 0
-        mx   = meta.get('maxValue', 0) or 0
+        mn = meta.get("minValue", 0) or 0
+        mx = meta.get("maxValue", 0) or 0
         if mn == mx:
             continue  # degenerate range
         # display_title's None/dropped default is unobservable: clean_string()
         # below falls back to f'Point {point_id}' regardless. Verified
         # empirically.
-        title = point_data.get('display_title') or point_data.get('title', f'Point {point_id}')
-        title = clean_string(title) or f'Point {point_id}'
-        unit  = clean_unit(meta.get('unit'))
+        title = point_data.get("display_title") or point_data.get("title", f"Point {point_id}")
+        title = clean_string(title) or f"Point {point_id}"
+        unit = clean_unit(meta.get("unit"))
         # `or 1` masks a None/dropped default the same way `or 0` masks
         # minValue/maxValue above — but divisor's own default (1) and the
         # `or` fallback value ARE both real/tested, since 1 (default) and
         # a wrong-but-truthy fallback are never masked. Verified empirically.
-        div   = meta.get('divisor', 1) or 1
-        rng   = f"{mn/div:g} – {mx/div:g}{' ' + unit if unit else ''}"
+        div = meta.get("divisor", 1) or 1
+        rng = f"{mn / div:g} – {mx / div:g}{' ' + unit if unit else ''}"
         entry = (point_id, title, rng)
 
-        if meta.get('isWritable') and reg == 'MODBUS_HOLDING_REGISTER':
+        if meta.get("isWritable") and reg == "MODBUS_HOLDING_REGISTER":
             # Check if it's part of a repetitive series
             is_grouped = any(re.search(pat, title, re.IGNORECASE) for pat in _GROUP_PATTERNS)
             if is_grouped:
                 unplaced_grouped.append(entry)
             else:
                 unplaced_writable.append(entry)
-        elif reg in ('MODBUS_HOLDING_REGISTER', 'MODBUS_INPUT_REGISTER'):
+        elif reg in ("MODBUS_HOLDING_REGISTER", "MODBUS_INPUT_REGISTER"):
             unplaced_readonly.append(entry)
 
     if not unplaced_writable and not unplaced_grouped and not unplaced_readonly:
@@ -470,14 +494,19 @@ def _build_unplaced_view(
 
     cards = []
 
-    cards.append({"type": "markdown", "content": (
-        "<h2><font color='#9C1924'>Unplaced settings (debug)</font></h2>\n\n"
-        "Firmware points present in the bulk fetch but not yet documented "
-        "in `menu_structure.yaml`. This tab is only visible in debug mode.\n\n"
-        f"**{len(unplaced_writable)} writable (review)** · "
-        f"**{len(unplaced_grouped)} writable (series/grouped)** · "
-        f"**{len(unplaced_readonly)} read-only**"
-    )})
+    cards.append(
+        {
+            "type": "markdown",
+            "content": (
+                "<h2><font color='#9C1924'>Unplaced settings (debug)</font></h2>\n\n"
+                "Firmware points present in the bulk fetch but not yet documented "
+                "in `menu_structure.yaml`. This tab is only visible in debug mode.\n\n"
+                f"**{len(unplaced_writable)} writable (review)** · "
+                f"**{len(unplaced_grouped)} writable (series/grouped)** · "
+                f"**{len(unplaced_readonly)} read-only**"
+            ),
+        }
+    )
 
     def _section_rows(entries: list[tuple], label: str) -> list:
         rows = [{"type": "section", "label": label}]
@@ -485,7 +514,7 @@ def _build_unplaced_view(
             # A None/dropped default is unobservable — only ever checked
             # via `if default_str:`, where None and '' are both falsy.
             # Verified empirically.
-            default_str = point_defaults.get(point_id, '')
+            default_str = point_defaults.get(point_id, "")
             divider = f"{title}  ·  {rng}"
             if default_str:
                 divider += f"  ·  default: {default_str}"
@@ -494,47 +523,41 @@ def _build_unplaced_view(
             if entity_id:
                 rows.append({"entity": entity_id})
             else:
-                rows.append({"type": "section",
-                             "label": f"↳ not enabled (point {point_id})"})
+                rows.append({"type": "section", "label": f"↳ not enabled (point {point_id})"})
         return rows
 
     if unplaced_writable:
         rows = _section_rows(
-            unplaced_writable,
-            f"Writable — review for YAML ({len(unplaced_writable)} points)"
+            unplaced_writable, f"Writable — review for YAML ({len(unplaced_writable)} points)"
         )
         cards.append({"type": "entities", "entities": rows})  # type: ignore[dict-item]
 
     if unplaced_grouped:
         rows = _section_rows(
-            unplaced_grouped,
-            f"Writable — multi-system series ({len(unplaced_grouped)} points)"
+            unplaced_grouped, f"Writable — multi-system series ({len(unplaced_grouped)} points)"
         )
         cards.append({"type": "entities", "entities": rows})  # type: ignore[dict-item]
 
     if unplaced_readonly:
-        rows = _section_rows(
-            unplaced_readonly,
-            f"Read-only ({len(unplaced_readonly)} points)"
-        )
+        rows = _section_rows(unplaced_readonly, f"Read-only ({len(unplaced_readonly)} points)")
         cards.append({"type": "entities", "entities": rows})  # type: ignore[dict-item]
 
     return {
         "title": "⚙ Unplaced (debug)",
-        "path":  "menu-unplaced-debug",
+        "path": "menu-unplaced-debug",
         "cards": [{"type": "vertical-stack", "cards": cards}],
     }
 
 
 def _build_menu_dashboard_config(
-    menu_structure:    list,
-    registry_watcher,
-    known_dynamic:     set[int] | None = None,
-    point_defaults:    dict[int, str] | None = None,
+    menu_structure: list,
+    registry_watcher: "HAEntityRegistryWatcher",
+    known_dynamic: set[int] | None = None,
+    point_defaults: dict[int, str] | None = None,
     dynamic_injection: dict[int, list[tuple[str, str, str, str]]] | None = None,
-    debug_mode:        bool = False,
-    bulk_data:         dict[int, dict] | None = None,
-    menu_yaml_points:  set[int] | None = None,
+    debug_mode: bool = False,
+    bulk_data: dict[int, dict] | None = None,
+    menu_yaml_points: set[int] | None = None,
 ) -> dict | None:
     """Build the full Lovelace dashboard config for the menu views.
 
@@ -545,8 +568,9 @@ def _build_menu_dashboard_config(
 
     for menu in menu_structure:
         cards = _build_menu_view(
-            menu, registry_watcher,
-            known_dynamic  or set(),
+            menu,
+            registry_watcher,
+            known_dynamic or set(),
             point_defaults or {},
             dynamic_injection or {},
         )
@@ -556,14 +580,18 @@ def _build_menu_dashboard_config(
         # No icon — HA shows either icon OR title in the tab bar, not both
         # (without the user enabling a per-dashboard UI toggle). Title is
         # more useful on mobile so we omit the icon entirely.
-        views.append({
-            "title": f"{menu['id']} {menu['title']}",
-            "path":  f"menu-{menu['id'].replace('.', '-')}",
-            "cards": [{
-                "type":  "vertical-stack",
-                "cards": cards,
-            }],
-        })
+        views.append(
+            {
+                "title": f"{menu['id']} {menu['title']}",
+                "path": f"menu-{menu['id'].replace('.', '-')}",
+                "cards": [
+                    {
+                        "type": "vertical-stack",
+                        "cards": cards,
+                    }
+                ],
+            }
+        )
 
     if not views:
         return None
@@ -571,8 +599,10 @@ def _build_menu_dashboard_config(
     # Debug-only: append unplaced settings view
     if debug_mode and bulk_data and menu_yaml_points is not None:
         unplaced_view = _build_unplaced_view(
-            bulk_data, menu_yaml_points,
-            registry_watcher, point_defaults or {},
+            bulk_data,
+            menu_yaml_points,
+            registry_watcher,
+            point_defaults or {},
         )
         if unplaced_view:
             views.append(unplaced_view)
@@ -588,15 +618,15 @@ def _collect_menu_points(menus: list) -> set[int]:
     menu_structure.yaml or any WebSocket/registry dependency."""
     pids: set[int] = set()
     for m in menus:
-        for s in m.get('settings', []):
-            pid = s.get('point_id')
+        for s in m.get("settings", []):
+            pid = s.get("point_id")
             # is not None, not a truthy check: the schema's documented
             # label-only-row sentinel is point_id: null, not point_id: 0 —
             # a real (if currently unseen) firmware variableId of 0 must
             # not be silently dropped and treated the same as "no point".
             if pid is not None:
                 pids.add(pid)
-        pids.update(_collect_menu_points(m.get('submenus', [])))
+        pids.update(_collect_menu_points(m.get("submenus", [])))
     return pids
 
 
@@ -607,14 +637,14 @@ def _build_point_to_menu(menus: list, result: dict | None = None) -> dict:
     if result is None:
         result = {}
     for m in menus:
-        mid   = m.get('id', '')
-        title = m.get('title', '')
-        for s in m.get('settings', []):
-            pid = s.get('point_id')
+        mid = m.get("id", "")
+        title = m.get("title", "")
+        for s in m.get("settings", []):
+            pid = s.get("point_id")
             # is not None, not a truthy check — see _collect_menu_points.
             if pid is not None:
                 result[pid] = (mid, title)
-        _build_point_to_menu(m.get('submenus', []), result)
+        _build_point_to_menu(m.get("submenus", []), result)
     return result
 
 
@@ -636,15 +666,14 @@ def _should_attempt_dashboard_create(dashboards_response: dict, slug: str) -> bo
     if not dashboards_response.get("success"):
         return False
     existing = next(
-        (d for d in dashboards_response.get("result", [])
-         if d.get("url_path") == slug),
+        (d for d in dashboards_response.get("result", []) if d.get("url_path") == slug),
         None,
     )
     return existing is None
 
 
 def _wait_for_registry_stable(
-    registry_watcher,
+    registry_watcher: "HAEntityRegistryWatcher",
     available_menu_points: set,
     active_dynamic: set,
 ) -> None:
@@ -659,17 +688,17 @@ def _wait_for_registry_stable(
     a shorter inner timeout (8s once menu points are stable) so a single
     disconnected accessory doesn't block indefinitely.
     """
-    _step        = 0.5
-    _limit       = 60.0
-    _waited      = 0.0
+    _step = 0.5
+    _limit = 60.0
+    _waited = 0.0
     # Any sentinel (negative or None) works here — only ever compared
     # with `==` to a real (non-negative) entity count, never read as an
     # actual count value. Verified empirically.
-    _prev_count  = -1
+    _prev_count = -1
     # A wrong initial value (None, or a truthy float like 1.0) is also
     # unobservable — no test asserts the exact number of loop iterations
     # needed to reach _stable_need. Verified empirically.
-    _stable_for  = 0.0
+    _stable_for = 0.0
     _stable_need = 3.0
     # On a fresh start HA creates entities in batches, causing the count to
     # pause between waves — the stability check fires during a gap and exits
@@ -686,14 +715,8 @@ def _wait_for_registry_stable(
         time.sleep(_step)
         _waited += _step
 
-        menu_resolved = sum(
-            1 for p in available_menu_points
-            if registry_watcher.entity_id_for(p)
-        )
-        dyn_resolved = sum(
-            1 for p in active_dynamic
-            if registry_watcher.entity_id_for(p)
-        )
+        menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
+        dyn_resolved = sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p))
         current_count = menu_resolved + dyn_resolved
 
         if current_count == _prev_count:
@@ -701,16 +724,17 @@ def _wait_for_registry_stable(
             # Don't accept stability if we're well below the expected count —
             # on a fresh start HA creates entities in waves and the count may
             # pause between waves, producing a false stable window.
-            menu_complete = (
-                menu_resolved >= len(available_menu_points) * _completeness_threshold
-            )
+            menu_complete = menu_resolved >= len(available_menu_points) * _completeness_threshold
             if _stable_for >= _stable_need and menu_resolved > 0 and menu_complete:
                 # All dynamic points resolved — ideal exit
                 if dyn_resolved == len(active_dynamic):
                     log_startup.debug(
                         "Registry stable: %d/%d menu + %d/%d dynamic after %.1fs",
-                        menu_resolved, len(available_menu_points),
-                        dyn_resolved, len(active_dynamic), _waited,
+                        menu_resolved,
+                        len(available_menu_points),
+                        dyn_resolved,
+                        len(active_dynamic),
+                        _waited,
                     )
                     return
                 # Menu stable but dynamic still missing — wait a bit more
@@ -725,8 +749,11 @@ def _wait_for_registry_stable(
                     # which IS format-tested.)
                     log_startup.debug(
                         "Registry stable at %d/%d menu, %d/%d dynamic after %.1fs — proceeding",
-                        menu_resolved, len(available_menu_points),
-                        dyn_resolved, len(active_dynamic), _waited,
+                        menu_resolved,
+                        len(available_menu_points),
+                        dyn_resolved,
+                        len(active_dynamic),
+                        _waited,
                     )  # pragma: no mutate
                     return
         else:
@@ -741,7 +768,9 @@ def _wait_for_registry_stable(
     )
 
 
-def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False) -> bool:
+def _setup_menu_dashboard(
+    open_ws_fn: Callable, registry_watcher: "HAEntityRegistryWatcher", debug_mode: bool = False
+) -> bool:
     """Build and save the Nibe Menus Lovelace dashboard config.
 
     Always rebuilds and saves the full config on every call — ensures
@@ -796,8 +825,7 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     # runs (see generate_nibe_mqtt.py's startup sequence) — this function
     # only builds the dashboard, it no longer enables anything itself.
     available_menu_points = {
-        pid for pid in all_menu_points
-        if pid in entity_manager.all_points_by_id
+        pid for pid in all_menu_points if pid in entity_manager.all_points_by_id
     }
 
     # Wait for the registry watcher to resolve entity IDs for both available
@@ -819,11 +847,11 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     # dashboard rebuild rather than a correctness guarantee.
     with entity_manager._em_lock:
         all_points_snapshot = dict(entity_manager.all_points_by_id)
-        bulk_data_snapshot  = dict(entity_manager.bulk_data)
+        bulk_data_snapshot = dict(entity_manager.bulk_data)
 
-    known_dynamic      = entity_manager.dynamic_point_map.all_known_dynamic_point_ids()
-    point_defaults     = _build_point_defaults(all_points_snapshot)
-    dynamic_injection  = _build_dynamic_injection(
+    known_dynamic = entity_manager.dynamic_point_map.all_known_dynamic_point_ids()
+    point_defaults = _build_point_defaults(all_points_snapshot)
+    dynamic_injection = _build_dynamic_injection(
         entity_manager.dynamic_point_map,
         entity_manager.active_dynamic_points,
         registry_watcher,
@@ -831,11 +859,14 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
         point_defaults,
     )
     dashboard_config = _build_menu_dashboard_config(
-        menu_structure, registry_watcher, known_dynamic,
-        point_defaults, dynamic_injection,
-        debug_mode       = debug_mode,
-        bulk_data        = bulk_data_snapshot,
-        menu_yaml_points = all_menu_points,
+        menu_structure,
+        registry_watcher,
+        known_dynamic,
+        point_defaults,
+        dynamic_injection,
+        debug_mode=debug_mode,
+        bulk_data=bulk_data_snapshot,
+        menu_yaml_points=all_menu_points,
     )
     if not dashboard_config or not dashboard_config.get("views"):
         log_startup.warning("Menu dashboard: no views generated — check menu_structure.yaml")
@@ -847,16 +878,19 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
     # resulting in every subsequent _ws_call returning {} ("returned no result").
     ws_result = open_ws_fn()
     if ws_result is None:
-        log_startup.warning(
-            "Menu dashboard: could not open WebSocket for Lovelace API calls"
-        )
-        return True   # signal retry
+        log_startup.warning("Menu dashboard: could not open WebSocket for Lovelace API calls")
+        return True  # signal retry
     ws, next_id = ws_result
 
     try:
         return _setup_menu_dashboard_lovelace(
-            ws, next_id, dashboard_config, entity_manager,
-            registry_watcher, available_menu_points, active_dynamic,
+            ws,
+            next_id,
+            dashboard_config,
+            entity_manager,
+            registry_watcher,
+            available_menu_points,
+            active_dynamic,
         )
     finally:
         try:
@@ -866,8 +900,13 @@ def _setup_menu_dashboard(open_ws_fn, registry_watcher, debug_mode: bool = False
 
 
 def _setup_menu_dashboard_lovelace(
-    ws, next_id, dashboard_config: dict,
-    entity_manager, registry_watcher, available_menu_points, active_dynamic,
+    ws: Any,
+    next_id: Callable[[], int],
+    dashboard_config: dict,
+    entity_manager: "EntityManager",
+    registry_watcher: "HAEntityRegistryWatcher",
+    available_menu_points: set,
+    active_dynamic: set,
 ) -> bool:
     """Perform the Lovelace API calls for the menu dashboard.
 
@@ -880,14 +919,18 @@ def _setup_menu_dashboard_lovelace(
     """
     dashboards = _ws_call(ws, next_id(), {"type": "lovelace/dashboards/list"})
     if _should_attempt_dashboard_create(dashboards, _MENU_DASHBOARD_SLUG):
-        resp = _ws_call(ws, next_id(), {
-            "type":       "lovelace/dashboards/create",
-            "url_path":   _MENU_DASHBOARD_SLUG,
-            "mode":       "storage",
-            "title":      _MENU_DASHBOARD_TITLE,
-            "icon":       "mdi:book-open-outline",
-            "show_in_sidebar": True,
-        })
+        resp = _ws_call(
+            ws,
+            next_id(),
+            {
+                "type": "lovelace/dashboards/create",
+                "url_path": _MENU_DASHBOARD_SLUG,
+                "mode": "storage",
+                "title": _MENU_DASHBOARD_TITLE,
+                "icon": "mdi:book-open-outline",
+                "show_in_sidebar": True,
+            },
+        )
         if not resp.get("success"):
             # A missing 'error' key defaulting to None instead of {} is
             # unobservable: str(None) == "None" and str({}) == "{}" both
@@ -899,20 +942,21 @@ def _setup_menu_dashboard_lovelace(
                 return False
             log_startup.debug("Nibe Menus dashboard already exists — proceeding to update config")
     elif not dashboards.get("success"):
-        log_startup.warning(
-            "lovelace/dashboards/list call returned no result — "
-            "will retry."
-        )
+        log_startup.warning("lovelace/dashboards/list call returned no result — will retry.")
         return True
     else:
         log_startup.debug("Nibe Menus dashboard already exists — skipping create")
 
     # Save the dashboard config (views + cards)
-    resp = _ws_call(ws, next_id(), {
-        "type":     "lovelace/config/save",
-        "url_path": _MENU_DASHBOARD_SLUG,
-        "config":   dashboard_config,
-    })
+    resp = _ws_call(
+        ws,
+        next_id(),
+        {
+            "type": "lovelace/config/save",
+            "url_path": _MENU_DASHBOARD_SLUG,
+            "config": dashboard_config,
+        },
+    )
 
     log_startup.debug("lovelace/config/save response: %s", resp)
     if resp.get("success"):
@@ -920,14 +964,19 @@ def _setup_menu_dashboard_lovelace(
         log_startup.info(
             "Nibe Menus dashboard provisioned with %d menu view(s). "
             "Find it in your HA sidebar under '%s'.",
-            view_count, _MENU_DASHBOARD_TITLE,
+            view_count,
+            _MENU_DASHBOARD_TITLE,
         )
         # Fire lovelace_updated event so connected browsers reload.
-        _ws_call(ws, next_id(), {
-            "type":       "fire_event",
-            "event_type": "lovelace_updated",
-            "event_data": {"url_path": _MENU_DASHBOARD_SLUG},
-        })
+        _ws_call(
+            ws,
+            next_id(),
+            {
+                "type": "fire_event",
+                "event_type": "lovelace_updated",
+                "event_data": {"url_path": _MENU_DASHBOARD_SLUG},
+            },
+        )
 
         # Verify all active dynamic points are in the registry.
         # Only retry if menu entities resolved correctly (registry is up)
@@ -937,33 +986,34 @@ def _setup_menu_dashboard_lovelace(
         # would behave identically.
         menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
         missing_dynamic = [
-            p for p in entity_manager.active_dynamic_points
-            if not registry_watcher.entity_id_for(p)
+            p for p in entity_manager.active_dynamic_points if not registry_watcher.entity_id_for(p)
         ]
         if missing_dynamic and menu_resolved > 0:
             log_startup.debug(
-                "Dashboard saved but %d dynamic point(s) not yet in registry — "
-                "retry needed: %s", len(missing_dynamic), missing_dynamic,
+                "Dashboard saved but %d dynamic point(s) not yet in registry — retry needed: %s",
+                len(missing_dynamic),
+                missing_dynamic,
             )
-            return True   # needs retry
-        return False      # all good
+            return True  # needs retry
+        return False  # all good
     else:
         log_startup.warning("Menu dashboard config save failed: %s", resp)
         return False
 
 
-def _open_ha_websocket():
+def _open_ha_websocket() -> tuple[Any, Callable[[], int]] | None:
     """Open and authenticate a WebSocket connection to the HA Supervisor.
 
     Returns (ws, next_id_callable) on success, or None if the connection
     cannot be established (no token, import error, auth failure).
     """
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
         return None
 
     try:
         import websocket
+
         ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=10)
     except ImportError:
         log_startup.warning("websocket-client not installed — WebSocket unavailable")
@@ -972,7 +1022,8 @@ def _open_ha_websocket():
         log_startup.warning("Could not connect to HA WebSocket: %s", e)
         return None
 
-    _mid = 0
+    _mid: int = 0
+
     def _next_id() -> int:
         nonlocal _mid
         _mid += 1
@@ -1000,8 +1051,13 @@ def _open_ha_websocket():
         return None
 
 
-def _setup_lovelace(version: str, device_name: str, registry_watcher=None,
-                     debug_mode: bool = False, mode: str = "menus") -> None:
+def _setup_lovelace(
+    version: str,
+    device_name: str,
+    registry_watcher: "HAEntityRegistryWatcher | None" = None,
+    debug_mode: bool = False,
+    mode: str = "menus",
+) -> None:
     """Register the card JS resource and provision the Nibe Bridge dashboard.
 
     Opens a single WebSocket connection to the HA supervisor for steps 1–2.
@@ -1030,11 +1086,10 @@ def _setup_lovelace(version: str, device_name: str, registry_watcher=None,
     """
     _FLAG_FILE = _LOVELACE_FLAG
 
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
         log_startup.debug(
-            "No SUPERVISOR_TOKEN — skipping Lovelace setup "
-            "(running outside HA add-on environment)"
+            "No SUPERVISOR_TOKEN — skipping Lovelace setup (running outside HA add-on environment)"
         )
         return
 
@@ -1058,7 +1113,6 @@ def _setup_lovelace(version: str, device_name: str, registry_watcher=None,
     ws, _next_id = result
 
     try:
-
         # ── Step 1: Resource registration ─────────────────────────────────────
         _setup_lovelace_resource(ws, _next_id, versioned_url)
 
@@ -1087,7 +1141,7 @@ def _setup_lovelace(version: str, device_name: str, registry_watcher=None,
             pass
 
 
-def _setup_lovelace_resource(ws, next_id, versioned_url: str) -> None:
+def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url: str) -> None:
     """Register or update the card JS file as a Lovelace module resource.
 
     Called from _setup_lovelace with an already-authenticated WebSocket.
@@ -1099,7 +1153,7 @@ def _setup_lovelace_resource(ws, next_id, versioned_url: str) -> None:
     # wrong non-matching default for r.get("url", "") below is also
     # unobservable — the substring check fails identically for any
     # non-matching string. Verified empirically.
-    resp      = _ws_call(ws, next_id(), {"type": "lovelace/resources/list"})
+    resp = _ws_call(ws, next_id(), {"type": "lovelace/resources/list"})
     resources = resp.get("result", [])
 
     # Find all existing registrations for this card (duplicates cause
@@ -1108,31 +1162,45 @@ def _setup_lovelace_resource(ws, next_id, versioned_url: str) -> None:
 
     # Delete any duplicates beyond the first
     for dup in matching[1:]:
-        _ws_call(ws, next_id(), {
-            "type":        "lovelace/resources/delete",
-            "resource_id": dup.get("id"),
-        })
+        _ws_call(
+            ws,
+            next_id(),
+            {
+                "type": "lovelace/resources/delete",
+                "resource_id": dup.get("id"),
+            },
+        )
         log_startup.info("Removed duplicate Lovelace resource: %s", dup.get("url"))
 
     existing = matching[0] if matching else None
 
     if existing is not None:
         if existing.get("url") == versioned_url:
-            log_startup.debug("Lovelace resource already current (%s) — no update needed", versioned_url)
+            log_startup.debug(
+                "Lovelace resource already current (%s) — no update needed", versioned_url
+            )
             return
-        resp = _ws_call(ws, next_id(), {
-            "type":        "lovelace/resources/update",
-            "resource_id": existing.get("id"),
-            "res_type":    "module",
-            "url":         versioned_url,
-        })
+        resp = _ws_call(
+            ws,
+            next_id(),
+            {
+                "type": "lovelace/resources/update",
+                "resource_id": existing.get("id"),
+                "res_type": "module",
+                "url": versioned_url,
+            },
+        )
         action = "Updated"
     else:
-        resp = _ws_call(ws, next_id(), {
-            "type":     "lovelace/resources/create",
-            "res_type": "module",
-            "url":      versioned_url,
-        })
+        resp = _ws_call(
+            ws,
+            next_id(),
+            {
+                "type": "lovelace/resources/create",
+                "res_type": "module",
+                "url": versioned_url,
+            },
+        )
         action = "Registered"
 
     if resp.get("success"):
@@ -1141,7 +1209,9 @@ def _setup_lovelace_resource(ws, next_id, versioned_url: str) -> None:
         log_startup.warning("Lovelace resource %s failed: %s", action.lower(), resp)
 
 
-def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> None:
+def _setup_lovelace_dashboard(
+    ws: Any, next_id: Callable[[], int], device_name: str, flag_file: str
+) -> None:
     """Create the Nibe Bridge dashboard if it does not already exist.
 
     Called from _setup_lovelace with an already-authenticated WebSocket.
@@ -1192,18 +1262,22 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
             log_startup.warning("Could not write lovelace provisioned flag: %s", e)
         return
 
-    resp = _ws_call(ws, next_id(), {
-        "type":       "lovelace/dashboards/create",
-        "url_path":   _DASHBOARD_SLUG,
-        "mode":       "storage",
-        "title":      _DASHBOARD_TITLE,
-        "icon":       _DASHBOARD_ICON,
-        "show_in_sidebar": True,
-        "require_admin":   False,
-    })
+    resp = _ws_call(
+        ws,
+        next_id(),
+        {
+            "type": "lovelace/dashboards/create",
+            "url_path": _DASHBOARD_SLUG,
+            "mode": "storage",
+            "title": _DASHBOARD_TITLE,
+            "icon": _DASHBOARD_ICON,
+            "show_in_sidebar": True,
+            "require_admin": False,
+        },
+    )
 
     if not resp.get("success"):
-        error      = resp.get("error", {})
+        error = resp.get("error", {})
         # error_code is only ever compared against the "url_already_exists"
         # string sentinel, so a "" vs None default for the missing 'code'
         # key is unobservable — neither equals the sentinel.
@@ -1212,7 +1286,7 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
         # only ever checked via `"already in use" in error_msg.lower()`,
         # which any non-matching default string fails identically.
         # Verified empirically.
-        error_msg  = error.get("message", "")
+        error_msg = error.get("message", "")
         if error_code == "url_already_exists" or "already in use" in error_msg.lower():
             log_startup.info(
                 "Nibe Bridge dashboard already exists (/%s) — writing flag to skip future attempts",
@@ -1223,7 +1297,9 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
                     f.write("provisioned\n")
             except OSError as e:
                 # e/format-string mutations here are log-only. Verified empirically.
-                log_startup.warning("Could not write lovelace provisioned flag: %s", e)  # pragma: no mutate
+                log_startup.warning(
+                    "Could not write lovelace provisioned flag: %s", e
+                )  # pragma: no mutate
         else:
             log_startup.warning("Could not create Nibe Bridge dashboard: %s", resp)
         return
@@ -1231,52 +1307,65 @@ def _setup_lovelace_dashboard(ws, next_id, device_name: str, flag_file: str) -> 
     dashboard_id = resp.get("result", {}).get("id")
     log_startup.info(
         "Created Nibe Bridge dashboard (id=%s, url_path=/%s)",
-        dashboard_id, _DASHBOARD_SLUG,
+        dashboard_id,
+        _DASHBOARD_SLUG,
     )
 
     view_title = device_name
     dashboard_config = {
-        "views": [{
-            "title": view_title,
-            "path":  "home",
-            "icon":  _DASHBOARD_ICON,
-            "type":  "panel",
-            "cards": [{
-                "type":                  _CARD_TYPE,
-                "title":                 "",
-                "pageSize":              50,
-                "suppressInitialToasts": True,
-            }],
-        }]
+        "views": [
+            {
+                "title": view_title,
+                "path": "home",
+                "icon": _DASHBOARD_ICON,
+                "type": "panel",
+                "cards": [
+                    {
+                        "type": _CARD_TYPE,
+                        "title": "",
+                        "pageSize": 50,
+                        "suppressInitialToasts": True,
+                    }
+                ],
+            }
+        ]
     }
 
-    resp = _ws_call(ws, next_id(), {
-        "type":     "lovelace/config/save",
-        "url_path": _DASHBOARD_SLUG,
-        "config":   dashboard_config,
-    })
+    resp = _ws_call(
+        ws,
+        next_id(),
+        {
+            "type": "lovelace/config/save",
+            "url_path": _DASHBOARD_SLUG,
+            "config": dashboard_config,
+        },
+    )
 
     if resp.get("success"):
         log_startup.info(
             "Nibe Bridge dashboard configured with '%s' card. "
             "Find it in your HA sidebar under '%s'.",
-            _CARD_TYPE, _DASHBOARD_TITLE,
+            _CARD_TYPE,
+            _DASHBOARD_TITLE,
         )
         try:
             with open(flag_file, "w") as f:
                 f.write("provisioned\n")
         except OSError as e:
             # e/format-string mutations here are log-only. Verified empirically.
-            log_startup.warning("Could not write lovelace provisioned flag: %s", e)  # pragma: no mutate
+            log_startup.warning(
+                "Could not write lovelace provisioned flag: %s", e
+            )  # pragma: no mutate
     else:
         log_startup.warning(
             "Dashboard created but card config could not be written: %s. "
             "You can add the '%s' card manually.",
-            resp, _CARD_TYPE,
+            resp,
+            _CARD_TYPE,
         )
 
 
-def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
+def _ws_call(ws: Any, msg_id: int, payload: dict, timeout: int = 10) -> dict:
     """Send a single WebSocket message and return the parsed response.
 
     Attaches the message ID, sends, and reads messages until it finds the
@@ -1310,7 +1399,7 @@ def _ws_call(ws, msg_id: int, payload: dict, timeout: int = 10) -> dict:
             raw = ws.recv()
             if not raw:
                 break
-            msg = json.loads(raw)
+            msg: dict = json.loads(raw)
             if msg.get("id") == msg_id and msg.get("type") == "result":
                 return msg
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
@@ -1338,7 +1427,7 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
 
     log_startup.info("remove_frontend=true — removing Lovelace dashboard and resources")
 
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
 
     # ── Remove card file from /homeassistant/www/ ────────────────────────────
     card_dst = "/homeassistant/www/nibe-entity-manager-card.js"
@@ -1377,17 +1466,21 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
             # never fires. A wrong non-matching default for r.get("url", "")
             # below is also unobservable — the substring check fails
             # identically for any non-matching string. Verified empirically.
-            resp       = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
+            resp = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
             dashboards = resp.get("result", [])
-            existing   = next(
+            existing = next(
                 (d for d in dashboards if d.get("url_path") == _DASHBOARD_SLUG),
                 None,
             )
             if existing is not None:
-                resp = _ws_call(ws, _next_id(), {
-                    "type":         "lovelace/dashboards/delete",
-                    "dashboard_id": existing.get("id"),
-                })
+                resp = _ws_call(
+                    ws,
+                    _next_id(),
+                    {
+                        "type": "lovelace/dashboards/delete",
+                        "dashboard_id": existing.get("id"),
+                    },
+                )
                 if resp.get("success"):
                     log_startup.info("Removed Nibe Bridge dashboard (id=%s)", existing.get("id"))
                 else:
@@ -1399,17 +1492,21 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
 
         # ── Remove Lovelace resource registration ─────────────────────────────
         try:
-            resp      = _ws_call(ws, _next_id(), {"type": "lovelace/resources/list"})
+            resp = _ws_call(ws, _next_id(), {"type": "lovelace/resources/list"})
             resources = resp.get("result", [])
-            existing  = next(
+            existing = next(
                 (r for r in resources if "nibe-entity-manager-card.js" in r.get("url", "")),
                 None,
             )
             if existing is not None:
-                resp = _ws_call(ws, _next_id(), {
-                    "type":        "lovelace/resources/delete",
-                    "resource_id": existing.get("id"),
-                })
+                resp = _ws_call(
+                    ws,
+                    _next_id(),
+                    {
+                        "type": "lovelace/resources/delete",
+                        "resource_id": existing.get("id"),
+                    },
+                )
                 if resp.get("success"):
                     log_startup.info("Removed Lovelace resource registration")
                 else:
@@ -1449,7 +1546,7 @@ def _remove_menu_dashboard() -> None:
     Does not touch the Bridge dashboard, the card resource registration,
     or the card file — those remain provisioned in every mode.
     """
-    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
         log_startup.debug(
             "No SUPERVISOR_TOKEN — skipping menu dashboard teardown "
@@ -1460,19 +1557,18 @@ def _remove_menu_dashboard() -> None:
     result = _open_ha_websocket()
     if result is None:
         log_startup.debug(
-            "Could not open HA WebSocket for menu dashboard teardown — "
-            "will retry on next startup"
+            "Could not open HA WebSocket for menu dashboard teardown — will retry on next startup"
         )
         return
     ws, _next_id = result
 
     try:
-        resp       = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
+        resp = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
         dashboards = resp.get("result", [])
         # Only ever used in truthiness checks below, so a None default is
         # unobservable — both False and None are falsy.
         list_succeeded = resp.get("success", False)
-        existing   = next(
+        existing = next(
             (d for d in dashboards if d.get("url_path") == _MENU_DASHBOARD_SLUG),
             None,
         )
@@ -1481,10 +1577,14 @@ def _remove_menu_dashboard() -> None:
             # _ws_call sites in this file: this function's own test suite's
             # fake_ws_call never inspects its ws argument. Verified
             # empirically.
-            resp = _ws_call(ws, _next_id(), {
-                "type":         "lovelace/dashboards/delete",
-                "dashboard_id": existing.get("id"),
-            })
+            resp = _ws_call(
+                ws,
+                _next_id(),
+                {
+                    "type": "lovelace/dashboards/delete",
+                    "dashboard_id": existing.get("id"),
+                },
+            )
             if resp.get("success"):
                 log_startup.info("Removed Nibe Menus dashboard (id=%s)", existing.get("id"))
             else:
@@ -1494,8 +1594,9 @@ def _remove_menu_dashboard() -> None:
                 # None are equally falsy. Verified empirically.
                 list_succeeded = False  # suppress flag removal — retry next startup
         elif not list_succeeded:
-            log_startup.debug("Nibe Menus dashboard list call returned no result — "
-                              "will retry on next startup")
+            log_startup.debug(
+                "Nibe Menus dashboard list call returned no result — will retry on next startup"
+            )
         else:
             log_startup.debug("Nibe Menus dashboard not found — nothing to remove")
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
@@ -1523,15 +1624,16 @@ def _remove_menu_dashboard() -> None:
 # MAIN
 # ============================================================================
 
+
 def _regen_menu_dashboard(
-    registry_watcher,
+    registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool,
     attempt: int = 1,
     max_attempts: int = 3,
     retry_delay: float = 3.0,
-    open_ws_fn=None,
-    setup_dashboard_fn=None,
-    schedule_retry_fn=None,
+    open_ws_fn: Callable | None = None,
+    setup_dashboard_fn: Callable | None = None,
+    schedule_retry_fn: Callable | None = None,
 ) -> None:
     """Perform one menu dashboard regeneration attempt, retrying on failure.
 
@@ -1560,19 +1662,20 @@ def _regen_menu_dashboard(
     open_ws_fn = open_ws_fn or _open_ha_websocket
     setup_dashboard_fn = setup_dashboard_fn or _setup_menu_dashboard
 
-    def _default_schedule_retry():
+    def _default_schedule_retry() -> None:
         registry_watcher.refresh_registry()
         t = threading.Timer(
-            retry_delay, _regen_menu_dashboard,
+            retry_delay,
+            _regen_menu_dashboard,
             kwargs={
-                'registry_watcher': registry_watcher,
-                'debug_mode': debug_mode,
-                'attempt': attempt + 1,
-                'max_attempts': max_attempts,
-                'retry_delay': retry_delay,
-                'open_ws_fn': open_ws_fn,
-                'setup_dashboard_fn': setup_dashboard_fn,
-                'schedule_retry_fn': schedule_retry_fn,
+                "registry_watcher": registry_watcher,
+                "debug_mode": debug_mode,
+                "attempt": attempt + 1,
+                "max_attempts": max_attempts,
+                "retry_delay": retry_delay,
+                "open_ws_fn": open_ws_fn,
+                "setup_dashboard_fn": setup_dashboard_fn,
+                "schedule_retry_fn": schedule_retry_fn,
             },
         )
         t.daemon = True
@@ -1584,12 +1687,15 @@ def _regen_menu_dashboard(
     log_startup.debug("Menu dashboard regen starting (attempt %d)...", attempt)
     try:
         needs_retry = setup_dashboard_fn(
-            open_ws_fn, registry_watcher, debug_mode=debug_mode,
+            open_ws_fn,
+            registry_watcher,
+            debug_mode=debug_mode,
         )
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning(
             "Menu dashboard regen attempt %d failed unexpectedly: %s",
-            attempt, e,
+            attempt,
+            e,
         )
         needs_retry = True
 
@@ -1597,7 +1703,10 @@ def _regen_menu_dashboard(
         log_startup.debug(
             "Dashboard regen attempt %d: dynamic points not yet in registry — "
             "refreshing registry and retrying in %ss (attempt %d of %d)",
-            attempt, retry_delay, attempt + 1, max_attempts,
+            attempt,
+            retry_delay,
+            attempt + 1,
+            max_attempts,
         )
         schedule_retry_fn()
     elif needs_retry:
@@ -1608,10 +1717,10 @@ def _regen_menu_dashboard(
 
 
 def _on_enabled_state_change_factory(
-    registry_watcher,
+    registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool,
     lovelace_thread: threading.Thread | None = None,
-):
+) -> Callable:
     """Build the debounced on-enabled-state-change handler used by main().
 
     Extracted alongside _regen_menu_dashboard so the debounce wiring itself
@@ -1635,18 +1744,16 @@ def _on_enabled_state_change_factory(
     _schedule_refresh_registry's lock in nibe_ha_integration.py exists to
     prevent.
     """
-    _regen_timer = [None]  # mutable cell holding the pending Timer
+    _regen_timer: list[threading.Timer | None] = [None]  # mutable cell holding the pending Timer
     _regen_timer_lock = threading.Lock()
 
-    def _on_enabled_state_change():
+    def _on_enabled_state_change() -> None:
         if lovelace_thread is not None and lovelace_thread.is_alive():
-            log_startup.debug(
-                "Menu dashboard regen skipped — Lovelace setup thread still running"
-            )
+            log_startup.debug("Menu dashboard regen skipped — Lovelace setup thread still running")
             return
         log_startup.debug("Menu dashboard regen scheduled (2s debounce)")
 
-        def _fire(attempt: int = 1):
+        def _fire(attempt: int = 1) -> None:
             with _regen_timer_lock:
                 _regen_timer[0] = None
             _regen_menu_dashboard(registry_watcher, debug_mode, attempt=attempt)
@@ -1664,8 +1771,8 @@ def _on_enabled_state_change_factory(
 
 
 def _wire_menu_dashboard_regen(
-    entity_manager,
-    registry_watcher,
+    entity_manager: "EntityManager",
+    registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool,
     lovelace_thread: threading.Thread | None = None,
 ) -> None:
@@ -1674,7 +1781,9 @@ def _wire_menu_dashboard_regen(
     _on_enabled_state_change_factory / _regen_menu_dashboard above, both
     extracted for testability."""
     handler = _on_enabled_state_change_factory(
-        registry_watcher, debug_mode, lovelace_thread=lovelace_thread,
+        registry_watcher,
+        debug_mode,
+        lovelace_thread=lovelace_thread,
     )
     entity_manager.set_on_enabled_state_change(handler)
 
@@ -1717,7 +1826,7 @@ def build_menu_points(yaml_path: str) -> frozenset[int]:
 def provision_lovelace_ui(
     version: str,
     device_name: str,
-    registry_watcher,
+    registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool = False,
     mode: str = "menus",
 ) -> None:
@@ -1734,14 +1843,15 @@ def provision_lovelace_ui(
 
 
 def schedule_menu_dashboard_regen(
-    entity_manager,
-    registry_watcher,
+    entity_manager: "EntityManager",
+    registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool,
     lovelace_thread: threading.Thread | None = None,
 ) -> None:
     """Wire the debounced menu dashboard regeneration callback into entity_manager."""
-    _wire_menu_dashboard_regen(entity_manager, registry_watcher, debug_mode,
-                               lovelace_thread=lovelace_thread)
+    _wire_menu_dashboard_regen(
+        entity_manager, registry_watcher, debug_mode, lovelace_thread=lovelace_thread
+    )
 
 
 def teardown_lovelace(remove_frontend: bool) -> None:

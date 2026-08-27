@@ -24,8 +24,12 @@ class TestPruneChangelog(unittest.TestCase):
         self.em._last_prune_time = 0.0
 
     def _entry(self, age_days=0):
-        return {'timestamp': time.time() - age_days * 86400,
-                'iso_timestamp': '2024-01-01', 'added': [], 'removed': []}
+        return {
+            "timestamp": time.time() - age_days * 86400,
+            "iso_timestamp": "2024-01-01",
+            "added": [],
+            "removed": [],
+        }
 
     def test_runs_when_due(self):
         self.assertTrue(self.em._prune_changelog_if_due())
@@ -36,29 +40,31 @@ class TestPruneChangelog(unittest.TestCase):
 
     def test_old_entries_removed(self):
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         self.em.changelog_retention_days = 30
         # Use more recent entries than the floor so the floor does not
         # confound the result.  All entries beyond the floor+recent count
         # should be evicted.
-        n_recent = _CHANGELOG_MIN_ENTRIES + 5   # safely above the floor
-        n_old    = 10
-        recent = [self._entry(1)  for _ in range(n_recent)]
-        old    = [self._entry(60) for _ in range(n_old)]
+        n_recent = _CHANGELOG_MIN_ENTRIES + 5  # safely above the floor
+        n_old = 10
+        recent = [self._entry(1) for _ in range(n_recent)]
+        old = [self._entry(60) for _ in range(n_old)]
         self.em.change_history = deque(recent + old, maxlen=500)
         self.em._prune_changelog_if_due()
         self.assertEqual(len(self.em.change_history), n_recent)
 
     def test_floor_preserved(self):
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         self.em.changelog_retention_days = 1
         self.em.change_history = deque(
-            [self._entry(10) for _ in range(_CHANGELOG_MIN_ENTRIES + 5)], maxlen=500)
+            [self._entry(10) for _ in range(_CHANGELOG_MIN_ENTRIES + 5)], maxlen=500
+        )
         self.em._prune_changelog_if_due()
         self.assertEqual(len(self.em.change_history), _CHANGELOG_MIN_ENTRIES)
 
     def test_invalid_entries_dropped(self):
-        self.em.change_history = deque(
-            [self._entry(1), {'not': 'valid'}, "not a dict"], maxlen=500)
+        self.em.change_history = deque([self._entry(1), {"not": "valid"}, "not a dict"], maxlen=500)
         self.em._prune_changelog_if_due()
         self.assertEqual(len(self.em.change_history), 1)
 
@@ -72,10 +78,11 @@ class TestPruneChangelog(unittest.TestCase):
         exercise that distinction."""
         # Has added/removed/timestamp but not iso_timestamp — distinguishes
         # a mutation of the final `and` to `or` in the validity check.
-        missing_timestamps = {'added': [1], 'removed': [], 'timestamp': 1.0}
-        missing_added_removed = {'timestamp': 1.0, 'iso_timestamp': 'x'}  # no added/removed
+        missing_timestamps = {"added": [1], "removed": [], "timestamp": 1.0}
+        missing_added_removed = {"timestamp": 1.0, "iso_timestamp": "x"}  # no added/removed
         self.em.change_history = deque(
-            [self._entry(1), missing_timestamps, missing_added_removed], maxlen=500)
+            [self._entry(1), missing_timestamps, missing_added_removed], maxlen=500
+        )
         self.em._prune_changelog_if_due()
         self.assertEqual(len(self.em.change_history), 1)
 
@@ -108,18 +115,27 @@ class TestPruneChangelogProperties(unittest.TestCase):
     def _add_entries(self, em, n, age_days=0):
         """Add n valid entries to change_history with given age in days."""
         import time as _time
+
         ts = _time.time() - age_days * 86400
         for i in range(n):
-            em.change_history.appendleft({
-                'timestamp': ts, 'iso_timestamp': '2020-01-01 00:00:00',
-                'added': [], 'removed': [], 'id': f'e{i}',
-                'unread': True, 'source': 'test', 'triggered_by': None,
-            })
+            em.change_history.appendleft(
+                {
+                    "timestamp": ts,
+                    "iso_timestamp": "2020-01-01 00:00:00",
+                    "added": [],
+                    "removed": [],
+                    "id": f"e{i}",
+                    "unread": True,
+                    "source": "test",
+                    "triggered_by": None,
+                }
+            )
 
     @given(st.integers(min_value=1, max_value=200))
     def test_always_keeps_at_least_50_entries(self, n_entries):
         """After pruning, at least min(50, original) entries always remain."""
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         em = self._make_fresh_em()
         self._add_entries(em, n_entries, age_days=9999)
         em._prune_changelog_if_due()
@@ -130,6 +146,7 @@ class TestPruneChangelogProperties(unittest.TestCase):
     def test_old_entries_beyond_50_are_pruned(self, n_entries):
         """Entries older than retention_days (beyond the 50-entry floor) are removed."""
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         em = self._make_fresh_em()
         em.changelog_retention_days = 1
         self._add_entries(em, n_entries, age_days=999)
@@ -173,12 +190,20 @@ class TestMarkChangelogReadProperties(unittest.TestCase):
 
     def _add_unread(self, em, n):
         import time as _time
+
         for i in range(n):
-            em.change_history.appendleft({
-                'timestamp': _time.time(), 'iso_timestamp': '2020-01-01 00:00:00',
-                'added': [], 'removed': [], 'id': f'e{i}',
-                'unread': True, 'source': 'test', 'triggered_by': None,
-            })
+            em.change_history.appendleft(
+                {
+                    "timestamp": _time.time(),
+                    "iso_timestamp": "2020-01-01 00:00:00",
+                    "added": [],
+                    "removed": [],
+                    "id": f"e{i}",
+                    "unread": True,
+                    "source": "test",
+                    "triggered_by": None,
+                }
+            )
 
     @given(st.integers(min_value=0, max_value=50))
     def test_all_entries_marked_unread_false(self, n):
@@ -187,7 +212,7 @@ class TestMarkChangelogReadProperties(unittest.TestCase):
         self._add_unread(em, n)
         em.mark_changelog_read()
         for entry in em.change_history:
-            self.assertFalse(entry['unread'])
+            self.assertFalse(entry["unread"])
 
     @given(st.integers(min_value=0, max_value=50))
     def test_seq_incremented(self, n):
@@ -204,14 +229,16 @@ class TestMarkChangelogReadProperties(unittest.TestCase):
         import json as _json
 
         from nibe_mqtt_publisher import BrowserTopic
+
         em = self._make_fresh_em()
         self._add_unread(em, n)
         em.mark_changelog_read()
-        calls = [c for c in em.mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.CHANGELOG_UNREAD]
+        calls = [
+            c for c in em.mqtt.publish.call_args_list if c.args[0] == BrowserTopic.CHANGELOG_UNREAD
+        ]
         self.assertTrue(calls)
         payload = _json.loads(calls[-1].args[1])
-        self.assertEqual(payload['unread_count'], 0)
+        self.assertEqual(payload["unread_count"], 0)
 
     @given(st.integers(min_value=0, max_value=50))
     def test_never_raises(self, n):
@@ -231,25 +258,27 @@ class TestMarkChangelogReadProperties(unittest.TestCase):
 class TestUpdateChangelogHistoryProperties(unittest.TestCase):
     """Hypothesis properties for _update_changelog_history."""
 
-    _event_strategy = st.fixed_dictionaries({
-        'added':   st.lists(st.integers(min_value=1, max_value=9999), max_size=5),
-        'removed': st.lists(st.integers(min_value=1, max_value=9999), max_size=5),
-        'source':  st.sampled_from(['firmware', 'user', 'bridge', 'api']),
-    })
+    _event_strategy = st.fixed_dictionaries(
+        {
+            "added": st.lists(st.integers(min_value=1, max_value=9999), max_size=5),
+            "removed": st.lists(st.integers(min_value=1, max_value=9999), max_size=5),
+            "source": st.sampled_from(["firmware", "user", "bridge", "api"]),
+        }
+    )
 
     @given(_event_strategy)
     def test_new_entry_always_unread(self, event):
         """Every new changelog entry must have unread=True."""
         em = _make_em()
         em._update_changelog_history(event)
-        self.assertTrue(em.change_history[0]['unread'])
+        self.assertTrue(em.change_history[0]["unread"])
 
     @given(_event_strategy)
     def test_new_entry_id_starts_with_change(self, event):
         """Entry id must always start with 'change_'."""
         em = _make_em()
         em._update_changelog_history(event)
-        self.assertTrue(em.change_history[0]['id'].startswith('change_'))
+        self.assertTrue(em.change_history[0]["id"].startswith("change_"))
 
     @given(_event_strategy)
     def test_new_entry_is_first_in_history(self, event):
@@ -257,7 +286,7 @@ class TestUpdateChangelogHistoryProperties(unittest.TestCase):
         em = _make_em()
         em._update_changelog_history(event)
         first = em.change_history[0]
-        self.assertEqual(first['source'], event['source'])
+        self.assertEqual(first["source"], event["source"])
 
     def test_provided_timestamp_is_preserved_not_overridden(self):
         """A caller-provided 'timestamp' must be used as-is — .get('timestamp',
@@ -267,17 +296,20 @@ class TestUpdateChangelogHistoryProperties(unittest.TestCase):
         value and always using time.time() went uncaught."""
         em = _make_em()
         provided_ts = 1_600_000_000.0
-        event = {'added': [1], 'removed': [], 'source': 'firmware',
-                 'timestamp': provided_ts}
+        event = {"added": [1], "removed": [], "source": "firmware", "timestamp": provided_ts}
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['timestamp'], provided_ts)
+        self.assertEqual(em.change_history[0]["timestamp"], provided_ts)
 
     def test_provided_iso_timestamp_is_preserved_not_overridden(self):
         em = _make_em()
-        event = {'added': [1], 'removed': [], 'source': 'firmware',
-                 'iso_timestamp': '2020-01-01T00:00:00'}
+        event = {
+            "added": [1],
+            "removed": [],
+            "source": "firmware",
+            "iso_timestamp": "2020-01-01T00:00:00",
+        }
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['iso_timestamp'], '2020-01-01T00:00:00')
+        self.assertEqual(em.change_history[0]["iso_timestamp"], "2020-01-01T00:00:00")
 
     @given(_event_strategy)
     def test_seq_always_increments(self, event):
@@ -290,35 +322,35 @@ class TestUpdateChangelogHistoryProperties(unittest.TestCase):
     def test_added_preserved_exactly(self, event):
         em = _make_em()
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['added'], event['added'])
+        self.assertEqual(em.change_history[0]["added"], event["added"])
 
     @given(_event_strategy)
     def test_removed_preserved_exactly(self, event):
         em = _make_em()
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['removed'], event['removed'])
+        self.assertEqual(em.change_history[0]["removed"], event["removed"])
 
     @given(_event_strategy)
     def test_source_preserved(self, event):
         em = _make_em()
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['source'], event['source'])
+        self.assertEqual(em.change_history[0]["source"], event["source"])
 
     @given(_event_strategy)
     def test_default_source_is_firmware(self, event):
         """When source is absent, defaults to 'firmware'."""
         em = _make_em()
-        event_no_source = {k: v for k, v in event.items() if k != 'source'}
+        event_no_source = {k: v for k, v in event.items() if k != "source"}
         em._update_changelog_history(event_no_source)
-        self.assertEqual(em.change_history[0]['source'], 'firmware')
+        self.assertEqual(em.change_history[0]["source"], "firmware")
 
     @given(_event_strategy)
     def test_default_added_is_empty_list(self, event):
         """When added is absent, defaults to []."""
         em = _make_em()
-        event_no_added = {k: v for k, v in event.items() if k != 'added'}
+        event_no_added = {k: v for k, v in event.items() if k != "added"}
         em._update_changelog_history(event_no_added)
-        self.assertEqual(em.change_history[0]['added'], [])
+        self.assertEqual(em.change_history[0]["added"], [])
 
     @given(_event_strategy)
     def test_history_length_increases(self, event):
@@ -335,16 +367,17 @@ class TestUpdateChangelogHistoryProperties(unittest.TestCase):
 
         from nibe_entity_manager import _decompress_payload
         from nibe_mqtt_publisher import BrowserTopic
+
         em = _make_em()
         em._update_changelog_history(event)
-        calls = [c for c in em.mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.CHANGELOG_HISTORY]
+        calls = [
+            c for c in em.mqtt.publish.call_args_list if c.args[0] == BrowserTopic.CHANGELOG_HISTORY
+        ]
         self.assertTrue(calls)
         raw = _decompress_payload(calls[-1].args[1])
         payload = _json.loads(raw)
-        actual_unread = sum(1 for e in em.change_history
-                           if e.get('unread', False))
-        self.assertEqual(payload['unread_count'], actual_unread)
+        actual_unread = sum(1 for e in em.change_history if e.get("unread", False))
+        self.assertEqual(payload["unread_count"], actual_unread)
 
     @given(_event_strategy)
     def test_never_raises(self, event):
@@ -366,9 +399,9 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         the default to None would go uncaught by the 'preserved when
         provided' test, since that test always supplies the key."""
         em = _make_em()
-        event = {'added': [1], 'removed': [], 'source': 'firmware'}
+        event = {"added": [1], "removed": [], "source": "firmware"}
         em._update_changelog_history(event)
-        iso_ts = em.change_history[0]['iso_timestamp']
+        iso_ts = em.change_history[0]["iso_timestamp"]
         self.assertIsInstance(iso_ts, str)
         self.assertTrue(len(iso_ts) > 0)
 
@@ -377,9 +410,9 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         covered by the Hypothesis suite above, which always includes
         'removed' via the fixed_dictionaries strategy."""
         em = _make_em()
-        event = {'added': [1], 'source': 'firmware'}
+        event = {"added": [1], "source": "firmware"}
         em._update_changelog_history(event)
-        self.assertEqual(em.change_history[0]['removed'], [])
+        self.assertEqual(em.change_history[0]["removed"], [])
 
     def test_id_computed_from_time_times_1000(self):
         """'id' must be f"change_{int(time.time() * 1000)}" — verified
@@ -387,19 +420,20 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         than read back from the entry itself. Catches both '/1000' and
         '*1001' scaling mutants."""
         from unittest.mock import patch as _patch
+
         em = _make_em()
         fixed_time = 1_700_000_123.456
-        with _patch('nibe_entity_manager.time.time', return_value=fixed_time):
-            em._update_changelog_history({'added': [], 'removed': [], 'source': 'firmware'})
+        with _patch("nibe_entity_manager.time.time", return_value=fixed_time):
+            em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
         expected_id = f"change_{int(fixed_time * 1000)}"
-        self.assertEqual(em.change_history[0]['id'], expected_id)
+        self.assertEqual(em.change_history[0]["id"], expected_id)
 
     def test_seq_increments_by_exactly_one(self):
         """Distinguishes '+= 1' from '+= 2' — starting from a non-zero seq
         so the two can't coincidentally agree."""
         em = _make_em()
         em._history_seq = 100
-        em._update_changelog_history({'added': [], 'removed': [], 'source': 'firmware'})
+        em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
         self.assertEqual(em._history_seq, 101)
 
     def test_unread_count_excludes_entries_missing_unread_key(self):
@@ -409,15 +443,16 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         count such entries as unread. (A default of None is unreachable via
         black-box testing here since None is falsy exactly like False.)"""
         em = _make_em()
-        em.change_history.appendleft({'timestamp': 1.0, 'iso_timestamp': 'x',
-                                       'added': [], 'removed': []})  # no 'unread' key
-        em._update_changelog_history({'added': [], 'removed': [], 'source': 'firmware'})
+        em.change_history.appendleft(
+            {"timestamp": 1.0, "iso_timestamp": "x", "added": [], "removed": []}
+        )  # no 'unread' key
+        em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
         # Only the freshly-appended entry (always unread=True) should count.
         from nibe_entity_manager import _decompress_payload
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         payload = json.loads(_decompress_payload(history_calls[-1].args[1]))
-        self.assertEqual(payload['unread_count'], 1)
+        self.assertEqual(payload["unread_count"], 1)
 
     def test_history_payload_has_all_expected_keys_with_correct_values(self):
         """Every key of history_payload (history/total_entries/unread_count/
@@ -425,29 +460,31 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         value — catches key-rename mutants that the narrower per-field
         Hypothesis checks above don't target."""
         from nibe_entity_manager import _decompress_payload
+
         em = _make_em()
         em._history_seq = 7
-        em._update_changelog_history({'added': [1], 'removed': [], 'source': 'firmware'})
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+        em._update_changelog_history({"added": [1], "removed": [], "source": "firmware"})
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         payload = json.loads(_decompress_payload(history_calls[-1].args[1]))
-        self.assertEqual(len(payload['history']), len(em.change_history))
-        self.assertEqual(payload['total_entries'], len(em.change_history))
-        self.assertEqual(payload['unread_count'], 1)
-        self.assertIn('last_updated', payload)
-        self.assertEqual(payload['_seq'], 8)
+        self.assertEqual(len(payload["history"]), len(em.change_history))
+        self.assertEqual(payload["total_entries"], len(em.change_history))
+        self.assertEqual(payload["unread_count"], 1)
+        self.assertIn("last_updated", payload)
+        self.assertEqual(payload["_seq"], 8)
 
     def test_changelog_history_publish_topic_and_retain(self):
         """The CHANGELOG_HISTORY publish call must use the real topic and
         retain=True (not False/None/omitted)."""
         from nibe_entity_manager import BrowserTopic
+
         em = _make_em()
-        em._update_changelog_history({'added': [], 'removed': [], 'source': 'firmware'})
-        calls = [c for c in em.mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.CHANGELOG_HISTORY]
+        em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
+        calls = [
+            c for c in em.mqtt.publish.call_args_list if c.args[0] == BrowserTopic.CHANGELOG_HISTORY
+        ]
         self.assertTrue(calls)
         call = calls[-1]
-        retain = call.kwargs.get('retain', call.args[2] if len(call.args) > 2 else None)
+        retain = call.kwargs.get("retain", call.args[2] if len(call.args) > 2 else None)
         self.assertIs(retain, True)
 
     def test_changelog_unread_publish_topic_payload_and_retain(self):
@@ -455,16 +492,18 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         parseable payload with the correct unread_count and a present
         'last_change' key, and retain=True."""
         from nibe_entity_manager import BrowserTopic
+
         em = _make_em()
-        em._update_changelog_history({'added': [], 'removed': [], 'source': 'firmware'})
-        calls = [c for c in em.mqtt.publish.call_args_list
-                 if c.args[0] == BrowserTopic.CHANGELOG_UNREAD]
+        em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
+        calls = [
+            c for c in em.mqtt.publish.call_args_list if c.args[0] == BrowserTopic.CHANGELOG_UNREAD
+        ]
         self.assertTrue(calls)
         call = calls[-1]
         payload = json.loads(call.args[1])
-        self.assertEqual(payload['unread_count'], 1)
-        self.assertIn('last_change', payload)
-        retain = call.kwargs.get('retain', call.args[2] if len(call.args) > 2 else None)
+        self.assertEqual(payload["unread_count"], 1)
+        self.assertIn("last_change", payload)
+        retain = call.kwargs.get("retain", call.args[2] if len(call.args) > 2 else None)
         self.assertIs(retain, True)
 
 
@@ -473,16 +512,23 @@ class TestChangelogConsistencyProperties(unittest.TestCase):
 
     def _em_with_entries(self, n_entries, age_days=0):
         import time as _time
+
         em = _make_em()
         em._last_prune_time = _time.time()
         ts = _time.time() - age_days * 86400
         for i in range(n_entries):
-            em.change_history.appendleft({
-                'timestamp': ts, 'iso_timestamp': '2024-01-01',
-                'added': [], 'removed': [],
-                'id': f'change_{i}', 'unread': True,
-                'source': 'test', 'triggered_by': None,
-            })
+            em.change_history.appendleft(
+                {
+                    "timestamp": ts,
+                    "iso_timestamp": "2024-01-01",
+                    "added": [],
+                    "removed": [],
+                    "id": f"change_{i}",
+                    "unread": True,
+                    "source": "test",
+                    "triggered_by": None,
+                }
+            )
         return em
 
     @given(st.integers(min_value=0, max_value=50))
@@ -505,20 +551,19 @@ class TestChangelogConsistencyProperties(unittest.TestCase):
         """After mark_changelog_read, unread count must be 0."""
         em = self._em_with_entries(n_entries)
         em.mark_changelog_read()
-        actual_unread = sum(1 for e in em.change_history if e.get('unread'))
+        actual_unread = sum(1 for e in em.change_history if e.get("unread"))
         self.assertEqual(actual_unread, 0)
 
     @given(st.integers(min_value=1, max_value=50))
     def test_update_always_increments_seq(self, n_events):
         """Each _update_changelog_history call must increment _history_seq."""
         import time as _time
+
         em = _make_em()
         em._last_prune_time = _time.time()
         seqs = [em._history_seq]
         for i in range(n_events):
-            em._update_changelog_history({
-                'added': [i], 'removed': [], 'source': 'test'
-            })
+            em._update_changelog_history({"added": [i], "removed": [], "source": "test"})
             seqs.append(em._history_seq)
         # Must be strictly increasing
         self.assertEqual(seqs, sorted(set(seqs)))
@@ -533,12 +578,12 @@ class TestChangelogConsistency(unittest.TestCase):
 
     def _entry(self, age_days=0, seq=None):
         return {
-            'timestamp':     time.time() - age_days * 86400,
-            'iso_timestamp': '2024-01-01',
-            'added':         [{'id': 6983, 'title': 'T', 'type': 'number'}],
-            'removed':       [],
-            'id':            f'change_{seq or int(time.time()*1000)}',
-            'unread':        True,
+            "timestamp": time.time() - age_days * 86400,
+            "iso_timestamp": "2024-01-01",
+            "added": [{"id": 6983, "title": "T", "type": "number"}],
+            "removed": [],
+            "id": f"change_{seq or int(time.time() * 1000)}",
+            "unread": True,
         }
 
     def test_last_published_seq_updated_after_publish(self):
@@ -557,14 +602,19 @@ class TestChangelogConsistency(unittest.TestCase):
 
         self.em.mqtt.publish.side_effect = capture_publish
 
-        change_event = {'added': [{'id': 6983, 'title': 'T', 'type': 'number'}],
-                        'removed': [], 'source': 'firmware', 'triggered_by': None}
+        change_event = {
+            "added": [{"id": 6983, "title": "T", "type": "number"}],
+            "removed": [],
+            "source": "firmware",
+            "triggered_by": None,
+        }
         self.em._update_changelog_history(change_event)
 
         # At the moment of the first publish call, _last_published_seq
         # should still be the original value (updated after, not before)
-        self.assertEqual(seq_at_publish[0], original_seq,
-                         "_last_published_seq must not be set before publish")
+        self.assertEqual(
+            seq_at_publish[0], original_seq, "_last_published_seq must not be set before publish"
+        )
         # After the call returns it should be updated
         self.assertGreater(self.em._last_published_seq, original_seq)
 
@@ -572,16 +622,17 @@ class TestChangelogConsistency(unittest.TestCase):
         """on_history_message must load the payload when incoming_seq differs
         from _last_published_seq — this is the normal restart case."""
         from nibe_entity_manager import EntityManager, _compress_payload
+
         self.em._last_published_seq = 5
         self.em.change_history.clear()
         EntityManager._setup_history_loading(self.em)
 
         payload_data = {
-            'history': [self._entry()],
-            '_seq': 3,  # different from _last_published_seq=5
+            "history": [self._entry()],
+            "_seq": 3,  # different from _last_published_seq=5
         }
         msg = MagicMock()
-        msg.payload = _compress_payload(payload_data).encode('utf-8')
+        msg.payload = _compress_payload(payload_data).encode("utf-8")
         self.em._on_history_message(None, None, msg)
 
         self.assertEqual(len(self.em.change_history), 1)
@@ -591,16 +642,17 @@ class TestChangelogConsistency(unittest.TestCase):
         _last_published_seq — this prevents overwriting fresh in-memory
         history with the just-published retained copy."""
         from nibe_entity_manager import EntityManager, _compress_payload
+
         self.em._last_published_seq = 7
         self.em.change_history.clear()
         EntityManager._setup_history_loading(self.em)
 
         payload_data = {
-            'history': [self._entry()],
-            '_seq': 7,   # matches _last_published_seq
+            "history": [self._entry()],
+            "_seq": 7,  # matches _last_published_seq
         }
         msg = MagicMock()
-        msg.payload = _compress_payload(payload_data).encode('utf-8')
+        msg.payload = _compress_payload(payload_data).encode("utf-8")
         self.em._on_history_message(None, None, msg)
 
         # History should remain empty — load was skipped
@@ -610,51 +662,61 @@ class TestChangelogConsistency(unittest.TestCase):
         """Every entry appended by _update_changelog_history must have all
         required fields that _prune_changelog_if_due checks for."""
         change_event = {
-            'added': [{'id': 6983, 'title': 'T', 'type': 'number'}],
-            'removed': [], 'source': 'firmware', 'triggered_by': None,
+            "added": [{"id": 6983, "title": "T", "type": "number"}],
+            "removed": [],
+            "source": "firmware",
+            "triggered_by": None,
         }
         self.em._update_changelog_history(change_event)
         self.assertEqual(len(self.em.change_history), 1)
         entry = next(iter(self.em.change_history))
-        for required_key in ('timestamp', 'iso_timestamp', 'added', 'removed'):
-            self.assertIn(required_key, entry,
-                          f"Entry missing required key: {required_key}")
+        for required_key in ("timestamp", "iso_timestamp", "added", "removed"):
+            self.assertIn(required_key, entry, f"Entry missing required key: {required_key}")
 
     def test_unread_count_matches_unread_entries(self):
         """The unread_count published to MQTT must match the actual number
         of unread entries in change_history."""
         published_payloads = {}
+
         def capture(topic, payload, retain=False):
             published_payloads[topic] = payload
+
         self.em.mqtt.publish.side_effect = capture
 
         # Seed two unread entries
-        self.em.change_history.appendleft({**self._entry(), 'unread': True})
-        self.em.change_history.appendleft({**self._entry(), 'unread': True})
+        self.em.change_history.appendleft({**self._entry(), "unread": True})
+        self.em.change_history.appendleft({**self._entry(), "unread": True})
 
         change_event = {
-            'added': [{'id': 6984, 'title': 'S', 'type': 'switch'}],
-            'removed': [], 'source': 'firmware', 'triggered_by': None,
+            "added": [{"id": 6984, "title": "S", "type": "switch"}],
+            "removed": [],
+            "source": "firmware",
+            "triggered_by": None,
         }
         self.em._update_changelog_history(change_event)
 
         from nibe_entity_manager import BrowserTopic
+
         unread_payload = published_payloads.get(str(BrowserTopic.CHANGELOG_UNREAD))
         if unread_payload:
             data = json.loads(unread_payload)
-            actual_unread = sum(1 for e in self.em.change_history
-                                if e.get('unread', False))
-            self.assertEqual(data['unread_count'], actual_unread)
+            actual_unread = sum(1 for e in self.em.change_history if e.get("unread", False))
+            self.assertEqual(data["unread_count"], actual_unread)
 
     def test_deque_maxlen_prevents_unbounded_growth(self):
         """The deque hard cap must prevent the changelog from growing beyond
         _CHANGELOG_MAX_ENTRIES even without time-based pruning."""
         from nibe_entity_manager import _CHANGELOG_MAX_ENTRIES
+
         self.em._last_prune_time = time.time() + 86400  # suppress prune
 
         for i in range(_CHANGELOG_MAX_ENTRIES + 50):
-            event = {'added': [{'id': i, 'title': 'T', 'type': 'sensor'}],
-                     'removed': [], 'source': 'firmware', 'triggered_by': None}
+            event = {
+                "added": [{"id": i, "title": "T", "type": "sensor"}],
+                "removed": [],
+                "source": "firmware",
+                "triggered_by": None,
+            }
             self.em.change_history.appendleft(event)
 
         self.assertLessEqual(len(self.em.change_history), _CHANGELOG_MAX_ENTRIES)
@@ -663,6 +725,7 @@ class TestChangelogConsistency(unittest.TestCase):
         """Even with an aggressive retention setting, _CHANGELOG_MIN_ENTRIES
         must always be preserved."""
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         self.em.changelog_retention_days = 1
         self.em._last_prune_time = 0.0
 
@@ -680,39 +743,45 @@ class TestMarkChangelogRead(unittest.TestCase):
 
     def _seed_history(self, em, count=3):
         from collections import deque
+
         em.change_history = deque(maxlen=500)
         for i in range(count):
-            em.change_history.appendleft({
-                'timestamp': float(i), 'iso_timestamp': f'2024-0{i+1}-01T00:00:00Z',
-                'added': [i], 'removed': [],
-                'id': f'change_{i}', 'unread': True,
-                'source': 'firmware', 'triggered_by': None,
-            })
+            em.change_history.appendleft(
+                {
+                    "timestamp": float(i),
+                    "iso_timestamp": f"2024-0{i + 1}-01T00:00:00Z",
+                    "added": [i],
+                    "removed": [],
+                    "id": f"change_{i}",
+                    "unread": True,
+                    "source": "firmware",
+                    "triggered_by": None,
+                }
+            )
 
     def test_all_entries_marked_read(self):
         em = _make_em()
         self._seed_history(em, 3)
         em.mark_changelog_read()
         for entry in em.change_history:
-            self.assertFalse(entry['unread'])
+            self.assertFalse(entry["unread"])
 
     def test_unread_topic_published_with_zero_count(self):
         import json
+
         em = _make_em()
         self._seed_history(em, 2)
         em.mark_changelog_read()
-        unread_calls = [c for c in em.mqtt.publish.call_args_list
-                        if 'unread' in c[0][0]]
+        unread_calls = [c for c in em.mqtt.publish.call_args_list if "unread" in c[0][0]]
         self.assertTrue(len(unread_calls) > 0)
         payload = json.loads(unread_calls[0][0][1])
-        self.assertEqual(payload['unread_count'], 0)
+        self.assertEqual(payload["unread_count"], 0)
 
     def test_history_topic_published(self):
         em = _make_em()
         self._seed_history(em, 2)
         em.mark_changelog_read()
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         self.assertTrue(len(history_calls) > 0)
 
     def test_history_payload_decompresses_to_real_content(self):
@@ -724,15 +793,15 @@ class TestMarkChangelogRead(unittest.TestCase):
         import json
 
         from nibe_entity_manager import _decompress_payload
+
         em = _make_em()
         self._seed_history(em, 3)
         em.mark_changelog_read()
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         payload = json.loads(_decompress_payload(history_calls[0].args[1]))
-        self.assertEqual(payload['total_entries'], 3)
-        self.assertEqual(len(payload['history']), 3)
-        self.assertEqual(payload['_seq'], em._history_seq)
+        self.assertEqual(payload["total_entries"], 3)
+        self.assertEqual(len(payload["history"]), 3)
+        self.assertEqual(payload["_seq"], em._history_seq)
 
     def test_history_and_unread_topics_published_with_retain(self):
         """Both changelog topics must be retained — a caller/card that
@@ -740,22 +809,23 @@ class TestMarkChangelogRead(unittest.TestCase):
         em = _make_em()
         self._seed_history(em, 2)
         em.mark_changelog_read()
-        relevant_calls = [c for c in em.mqtt.publish.call_args_list
-                          if 'history' in c[0][0] or 'unread' in c[0][0]]
+        relevant_calls = [
+            c for c in em.mqtt.publish.call_args_list if "history" in c[0][0] or "unread" in c[0][0]
+        ]
         self.assertTrue(relevant_calls)
         for c in relevant_calls:
-            retain = c.kwargs.get('retain', c.args[2] if len(c.args) > 2 else None)
+            retain = c.kwargs.get("retain", c.args[2] if len(c.args) > 2 else None)
             self.assertTrue(retain, f"Expected retain=True for {c.args[0]!r}")
 
     def test_unread_payload_contains_last_change_timestamp(self):
         import json
+
         em = _make_em()
         self._seed_history(em, 2)
         em.mark_changelog_read()
-        unread_calls = [c for c in em.mqtt.publish.call_args_list
-                        if 'unread' in c[0][0]]
+        unread_calls = [c for c in em.mqtt.publish.call_args_list if "unread" in c[0][0]]
         payload = json.loads(unread_calls[0].args[1])
-        self.assertIn('last_change', payload)
+        self.assertIn("last_change", payload)
 
     def test_seq_incremented(self):
         em = _make_em()
@@ -773,7 +843,7 @@ class TestMarkChangelogRead(unittest.TestCase):
         self._seed_history(em, 3)
         em.mark_changelog_read()
         for entry in em.change_history:
-            self.assertIs(entry['unread'], False)
+            self.assertIs(entry["unread"], False)
 
     def test_history_seq_increments_by_exactly_one(self):
         """_history_seq += 1 must add exactly 1, not some other constant.
@@ -792,27 +862,27 @@ class TestMarkChangelogRead(unittest.TestCase):
         is not exercised by the total_entries/history/_seq checks in
         test_history_payload_decompresses_to_real_content."""
         from nibe_entity_manager import _decompress_payload
+
         em = _make_em()
         self._seed_history(em, 3)
         em.mark_changelog_read()
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         payload = json.loads(_decompress_payload(history_calls[0].args[1]))
-        self.assertIn('unread_count', payload)
-        self.assertEqual(payload['unread_count'], 0)
+        self.assertIn("unread_count", payload)
+        self.assertEqual(payload["unread_count"], 0)
 
     def test_history_payload_contains_last_updated_key(self):
         """A mutant that renames the 'last_updated' key in the
         CHANGELOG_HISTORY payload is not caught by any existing assertion —
         confirm the key survives under its real name."""
         from nibe_entity_manager import _decompress_payload
+
         em = _make_em()
         self._seed_history(em, 2)
         em.mark_changelog_read()
-        history_calls = [c for c in em.mqtt.publish.call_args_list
-                         if 'history' in c[0][0]]
+        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
         payload = json.loads(_decompress_payload(history_calls[0].args[1]))
-        self.assertIn('last_updated', payload)
+        self.assertIn("last_updated", payload)
 
     def test_last_published_seq_updated_after_publish(self):
         """_last_published_seq must be set after the MQTT publish calls,
@@ -840,8 +910,11 @@ class TestMarkChangelogRead(unittest.TestCase):
         em.mqtt.publish.side_effect = capture_publish
         em.mark_changelog_read()
 
-        self.assertEqual(seq_at_first_publish[0], original_seq,
-            "_last_published_seq must not be set before the publish calls")
+        self.assertEqual(
+            seq_at_first_publish[0],
+            original_seq,
+            "_last_published_seq must not be set before the publish calls",
+        )
         self.assertGreater(em._last_published_seq, original_seq)
 
 
@@ -851,9 +924,14 @@ class TestPruneChangelogIfDue(unittest.TestCase):
 
     def _entry(self, timestamp, unread=True):
         return {
-            'timestamp': timestamp, 'iso_timestamp': '2024-01-01T00:00:00Z',
-            'added': [1], 'removed': [], 'id': 'x', 'unread': unread,
-            'source': 'firmware', 'triggered_by': None,
+            "timestamp": timestamp,
+            "iso_timestamp": "2024-01-01T00:00:00Z",
+            "added": [1],
+            "removed": [],
+            "id": "x",
+            "unread": unread,
+            "source": "firmware",
+            "triggered_by": None,
         }
 
     def test_returns_false_when_not_due(self):
@@ -870,6 +948,7 @@ class TestPruneChangelogIfDue(unittest.TestCase):
 
     def test_old_entries_removed(self):
         from collections import deque
+
         em = _make_em()
         em._last_prune_time = 0
         em.changelog_retention_days = 1  # 1 day retention
@@ -877,17 +956,18 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         em.change_history = deque(maxlen=500)
         # Add 55 recent and 10 old entries — total > 50 so old ones get pruned
         for _ in range(55):
-            em.change_history.appendleft(self._entry(now - 100))   # recent
+            em.change_history.appendleft(self._entry(now - 100))  # recent
         for _ in range(10):
             em.change_history.appendleft(self._entry(now - 200000))  # old (>2 days)
         em._prune_changelog_if_due()
-        remaining_ts = [e['timestamp'] for e in em.change_history]
+        remaining_ts = [e["timestamp"] for e in em.change_history]
         # All remaining entries should be recent (within 1 day)
         cutoff = now - 86400
         self.assertTrue(all(ts >= cutoff for ts in remaining_ts))
 
     def test_minimum_50_entries_kept_regardless_of_age(self):
         from collections import deque
+
         em = _make_em()
         em._last_prune_time = 0
         em.changelog_retention_days = 0  # expire everything
@@ -900,6 +980,7 @@ class TestPruneChangelogIfDue(unittest.TestCase):
 
     def test_no_prune_when_all_entries_recent(self):
         from collections import deque
+
         em = _make_em()
         em._last_prune_time = 0
         em.changelog_retention_days = 90
@@ -935,10 +1016,11 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import _CHANGELOG_PRUNE_S
+
         em = _make_em()
         fixed_now = 1_700_000_000.0
         em._last_prune_time = fixed_now - _CHANGELOG_PRUNE_S
-        with _patch('nibe_entity_manager.time.time', return_value=fixed_now):
+        with _patch("nibe_entity_manager.time.time", return_value=fixed_now):
             result = em._prune_changelog_if_due()
         self.assertTrue(result, "Prune must run at exactly the PRUNE_S boundary")
 
@@ -950,6 +1032,7 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         from collections import deque
 
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         em = _make_em()
         em._last_prune_time = 0.0
         em.changelog_retention_days = 1
@@ -957,11 +1040,14 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         # Entries just past the 1-day boundary (old) plus enough recent
         # entries to exceed the floor, so pruning of the old ones is visible.
         recent = [self._entry(now - 10) for _ in range(_CHANGELOG_MIN_ENTRIES + 5)]
-        old    = [self._entry(now - 86400.5) for _ in range(5)]
+        old = [self._entry(now - 86400.5) for _ in range(5)]
         em.change_history = deque(recent + old, maxlen=500)
         em._prune_changelog_if_due()
-        self.assertEqual(len(em.change_history), len(recent),
-            "Entries just past the 86400s/day boundary must be pruned")
+        self.assertEqual(
+            len(em.change_history),
+            len(recent),
+            "Entries just past the 86400s/day boundary must be pruned",
+        )
 
     def test_recent_old_boundary_entry_counted_exactly_once(self):
         """An entry with timestamp exactly equal to cutoff_ts must land in
@@ -982,23 +1068,27 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         em = _make_em()
         em._last_prune_time = 0.0
         em.changelog_retention_days = 1
         fixed_now = 1_700_000_000.0
         cutoff_ts = fixed_now - 1 * 86400
         boundary_entry = self._entry(0)
-        boundary_entry['timestamp'] = cutoff_ts
-        boundary_entry['id'] = 'boundary'
+        boundary_entry["timestamp"] = cutoff_ts
+        boundary_entry["id"] = "boundary"
         # Enough other very-old entries that the floor doesn't mask pruning,
         # and enough total that "kept" isn't trivially "everything".
         filler = [self._entry(fixed_now - 999 * 86400 - 100) for _ in range(_CHANGELOG_MIN_ENTRIES)]
         em.change_history = deque([boundary_entry] + filler, maxlen=500)
-        with _patch('nibe_entity_manager.time.time', return_value=fixed_now):
+        with _patch("nibe_entity_manager.time.time", return_value=fixed_now):
             em._prune_changelog_if_due()
-        boundary_count = sum(1 for e in em.change_history if e.get('id') == 'boundary')
-        self.assertEqual(boundary_count, 1,
-            "Boundary entry must be kept exactly once (via 'recent'), not dropped or duplicated")
+        boundary_count = sum(1 for e in em.change_history if e.get("id") == "boundary")
+        self.assertEqual(
+            boundary_count,
+            1,
+            "Boundary entry must be kept exactly once (via 'recent'), not dropped or duplicated",
+        )
 
     def test_no_reassignment_or_log_when_nothing_pruned(self):
         """When pruned == len(history) - len(kept) is 0, the deque must not
@@ -1008,12 +1098,13 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         since the reassigned content would be identical, only the log call
         distinguishes correct from mutant behaviour here."""
         from unittest.mock import patch as _patch
+
         em = _make_em()
         em._last_prune_time = 0.0
         em.changelog_retention_days = 90  # nothing expires
         for _ in range(5):
             em.change_history.appendleft(self._entry(0))
-        with _patch('nibe_entity_manager.log_history') as mock_log:
+        with _patch("nibe_entity_manager.log_history") as mock_log:
             em._prune_changelog_if_due()
             mock_log.debug.assert_not_called()
 
@@ -1026,17 +1117,21 @@ class TestPruneChangelogIfDue(unittest.TestCase):
         from collections import deque
 
         from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
         em = _make_em()
         em._last_prune_time = 0.0
         em.changelog_retention_days = 1
         now = time.time()
         ml = 500
         recent = [self._entry(now - 10) for _ in range(_CHANGELOG_MIN_ENTRIES + 5)]
-        old    = [self._entry(now - 999 * 86400) for _ in range(10)]
+        old = [self._entry(now - 999 * 86400) for _ in range(10)]
         em.change_history = deque(recent + old, maxlen=ml)
         em._prune_changelog_if_due()
-        self.assertLess(len(em.change_history), len(recent) + len(old),
-            "Sanity check: pruning must actually have removed entries")
+        self.assertLess(
+            len(em.change_history),
+            len(recent) + len(old),
+            "Sanity check: pruning must actually have removed entries",
+        )
         self.assertEqual(em.change_history.maxlen, ml)
 
 
@@ -1051,16 +1146,18 @@ class TestSetupHistoryLoadingCallbacks(unittest.TestCase):
     def test_empty_payload_returns_without_loading(self):
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em._on_history_message(None, None, self._make_message(b''))
+        em._on_history_message(None, None, self._make_message(b""))
         # change_history should be untouched
         self.assertEqual(len(em.change_history), 0)
 
     def test_bad_payload_resets_history(self):
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em._on_history_message(None, None, self._make_message(b'not valid json or gzip'))
+        em._on_history_message(None, None, self._make_message(b"not valid json or gzip"))
         # Should reset to empty deque rather than crash
         self.assertEqual(len(em.change_history), 0)
 
@@ -1076,8 +1173,9 @@ class TestSetupHistoryLoadingUnreadCallback(unittest.TestCase):
     def test_empty_payload_does_not_crash(self):
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em._on_unread_message(None, None, self._make_message(b''))
+        em._on_unread_message(None, None, self._make_message(b""))
 
     def test_valid_unread_marks_entries(self):
         """Regression: appendleft(1) then appendleft(2) makes change_history
@@ -1086,20 +1184,22 @@ class TestSetupHistoryLoadingUnreadCallback(unittest.TestCase):
         which is what the pre-fix list(...)[-n:] slice incorrectly selected."""
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'unread': False, 'id': 1})
-        em.change_history.appendleft({'unread': False, 'id': 2})
-        payload = json.dumps({'unread_count': 1}).encode()
+        em.change_history.appendleft({"unread": False, "id": 1})
+        em.change_history.appendleft({"unread": False, "id": 2})
+        payload = json.dumps({"unread_count": 1}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
         entries = list(em.change_history)
-        self.assertTrue(entries[0]['unread'], "newest entry (id=2) must be marked unread")
-        self.assertFalse(entries[-1]['unread'], "oldest entry (id=1) must stay read")
+        self.assertTrue(entries[0]["unread"], "newest entry (id=2) must be marked unread")
+        self.assertFalse(entries[-1]["unread"], "oldest entry (id=1) must stay read")
 
     def test_bad_unread_payload_does_not_crash(self):
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em._on_unread_message(None, None, self._make_message(b'NOT JSON'))
+        em._on_unread_message(None, None, self._make_message(b"NOT JSON"))
 
 
 class TestHistoryLoadingEntryValidation(unittest.TestCase):
@@ -1112,35 +1212,42 @@ class TestHistoryLoadingEntryValidation(unittest.TestCase):
 
     def _compress(self, data):
         from nibe_entity_manager import _compress_payload
-        return _compress_payload(data).encode('utf-8')
+
+        return _compress_payload(data).encode("utf-8")
 
     def _valid_entry(self):
         return {
-            'timestamp': 1700000000.0, 'iso_timestamp': '2024-01-01',
-            'added': [{'id': 100, 'title': 'T', 'type': 'sensor'}],
-            'removed': [], 'id': 'change_1', 'unread': False, 'source': 'firmware',
+            "timestamp": 1700000000.0,
+            "iso_timestamp": "2024-01-01",
+            "added": [{"id": 100, "title": "T", "type": "sensor"}],
+            "removed": [],
+            "id": "change_1",
+            "unread": False,
+            "source": "firmware",
         }
 
     def test_non_dict_entry_skipped_valid_entry_kept(self):
         """Non-dict history entries must be skipped; valid ones retained."""
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
         payload_data = {
-            'history': ["not a dict", 42, self._valid_entry()],
+            "history": ["not a dict", 42, self._valid_entry()],
         }
         em._on_history_message(None, None, self._make_message(self._compress(payload_data)))
         self.assertEqual(len(em.change_history), 1)
-        self.assertEqual(em.change_history[0]['id'], 'change_1')
+        self.assertEqual(em.change_history[0]["id"], "change_1")
 
     def test_entry_with_non_list_added_skipped(self):
         """Entry where 'added' is not a list must be skipped."""
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
         bad = dict(self._valid_entry())
-        bad['added'] = "should_be_a_list"
-        payload_data = {'history': [bad, self._valid_entry()]}
+        bad["added"] = "should_be_a_list"
+        payload_data = {"history": [bad, self._valid_entry()]}
         em._on_history_message(None, None, self._make_message(self._compress(payload_data)))
         self.assertEqual(len(em.change_history), 1)
 
@@ -1148,10 +1255,11 @@ class TestHistoryLoadingEntryValidation(unittest.TestCase):
         """Entry where 'removed' is not a list must be skipped."""
         em = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
         bad = dict(self._valid_entry())
-        bad['removed'] = {"wrong": "type"}
-        payload_data = {'history': [bad, self._valid_entry()]}
+        bad["removed"] = {"wrong": "type"}
+        payload_data = {"history": [bad, self._valid_entry()]}
         em._on_history_message(None, None, self._make_message(self._compress(payload_data)))
         self.assertEqual(len(em.change_history), 1)
 
@@ -1172,30 +1280,31 @@ class TestOnHistoryMessageMissingHistoryKey(unittest.TestCase):
     def _pack(self, data):
         """Produce a valid bridge-format payload using _compress_payload."""
         from nibe_entity_manager import _compress_payload
+
         return _compress_payload(data)
 
     def test_missing_history_key_does_not_touch_change_history(self):
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'id': 1, 'unread': False})
+        em.change_history.appendleft({"id": 1, "unread": False})
         # Payload with 'incoming_seq' but no 'history' key
-        em._on_history_message(None, None, self._make_message(
-            self._pack({'incoming_seq': 99})
-        ))
+        em._on_history_message(None, None, self._make_message(self._pack({"incoming_seq": 99})))
         # change_history must be untouched — 'history' key absent
         self.assertEqual(len(em.change_history), 1)
-        self.assertEqual(next(iter(em.change_history))['id'], 1)
+        self.assertEqual(next(iter(em.change_history))["id"], 1)
 
     def test_history_not_a_list_does_not_touch_change_history(self):
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'id': 2, 'unread': False})
+        em.change_history.appendleft({"id": 2, "unread": False})
         # 'history' present but wrong type (string instead of list)
-        em._on_history_message(None, None, self._make_message(
-            self._pack({'incoming_seq': 5, 'history': 'not a list'})
-        ))
+        em._on_history_message(
+            None, None, self._make_message(self._pack({"incoming_seq": 5, "history": "not a list"}))
+        )
         self.assertEqual(len(em.change_history), 1)
 
 
@@ -1216,15 +1325,15 @@ class TestOnUnreadMessageZeroCount(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'unread': False, 'id': 1})
-        em.change_history.appendleft({'unread': False, 'id': 2})
-        payload = _json.dumps({'unread_count': 0}).encode()
+        em.change_history.appendleft({"unread": False, "id": 1})
+        em.change_history.appendleft({"unread": False, "id": 2})
+        payload = _json.dumps({"unread_count": 0}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
         for entry in em.change_history:
-            self.assertFalse(entry['unread'],
-                             "unread_count=0 must not mark any entry as unread")
+            self.assertFalse(entry["unread"], "unread_count=0 must not mark any entry as unread")
 
     def test_negative_unread_count_leaves_entries_unread_false(self):
         """A negative unread_count (malformed/adversarial retained payload)
@@ -1238,15 +1347,17 @@ class TestOnUnreadMessageZeroCount(unittest.TestCase):
         import json as _json
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
         for i in range(5):
-            em.change_history.appendleft({'unread': False, 'id': i})
-        payload = _json.dumps({'unread_count': -3}).encode()
+            em.change_history.appendleft({"unread": False, "id": i})
+        payload = _json.dumps({"unread_count": -3}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
         for entry in em.change_history:
-            self.assertFalse(entry['unread'],
-                             "negative unread_count must not mark any entry as unread")
+            self.assertFalse(
+                entry["unread"], "negative unread_count must not mark any entry as unread"
+            )
 
 
 class TestUnreadCountOverfillGuard(unittest.TestCase):
@@ -1267,18 +1378,20 @@ class TestUnreadCountOverfillGuard(unittest.TestCase):
     def test_oversized_unread_count_marks_at_most_all_entries(self):
         """unread_count=10 with only 2 history entries marks both, not a crash."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'unread': False, 'id': 1})
-        em.change_history.appendleft({'unread': False, 'id': 2})
+        em.change_history.appendleft({"unread": False, "id": 1})
+        em.change_history.appendleft({"unread": False, "id": 2})
         self.assertEqual(len(em.change_history), 2)
 
-        payload = json.dumps({'unread_count': 10}).encode()
+        payload = json.dumps({"unread_count": 10}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
 
-        unread = [e for e in em.change_history if e.get('unread')]
-        self.assertEqual(len(unread), 2,
-            "unread_count > len(history) should mark all entries, not crash")
+        unread = [e for e in em.change_history if e.get("unread")]
+        self.assertEqual(
+            len(unread), 2, "unread_count > len(history) should mark all entries, not crash"
+        )
 
     def test_unread_count_less_than_history_marks_newest_only(self):
         """unread_count=2 with 5 history entries marks only the 2 newest.
@@ -1291,34 +1404,37 @@ class TestUnreadCountOverfillGuard(unittest.TestCase):
         predecessor (asserting only a count, not which entries) never
         caught."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
         for i in range(5):
-            em.change_history.appendleft({'unread': False, 'id': i})
+            em.change_history.appendleft({"unread": False, "id": i})
         # appendleft(0..4) in order -> change_history is [4,3,2,1,0] (newest first)
 
-        payload = json.dumps({'unread_count': 2}).encode()
+        payload = json.dumps({"unread_count": 2}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
 
-        unread_ids = {e['id'] for e in em.change_history if e.get('unread')}
-        self.assertEqual(unread_ids, {4, 3},
-            "unread_count=2 must mark the 2 NEWEST entries (ids 4, 3), "
-            "not the 2 oldest (ids 0, 1)")
+        unread_ids = {e["id"] for e in em.change_history if e.get("unread")}
+        self.assertEqual(
+            unread_ids,
+            {4, 3},
+            "unread_count=2 must mark the 2 NEWEST entries (ids 4, 3), not the 2 oldest (ids 0, 1)",
+        )
 
     def test_unread_count_zero_marks_nothing(self):
         """unread_count=0 must leave all entries as unread=False."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
         for i in range(3):
-            em.change_history.appendleft({'unread': False, 'id': i})
+            em.change_history.appendleft({"unread": False, "id": i})
 
-        payload = json.dumps({'unread_count': 0}).encode()
+        payload = json.dumps({"unread_count": 0}).encode()
         em._on_unread_message(None, None, self._make_message(payload))
 
         for entry in em.change_history:
-            self.assertFalse(entry['unread'],
-                "unread_count=0 must not mark any entry as unread")
+            self.assertFalse(entry["unread"], "unread_count=0 must not mark any entry as unread")
 
 
 class TestSetupHistoryLoadingCleanedEntryFields(unittest.TestCase):
@@ -1342,16 +1458,21 @@ class TestSetupHistoryLoadingCleanedEntryFields(unittest.TestCase):
 
     def _pack(self, data):
         from nibe_entity_manager import _compress_payload
+
         return _compress_payload(data)
 
     def _load_and_get_first(self, em, history_entry):
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(em)
-        em._on_history_message(None, None, self._make_message(
-            self._pack({'history': [history_entry]})
-        ))
-        self.assertEqual(len(em.change_history), 1,
-            "Entry must have been accepted (added/removed must resolve to lists)")
+        em._on_history_message(
+            None, None, self._make_message(self._pack({"history": [history_entry]}))
+        )
+        self.assertEqual(
+            len(em.change_history),
+            1,
+            "Entry must have been accepted (added/removed must resolve to lists)",
+        )
         return em.change_history[0]
 
     def test_all_fields_preserved_when_present(self):
@@ -1360,24 +1481,24 @@ class TestSetupHistoryLoadingCleanedEntryFields(unittest.TestCase):
         something else (often the default, sometimes None/KeyError)."""
         em = _make_em()
         source_entry = {
-            'timestamp': 12345.5,
-            'iso_timestamp': 'ISO_SENTINEL',
-            'added': [111],
-            'removed': [222],
-            'id': 'ID_SENTINEL',
-            'unread': True,
-            'source': 'SRC_SENTINEL',
-            'triggered_by': 'TRIG_SENTINEL',
+            "timestamp": 12345.5,
+            "iso_timestamp": "ISO_SENTINEL",
+            "added": [111],
+            "removed": [222],
+            "id": "ID_SENTINEL",
+            "unread": True,
+            "source": "SRC_SENTINEL",
+            "triggered_by": "TRIG_SENTINEL",
         }
         cleaned = self._load_and_get_first(em, source_entry)
-        self.assertEqual(cleaned['timestamp'], 12345.5)
-        self.assertEqual(cleaned['iso_timestamp'], 'ISO_SENTINEL')
-        self.assertEqual(cleaned['added'], [111])
-        self.assertEqual(cleaned['removed'], [222])
-        self.assertEqual(cleaned['id'], 'ID_SENTINEL')
-        self.assertIs(cleaned['unread'], True)
-        self.assertEqual(cleaned['source'], 'SRC_SENTINEL')
-        self.assertEqual(cleaned['triggered_by'], 'TRIG_SENTINEL')
+        self.assertEqual(cleaned["timestamp"], 12345.5)
+        self.assertEqual(cleaned["iso_timestamp"], "ISO_SENTINEL")
+        self.assertEqual(cleaned["added"], [111])
+        self.assertEqual(cleaned["removed"], [222])
+        self.assertEqual(cleaned["id"], "ID_SENTINEL")
+        self.assertIs(cleaned["unread"], True)
+        self.assertEqual(cleaned["source"], "SRC_SENTINEL")
+        self.assertEqual(cleaned["triggered_by"], "TRIG_SENTINEL")
 
     def test_defaults_applied_when_fields_absent(self):
         """Scenario B: source entry has none of the optional fields. Each
@@ -1387,16 +1508,16 @@ class TestSetupHistoryLoadingCleanedEntryFields(unittest.TestCase):
         implicitly confirms those defaults are correct."""
         em = _make_em()
         cleaned = self._load_and_get_first(em, {})
-        self.assertIsInstance(cleaned['timestamp'], float)
-        self.assertGreater(cleaned['timestamp'], 0)
-        self.assertIsInstance(cleaned['iso_timestamp'], str)
-        self.assertGreater(len(cleaned['iso_timestamp']), 0)
-        self.assertEqual(cleaned['added'], [])
-        self.assertEqual(cleaned['removed'], [])
-        self.assertTrue(cleaned['id'].startswith('change_'))
-        self.assertIs(cleaned['unread'], False)
-        self.assertEqual(cleaned['source'], 'firmware')
-        self.assertIsNone(cleaned['triggered_by'])
+        self.assertIsInstance(cleaned["timestamp"], float)
+        self.assertGreater(cleaned["timestamp"], 0)
+        self.assertIsInstance(cleaned["iso_timestamp"], str)
+        self.assertGreater(len(cleaned["iso_timestamp"]), 0)
+        self.assertEqual(cleaned["added"], [])
+        self.assertEqual(cleaned["removed"], [])
+        self.assertTrue(cleaned["id"].startswith("change_"))
+        self.assertIs(cleaned["unread"], False)
+        self.assertEqual(cleaned["source"], "firmware")
+        self.assertIsNone(cleaned["triggered_by"])
 
     def test_default_id_computed_from_time_times_1000(self):
         """When 'id' is absent, it must be f"change_{int(time.time()*1000)}"
@@ -1404,12 +1525,13 @@ class TestSetupHistoryLoadingCleanedEntryFields(unittest.TestCase):
         read back from the entry), to catch '*1001'/'/1000' scaling
         mutants that a mere 'startswith(change_)' check would miss."""
         from unittest.mock import patch as _patch
+
         em = _make_em()
         fixed_time = 1_650_000_777.25
-        with _patch('nibe_entity_manager.time.time', return_value=fixed_time):
-            cleaned = self._load_and_get_first(em, {'added': [], 'removed': []})
+        with _patch("nibe_entity_manager.time.time", return_value=fixed_time):
+            cleaned = self._load_and_get_first(em, {"added": [], "removed": []})
         expected_id = f"change_{int(fixed_time * 1000)}"
-        self.assertEqual(cleaned['id'], expected_id)
+        self.assertEqual(cleaned["id"], expected_id)
 
 
 class TestSetupHistoryLoadingSeqGuard(unittest.TestCase):
@@ -1425,6 +1547,7 @@ class TestSetupHistoryLoadingSeqGuard(unittest.TestCase):
 
     def _pack(self, data):
         from nibe_entity_manager import _compress_payload
+
         return _compress_payload(data)
 
     def test_missing_seq_key_always_loads_regardless_of_last_published_seq(self):
@@ -1434,16 +1557,22 @@ class TestSetupHistoryLoadingSeqGuard(unittest.TestCase):
         it coincidentally equals a wrong default a mutant might introduce
         (None, 1, or -2)."""
         from nibe_entity_manager import EntityManager
+
         for wrong_default_lookalike in (None, 1, -2):
             with self.subTest(last_published_seq=wrong_default_lookalike):
                 em = _make_em()
                 em._last_published_seq = wrong_default_lookalike
                 EntityManager._setup_history_loading(em)
-                em._on_history_message(None, None, self._make_message(
-                    self._pack({'history': [{'added': [], 'removed': []}]})
-                ))
-                self.assertEqual(len(em.change_history), 1,
-                    "Missing '_seq' must always result in loading (default -1 short-circuits the guard)")
+                em._on_history_message(
+                    None,
+                    None,
+                    self._make_message(self._pack({"history": [{"added": [], "removed": []}]})),
+                )
+                self.assertEqual(
+                    len(em.change_history),
+                    1,
+                    "Missing '_seq' must always result in loading (default -1 short-circuits the guard)",
+                )
 
     def test_seq_minus_one_always_loads_even_if_last_published_seq_is_minus_one(self):
         """The '-1' sentinel is special: even if incoming_seq == -1 happens
@@ -1452,14 +1581,20 @@ class TestSetupHistoryLoadingSeqGuard(unittest.TestCase):
         A mutant changing '!= -1' to '!= 1' or '!= -2' would incorrectly
         skip this exact case, since -1 != 1 and -1 != -2 are both True."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         em._last_published_seq = -1
         EntityManager._setup_history_loading(em)
-        em._on_history_message(None, None, self._make_message(
-            self._pack({'_seq': -1, 'history': [{'added': [], 'removed': []}]})
-        ))
-        self.assertEqual(len(em.change_history), 1,
-            "incoming_seq == -1 must always load, regardless of _last_published_seq")
+        em._on_history_message(
+            None,
+            None,
+            self._make_message(self._pack({"_seq": -1, "history": [{"added": [], "removed": []}]})),
+        )
+        self.assertEqual(
+            len(em.change_history),
+            1,
+            "incoming_seq == -1 must always load, regardless of _last_published_seq",
+        )
 
 
 class TestSetupHistoryLoadingCleanHistoryMaxlen(unittest.TestCase):
@@ -1468,15 +1603,15 @@ class TestSetupHistoryLoadingCleanHistoryMaxlen(unittest.TestCase):
         mutant setting maxlen=None would silently make the changelog
         unbounded after every restart."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         original_maxlen = em.change_history.maxlen
         self.assertIsNotNone(original_maxlen)
         EntityManager._setup_history_loading(em)
         msg = MagicMock()
         from nibe_entity_manager import _compress_payload
-        msg.payload = _compress_payload(
-            {'history': [{'added': [], 'removed': []}]}
-        ).encode('utf-8')
+
+        msg.payload = _compress_payload({"history": [{"added": [], "removed": []}]}).encode("utf-8")
         em._on_history_message(None, None, msg)
         self.assertEqual(em.change_history.maxlen, original_maxlen)
 
@@ -1500,6 +1635,7 @@ class TestSetupHistoryLoadingUnreadCountLogging(unittest.TestCase):
 
     def _pack(self, data):
         from nibe_entity_manager import _compress_payload
+
         return _compress_payload(data)
 
     def test_loaded_count_log_uses_real_format_and_length(self):
@@ -1510,18 +1646,19 @@ class TestSetupHistoryLoadingUnreadCountLogging(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        entries = [{'added': [i], 'removed': []} for i in range(3)]
-        with _patch('nibe_entity_manager.log_history') as mock_log:
-            em._on_history_message(None, None, self._make_message(
-                self._pack({'history': entries})
-            ))
-            loaded_calls = [c for c in mock_log.info.call_args_list
-                            if c.args and isinstance(c.args[0], str) and c.args[0].startswith('Loaded')]
+        entries = [{"added": [i], "removed": []} for i in range(3)]
+        with _patch("nibe_entity_manager.log_history") as mock_log:
+            em._on_history_message(None, None, self._make_message(self._pack({"history": entries})))
+            loaded_calls = [
+                c
+                for c in mock_log.info.call_args_list
+                if c.args and isinstance(c.args[0], str) and c.args[0].startswith("Loaded")
+            ]
         self.assertEqual(len(loaded_calls), 1)
-        self.assertEqual(loaded_calls[0].args,
-                          ("Loaded %d historical changes from MQTT", 3))
+        self.assertEqual(loaded_calls[0].args, ("Loaded %d historical changes from MQTT", 3))
 
     def test_unread_count_in_log_matches_actual_unread_entries(self):
         """One unread + one read entry loaded -> the '%d unread changes'
@@ -1532,20 +1669,25 @@ class TestSetupHistoryLoadingUnreadCountLogging(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
         entries = [
-            {'added': [1], 'removed': [], 'unread': True},
-            {'added': [2], 'removed': [], 'unread': False},
+            {"added": [1], "removed": [], "unread": True},
+            {"added": [2], "removed": [], "unread": False},
         ]
-        with _patch('nibe_entity_manager.log_history') as mock_log:
-            em._on_history_message(None, None, self._make_message(
-                self._pack({'history': entries})
-            ))
-            unread_calls = [c for c in mock_log.info.call_args_list
-                            if c.args and isinstance(c.args[0], str) and 'unread changes' in c.args[0]]
-        self.assertEqual(len(unread_calls), 1,
-            "Exactly one unread entry must trigger exactly one '%d unread changes' log call")
+        with _patch("nibe_entity_manager.log_history") as mock_log:
+            em._on_history_message(None, None, self._make_message(self._pack({"history": entries})))
+            unread_calls = [
+                c
+                for c in mock_log.info.call_args_list
+                if c.args and isinstance(c.args[0], str) and "unread changes" in c.args[0]
+            ]
+        self.assertEqual(
+            len(unread_calls),
+            1,
+            "Exactly one unread entry must trigger exactly one '%d unread changes' log call",
+        )
         self.assertEqual(unread_calls[0].args, ("%d unread changes", 1))
 
     def test_no_unread_log_line_when_zero_unread(self):
@@ -1555,15 +1697,17 @@ class TestSetupHistoryLoadingUnreadCountLogging(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        entries = [{'added': [1], 'removed': [], 'unread': False}]
-        with _patch('nibe_entity_manager.log_history') as mock_log:
-            em._on_history_message(None, None, self._make_message(
-                self._pack({'history': entries})
-            ))
-            unread_calls = [c for c in mock_log.info.call_args_list
-                            if c.args and isinstance(c.args[0], str) and 'unread changes' in c.args[0]]
+        entries = [{"added": [1], "removed": [], "unread": False}]
+        with _patch("nibe_entity_manager.log_history") as mock_log:
+            em._on_history_message(None, None, self._make_message(self._pack({"history": entries})))
+            unread_calls = [
+                c
+                for c in mock_log.info.call_args_list
+                if c.args and isinstance(c.args[0], str) and "unread changes" in c.args[0]
+            ]
         self.assertEqual(len(unread_calls), 0)
 
 
@@ -1584,10 +1728,11 @@ class TestSetupHistoryLoadingExceptionPaths(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        with _patch('nibe_entity_manager.log_history') as mock_log:
-            em._on_history_message(None, None, self._make_message(b'not valid json or gzip'))
+        with _patch("nibe_entity_manager.log_history") as mock_log:
+            em._on_history_message(None, None, self._make_message(b"not valid json or gzip"))
             self.assertEqual(mock_log.warning.call_count, 1)
             call = mock_log.warning.call_args
         self.assertEqual(
@@ -1601,21 +1746,23 @@ class TestSetupHistoryLoadingExceptionPaths(unittest.TestCase):
         """The exception-path reset 'self.change_history = deque(maxlen=
         self.change_history.maxlen)' must preserve the real maxlen."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         original_maxlen = em.change_history.maxlen
         self.assertIsNotNone(original_maxlen)
         EntityManager._setup_history_loading(em)
-        em._on_history_message(None, None, self._make_message(b'garbage'))
+        em._on_history_message(None, None, self._make_message(b"garbage"))
         self.assertEqual(em.change_history.maxlen, original_maxlen)
 
     def test_unread_message_exception_logs_real_warning_with_exception_object(self):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        with _patch('nibe_entity_manager.log_history') as mock_log:
-            em._on_unread_message(None, None, self._make_message(b'not json'))
+        with _patch("nibe_entity_manager.log_history") as mock_log:
+            em._on_unread_message(None, None, self._make_message(b"not json"))
             self.assertEqual(mock_log.warning.call_count, 1)
             call = mock_log.warning.call_args
         self.assertEqual(call.args[0], "Could not restore changelog unread state from MQTT: %s")
@@ -1641,15 +1788,16 @@ class TestSetupHistoryLoadingUnreadDefaultAndResetKey(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
         for i in range(3):
-            em.change_history.appendleft({'unread': False, 'id': i})
-        with _patch('nibe_entity_manager.log_history') as mock_log:
+            em.change_history.appendleft({"unread": False, "id": i})
+        with _patch("nibe_entity_manager.log_history") as mock_log:
             em._on_unread_message(None, None, self._make_message(json.dumps({}).encode()))
             mock_log.warning.assert_not_called()
         for entry in em.change_history:
-            self.assertIs(entry['unread'], False)
+            self.assertIs(entry["unread"], False)
 
     def test_reset_loop_sets_real_false_via_real_key(self):
         """Every entry must have its ACTUAL 'unread' key (not a renamed
@@ -1659,15 +1807,16 @@ class TestSetupHistoryLoadingUnreadDefaultAndResetKey(unittest.TestCase):
         'unread' key would be left untouched at True instead of being
         reset."""
         from nibe_entity_manager import EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
-        em.change_history.appendleft({'unread': True, 'id': 1})
-        em.change_history.appendleft({'unread': True, 'id': 2})
-        em._on_unread_message(None, None, self._make_message(
-            json.dumps({'unread_count': 0}).encode()
-        ))
+        em.change_history.appendleft({"unread": True, "id": 1})
+        em.change_history.appendleft({"unread": True, "id": 2})
+        em._on_unread_message(
+            None, None, self._make_message(json.dumps({"unread_count": 0}).encode())
+        )
         for entry in em.change_history:
-            self.assertIs(entry['unread'], False)
+            self.assertIs(entry["unread"], False)
 
 
 class TestSetupHistoryLoadingMqttWiring(unittest.TestCase):
@@ -1677,6 +1826,7 @@ class TestSetupHistoryLoadingMqttWiring(unittest.TestCase):
 
     def test_subscribe_and_callback_wiring_uses_real_topics_and_callbacks(self):
         from nibe_entity_manager import BrowserTopic, EntityManager
+
         em = _make_em()
         EntityManager._setup_history_loading(em)
 
@@ -1684,12 +1834,9 @@ class TestSetupHistoryLoadingMqttWiring(unittest.TestCase):
         self.assertIn(BrowserTopic.CHANGELOG_HISTORY, subscribed_topics)
         self.assertIn(BrowserTopic.CHANGELOG_UNREAD, subscribed_topics)
 
-        callback_pairs = {c.args[0]: c.args[1]
-                           for c in em.mqtt.message_callback_add.call_args_list}
-        self.assertEqual(callback_pairs.get(BrowserTopic.CHANGELOG_HISTORY),
-                          em._on_history_message)
-        self.assertEqual(callback_pairs.get(BrowserTopic.CHANGELOG_UNREAD),
-                          em._on_unread_message)
+        callback_pairs = {c.args[0]: c.args[1] for c in em.mqtt.message_callback_add.call_args_list}
+        self.assertEqual(callback_pairs.get(BrowserTopic.CHANGELOG_HISTORY), em._on_history_message)
+        self.assertEqual(callback_pairs.get(BrowserTopic.CHANGELOG_UNREAD), em._on_unread_message)
 
 
 class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
@@ -1704,10 +1851,10 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
     def test_real_history_entry_survives_a_fresh_instance_restart(self):
         writer = _make_em()
         change_event = {
-            'added':        [{'id': 12345, 'title': 'New Point', 'type': 'sensor'}],
-            'removed':      [],
-            'source':       'firmware',
-            'triggered_by': None,
+            "added": [{"id": 12345, "title": "New Point", "type": "sensor"}],
+            "removed": [],
+            "source": "firmware",
+            "triggered_by": None,
         }
         writer._update_changelog_history(change_event)
         # Find the CHANGELOG_HISTORY publish call by its actual decompressed
@@ -1718,8 +1865,9 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
         for c in writer.mqtt.publish.call_args_list:
             try:
                 from nibe_entity_manager import _decompress_payload
+
                 decoded = json.loads(_decompress_payload(c.args[1]))
-                if 'history' in decoded:
+                if "history" in decoded:
                     retained_payload = c.args[1]
                     break
             except Exception:  # noqa: BLE001, S112 — scanning every publish()
@@ -1732,6 +1880,7 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
 
         reader = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(reader)
         msg = MagicMock()
         msg.payload = retained_payload
@@ -1739,28 +1888,35 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
 
         self.assertEqual(len(reader.change_history), 1)
         restored_entry = reader.change_history[0]
-        self.assertEqual(restored_entry['added'], [{'id': 12345, 'title': 'New Point', 'type': 'sensor'}])
-        self.assertEqual(restored_entry['source'], 'firmware')
-        self.assertTrue(restored_entry['unread'])
+        self.assertEqual(
+            restored_entry["added"], [{"id": 12345, "title": "New Point", "type": "sensor"}]
+        )
+        self.assertEqual(restored_entry["source"], "firmware")
+        self.assertTrue(restored_entry["unread"])
 
     def test_mark_read_by_writer_is_reflected_after_fresh_instance_restart(self):
         """The unread=False state set by a real mark_changelog_read() call
         must survive into a fresh instance's real on_history_message —
         not just the raw entries, but their unread flags too."""
         writer = _make_em()
-        writer._update_changelog_history({
-            'added': [{'id': 1, 'title': 'P1', 'type': 'sensor'}],
-            'removed': [], 'source': 'firmware', 'triggered_by': None,
-        })
+        writer._update_changelog_history(
+            {
+                "added": [{"id": 1, "title": "P1", "type": "sensor"}],
+                "removed": [],
+                "source": "firmware",
+                "triggered_by": None,
+            }
+        )
         writer.mqtt.publish.reset_mock()
         writer.mark_changelog_read()
 
         from nibe_entity_manager import _decompress_payload
+
         retained_payload = None
         for c in writer.mqtt.publish.call_args_list:
             try:
                 decoded = json.loads(_decompress_payload(c.args[1]))
-                if 'history' in decoded:
+                if "history" in decoded:
                     retained_payload = c.args[1]
                     break
             except Exception:  # noqa: BLE001, S112 — same reasoning as the
@@ -1771,10 +1927,11 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
 
         reader = _make_em()
         from nibe_entity_manager import EntityManager
+
         EntityManager._setup_history_loading(reader)
         msg = MagicMock()
         msg.payload = retained_payload
         reader._on_history_message(None, None, msg)
 
         self.assertEqual(len(reader.change_history), 1)
-        self.assertFalse(reader.change_history[0]['unread'])
+        self.assertFalse(reader.change_history[0]["unread"])

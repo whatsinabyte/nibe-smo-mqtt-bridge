@@ -6,6 +6,7 @@ Part of the Nibe S-Series MQTT Bridge test suite.
 Shared fixtures are in conftest.py.
 """
 
+import contextlib
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,7 @@ from hypothesis import strategies as st
 class TestRetryDelay(unittest.TestCase):
     def setUp(self):
         from nibe_api import _RETRY_BASE_S, _RETRY_MAX_S, _retry_delay
+
         self.fn = _retry_delay
         self.cap = min(_RETRY_BASE_S, _RETRY_MAX_S)
 
@@ -37,82 +39,95 @@ class TestRetryDelay(unittest.TestCase):
         self.assertGreater(max(d) - min(d), 0)
 
 
-
 class TestWritePointValidation(unittest.TestCase):
     def setUp(self):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        self.c = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0",
-                               "Basic dGVzdA==", ctx)
+        ctx.verify_mode = ssl.CERT_NONE
+        self.c = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0", "Basic dGVzdA==", ctx)
 
     def _ei(self, writable=True, lo=0, hi=100, degen=False):
-        return {'is_writable': writable, 'is_degenerate_range': degen,
-                'metadata': {'minValue': lo, 'maxValue': hi, 'isWritable': writable}}
+        return {
+            "is_writable": writable,
+            "is_degenerate_range": degen,
+            "metadata": {"minValue": lo, "maxValue": hi, "isWritable": writable},
+        }
 
     def _resp(self, body):
         r = MagicMock()
         r.read.return_value = json.dumps(body).encode()
         return r
 
-    def test_non_writable_false(self):  self.assertFalse(self.c.write_point(1, 50,  self._ei(writable=False)))
-    def test_below_min_false(self):     self.assertFalse(self.c.write_point(1, -10, self._ei()))
-    def test_above_max_false(self):     self.assertFalse(self.c.write_point(1, 150, self._ei()))
+    def test_non_writable_false(self):
+        self.assertFalse(self.c.write_point(1, 50, self._ei(writable=False)))
+
+    def test_below_min_false(self):
+        self.assertFalse(self.c.write_point(1, -10, self._ei()))
+
+    def test_above_max_false(self):
+        self.assertFalse(self.c.write_point(1, 150, self._ei()))
 
     def test_below_min_rejected_before_any_http_call(self):
         """A below-minimum write must be rejected by the range check itself,
         not merely happen to fail for an unrelated reason (e.g. no network
         route in the test sandbox) — mock urlopen to succeed and confirm it
         is never even called when the value is out of range."""
-        with patch('urllib.request.urlopen',
-                  return_value=self._resp({"1": "modified"})) as mock_urlopen:
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"1": "modified"})
+        ) as mock_urlopen:
             self.assertFalse(self.c.write_point(1, -10, self._ei(lo=0, hi=100)))
             mock_urlopen.assert_not_called()
 
     def test_above_max_rejected_before_any_http_call(self):
         """Symmetric to the below-min case for the maximum bound."""
-        with patch('urllib.request.urlopen',
-                  return_value=self._resp({"1": "modified"})) as mock_urlopen:
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"1": "modified"})
+        ) as mock_urlopen:
             self.assertFalse(self.c.write_point(1, 150, self._ei(lo=0, hi=100)))
             mock_urlopen.assert_not_called()
 
     def test_at_min_boundary(self):
-        with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 0, self._ei()))
 
     def test_at_max_boundary(self):
-        with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 100, self._ei()))
 
     def test_degenerate_skips_range(self):
-        with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 999, self._ei(lo=0, hi=0, degen=True)))
 
     def test_modified_true(self):
-        with patch('urllib.request.urlopen', return_value=self._resp({"5": "modified"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"5": "modified"})):
             self.assertTrue(self.c.write_point(5, 1, self._ei()))
 
     def test_isok_true(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._resp({"5": {"value": {"isOk": True}}})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"5": {"value": {"isOk": True}}})
+        ):
             self.assertTrue(self.c.write_point(5, 1, self._ei()))
 
     def test_isok_false(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._resp({"5": {"value": {"isOk": False}}})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"5": {"value": {"isOk": False}}})
+        ):
             self.assertFalse(self.c.write_point(5, 1, self._ei()))
 
     def test_read_only_response(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._resp({"5": "error: read only value"})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"5": "error: read only value"})
+        ):
             self.assertFalse(self.c.write_point(5, 1, self._ei()))
 
     def test_no_such_param(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._resp({"5": "error: no such param"})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"5": "error: no such param"})
+        ):
             self.assertFalse(self.c.write_point(5, 1, self._ei()))
 
     def test_explicit_null_metadata_does_not_crash(self):
@@ -120,14 +135,13 @@ class TestWritePointValidation(unittest.TestCase):
         absent) must not crash — .get(key, {}) only supplies its default
         for a missing key. With no min/max known, range checks are skipped
         (not rejected) and the write proceeds normally."""
-        entity_info = {'is_writable': True, 'is_degenerate_range': False, 'metadata': None}
-        with patch('urllib.request.urlopen', return_value=self._resp({"1": "modified"})):
+        entity_info = {"is_writable": True, "is_degenerate_range": False, "metadata": None}
+        with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 50, entity_info))  # must not raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main(verbosity=2)
-
 
 
 class TestWritePointValidationProperties(unittest.TestCase):
@@ -137,80 +151,79 @@ class TestWritePointValidationProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _ei(self, min_val, max_val, degenerate=False):
         return {
-            'is_writable': True,
-            'metadata': {'minValue': min_val, 'maxValue': max_val,
-                         'variableId': 100, 'isWritable': True,
-                         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'},
-            'is_degenerate_range': degenerate,
+            "is_writable": True,
+            "metadata": {
+                "minValue": min_val,
+                "maxValue": max_val,
+                "variableId": 100,
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            },
+            "is_degenerate_range": degenerate,
         }
 
     def _mock_resp(self, pid=100):
         import json as _json
+
         mock = MagicMock()
-        mock.read.return_value = _json.dumps({str(pid): 'modified'}).encode()
+        mock.read.return_value = _json.dumps({str(pid): "modified"}).encode()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
         return mock
 
-    @given(st.integers(min_value=-1000, max_value=1000),
-           st.integers(min_value=0, max_value=100))
-    @example(min_val=0,   width=1)    # binary register (0/1)
+    @given(st.integers(min_value=-1000, max_value=1000), st.integers(min_value=0, max_value=100))
+    @example(min_val=0, width=1)  # binary register (0/1)
     @example(min_val=-300, width=600)  # temperature range (typical)
-    @example(min_val=0,   width=100)  # percentage range
+    @example(min_val=0, width=100)  # percentage range
     def test_value_in_range_proceeds_to_network(self, min_val, width):
         """Any in-range value must always proceed to urlopen."""
         max_val = min_val + width
         value = min_val + (width // 2)
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_resp()) as mock_open:
+        with patch("urllib.request.urlopen", return_value=self._mock_resp()) as mock_open:
             client.write_point(100, value, self._ei(min_val, max_val))
         mock_open.assert_called_once()
 
-    @given(st.integers(min_value=-1000, max_value=1000),
-           st.integers(min_value=0, max_value=100))
+    @given(st.integers(min_value=-1000, max_value=1000), st.integers(min_value=0, max_value=100))
     def test_value_at_min_proceeds(self, min_val, width):
         """Value exactly at min must always proceed (inclusive lower bound)."""
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_resp()) as mock_open:
+        with patch("urllib.request.urlopen", return_value=self._mock_resp()) as mock_open:
             client.write_point(100, min_val, self._ei(min_val, min_val + width))
         mock_open.assert_called_once()
 
-    @given(st.integers(min_value=-1000, max_value=1000),
-           st.integers(min_value=0, max_value=100))
+    @given(st.integers(min_value=-1000, max_value=1000), st.integers(min_value=0, max_value=100))
     def test_value_at_max_proceeds(self, min_val, width):
         """Value exactly at max must always proceed (inclusive upper bound)."""
         client = self._client()
         max_val = min_val + width
-        with patch('urllib.request.urlopen', return_value=self._mock_resp()) as mock_open:
+        with patch("urllib.request.urlopen", return_value=self._mock_resp()) as mock_open:
             client.write_point(100, max_val, self._ei(min_val, max_val))
         mock_open.assert_called_once()
 
-    @given(st.integers(min_value=-1000, max_value=1000),
-           st.integers(min_value=1, max_value=100))
+    @given(st.integers(min_value=-1000, max_value=1000), st.integers(min_value=1, max_value=100))
     def test_value_below_min_rejected_without_network(self, min_val, below):
         """Value below min must be rejected without calling urlopen."""
         client = self._client()
-        with patch('urllib.request.urlopen') as mock_open:
-            result = client.write_point(100, min_val - below,
-                                        self._ei(min_val, min_val + 10))
+        with patch("urllib.request.urlopen") as mock_open:
+            result = client.write_point(100, min_val - below, self._ei(min_val, min_val + 10))
         self.assertFalse(result)
         mock_open.assert_not_called()
 
-    @given(st.integers(min_value=-1000, max_value=1000),
-           st.integers(min_value=1, max_value=100))
+    @given(st.integers(min_value=-1000, max_value=1000), st.integers(min_value=1, max_value=100))
     def test_value_above_max_rejected_without_network(self, max_val, above):
         """Value above max must be rejected without calling urlopen."""
         client = self._client()
-        with patch('urllib.request.urlopen') as mock_open:
-            result = client.write_point(100, max_val + above,
-                                        self._ei(max_val - 10, max_val))
+        with patch("urllib.request.urlopen") as mock_open:
+            result = client.write_point(100, max_val + above, self._ei(max_val - 10, max_val))
         self.assertFalse(result)
         mock_open.assert_not_called()
 
@@ -218,10 +231,9 @@ class TestWritePointValidationProperties(unittest.TestCase):
     def test_degenerate_range_always_proceeds(self, value):
         """Degenerate range (min==max) always proceeds regardless of value."""
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_resp()) as mock_open:
+        with patch("urllib.request.urlopen", return_value=self._mock_resp()) as mock_open:
             client.write_point(100, value, self._ei(5, 5, degenerate=True))
         mock_open.assert_called_once()
-
 
 
 class TestRequestRetry(unittest.TestCase):
@@ -231,12 +243,14 @@ class TestRequestRetry(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
+        ctx.verify_mode = ssl.CERT_NONE
         self.client = NibeApiClient(
             "https://192.0.2.1:8443/api/v1/devices/0",
-            "Basic dGVzdA==", ctx,
+            "Basic dGVzdA==",
+            ctx,
         )
 
     def _ok_response(self, body: dict):
@@ -246,125 +260,135 @@ class TestRequestRetry(unittest.TestCase):
 
     def _http_error(self, code: int):
         import urllib.error
-        e = urllib.error.HTTPError(url='', code=code, msg='err',
-                                   hdrs={}, fp=None)  # type: ignore[arg-type]
+
+        e = urllib.error.HTTPError(url="", code=code, msg="err", hdrs={}, fp=None)  # type: ignore[arg-type]
         return e
 
     # ── successful request ────────────────────────────────────────────────────
 
     def test_successful_request_returns_json(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok_response({'ok': True})):
-            result = self.client.request('https://192.0.2.1:8443/test')
-        self.assertEqual(result, {'ok': True})
+        with patch("urllib.request.urlopen", return_value=self._ok_response({"ok": True})):
+            result = self.client.request("https://192.0.2.1:8443/test")
+        self.assertEqual(result, {"ok": True})
 
     # ── HTTP 401/403 — auth errors raise immediately, no retry ───────────────
 
     def test_http_401_raises_no_retry(self):
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            patch("urllib.request.urlopen", side_effect=self._http_error(401)),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
 
     def test_http_403_raises_no_retry(self):
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(403)),
+            patch("urllib.request.urlopen", side_effect=self._http_error(403)),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
 
     def test_http_401_sets_last_error_with_code_and_reason(self):
         """last_error must be set to a real message before the exception
         propagates — a mutation to None here would leave the 'API
         Unreachable' HA notification blank."""
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
+            patch("urllib.request.urlopen", side_effect=self._http_error(401)),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNotNone(self.client.last_error)
-        self.assertIn('401', self.client.last_error)
+        self.assertIn("401", self.client.last_error)
 
     def test_auth_error_does_not_sleep(self):
         """Auth errors must not sleep — they are permanent failures."""
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)), \
-             patch('nibe_api.time.sleep') as mock_sleep:
-            try:
-                self.client.request('https://192.0.2.1:8443/test')
-            except urllib.error.HTTPError:
-                pass
+
+        with (
+            patch("urllib.request.urlopen", side_effect=self._http_error(401)),
+            patch("nibe_api.time.sleep") as mock_sleep,
+            contextlib.suppress(urllib.error.HTTPError),
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
         mock_sleep.assert_not_called()
 
     # ── HTTP 404 — raises immediately, no retry ───────────────────────────────
 
     def test_http_404_raises_no_retry(self):
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(404)),
+            patch("urllib.request.urlopen", side_effect=self._http_error(404)),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
 
     def test_http_404_sets_last_error_with_url(self):
         """last_error must be set to a real message before the exception
         propagates — a mutation to None here would leave the 'API
         Unreachable' HA notification blank."""
         import urllib.error
-        url = 'https://192.0.2.1:8443/test'
+
+        url = "https://192.0.2.1:8443/test"
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(404)),
+            patch("urllib.request.urlopen", side_effect=self._http_error(404)),
             self.assertRaises(urllib.error.HTTPError),
         ):
             self.client.request(url)
         self.assertIsNotNone(self.client.last_error)
-        self.assertIn('404', self.client.last_error)
+        self.assertIn("404", self.client.last_error)
         self.assertIn(url, self.client.last_error)
 
     # ── HTTP 500 — retries once with jitter sleep, then returns None ──────────
 
     def test_http_500_retries_once(self):
         import urllib.error
+
         call_count = []
+
         def side_effect(*a, **kw):
             call_count.append(1)
-            raise urllib.error.HTTPError('', 500, 'err', None, None)
+            raise urllib.error.HTTPError("", 500, "err", None, None)
 
-        with patch('urllib.request.urlopen', side_effect=side_effect), \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", side_effect=side_effect), patch("nibe_api.time.sleep"):
+            result = self.client.request("https://192.0.2.1:8443/test")
 
         self.assertIsNone(result)
-        self.assertEqual(len(call_count), 2,
-                         "Should have been called twice (initial + one retry)")
+        self.assertEqual(len(call_count), 2, "Should have been called twice (initial + one retry)")
 
     def test_http_500_sleeps_before_retry(self):
         import urllib.error
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.HTTPError('', 500, 'err', None, None)), \
-             patch('nibe_api.time.sleep') as mock_sleep:
-            self.client.request('https://192.0.2.1:8443/test')
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError("", 500, "err", None, None),
+            ),
+            patch("nibe_api.time.sleep") as mock_sleep,
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
         mock_sleep.assert_called_once()
         delay = mock_sleep.call_args[0][0]
         self.assertGreaterEqual(delay, 0)
-        self.assertLessEqual(delay, 2.0)   # within _RETRY_BASE_S cap
+        self.assertLessEqual(delay, 2.0)  # within _RETRY_BASE_S cap
 
     def test_http_500_no_second_retry(self):
         """Only one retry total — the loop never attempts more than two calls."""
         import urllib.error
+
         call_count = []
+
         def side_effect(*a, **kw):
             call_count.append(1)
-            raise urllib.error.HTTPError('', 500, 'err', None, None)
+            raise urllib.error.HTTPError("", 500, "err", None, None)
 
-        with patch('urllib.request.urlopen', side_effect=side_effect), \
-             patch('nibe_api.time.sleep'):
-            self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", side_effect=side_effect), patch("nibe_api.time.sleep"):
+            self.client.request("https://192.0.2.1:8443/test")
 
         self.assertEqual(len(call_count), 2)  # never more than 2
 
@@ -375,14 +399,18 @@ class TestRequestRetry(unittest.TestCase):
         response that can never change. Only 5xx (plausibly transient) is
         worth retrying, per this method's own docstring."""
         import urllib.error
+
         call_count = []
+
         def side_effect(*a, **kw):
             call_count.append(1)
-            raise urllib.error.HTTPError('', 400, 'bad request', None, None)
+            raise urllib.error.HTTPError("", 400, "bad request", None, None)
 
-        with patch('urllib.request.urlopen', side_effect=side_effect), \
-             patch('nibe_api.time.sleep') as mock_sleep:
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch("urllib.request.urlopen", side_effect=side_effect),
+            patch("nibe_api.time.sleep") as mock_sleep,
+        ):
+            result = self.client.request("https://192.0.2.1:8443/test")
 
         self.assertIsNone(result)
         self.assertEqual(len(call_count), 1)
@@ -392,90 +420,98 @@ class TestRequestRetry(unittest.TestCase):
 
     def test_network_exception_retries_once(self):
         call_count = []
+
         def side_effect(*a, **kw):
             call_count.append(1)
             raise ConnectionError("network down")
 
-        with patch('urllib.request.urlopen', side_effect=side_effect), \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", side_effect=side_effect), patch("nibe_api.time.sleep"):
+            result = self.client.request("https://192.0.2.1:8443/test")
 
         self.assertIsNone(result)
         self.assertEqual(len(call_count), 2)
 
     def test_network_exception_sleeps_before_retry(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=ConnectionError("down")), \
-             patch('nibe_api.time.sleep') as mock_sleep:
-            self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch("urllib.request.urlopen", side_effect=ConnectionError("down")),
+            patch("nibe_api.time.sleep") as mock_sleep,
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
         mock_sleep.assert_called_once()
 
     def test_retry_succeeds_on_second_attempt(self):
         """If the first call fails but the retry succeeds, return the value."""
         import urllib.error
+
         attempts = []
+
         def side_effect(*a, **kw):
             attempts.append(1)
             if len(attempts) == 1:
-                raise urllib.error.HTTPError('', 503, 'unavailable', None, None)
-            return self._ok_response({'recovered': True})
+                raise urllib.error.HTTPError("", 503, "unavailable", None, None)
+            return self._ok_response({"recovered": True})
 
-        with patch('urllib.request.urlopen', side_effect=side_effect), \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", side_effect=side_effect), patch("nibe_api.time.sleep"):
+            result = self.client.request("https://192.0.2.1:8443/test")
 
-        self.assertEqual(result, {'recovered': True})
+        self.assertEqual(result, {"recovered": True})
 
     def test_no_private_retry_parameter(self):
         """The _retry flag was removed when the implementation switched from
         recursion to a loop.  Passing it must now raise TypeError so callers
         don't silently rely on a removed implementation detail."""
         with self.assertRaises(TypeError):
-            self.client.request('https://192.0.2.1:8443/test', _retry=False)
+            self.client.request("https://192.0.2.1:8443/test", _retry=False)
 
     # ── last_error tracking (surfaced in the "API Unreachable" HA notification) ──
 
     def test_last_error_none_after_success(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok_response({'ok': True})):
-            self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", return_value=self._ok_response({"ok": True})):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(self.client.last_error)
 
     def test_last_error_set_on_timeout(self):
-        with patch('urllib.request.urlopen', side_effect=TimeoutError()), \
-             patch('nibe_api.time.sleep'):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertIn('timed out', self.client.last_error)
+        with (
+            patch("urllib.request.urlopen", side_effect=TimeoutError()),
+            patch("nibe_api.time.sleep"),
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertIn("timed out", self.client.last_error)
 
     def test_last_error_set_on_connection_refused(self):
-        with patch('urllib.request.urlopen', side_effect=ConnectionRefusedError()), \
-             patch('nibe_api.time.sleep'):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertIn('refused', self.client.last_error)
+        with (
+            patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()),
+            patch("nibe_api.time.sleep"),
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertIn("refused", self.client.last_error)
 
     def test_last_error_set_on_http_error(self):
-        with patch('urllib.request.urlopen', side_effect=self._http_error(500)), \
-             patch('nibe_api.time.sleep'):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertIn('500', self.client.last_error)
+        with (
+            patch("urllib.request.urlopen", side_effect=self._http_error(500)),
+            patch("nibe_api.time.sleep"),
+        ):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertIn("500", self.client.last_error)
 
     def test_last_error_cleared_after_recovery(self):
         """A stale reason from an earlier failure streak must not survive
         into a later successful request — otherwise a since-resolved
         problem could still be quoted in a future notification."""
         self.client.last_error = "stale reason from a previous outage"
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok_response({'ok': True})):
-            self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", return_value=self._ok_response({"ok": True})):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(self.client.last_error)
 
     def test_last_error_survives_after_exhausting_retries(self):
         """After both attempts fail, last_error must reflect the failure,
         not be left over from client construction (None) or wiped by the
         retry loop itself."""
-        with patch('urllib.request.urlopen', side_effect=TimeoutError()), \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch("urllib.request.urlopen", side_effect=TimeoutError()),
+            patch("nibe_api.time.sleep"),
+        ):
+            result = self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(result)
         self.assertIsNotNone(self.client.last_error)
 
@@ -492,9 +528,10 @@ class TestDescribeNetworkError(unittest.TestCase):
 
         class _NoMessage(OSError):
             def __str__(self):
-                return ''
+                return ""
+
         result = _describe_network_error(_NoMessage())
-        self.assertEqual(result, '_NoMessage')
+        self.assertEqual(result, "_NoMessage")
 
     def test_bare_timeout_error_gets_hint(self):
         """Asserts the hint's exact text, not just a short substring —
@@ -502,11 +539,13 @@ class TestDescribeNetworkError(unittest.TestCase):
         hint like 'XXtimed out waiting for a responseXX', since the
         original words survive inside the mutmut XX-wrapping."""
         from nibe_api import _describe_network_error
+
         result = _describe_network_error(TimeoutError())
-        self.assertEqual(result, 'timed out waiting for a response')
+        self.assertEqual(result, "timed out waiting for a response")
 
     def test_connection_refused_gets_hint(self):
         from nibe_api import _describe_network_error
+
         result = _describe_network_error(ConnectionRefusedError())
         self.assertEqual(
             result,
@@ -515,21 +554,24 @@ class TestDescribeNetworkError(unittest.TestCase):
 
     def test_connection_reset_gets_hint(self):
         from nibe_api import _describe_network_error
+
         result = _describe_network_error(ConnectionResetError())
-        self.assertEqual(result, 'connection reset by the device')
+        self.assertEqual(result, "connection reset by the device")
 
     def test_real_message_is_preserved_and_hint_appended(self):
         """An exception that DOES carry a real message must keep it, not
         just the category hint — the original detail is still useful."""
         from nibe_api import _describe_network_error
-        e = TimeoutError('timed out after 30s')
+
+        e = TimeoutError("timed out after 30s")
         result = _describe_network_error(e)
-        self.assertIn('timed out after 30s', result)
+        self.assertIn("timed out after 30s", result)
 
     def test_real_message_without_category_hint_returned_as_is(self):
         from nibe_api import _describe_network_error
-        result = _describe_network_error(OSError('Network is unreachable'))
-        self.assertEqual(result, 'Network is unreachable')
+
+        result = _describe_network_error(OSError("Network is unreachable"))
+        self.assertEqual(result, "Network is unreachable")
 
     # NOTE: the `if not detail else None` guard inside the URLError+OSError
     # branch is unreachable with real exception objects — urllib.error.
@@ -545,10 +587,10 @@ class TestDescribeNetworkError(unittest.TestCase):
         import urllib.error
 
         from nibe_api import _describe_network_error
-        e = urllib.error.URLError(OSError('Name or service not known'))
-        result = _describe_network_error(e)
-        self.assertIn('Name or service not known', result)
 
+        e = urllib.error.URLError(OSError("Name or service not known"))
+        result = _describe_network_error(e)
+        self.assertIn("Name or service not known", result)
 
 
 class TestRequestRetryProperties(unittest.TestCase):
@@ -558,74 +600,95 @@ class TestRequestRetryProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _mock_resp(self, body=None):
         import json as _json
+
         mock = MagicMock()
         mock.read.return_value = _json.dumps(body or {}).encode()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
         return mock
 
-    @given(st.dictionaries(
-        st.text(min_size=1, max_size=5, alphabet=st.characters(
-            categories=['L',])),
-        st.integers(), max_size=3))
+    @given(
+        st.dictionaries(
+            st.text(
+                min_size=1,
+                max_size=5,
+                alphabet=st.characters(
+                    categories=[
+                        "L",
+                    ]
+                ),
+            ),
+            st.integers(),
+            max_size=3,
+        )
+    )
     def test_success_no_retry(self, body):
         """Successful first call: urlopen called exactly once, no sleep."""
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_resp(body)),              patch('time.sleep') as mock_sleep:
-            result = client.request('https://host/api/v1/devices/test/points')
+        with (
+            patch("urllib.request.urlopen", return_value=self._mock_resp(body)),
+            patch("time.sleep") as mock_sleep,
+        ):
+            result = client.request("https://host/api/v1/devices/test/points")
         mock_sleep.assert_not_called()
         self.assertEqual(result, body)
 
     def test_first_failure_triggers_one_retry(self):
         """Transient URLError: exactly 2 urlopen calls, 1 sleep."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.URLError('timeout')
-        calls = [err, self._mock_resp({'ok': 1})]
-        with patch('urllib.request.urlopen', side_effect=calls),              patch('time.sleep') as mock_sleep:
-            client.request('https://host/api/v1/devices/test/points')
+        err = urllib.error.URLError("timeout")
+        calls = [err, self._mock_resp({"ok": 1})]
+        with patch("urllib.request.urlopen", side_effect=calls), patch("time.sleep") as mock_sleep:
+            client.request("https://host/api/v1/devices/test/points")
         self.assertEqual(mock_sleep.call_count, 1)
 
     def test_both_failures_returns_none(self):
         """Two URLErrors: returns None after retry."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.URLError('timeout')
-        with patch('urllib.request.urlopen', side_effect=[err, err]),              patch('time.sleep'):
-            result = client.request('https://host/api/v1/devices/test/points')
+        err = urllib.error.URLError("timeout")
+        with patch("urllib.request.urlopen", side_effect=[err, err]), patch("time.sleep"):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertIsNone(result)
 
-    @given(st.integers(min_value=401, max_value=403).filter(
-        lambda c: c in (401, 403)))
+    @given(st.integers(min_value=401, max_value=403).filter(lambda c: c in (401, 403)))
     def test_auth_error_never_retried(self, code):
         """Auth errors must never trigger a retry."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Auth', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err),              patch('time.sleep') as mock_sleep:
-            try:
-                client.request('https://host/api/v1/devices/test/points')
-            except urllib.error.HTTPError:
-                pass
+        err = urllib.error.HTTPError("url", code, "Auth", {}, None)
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch("time.sleep") as mock_sleep,
+            contextlib.suppress(urllib.error.HTTPError),
+        ):
+            client.request("https://host/api/v1/devices/test/points")
         mock_sleep.assert_not_called()
 
     def test_404_never_retried(self):
         """HTTP 404 must never trigger a retry."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err),              patch('time.sleep') as mock_sleep:
-            try:
-                client.request('https://host/api/v1/devices/test/points')
-            except urllib.error.HTTPError:
-                pass
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch("time.sleep") as mock_sleep,
+            contextlib.suppress(urllib.error.HTTPError),
+        ):
+            client.request("https://host/api/v1/devices/test/points")
         mock_sleep.assert_not_called()
 
 
@@ -645,11 +708,11 @@ class TestWriteValidationBoundaries(unittest.TestCase):
 
     def _ei(self, lo, hi, divisor=1, degen=False):
         return {
-            'point_id': 1000, 'entity_type': 'number',
-            'metadata': {'divisor': divisor, 'minValue': lo, 'maxValue': hi,
-                         'isWritable': True},
-            'state_topic': 'nibe/s/1000',
-            'is_degenerate_range': degen,
+            "point_id": 1000,
+            "entity_type": "number",
+            "metadata": {"divisor": divisor, "minValue": lo, "maxValue": hi, "isWritable": True},
+            "state_topic": "nibe/s/1000",
+            "is_degenerate_range": degen,
         }
 
     def test_boundary_values_accepted(self):
@@ -658,16 +721,19 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         from unittest.mock import MagicMock, patch
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0",
-                               "Basic dGVzdA==", ctx)
-        ei_api = {'is_writable': True, 'is_degenerate_range': False,
-                  'metadata': {'minValue': 150, 'maxValue': 300, 'isWritable': True}}
+        ctx.verify_mode = ssl.CERT_NONE
+        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0", "Basic dGVzdA==", ctx)
+        ei_api = {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 150, "maxValue": 300, "isWritable": True},
+        }
         r = MagicMock()
         r.read.return_value = json.dumps({"1000": "modified"}).encode()
-        with patch('urllib.request.urlopen', return_value=r):
+        with patch("urllib.request.urlopen", return_value=r):
             self.assertTrue(client.write_point(1000, 150, ei_api))
             self.assertTrue(client.write_point(1000, 300, ei_api))
 
@@ -677,19 +743,22 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0",
-                               "Basic dGVzdA==", ctx)
+        ctx.verify_mode = ssl.CERT_NONE
+        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0", "Basic dGVzdA==", ctx)
         ei_parse = self._ei(lo=150, hi=300, divisor=10)
         # Client-side: 1000.0 / 10 = 100 which is below minValue=150
         parse_result = self.em._parse_command_payload("100.0", ei_parse, "t")
         self.assertIsNone(parse_result, "Client-side should reject 100.0 (below min)")
 
         # API-side: raw value 100 is below minValue=150
-        ei_api = {'is_writable': True, 'is_degenerate_range': False,
-                  'metadata': {'minValue': 150, 'maxValue': 300, 'isWritable': True}}
+        ei_api = {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 150, "maxValue": 300, "isWritable": True},
+        }
         api_result = client.write_point(1000, 100, ei_api)
         self.assertFalse(api_result, "API-side should reject raw 100 (below min)")
 
@@ -700,11 +769,11 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         from unittest.mock import MagicMock, patch
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0",
-                               "Basic dGVzdA==", ctx)
+        ctx.verify_mode = ssl.CERT_NONE
+        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0", "Basic dGVzdA==", ctx)
         # Client side: value 999 would normally exceed maxValue=0
         ei_parse = self._ei(lo=0, hi=0, degen=True)
         parse_result = self.em._parse_command_payload("999", ei_parse, "t")
@@ -713,9 +782,12 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         # API side
         r = MagicMock()
         r.read.return_value = json.dumps({"1000": "modified"}).encode()
-        ei_api = {'is_writable': True, 'is_degenerate_range': True,
-                  'metadata': {'minValue': 0, 'maxValue': 0, 'isWritable': True}}
-        with patch('urllib.request.urlopen', return_value=r):
+        ei_api = {
+            "is_writable": True,
+            "is_degenerate_range": True,
+            "metadata": {"minValue": 0, "maxValue": 0, "isWritable": True},
+        }
+        with patch("urllib.request.urlopen", return_value=r):
             self.assertTrue(client.write_point(1000, 999, ei_api))
 
     def test_divisor_scaling_does_not_cause_range_false_negative(self):
@@ -728,8 +800,9 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         """
         ei = self._ei(lo=150, hi=300, divisor=10)
         result = self.em._parse_command_payload("22.5", ei, "t")
-        self.assertEqual(result, 225,
-                         "22.5 * 10 = 225 which is within [150,300] — must be accepted")
+        self.assertEqual(
+            result, 225, "22.5 * 10 = 225 which is within [150,300] — must be accepted"
+        )
 
     def test_divisor_scaling_does_not_cause_range_false_positive(self):
         """A display value that looks in-range but converts to an out-of-range
@@ -739,8 +812,8 @@ class TestWriteValidationBoundaries(unittest.TestCase):
         """
         ei = self._ei(lo=150, hi=300, divisor=10)
         result = self.em._parse_command_payload("10.0", ei, "t")
-        self.assertIsNone(result,
-                          "10.0 * 10 = 100 which is below minValue=150 — must be rejected")
+        self.assertIsNone(result, "10.0 * 10 = 100 which is below minValue=150 — must be rejected")
+
 
 # ===========================================================================
 # 21. MqttDiscoveryPublisher — config builders
@@ -754,12 +827,14 @@ class TestNibeApiClientMethods(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
+        ctx.verify_mode = ssl.CERT_NONE
         self.client = NibeApiClient(
             "https://192.0.2.1:8443/api/v1/devices/0",
-            "Basic dGVzdA==", ctx,
+            "Basic dGVzdA==",
+            ctx,
         )
 
     def _ok(self, body: dict):
@@ -770,41 +845,41 @@ class TestNibeApiClientMethods(unittest.TestCase):
     def _http_error(self, code: int, body: str = ""):
         import io
         import urllib.error
+
         fp = io.BytesIO(body.encode()) if body else None
-        e  = urllib.error.HTTPError(url='', code=code, msg='err', hdrs={}, fp=fp)  # type: ignore[arg-type]
+        e = urllib.error.HTTPError(url="", code=code, msg="err", hdrs={}, fp=fp)  # type: ignore[arg-type]
         if body:
             e.read = lambda: body.encode()  # type: ignore[method-assign, misc, assignment]
         return e
 
     def _entity_info(self, writable=True, min_val=0, max_val=100, degenerate=False):
         return {
-            'is_writable':       writable,
-            'is_degenerate_range': degenerate,
-            'metadata': {
-                'minValue': min_val,
-                'maxValue': max_val,
+            "is_writable": writable,
+            "is_degenerate_range": degenerate,
+            "metadata": {
+                "minValue": min_val,
+                "maxValue": max_val,
             },
         }
 
     # ── fetch_point ──────────────────────────────────────────────────────────
 
     def test_fetch_point_returns_dict_on_success(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'title': 'Temp'})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"title": "Temp"})):
             result = self.client.fetch_point(1000)
-        self.assertEqual(result, {'title': 'Temp'})
+        self.assertEqual(result, {"title": "Temp"})
 
     def test_fetch_point_404_returns_none(self):
         """HTTP 404 returns None — dynamic point inactive."""
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(404)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(404)):
             result = self.client.fetch_point(1000)
         self.assertIsNone(result)
 
     def test_fetch_point_non_404_http_error_reraises(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(500)), \
-             patch('nibe_api.time.sleep'):
+        with (
+            patch("urllib.request.urlopen", side_effect=self._http_error(500)),
+            patch("nibe_api.time.sleep"),
+        ):
             result = self.client.fetch_point(1000)
         self.assertIsNone(result)
 
@@ -813,9 +888,10 @@ class TestNibeApiClientMethods(unittest.TestCase):
         auth errors and fetch_point's except block re-raises anything not 404
         (line 176). Callers like post-write failure revert need to see it."""
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(401)),
-            patch('nibe_api.time.sleep'),
+            patch("urllib.request.urlopen", side_effect=self._http_error(401)),
+            patch("nibe_api.time.sleep"),
             self.assertRaises(urllib.error.HTTPError) as ctx,
         ):
             self.client.fetch_point(1000)
@@ -824,31 +900,29 @@ class TestNibeApiClientMethods(unittest.TestCase):
     # ── fetch_notifications ──────────────────────────────────────────────────
 
     def test_fetch_notifications_returns_alarm_list(self):
-        alarms = [{'alarmId': 1, 'description': 'test'}]
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'alarms': alarms})):
+        alarms = [{"alarmId": 1, "description": "test"}]
+        with patch("urllib.request.urlopen", return_value=self._ok({"alarms": alarms})):
             result = self.client.fetch_notifications()
         self.assertEqual(result, alarms)
 
     def test_fetch_notifications_returns_empty_list_when_no_alarms(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'alarms': []})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"alarms": []})):
             result = self.client.fetch_notifications()
         self.assertEqual(result, [])
 
     def test_fetch_notifications_explicit_null_alarms_returns_empty_list(self):
-        """"alarms": null (present but None, not just absent) must return
+        """ "alarms": null (present but None, not just absent) must return
         [] like the missing-key case — a bare None would otherwise crash
         the sole caller's len(alarms) with TypeError."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'alarms': None})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"alarms": None})):
             result = self.client.fetch_notifications()
         self.assertEqual(result, [])
 
     def test_fetch_notifications_returns_none_on_network_error(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=ConnectionError('down')), \
-             patch('nibe_api.time.sleep'):
+        with (
+            patch("urllib.request.urlopen", side_effect=ConnectionError("down")),
+            patch("nibe_api.time.sleep"),
+        ):
             result = self.client.fetch_notifications()
         self.assertIsNone(result)
 
@@ -856,47 +930,53 @@ class TestNibeApiClientMethods(unittest.TestCase):
         """fetch_notifications must hit <base_url>/notifications, not a
         reconstructed path via the old _device_root split."""
         captured = {}
+
         def fake_urlopen(req, _context=None, _timeout=None, **_kw):
-            captured['url'] = req.full_url
+            captured["url"] = req.full_url
             r = MagicMock()
-            r.read.return_value = json.dumps({'alarms': []}).encode()
+            r.read.return_value = json.dumps({"alarms": []}).encode()
             return r
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             self.client.fetch_notifications()
         self.assertEqual(
-            captured['url'],
-            'https://192.0.2.1:8443/api/v1/devices/0/notifications',
+            captured["url"],
+            "https://192.0.2.1:8443/api/v1/devices/0/notifications",
         )
 
     def test_reset_notifications_url(self):
         """reset_notifications must DELETE <base_url>/notifications."""
         captured = {}
+
         def fake_urlopen(req, _context=None, _timeout=None, **_kw):
-            captured['url']    = req.full_url
-            captured['method'] = req.get_method()
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
             return MagicMock()
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             self.client.reset_notifications()
         self.assertEqual(
-            captured['url'],
-            'https://192.0.2.1:8443/api/v1/devices/0/notifications',
+            captured["url"],
+            "https://192.0.2.1:8443/api/v1/devices/0/notifications",
         )
-        self.assertEqual(captured['method'], 'DELETE')
+        self.assertEqual(captured["method"], "DELETE")
 
     def test_write_device_mode_url(self):
         """write_device_mode must POST to <base_url>/{mode_type}."""
         captured = {}
+
         def fake_urlopen(req, _context=None, _timeout=None, **_kw):
-            captured['url']    = req.full_url
-            captured['method'] = req.get_method()
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
             return MagicMock()
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
-            self.client.write_device_mode('aidmode', 'on')
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.write_device_mode("aidmode", "on")
         self.assertEqual(
-            captured['url'],
-            'https://192.0.2.1:8443/api/v1/devices/0/aidmode',
+            captured["url"],
+            "https://192.0.2.1:8443/api/v1/devices/0/aidmode",
         )
-        self.assertEqual(captured['method'], 'POST')
+        self.assertEqual(captured["method"], "POST")
 
     # ── patch_points — guard rails ───────────────────────────────────────────
 
@@ -913,8 +993,7 @@ class TestNibeApiClientMethods(unittest.TestCase):
         self.assertFalse(result)
 
     def test_write_degenerate_range_bypasses_range_check(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'1000': 'modified'})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"1000": "modified"})):
             result = self.client.write_point(
                 1000, 99999, self._entity_info(min_val=0, max_val=0, degenerate=True)
             )
@@ -923,109 +1002,100 @@ class TestNibeApiClientMethods(unittest.TestCase):
     # ── patch_points — success responses ────────────────────────────────────
 
     def test_write_modified_string_returns_true(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'1000': 'modified'})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"1000": "modified"})):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertTrue(result)
 
     def test_write_full_object_response_isok_true_returns_true(self):
-        body = {'1000': {'value': {'isOk': True, 'variableId': 1000, 'integerValue': 50}}}
-        with patch('urllib.request.urlopen', return_value=self._ok(body)):
+        body = {"1000": {"value": {"isOk": True, "variableId": 1000, "integerValue": 50}}}
+        with patch("urllib.request.urlopen", return_value=self._ok(body)):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertTrue(result)
 
     def test_write_full_object_response_isok_false_returns_false(self):
-        body = {'1000': {'value': {'isOk': False}}}
-        with patch('urllib.request.urlopen', return_value=self._ok(body)):
+        body = {"1000": {"value": {"isOk": False}}}
+        with patch("urllib.request.urlopen", return_value=self._ok(body)):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     def test_write_no_such_param_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'1000': 'error: no such param'})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._ok({"1000": "error: no such param"})
+        ):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     def test_write_read_only_value_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'1000': 'error: read only value'})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._ok({"1000": "error: read only value"})
+        ):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     # ── patch_points — HTTP error responses ─────────────────────────────────
 
     def test_write_http_400_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(400, 'bad request')):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(400, "bad request")):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     def test_write_http_401_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(401)):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     def test_write_http_403_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(403)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(403)):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     def test_write_network_exception_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=ConnectionError('down')):
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("down")):
             result = self.client.write_point(1000, 50, self._entity_info())
         self.assertFalse(result)
 
     # ── reset_notifications ──────────────────────────────────────────────────
 
     def test_reset_notifications_success_returns_true(self):
-        with patch('urllib.request.urlopen', return_value=MagicMock()):
+        with patch("urllib.request.urlopen", return_value=MagicMock()):
             result = self.client.reset_notifications()
         self.assertTrue(result)
 
     def test_reset_notifications_405_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(405)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(405)):
             result = self.client.reset_notifications()
         self.assertFalse(result)
 
     def test_reset_notifications_401_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(401)):
             result = self.client.reset_notifications()
         self.assertFalse(result)
 
     def test_reset_notifications_network_exception_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=ConnectionError('down')):
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("down")):
             result = self.client.reset_notifications()
         self.assertFalse(result)
 
     # ── write_device_mode ────────────────────────────────────────────────────
 
     def test_write_device_mode_success_returns_true(self):
-        with patch('urllib.request.urlopen', return_value=MagicMock()):
-            result = self.client.write_device_mode('aidmode', 'on')
+        with patch("urllib.request.urlopen", return_value=MagicMock()):
+            result = self.client.write_device_mode("aidmode", "on")
         self.assertTrue(result)
 
     def test_write_device_mode_400_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(400, 'bad value')):
-            result = self.client.write_device_mode('aidmode', 'invalid')
+        with patch("urllib.request.urlopen", side_effect=self._http_error(400, "bad value")):
+            result = self.client.write_device_mode("aidmode", "invalid")
         self.assertFalse(result)
 
     def test_write_device_mode_401_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=self._http_error(401)):
-            result = self.client.write_device_mode('smartmode', 'away')
+        with patch("urllib.request.urlopen", side_effect=self._http_error(401)):
+            result = self.client.write_device_mode("smartmode", "away")
         self.assertFalse(result)
 
     def test_write_device_mode_network_exception_returns_false(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=ConnectionError('down')):
-            result = self.client.write_device_mode('aidmode', 'on')
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("down")):
+            result = self.client.write_device_mode("aidmode", "on")
         self.assertFalse(result)
 
 
@@ -1041,13 +1111,15 @@ class TestNibeApiRequestProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _mock_response(self, body_dict):
         import json as _json
+
         mock_resp = MagicMock()
         mock_resp.read.return_value = _json.dumps(body_dict).encode()
         mock_resp.__enter__ = lambda s: s
@@ -1058,82 +1130,105 @@ class TestNibeApiRequestProperties(unittest.TestCase):
     def test_auth_error_always_raises(self, code):
         """HTTP 401/403 must always raise HTTPError — never return None."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Auth', {}, None)
+        err = urllib.error.HTTPError("url", code, "Auth", {}, None)
         with (
-            patch('urllib.request.urlopen', side_effect=err),
+            patch("urllib.request.urlopen", side_effect=err),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            client.request('https://host/api/v1/devices/test/points')
+            client.request("https://host/api/v1/devices/test/points")
 
     def test_404_always_raises(self):
         """HTTP 404 must always raise HTTPError (dynamic point inactive)."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
         with (
-            patch('urllib.request.urlopen', side_effect=err),
+            patch("urllib.request.urlopen", side_effect=err),
             self.assertRaises(urllib.error.HTTPError),
         ):
-            client.request('https://host/api/v1/devices/test/points/99999')
+            client.request("https://host/api/v1/devices/test/points/99999")
 
     @given(st.integers(min_value=500, max_value=599))
     def test_server_error_returns_none(self, code):
         """Non-auth HTTP errors (5xx) return None after retry."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Server Error', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err), \
-             patch('time.sleep'):
-            result = client.request('https://host/api/v1/devices/test/points')
+        err = urllib.error.HTTPError("url", code, "Server Error", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err), patch("time.sleep"):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertIsNone(result)
 
     def test_url_error_returns_none(self):
         """Network errors return None after retry."""
         import urllib.error
+
         client = self._client()
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('Connection refused')), \
-             patch('time.sleep'):
-            result = client.request('https://host/api/v1/devices/test/points')
+        with (
+            patch(
+                "urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")
+            ),
+            patch("time.sleep"),
+        ):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertIsNone(result)
 
-    @given(st.dictionaries(
-        st.text(min_size=1, max_size=10, alphabet=st.characters(
-            categories=['L',])),
-        st.integers(),
-        max_size=5,
-    ))
+    @given(
+        st.dictionaries(
+            st.text(
+                min_size=1,
+                max_size=10,
+                alphabet=st.characters(
+                    categories=[
+                        "L",
+                    ]
+                ),
+            ),
+            st.integers(),
+            max_size=5,
+        )
+    )
     def test_success_returns_parsed_json(self, body):
         """Successful response returns the parsed JSON dict."""
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_response(body)):
-            result = client.request('https://host/api/v1/devices/test/points')
+        with patch("urllib.request.urlopen", return_value=self._mock_response(body)):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertEqual(result, body)
 
     def test_json_error_returns_none(self):
         """Malformed JSON response returns None gracefully."""
         client = self._client()
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'not json {'
+        mock_resp.read.return_value = b"not json {"
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock_resp), \
-             patch('time.sleep'):
-            result = client.request('https://host/api/v1/devices/test/points')
+        with patch("urllib.request.urlopen", return_value=mock_resp), patch("time.sleep"):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertIsNone(result)
 
-    @given(st.dictionaries(
-        st.text(min_size=1, max_size=10, alphabet=st.characters(
-            categories=['L',])),
-        st.integers(),
-        max_size=5,
-    ))
+    @given(
+        st.dictionaries(
+            st.text(
+                min_size=1,
+                max_size=10,
+                alphabet=st.characters(
+                    categories=[
+                        "L",
+                    ]
+                ),
+            ),
+            st.integers(),
+            max_size=5,
+        )
+    )
     def test_result_always_dict_or_none(self, body):
         """request() always returns dict or None, never raises for valid responses."""
         client = self._client()
-        with patch('urllib.request.urlopen', return_value=self._mock_response(body)):
-            result = client.request('https://host/api/v1/devices/test/points')
+        with patch("urllib.request.urlopen", return_value=self._mock_response(body)):
+            result = client.request("https://host/api/v1/devices/test/points")
         self.assertIn(type(result), (dict, type(None)))
 
 
@@ -1154,44 +1249,48 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def test_404_returns_none(self):
         """HTTP 404 must return None — dynamic point inactive."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
             result = client.fetch_point(99999)
         self.assertIsNone(result)
 
     def test_404_never_raises(self):
         """HTTP 404 must never propagate — always caught."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
             client.fetch_point(99999)  # must not raise
 
     @given(_nibe_point_id)
-    @example(pid=10001)   # typical dynamic point range
-    @example(pid=99999)   # large pid
-    @example(pid=1)       # small pid
+    @example(pid=10001)  # typical dynamic point range
+    @example(pid=99999)  # large pid
+    @example(pid=1)  # small pid
     def test_404_result_is_always_none(self, pid):
         """HTTP 404 for any point_id always returns None."""
         import ssl
         import urllib.error
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        client = NibeApiClient('user:pass', 'https://host:8443', ctx)
-        err = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
+        client = NibeApiClient("user:pass", "https://host:8443", ctx)
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
             result = client.fetch_point(pid)
         self.assertIsNone(result)
 
@@ -1199,10 +1298,11 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
     def test_auth_error_propagates(self, code):
         """401/403 must always propagate through fetch_point."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Auth', {}, None)
+        err = urllib.error.HTTPError("url", code, "Auth", {}, None)
         with (
-            patch('urllib.request.urlopen', side_effect=err),
+            patch("urllib.request.urlopen", side_effect=err),
             self.assertRaises(urllib.error.HTTPError),
         ):
             client.fetch_point(100)
@@ -1210,16 +1310,16 @@ class TestNibeApiFetchPointProperties(unittest.TestCase):
     def test_success_returns_dict(self):
         """Successful response returns the parsed JSON dict."""
         import json as _json
+
         client = self._client()
-        body = {'variableId': 100, 'value': {'integerValue': 42}}
+        body = {"variableId": 100, "value": {"integerValue": 42}}
         mock_resp = MagicMock()
         mock_resp.read.return_value = _json.dumps(body).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock_resp):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             result = client.fetch_point(100)
         self.assertEqual(result, body)
-
 
 
 class TestNibeApiFetchNotificationsProperties(unittest.TestCase):
@@ -1229,13 +1329,15 @@ class TestNibeApiFetchNotificationsProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _mock_resp(self, body):
         import json as _json
+
         mock = MagicMock()
         mock.read.return_value = _json.dumps(body).encode()
         mock.__enter__ = lambda s: s
@@ -1245,34 +1347,36 @@ class TestNibeApiFetchNotificationsProperties(unittest.TestCase):
     def test_none_from_request_returns_none(self):
         """When request() returns None, fetch_notifications must return None."""
         client = self._client()
-        with patch.object(client, 'request', return_value=None):
+        with patch.object(client, "request", return_value=None):
             result = client.fetch_notifications()
         self.assertIsNone(result)
 
-    @given(st.lists(st.dictionaries(
-        st.text(max_size=10), st.text(max_size=10), max_size=3), max_size=5))
+    @given(
+        st.lists(
+            st.dictionaries(st.text(max_size=10), st.text(max_size=10), max_size=3), max_size=5
+        )
+    )
     def test_alarms_key_returned(self, alarms):
         """Response with 'alarms' key → returns the alarms list."""
         client = self._client()
-        with patch.object(client, 'request', return_value={'alarms': alarms}):
+        with patch.object(client, "request", return_value={"alarms": alarms}):
             result = client.fetch_notifications()
         self.assertEqual(result, alarms)
 
     def test_missing_alarms_key_returns_empty_list(self):
         """Response without 'alarms' key → returns []."""
         client = self._client()
-        with patch.object(client, 'request', return_value={'other': 'data'}):
+        with patch.object(client, "request", return_value={"other": "data"}):
             result = client.fetch_notifications()
         self.assertEqual(result, [])
 
     def test_result_always_list_or_none(self):
         """fetch_notifications always returns list or None."""
         client = self._client()
-        for response in [None, {'alarms': []}, {'alarms': [{'id': 1}]}, {}]:
-            with patch.object(client, 'request', return_value=response):
+        for response in [None, {"alarms": []}, {"alarms": [{"id": 1}]}, {}]:
+            with patch.object(client, "request", return_value=response):
                 result = client.fetch_notifications()
             self.assertIn(type(result), (list, type(None)))
-
 
 
 class TestNibeApiWritePointProperties(unittest.TestCase):
@@ -1282,31 +1386,35 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _entity_info(self, min_val=0, max_val=100):
         return {
-            'is_writable': True,
-            'metadata': {
-                'minValue': min_val, 'maxValue': max_val,
-                'variableId': 100, 'isWritable': True,
-                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+            "is_writable": True,
+            "metadata": {
+                "minValue": min_val,
+                "maxValue": max_val,
+                "variableId": 100,
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
             },
-            'is_degenerate_range': False,
+            "is_degenerate_range": False,
         }
 
     def test_always_returns_bool(self):
         """write_point must always return a bool."""
         client = self._client()
         import json as _json
+
         resp = MagicMock()
-        resp.read.return_value = _json.dumps({'100': 'modified'}).encode()
+        resp.read.return_value = _json.dumps({"100": "modified"}).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=resp):
+        with patch("urllib.request.urlopen", return_value=resp):
             result = client.write_point(100, 50, self._entity_info())
         self.assertIsInstance(result, bool)
 
@@ -1314,11 +1422,12 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
         """Firmware 'modified' response must return True."""
         client = self._client()
         import json as _json
+
         resp = MagicMock()
-        resp.read.return_value = _json.dumps({'100': 'modified'}).encode()
+        resp.read.return_value = _json.dumps({"100": "modified"}).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=resp):
+        with patch("urllib.request.urlopen", return_value=resp):
             result = client.write_point(100, 50, self._entity_info())
         self.assertTrue(result)
 
@@ -1326,12 +1435,12 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
         """Firmware full-object response with isOk=True must return True."""
         client = self._client()
         import json as _json
+
         resp = MagicMock()
-        resp.read.return_value = _json.dumps(
-            {'100': {'value': {'isOk': True}}}).encode()
+        resp.read.return_value = _json.dumps({"100": {"value": {"isOk": True}}}).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=resp):
+        with patch("urllib.request.urlopen", return_value=resp):
             result = client.write_point(100, 50, self._entity_info())
         self.assertTrue(result)
 
@@ -1339,7 +1448,7 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
     def test_value_below_min_returns_false(self, excess):
         """Value below minimum must always return False without network call."""
         client = self._client()
-        with patch('urllib.request.urlopen') as mock_open:
+        with patch("urllib.request.urlopen") as mock_open:
             result = client.write_point(100, -(excess + 1), self._entity_info(0, 100))
         self.assertFalse(result)
         mock_open.assert_not_called()
@@ -1348,7 +1457,7 @@ class TestNibeApiWritePointProperties(unittest.TestCase):
     def test_value_above_max_returns_false(self, excess):
         """Value above maximum must always return False without network call."""
         client = self._client()
-        with patch('urllib.request.urlopen') as mock_open:
+        with patch("urllib.request.urlopen") as mock_open:
             result = client.write_point(100, 100 + excess, self._entity_info(0, 100))
         self.assertFalse(result)
         mock_open.assert_not_called()
@@ -1370,20 +1479,21 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
-    @example(mode_type='aidmode',   value='on')   # confirmed working on hardware
-    @example(mode_type='aidmode',   value='off')
-    @example(mode_type='smartmode', value='normal')  # confirmed working on hardware
-    @example(mode_type='smartmode', value='away')    # confirmed working on hardware
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
+    @example(mode_type="aidmode", value="on")  # confirmed working on hardware
+    @example(mode_type="aidmode", value="off")
+    @example(mode_type="smartmode", value="normal")  # confirmed working on hardware
+    @example(mode_type="smartmode", value="away")  # confirmed working on hardware
     def test_json_body_key_equals_mode_type(self, mode_type, value):
         """JSON body must always use mode_type as the key — not 'value' or 'mode'."""
         import json as _json
+
         client = self._client()
         captured = []
 
@@ -1394,18 +1504,19 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.write_device_mode(mode_type, value)
 
         self.assertTrue(captured, "urlopen was never called")
-        self.assertIn(mode_type, captured[0],
-            f"JSON body {captured[0]} does not contain key '{mode_type}'")
+        self.assertIn(
+            mode_type, captured[0], f"JSON body {captured[0]} does not contain key '{mode_type}'"
+        )
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
     def test_json_body_has_exactly_one_key(self, mode_type, value):
         """JSON body must have exactly one key — no extra fields."""
         import json as _json
+
         client = self._client()
         captured = []
 
@@ -1416,17 +1527,17 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.write_device_mode(mode_type, value)
 
         if captured:
             self.assertEqual(len(captured[0]), 1)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
     def test_json_body_value_matches_input(self, mode_type, value):
         """The value in the JSON body must exactly match the input value."""
         import json as _json
+
         client = self._client()
         captured = []
 
@@ -1437,55 +1548,54 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.write_device_mode(mode_type, value)
 
         if captured:
             self.assertEqual(captured[0][mode_type], value)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
     def test_success_returns_true(self, mode_type, value):
         """Successful POST returns True."""
         client = self._client()
         mock = MagicMock()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock):
+        with patch("urllib.request.urlopen", return_value=mock):
             result = client.write_device_mode(mode_type, value)
         self.assertTrue(result)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20),
-           st.integers(min_value=400, max_value=599))
+    @given(
+        st.sampled_from(["aidmode", "smartmode"]),
+        st.text(max_size=20),
+        st.integers(min_value=400, max_value=599),
+    )
     def test_http_error_returns_false(self, mode_type, value, code):
         """Any HTTP error returns False."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Error', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
+        err = urllib.error.HTTPError("url", code, "Error", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
             result = client.write_device_mode(mode_type, value)
         self.assertFalse(result)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
     def test_always_returns_bool(self, mode_type, value):
         """write_device_mode always returns a bool."""
         client = self._client()
         mock = MagicMock()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock):
+        with patch("urllib.request.urlopen", return_value=mock):
             result = client.write_device_mode(mode_type, value)
         self.assertIsInstance(result, bool)
 
-    @given(st.sampled_from(['aidmode', 'smartmode']),
-           st.text(max_size=20))
+    @given(st.sampled_from(["aidmode", "smartmode"]), st.text(max_size=20))
     def test_url_contains_mode_type(self, mode_type, value):
         """The URL must always contain mode_type as the path segment."""
         client = self._client()
         captured_urls = []
-
 
         def fake_urlopen(req, **kw):
             captured_urls.append(req.full_url)
@@ -1494,7 +1604,7 @@ class TestNibeApiWriteDeviceModeProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.write_device_mode(mode_type, value)
 
         if captured_urls:
@@ -1513,10 +1623,11 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def test_success_returns_true(self):
         """Successful DELETE returns True."""
@@ -1524,7 +1635,7 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
         mock = MagicMock()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock):
+        with patch("urllib.request.urlopen", return_value=mock):
             result = client.reset_notifications()
         self.assertTrue(result)
 
@@ -1532,18 +1643,21 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
     def test_http_error_returns_false(self, code):
         """Any HTTP error returns False — including 405 (not supported)."""
         import urllib.error
+
         client = self._client()
-        err = urllib.error.HTTPError('url', code, 'Error', {}, None)
-        with patch('urllib.request.urlopen', side_effect=err):
+        err = urllib.error.HTTPError("url", code, "Error", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
             result = client.reset_notifications()
         self.assertFalse(result)
 
     def test_url_error_returns_false(self):
         """Network errors return False."""
         import urllib.error
+
         client = self._client()
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('Connection refused')):
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")
+        ):
             result = client.reset_notifications()
         self.assertFalse(result)
 
@@ -1553,7 +1667,7 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
         mock = MagicMock()
         mock.__enter__ = lambda s: s
         mock.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=mock):
+        with patch("urllib.request.urlopen", return_value=mock):
             result = client.reset_notifications()
         self.assertIsInstance(result, bool)
 
@@ -1569,11 +1683,11 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.reset_notifications()
 
         self.assertTrue(captured)
-        self.assertEqual(captured[0], 'DELETE')
+        self.assertEqual(captured[0], "DELETE")
 
     def test_url_contains_notifications(self):
         """The URL must always contain '/notifications'."""
@@ -1587,11 +1701,11 @@ class TestNibeApiResetNotificationsProperties(unittest.TestCase):
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             client.reset_notifications()
 
         self.assertTrue(captured)
-        self.assertIn('notifications', captured[0])
+        self.assertIn("notifications", captured[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1610,32 +1724,36 @@ class TestNibeApiWritePointDegenerateProperties(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return NibeApiClient('user:pass', 'https://host:8443', ctx)
+        return NibeApiClient("user:pass", "https://host:8443", ctx)
 
     def _degenerate_entity_info(self, val=5):
         return {
-            'is_writable': True,
-            'metadata': {
-                'minValue': val, 'maxValue': val,
-                'variableId': 100, 'isWritable': True,
-                'modbusRegisterType': 'MODBUS_HOLDING_REGISTER',
+            "is_writable": True,
+            "metadata": {
+                "minValue": val,
+                "maxValue": val,
+                "variableId": 100,
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
             },
-            'is_degenerate_range': True,
+            "is_degenerate_range": True,
         }
 
     @given(st.integers(min_value=-32768, max_value=32767))
     def test_degenerate_range_bypasses_min_max_check(self, value):
         """Any value bypasses min/max validation for degenerate range points."""
         import json as _json
+
         client = self._client()
         resp = MagicMock()
-        resp.read.return_value = _json.dumps({'100': 'modified'}).encode()
+        resp.read.return_value = _json.dumps({"100": "modified"}).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=resp):
+        with patch("urllib.request.urlopen", return_value=resp):
             result = client.write_point(100, value, self._degenerate_entity_info())
         # With degenerate range, value is never rejected by range check
         # (may still fail for other reasons, but not range validation)
@@ -1646,11 +1764,12 @@ class TestNibeApiWritePointDegenerateProperties(unittest.TestCase):
         """Degenerate range always proceeds to the network call."""
         client = self._client()
         import json as _json
+
         resp = MagicMock()
-        resp.read.return_value = _json.dumps({'100': 'modified'}).encode()
+        resp.read.return_value = _json.dumps({"100": "modified"}).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch('urllib.request.urlopen', return_value=resp) as mock_open:
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
             client.write_point(100, value, self._degenerate_entity_info())
         mock_open.assert_called_once()
 
@@ -1659,13 +1778,17 @@ class TestNibeApiWritePointDegenerateProperties(unittest.TestCase):
         """Non-degenerate range rejects out-of-range values without network call."""
         client = self._client()
         ei = {
-            'is_writable': True,
-            'metadata': {'minValue': 0, 'maxValue': 100,
-                         'variableId': 100, 'isWritable': True,
-                         'modbusRegisterType': 'MODBUS_HOLDING_REGISTER'},
-            'is_degenerate_range': False,
+            "is_writable": True,
+            "metadata": {
+                "minValue": 0,
+                "maxValue": 100,
+                "variableId": 100,
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            },
+            "is_degenerate_range": False,
         }
-        with patch('urllib.request.urlopen') as mock_open:
+        with patch("urllib.request.urlopen") as mock_open:
             client.write_point(100, 100 + excess + 1, ei)
         mock_open.assert_not_called()
 
@@ -1683,12 +1806,14 @@ class TestNibeApiRemainingPaths(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
+        ctx.verify_mode = ssl.CERT_NONE
         self.client = NibeApiClient(
             "https://192.0.2.1:8443/api/v1/devices/0",
-            "Basic dGVzdA==", ctx,
+            "Basic dGVzdA==",
+            ctx,
         )
 
     def _ok(self, body):
@@ -1698,43 +1823,44 @@ class TestNibeApiRemainingPaths(unittest.TestCase):
 
     def _http_error(self, code):
         import urllib.error
-        return urllib.error.HTTPError(
-            url='', code=code, msg='err', hdrs=None, fp=None)
+
+        return urllib.error.HTTPError(url="", code=code, msg="err", hdrs=None, fp=None)
 
     def test_request_with_data_sets_content_type_header(self):
         """When data is passed to request(), Content-Type header is added."""
         captured = {}
+
         def fake_urlopen(req, _context=None, _timeout=None, **_kw):
-            captured['headers'] = dict(req.headers)
+            captured["headers"] = dict(req.headers)
             return self._ok({})
-        with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             self.client.request(
                 "https://192.0.2.1:8443/api/v1/devices/0/points",
-                method='PATCH',
+                method="PATCH",
                 data='{"test": 1}',
             )
-        self.assertIn('Content-type', captured['headers'])
+        self.assertIn("Content-type", captured["headers"])
 
     def test_fetch_bulk_points_returns_dict(self):
         """fetch_bulk_points delegates to request() and returns the parsed dict."""
-        with patch('urllib.request.urlopen', return_value=self._ok({'100': {}})):
+        with patch("urllib.request.urlopen", return_value=self._ok({"100": {}})):
             result = self.client.fetch_bulk_points()
-        self.assertEqual(result, {'100': {}})
+        self.assertEqual(result, {"100": {}})
 
     def test_write_point_unexpected_response_logs_and_returns_false(self):
         """An unexpected string response (not 'modified', not an error key)
         hits the else branch and returns False."""
         entity_info = {
-            'is_writable': True,
-            'is_degenerate_range': True,   # skip range checks
-            'metadata': {},
+            "is_writable": True,
+            "is_degenerate_range": True,  # skip range checks
+            "metadata": {},
         }
-        with patch('urllib.request.urlopen',
-                   return_value=self._ok({'999': 'some_unexpected_value'})):
+        with patch(
+            "urllib.request.urlopen", return_value=self._ok({"999": "some_unexpected_value"})
+        ):
             result = self.client.write_point(999, 1, entity_info)
         self.assertFalse(result)
-
-
 
 
 # ===========================================================================
@@ -1752,7 +1878,8 @@ class TestRetryDelayLowerBound(unittest.TestCase):
     def test_retry_delay_can_return_zero_or_near_zero(self):
         """Lower bound is 0 — mock random.uniform to verify it's called with 0."""
         from nibe_api import _retry_delay
-        with patch('nibe_api.random.uniform', return_value=0.0) as mock_uniform:
+
+        with patch("nibe_api.random.uniform", return_value=0.0) as mock_uniform:
             result = _retry_delay()
         # First arg must be 0 (not 1)
         args = mock_uniform.call_args[0]
@@ -1762,7 +1889,8 @@ class TestRetryDelayLowerBound(unittest.TestCase):
     def test_retry_delay_upper_bound_is_min_of_base_and_max(self):
         """Upper bound is min(_RETRY_BASE_S, _RETRY_MAX_S) — cap prevents runaway."""
         from nibe_api import _RETRY_BASE_S, _RETRY_MAX_S, _retry_delay
-        with patch('nibe_api.random.uniform', return_value=1.0) as mock_uniform:
+
+        with patch("nibe_api.random.uniform", return_value=1.0) as mock_uniform:
             _retry_delay()
         args = mock_uniform.call_args[0]
         self.assertEqual(args[1], min(_RETRY_BASE_S, _RETRY_MAX_S))
@@ -1778,26 +1906,30 @@ class TestRequestSslContextAndBody(unittest.TestCase):
 
     def setUp(self):
         import ssl
+
         self.client = MagicMock()
-        self.client.base_url = 'https://192.0.2.1:8443/api/v1/devices/0'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443/api/v1/devices/0"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = ssl.create_default_context()
         # Import the real request method
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443/api/v1/devices/0'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443/api/v1/devices/0"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def test_request_passes_ssl_context_to_urlopen(self):
         """ssl_context must be passed as context= to urllib.request.urlopen."""
         mock_response = MagicMock()
         mock_response.read.return_value = b'{"ok": true}'
-        with patch('urllib.request.urlopen', return_value=mock_response) as mock_open:
-            self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_open:
+            self.client.request("https://192.0.2.1:8443/test")
         call_kwargs = mock_open.call_args
         # context= must be passed and must be our ssl_context
-        ctx = call_kwargs[1].get('context') or (call_kwargs[0][1] if len(call_kwargs[0]) > 1 else None)
+        ctx = call_kwargs[1].get("context") or (
+            call_kwargs[0][1] if len(call_kwargs[0]) > 1 else None
+        )
         self.assertIsNotNone(ctx, "ssl_context must be passed to urlopen")
         self.assertEqual(ctx, self.client.ssl_context)
 
@@ -1806,15 +1938,18 @@ class TestRequestSslContextAndBody(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.read.return_value = b'{"ok": true}'
         captured_requests = []
+
         def capture_urlopen(req, **kwargs):
             captured_requests.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture_urlopen):
-            self.client.request('https://192.0.2.1:8443/test', data='{"x": 1}')
+
+        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+            self.client.request("https://192.0.2.1:8443/test", data='{"x": 1}')
         self.assertTrue(captured_requests)
         req = captured_requests[0]
         self.assertIsNotNone(req.data, "data= must be set on the Request when data is provided")
         self.assertEqual(req.data, b'{"x": 1}')
+
 
 # ===========================================================================
 # Phase 2 round 2 — nibe_api.py genuine logic gaps
@@ -1830,34 +1965,41 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443/api/v1/devices/0'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443/api/v1/devices/0"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def test_exactly_two_attempts_on_transient_error(self):
         """range(2) → exactly 2 urlopen calls on transient failure, not 3."""
         import urllib.error
-        error = urllib.error.HTTPError('url', 500, 'Server Error', {}, None)
-        with patch('urllib.request.urlopen', side_effect=error) as mock_open, \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+
+        error = urllib.error.HTTPError("url", 500, "Server Error", {}, None)
+        with (
+            patch("urllib.request.urlopen", side_effect=error) as mock_open,
+            patch("nibe_api.time.sleep"),
+        ):
+            result = self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(result)
-        self.assertEqual(mock_open.call_count, 2,
-                         f"Expected exactly 2 attempts, got {mock_open.call_count}")
+        self.assertEqual(
+            mock_open.call_count, 2, f"Expected exactly 2 attempts, got {mock_open.call_count}"
+        )
 
     def test_request_method_passed_to_request_object(self):
         """method= must be passed to Request — without it PATCH becomes GET."""
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{}'
+        mock_response.read.return_value = b"{}"
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test', method='PATCH')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test", method="PATCH")
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_method(), 'PATCH')
+        self.assertEqual(captured[0].get_method(), "PATCH")
 
     def test_default_method_is_get(self):
         """request() called without an explicit method= must default to a
@@ -1866,15 +2008,17 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
         nothing called request() without an explicit method and checked
         the actual method sent."""
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{}'
+        mock_response.read.return_value = b"{}"
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_method(), 'GET')
+        self.assertEqual(captured[0].get_method(), "GET")
 
     def test_authorization_header_sent_with_configured_auth(self):
         """The request must carry a real 'Authorization' header with the
@@ -1883,15 +2027,17 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
         while still 'succeeding' in every test that only checks the
         response body, not the actual outgoing headers."""
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{}'
+        mock_response.read.return_value = b"{}"
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+        self.assertEqual(captured[0].get_header("Authorization"), "Basic dXNlcjpwYXNz")
 
     def test_no_accept_language_header_when_language_unset(self):
         """When the client is constructed without a language (the default),
@@ -1899,15 +2045,17 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
         sending an empty one, is what makes the Nibe API fall back to its
         default (English) response language."""
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{}'
+        mock_response.read.return_value = b"{}"
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertTrue(captured)
-        self.assertIsNone(captured[0].get_header('Accept-language'))
+        self.assertIsNone(captured[0].get_header("Accept-language"))
 
     def test_accept_language_header_sent_with_configured_language(self):
         """When the client is constructed with a language, every request
@@ -1916,20 +2064,25 @@ class TestRequestRetryCountAndMethod(unittest.TestCase):
         its title/description text (confirmed against a live SMO S40:
         Accept-Language: nl returns Dutch-translated point titles)."""
         from nibe_api import NibeApiClient
+
         client = NibeApiClient(
-            'https://192.0.2.1:8443/api/v1/devices/0', 'Basic dXNlcjpwYXNz',
-            self.client.ssl_context, 'nl',
+            "https://192.0.2.1:8443/api/v1/devices/0",
+            "Basic dXNlcjpwYXNz",
+            self.client.ssl_context,
+            "nl",
         )
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{}'
+        mock_response.read.return_value = b"{}"
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_response
-        with patch('urllib.request.urlopen', side_effect=capture):
-            client.request('https://192.0.2.1:8443/test')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            client.request("https://192.0.2.1:8443/test")
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_header('Accept-language'), 'nl')
+        self.assertEqual(captured[0].get_header("Accept-language"), "nl")
 
 
 class TestWritePointIsWritableDefault(unittest.TestCase):
@@ -1941,20 +2094,21 @@ class TestWritePointIsWritableDefault(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity_info(self, **kwargs):
-        defaults = {'is_writable': False, 'metadata': {}}
+        defaults = {"is_writable": False, "metadata": {}}
         defaults.update(kwargs)
         return defaults
 
     def test_non_writable_point_returns_false_without_http(self):
         """is_writable default False: absent key → not writable → returns False."""
         entity_info = {}  # no 'is_writable' key → defaults to False
-        with patch('urllib.request.urlopen') as mock_open:
+        with patch("urllib.request.urlopen") as mock_open:
             result = self.client.write_point(100, 50, entity_info)
         self.assertFalse(result)
         mock_open.assert_not_called()
@@ -1963,11 +2117,11 @@ class TestWritePointIsWritableDefault(unittest.TestCase):
         """is_degenerate_range default False: absent key → check bounds.
         With default True: bounds check bypassed for all non-degenerate points."""
         entity_info = {
-            'is_writable': True,
-            'metadata': {'minValue': 0, 'maxValue': 10},
+            "is_writable": True,
+            "metadata": {"minValue": 0, "maxValue": 10},
             # no 'is_degenerate_range' key → defaults to False → check bounds
         }
-        with patch('urllib.request.urlopen') as mock_open:
+        with patch("urllib.request.urlopen") as mock_open:
             result = self.client.write_point(100, 99, entity_info)  # 99 > max=10
         self.assertFalse(result)
         mock_open.assert_not_called()
@@ -1986,14 +2140,18 @@ class TestWritePointErrorStringComparisons(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def _mock_response(self, point_id, response_value):
         mock_resp = MagicMock()
@@ -2002,22 +2160,24 @@ class TestWritePointErrorStringComparisons(unittest.TestCase):
 
     def test_no_such_param_returns_false(self):
         """'error: no such param' → returns False (not True from else branch)."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._mock_response(100, 'error: no such param')):
+        with patch(
+            "urllib.request.urlopen", return_value=self._mock_response(100, "error: no such param")
+        ):
             result = self.client.write_point(100, 50, self._entity())
         self.assertFalse(result)
 
     def test_read_only_value_returns_false(self):
         """'error: read only value' → returns False."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._mock_response(100, 'error: read only value')):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._mock_response(100, "error: read only value"),
+        ):
             result = self.client.write_point(100, 50, self._entity())
         self.assertFalse(result)
 
     def test_modified_response_returns_true(self):
         """'modified' → returns True (unchanged by these mutations)."""
-        with patch('urllib.request.urlopen',
-                   return_value=self._mock_response(100, 'modified')):
+        with patch("urllib.request.urlopen", return_value=self._mock_response(100, "modified")):
             result = self.client.write_point(100, 50, self._entity())
         self.assertTrue(result)
 
@@ -2038,23 +2198,26 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443/api/v1/devices/0'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443/api/v1/devices/0"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def _http_error(self, code):
         import urllib.error
-        return urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+
+        return urllib.error.HTTPError("url", code, f"HTTP {code}", {}, None)
 
     def test_401_raises_immediately_no_retry(self):
         """HTTP 401 must raise HTTPError — not retry, not return None."""
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(401)) as mock_open,
+            patch("urllib.request.urlopen", side_effect=self._http_error(401)) as mock_open,
             self.assertRaises(urllib.error.HTTPError) as ctx,
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertEqual(ctx.exception.code, 401)
         self.assertEqual(mock_open.call_count, 1, "401 must not retry")
 
@@ -2065,30 +2228,34 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
         403 with 404 would make 403 fall through to the retry path.
         """
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(403)) as mock_open,
+            patch("urllib.request.urlopen", side_effect=self._http_error(403)) as mock_open,
             self.assertRaises(urllib.error.HTTPError) as ctx,
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertEqual(ctx.exception.code, 403)
         self.assertEqual(mock_open.call_count, 1, "403 must not retry")
 
     def test_404_raises_not_retried_not_none(self):
         """HTTP 404 must raise HTTPError — not be swallowed and returned as None."""
         import urllib.error
+
         with (
-            patch('urllib.request.urlopen', side_effect=self._http_error(404)) as mock_open,
+            patch("urllib.request.urlopen", side_effect=self._http_error(404)) as mock_open,
             self.assertRaises(urllib.error.HTTPError) as ctx,
         ):
-            self.client.request('https://192.0.2.1:8443/test')
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertEqual(ctx.exception.code, 404)
         self.assertEqual(mock_open.call_count, 1, "404 must not retry")
 
     def test_500_returns_none_after_two_attempts(self):
         """HTTP 500 is transient: retried once then returns None (not raises)."""
-        with patch('urllib.request.urlopen', side_effect=self._http_error(500)) as mock_open, \
-             patch('nibe_api.time.sleep'):
-            result = self.client.request('https://192.0.2.1:8443/test')
+        with (
+            patch("urllib.request.urlopen", side_effect=self._http_error(500)) as mock_open,
+            patch("nibe_api.time.sleep"),
+        ):
+            result = self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(result)
         self.assertEqual(mock_open.call_count, 2)
 
@@ -2096,11 +2263,14 @@ class TestRequestAuthAndNotFoundBehaviour(unittest.TestCase):
         """403 raises (auth); 404 raises (missing resource). Both must raise,
         but this confirms the (401, 403) membership does not accidentally absorb 404."""
         import urllib.error
+
         for code in (401, 403, 404):
-            with self.subTest(code=code), \
-                 patch('urllib.request.urlopen', side_effect=self._http_error(code)), \
-                 self.assertRaises(urllib.error.HTTPError):
-                self.client.request('https://192.0.2.1:8443/test')
+            with (
+                self.subTest(code=code),
+                patch("urllib.request.urlopen", side_effect=self._http_error(code)),
+                self.assertRaises(urllib.error.HTTPError),
+            ):
+                self.client.request("https://192.0.2.1:8443/test")
 
 
 class TestWritePointResponseKeyParsing(unittest.TestCase):
@@ -2115,14 +2285,18 @@ class TestWritePointResponseKeyParsing(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self, pid=42):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def _resp(self, body):
         m = MagicMock()
@@ -2131,13 +2305,13 @@ class TestWritePointResponseKeyParsing(unittest.TestCase):
 
     def test_modified_string_returns_true(self):
         """point_resp == 'modified' → True. Mutation == → != makes this False."""
-        with patch('urllib.request.urlopen', return_value=self._resp({"42": "modified"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"42": "modified"})):
             self.assertTrue(self.client.write_point(42, 1, self._entity()))
 
     def test_non_modified_string_returns_false(self):
         """point_resp != 'modified' (e.g. 'MODIFIED') → False.
         Confirms the equality is case-sensitive and mutation would break it."""
-        with patch('urllib.request.urlopen', return_value=self._resp({"42": "MODIFIED"})):
+        with patch("urllib.request.urlopen", return_value=self._resp({"42": "MODIFIED"})):
             self.assertFalse(self.client.write_point(42, 1, self._entity()))
 
     def test_full_object_value_key_lowercase(self):
@@ -2145,40 +2319,40 @@ class TestWritePointResponseKeyParsing(unittest.TestCase):
         dv = point_resp.get('value', {}) — mutation 'value' → 'VALUE' gives {}
         then dv.get('isOk') → None → returns False."""
         body = {"42": {"value": {"isOk": True}}}
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertTrue(self.client.write_point(42, 1, self._entity()))
 
     def test_full_object_isok_key_exact_case(self):
         """isOk key is case-sensitive: 'isOk' True → returns True.
         Mutation 'isOk' → 'isok' → get returns None → falsy → returns False."""
         body = {"42": {"value": {"isOk": True}}}
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertTrue(self.client.write_point(42, 1, self._entity()))
 
     def test_full_object_isok_false_returns_false(self):
         """isOk=False → returns False even though response is a dict."""
         body = {"42": {"value": {"isOk": False}}}
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertFalse(self.client.write_point(42, 1, self._entity()))
 
     def test_list_response_not_treated_as_dict(self):
         """isinstance(point_resp, dict): a list response must not be treated as dict.
         Mutation dict → list would make a list trigger the dict path."""
-        body = {"42": ["modified"]}   # list, not dict
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        body = {"42": ["modified"]}  # list, not dict
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertFalse(self.client.write_point(42, 1, self._entity()))
 
     def test_point_id_string_key_used_for_lookup(self):
         """Response key is str(point_id): response {"42": "modified"} for pid=42.
         If key were int(point_id) the lookup would always miss."""
         body = {"42": "modified"}
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertTrue(self.client.write_point(42, 1, self._entity()))
 
     def test_wrong_point_id_key_returns_false(self):
         """Response key for different pid → point_resp is None → falls through to False."""
-        body = {"99": "modified"}   # pid=42 not in response
-        with patch('urllib.request.urlopen', return_value=self._resp(body)):
+        body = {"99": "modified"}  # pid=42 not in response
+        with patch("urllib.request.urlopen", return_value=self._resp(body)):
             self.assertFalse(self.client.write_point(42, 1, self._entity()))
 
 
@@ -2191,53 +2365,63 @@ class TestWritePointHttpMethod(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def test_write_point_uses_patch_method(self):
         """write_point must use HTTP PATCH, not GET or POST."""
         captured = []
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"42": "modified"}).encode()
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
+
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(42, 1, self._entity())
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_method(), 'PATCH')
+        self.assertEqual(captured[0].get_method(), "PATCH")
 
     def test_reset_notifications_uses_delete_method(self):
         """reset_notifications must use HTTP DELETE."""
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b''
+        mock_resp.read.return_value = b""
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
+
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.reset_notifications()
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_method(), 'DELETE')
+        self.assertEqual(captured[0].get_method(), "DELETE")
 
     def test_write_device_mode_uses_post_method(self):
         """write_device_mode must use HTTP POST."""
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
         self.assertTrue(captured)
-        self.assertEqual(captured[0].get_method(), 'POST')
+        self.assertEqual(captured[0].get_method(), "POST")
 
 
 class TestFetchPointNotFoundHandling(unittest.TestCase):
@@ -2250,18 +2434,20 @@ class TestFetchPointNotFoundHandling(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _http_error(self, code):
         import urllib.error
-        return urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+
+        return urllib.error.HTTPError("url", code, f"HTTP {code}", {}, None)
 
     def test_404_returns_none(self):
         """fetch_point HTTP 404 → returns None (dynamic point inactive)."""
-        with patch('urllib.request.urlopen', side_effect=self._http_error(404)):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(404)):
             result = self.client.fetch_point(99)
         self.assertIsNone(result)
 
@@ -2271,10 +2457,11 @@ class TestFetchPointNotFoundHandling(unittest.TestCase):
         The critical mutation is e.code == 404 → != : 404 would re-raise instead
         of returning None, and non-404 auth errors that reach fetch_point re-raise."""
         import urllib.error
+
         for code in (401, 403):
             with self.subTest(code=code):
                 with (
-                    patch('urllib.request.urlopen', side_effect=self._http_error(code)),
+                    patch("urllib.request.urlopen", side_effect=self._http_error(code)),
                     self.assertRaises(urllib.error.HTTPError) as ctx,
                 ):
                     self.client.fetch_point(99)
@@ -2284,10 +2471,10 @@ class TestFetchPointNotFoundHandling(unittest.TestCase):
         """fetch_point success → returns parsed JSON dict."""
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"variableId": 99, "value": 42}'
-        with patch('urllib.request.urlopen', return_value=mock_resp):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             result = self.client.fetch_point(99)
         self.assertIsNotNone(result)
-        self.assertEqual(result['variableId'], 99)
+        self.assertEqual(result["variableId"], 99)
 
 
 class TestWriteDeviceModePayloadAndUrl(unittest.TestCase):
@@ -2302,59 +2489,66 @@ class TestWriteDeviceModePayloadAndUrl(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def test_url_includes_mode_type(self):
         """URL must be {base_url}/{mode_type} — mode_type must appear in URL."""
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
         self.assertTrue(captured)
-        self.assertIn('smartmode', captured[0].full_url)
+        self.assertIn("smartmode", captured[0].full_url)
 
     def test_payload_key_is_mode_type(self):
         """Payload must be JSON with mode_type as the key: {"smartmode": "away"}."""
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
         self.assertTrue(captured)
         body = json.loads(captured[0].data.decode())
-        self.assertIn('smartmode', body)
-        self.assertEqual(body['smartmode'], 'away')
+        self.assertIn("smartmode", body)
+        self.assertEqual(body["smartmode"], "away")
 
     def test_aidmode_payload_key(self):
         """aidmode uses 'aidmode' as payload key with 'on'/'off' values."""
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('aidmode', 'on')
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("aidmode", "on")
         body = json.loads(captured[0].data.decode())
-        self.assertIn('aidmode', body)
-        self.assertEqual(body['aidmode'], 'on')
+        self.assertIn("aidmode", body)
+        self.assertEqual(body["aidmode"], "on")
 
     def test_success_returns_true(self):
         """Successful POST → returns True."""
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
-        with patch('urllib.request.urlopen', return_value=mock_resp):
-            self.assertTrue(self.client.write_device_mode('smartmode', 'normal'))
+        mock_resp.read.return_value = b"{}"
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            self.assertTrue(self.client.write_device_mode("smartmode", "normal"))
 
 
 # ===========================================================================
@@ -2380,23 +2574,29 @@ class TestWritePointPayloadAndHeaders(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
         # No min/max constraints so any value proceeds straight to the network.
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': None, 'maxValue': None}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": None, "maxValue": None},
+        }
 
     def _capture(self, point_id):
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({str(point_id): 'modified'}).encode()
+        mock_resp.read.return_value = json.dumps({str(point_id): "modified"}).encode()
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
+
         return captured, capture
 
     def test_payload_is_single_element_list_of_dict(self):
@@ -2405,7 +2605,7 @@ class TestWritePointPayloadAndHeaders(unittest.TestCase):
         Kills mutmut_52 (payload = json.dumps(None) → decodes to None, not a list)."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         self.assertTrue(captured, "urlopen was never called")
         body = json.loads(captured[0].data.decode())
@@ -2420,48 +2620,47 @@ class TestWritePointPayloadAndHeaders(unittest.TestCase):
         uppercased key changes this set."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         body = json.loads(captured[0].data.decode())[0]
-        self.assertEqual(set(body.keys()),
-                          {'type', 'variableId', 'integerValue', 'stringValue'})
+        self.assertEqual(set(body.keys()), {"type", "variableId", "integerValue", "stringValue"})
 
     def test_payload_type_field_value(self):
         """'type' field must literally be 'datavalue'. Kills 55/56."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         body = json.loads(captured[0].data.decode())[0]
-        self.assertEqual(body['type'], 'datavalue')
+        self.assertEqual(body["type"], "datavalue")
 
     def test_payload_variableId_matches_point_id(self):
         """'variableId' must equal the point_id argument (a value chosen
         independently of the mock's own response, not read back from it)."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         body = json.loads(captured[0].data.decode())[0]
-        self.assertEqual(body['variableId'], 777)
+        self.assertEqual(body["variableId"], 777)
 
     def test_payload_integerValue_matches_value_argument(self):
         """'integerValue' must equal the raw value argument passed in."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         body = json.loads(captured[0].data.decode())[0]
-        self.assertEqual(body['integerValue'], 4321)
+        self.assertEqual(body["integerValue"], 4321)
 
     def test_payload_stringValue_is_always_none(self):
         """'stringValue' must always be JSON null — this is an integer-only write."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         body = json.loads(captured[0].data.decode())[0]
-        self.assertIsNone(body['stringValue'])
+        self.assertIsNone(body["stringValue"])
 
     def test_request_data_is_the_encoded_payload(self):
         """req.data must actually be set (not None/omitted).
@@ -2470,7 +2669,7 @@ class TestWritePointPayloadAndHeaders(unittest.TestCase):
         entirely, which also defaults to None on urllib.request.Request)."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
         self.assertIsNotNone(captured[0].data)
         # Round-trips to a JSON body — would raise on None.data before this point.
@@ -2482,25 +2681,25 @@ class TestWritePointPayloadAndHeaders(unittest.TestCase):
         and 74 (headers dict dropped entirely)."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
-        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+        self.assertEqual(captured[0].get_header("Authorization"), "Basic dXNlcjpwYXNz")
 
     def test_request_headers_accept(self):
         """Accept header must be exactly 'application/json'. Kills 79-83."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
-        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+        self.assertEqual(captured[0].get_header("Accept"), "application/json")
 
     def test_request_headers_content_type(self):
         """Content-Type header must be exactly 'application/json'. Kills 84-88."""
         point_id, value = 777, 4321
         captured, capture = self._capture(point_id)
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.write_point(point_id, value, self._entity())
-        self.assertEqual(captured[0].get_header('Content-type'), 'application/json')
+        self.assertEqual(captured[0].get_header("Content-type"), "application/json")
 
 
 class TestWritePointFullObjectMissingValueKey(unittest.TestCase):
@@ -2519,20 +2718,24 @@ class TestWritePointFullObjectMissingValueKey(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def test_dict_response_missing_value_key_returns_false(self):
         """A dict response without 'value' must still return False (either path)."""
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"42": {}}).encode()
-        with patch('urllib.request.urlopen', return_value=mock_resp):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             result = self.client.write_point(42, 1, self._entity())
         self.assertIs(result, False)
 
@@ -2542,13 +2745,13 @@ class TestWritePointFullObjectMissingValueKey(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"42": {}}).encode()
         with (
-            patch('urllib.request.urlopen', return_value=mock_resp),
-            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            self.assertLogs("nibe.commands", level="DEBUG") as ctx,
         ):
             self.client.write_point(42, 1, self._entity())
-        joined = '\n'.join(ctx.output)
-        self.assertIn('isOk=False', joined)
-        self.assertNotIn('Unexpected error', joined)
+        joined = "\n".join(ctx.output)
+        self.assertIn("isOk=False", joined)
+        self.assertNotIn("Unexpected error", joined)
 
 
 class TestWritePointErrorStringExactBranch(unittest.TestCase):
@@ -2566,14 +2769,18 @@ class TestWritePointErrorStringExactBranch(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def _mock_response(self, point_id, response_value):
         mock_resp = MagicMock()
@@ -2584,27 +2791,31 @@ class TestWritePointErrorStringExactBranch(unittest.TestCase):
         """'error: no such param' must log the specific 'does not exist' message,
         not the generic 'unexpected API response' fallback."""
         with (
-            patch('urllib.request.urlopen',
-                  return_value=self._mock_response(100, 'error: no such param')),
-            self.assertLogs('nibe.commands', level='ERROR') as ctx,
+            patch(
+                "urllib.request.urlopen",
+                return_value=self._mock_response(100, "error: no such param"),
+            ),
+            self.assertLogs("nibe.commands", level="ERROR") as ctx,
         ):
             self.client.write_point(100, 50, self._entity())
-        joined = '\n'.join(ctx.output)
-        self.assertIn('does not exist in this firmware version', joined)
-        self.assertNotIn('unexpected API response', joined)
+        joined = "\n".join(ctx.output)
+        self.assertIn("does not exist in this firmware version", joined)
+        self.assertNotIn("unexpected API response", joined)
 
     def test_read_only_value_logs_register_is_read_only(self):
         """'error: read only value' must log the specific 'read-only' message,
         not the generic 'unexpected API response' fallback."""
         with (
-            patch('urllib.request.urlopen',
-                  return_value=self._mock_response(100, 'error: read only value')),
-            self.assertLogs('nibe.commands', level='ERROR') as ctx,
+            patch(
+                "urllib.request.urlopen",
+                return_value=self._mock_response(100, "error: read only value"),
+            ),
+            self.assertLogs("nibe.commands", level="ERROR") as ctx,
         ):
             self.client.write_point(100, 50, self._entity())
-        joined = '\n'.join(ctx.output)
-        self.assertIn('register is read-only', joined)
-        self.assertNotIn('unexpected API response', joined)
+        joined = "\n".join(ctx.output)
+        self.assertIn("register is read-only", joined)
+        self.assertNotIn("unexpected API response", joined)
 
 
 class TestWritePointHttpErrorBodyDefault(unittest.TestCase):
@@ -2619,18 +2830,23 @@ class TestWritePointHttpErrorBodyDefault(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _entity(self):
-        return {'is_writable': True, 'is_degenerate_range': False,
-                'metadata': {'minValue': 0, 'maxValue': 100}}
+        return {
+            "is_writable": True,
+            "is_degenerate_range": False,
+            "metadata": {"minValue": 0, "maxValue": 100},
+        }
 
     def _unreadable_http_error(self, code):
         import urllib.error
-        err = urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+
+        err = urllib.error.HTTPError("url", code, f"HTTP {code}", {}, None)
         # e.read() itself raises, so the inner try/except never assigns `body`
         # and the outer default is what ends up in the log message.
         err.read = MagicMock(side_effect=OSError("body already consumed"))
@@ -2640,18 +2856,19 @@ class TestWritePointHttpErrorBodyDefault(unittest.TestCase):
         """HTTP 500 with unreadable body: log must show body as '' (empty),
         not 'None' or the mutant's 'XXXX' placeholder."""
         with (
-            patch('urllib.request.urlopen', side_effect=self._unreadable_http_error(500)),
-            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+            patch("urllib.request.urlopen", side_effect=self._unreadable_http_error(500)),
+            self.assertLogs("nibe.commands", level="DEBUG") as ctx,
         ):
             result = self.client.write_point(100, 50, self._entity())
         self.assertIs(result, False)
         # Find the final "Write HTTP 500 for point 100: <body>" record.
-        final = [line for line in ctx.output if 'Write HTTP 500 for point 100' in line]
+        final = [line for line in ctx.output if "Write HTTP 500 for point 100" in line]
         self.assertTrue(final, f"expected a 'Write HTTP 500' log line, got: {ctx.output}")
-        self.assertTrue(final[0].endswith(': '),
-                         f"expected body to render as empty string, got: {final[0]!r}")
-        self.assertNotIn('None', final[0])
-        self.assertNotIn('XXXX', final[0])
+        self.assertTrue(
+            final[0].endswith(": "), f"expected body to render as empty string, got: {final[0]!r}"
+        )
+        self.assertNotIn("None", final[0])
+        self.assertNotIn("XXXX", final[0])
 
 
 class TestRequestHeaders(unittest.TestCase):
@@ -2670,47 +2887,52 @@ class TestRequestHeaders(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        self.client = NibeApiClient('https://192.0.2.1:8443', 'Basic dXNlcjpwYXNz', ctx)
+        self.client = NibeApiClient("https://192.0.2.1:8443", "Basic dXNlcjpwYXNz", ctx)
 
     def _capture(self):
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
+
         return captured, capture
 
     def test_authorization_header_present_and_correct(self):
         """Authorization header must carry self.auth verbatim. Kills 5/6."""
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertEqual(captured[0].get_header("Authorization"), "Basic dXNlcjpwYXNz")
 
     def test_accept_header_present_and_correct(self):
         """Accept header must be exactly 'application/json'. Kills 7/8/9/10/11."""
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertEqual(captured[0].get_header("Accept"), "application/json")
 
     def test_content_type_header_only_set_when_data_provided(self):
         """Content-Type must be absent with no data, and exactly
         'application/json' when data is provided. Kills 12/14/15/16/17."""
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.request('https://192.0.2.1:8443/test')
-        self.assertIsNone(captured[0].get_header('Content-type'),
-                           "Content-Type must not be set for a bodyless GET")
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertIsNone(
+            captured[0].get_header("Content-type"),
+            "Content-Type must not be set for a bodyless GET",
+        )
 
         captured2, capture2 = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture2):
-            self.client.request('https://192.0.2.1:8443/test', data='{"x": 1}')
-        self.assertEqual(captured2[0].get_header('Content-type'), 'application/json')
+        with patch("urllib.request.urlopen", side_effect=capture2):
+            self.client.request("https://192.0.2.1:8443/test", data='{"x": 1}')
+        self.assertEqual(captured2[0].get_header("Content-type"), "application/json")
 
 
 class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
@@ -2728,21 +2950,22 @@ class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        self.client = NibeApiClient('https://192.0.2.1:8443', 'Basic x', ctx)
+        self.client = NibeApiClient("https://192.0.2.1:8443", "Basic x", ctx)
 
     def test_unexpected_error_log_record_carries_exc_info(self):
         """A non-network, non-HTTPError exception from urlopen must produce
         a log record with exc_info populated (a real (type, value, tb) tuple)."""
         with (
-            patch('urllib.request.urlopen', side_effect=ValueError("boom")),
-            self.assertLogs('nibe.api', level='ERROR') as ctx,
+            patch("urllib.request.urlopen", side_effect=ValueError("boom")),
+            self.assertLogs("nibe.api", level="ERROR") as ctx,
         ):
-            result = self.client.request('https://192.0.2.1:8443/test')
+            result = self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNone(result)
-        matching = [r for r in ctx.records if 'Unexpected error' in r.getMessage()]
+        matching = [r for r in ctx.records if "Unexpected error" in r.getMessage()]
         self.assertTrue(matching, f"expected an 'Unexpected error' record, got: {ctx.output}")
 
     def test_unexpected_error_sets_last_error_from_the_actual_exception(self):
@@ -2753,10 +2976,10 @@ class TestRequestUnexpectedErrorLogsTraceback(unittest.TestCase):
         so both `self.last_error = None` and `_describe_network_error(None)`
         would otherwise go unnoticed even though they produce a useless
         "API Unreachable" notification instead of the real diagnostic."""
-        with patch('urllib.request.urlopen', side_effect=ValueError("boom")):
-            self.client.request('https://192.0.2.1:8443/test')
+        with patch("urllib.request.urlopen", side_effect=ValueError("boom")):
+            self.client.request("https://192.0.2.1:8443/test")
         self.assertIsNotNone(self.client.last_error)
-        self.assertIn('boom', self.client.last_error)
+        self.assertIn("boom", self.client.last_error)
 
 
 class TestWriteDeviceModeHeaders(unittest.TestCase):
@@ -2777,37 +3000,40 @@ class TestWriteDeviceModeHeaders(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def _capture(self):
         captured = []
         mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{}'
+        mock_resp.read.return_value = b"{}"
+
         def capture(req, **kwargs):
             captured.append(req)
             return mock_resp
+
         return captured, capture
 
     def test_authorization_header_present_and_correct(self):
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
-        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
+        self.assertEqual(captured[0].get_header("Authorization"), "Basic dXNlcjpwYXNz")
 
     def test_accept_header_present_and_correct(self):
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
-        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
+        self.assertEqual(captured[0].get_header("Accept"), "application/json")
 
     def test_content_type_header_present_and_correct(self):
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
-            self.client.write_device_mode('smartmode', 'away')
-        self.assertEqual(captured[0].get_header('Content-type'), 'application/json')
+        with patch("urllib.request.urlopen", side_effect=capture):
+            self.client.write_device_mode("smartmode", "away")
+        self.assertEqual(captured[0].get_header("Content-type"), "application/json")
 
 
 class TestWriteDeviceModeHttpErrorBodyDefault(unittest.TestCase):
@@ -2821,30 +3047,35 @@ class TestWriteDeviceModeHttpErrorBodyDefault(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic x'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic x"
         self.client.ssl_context = MagicMock()
 
     def _unreadable_http_error(self, code):
         import urllib.error
-        err = urllib.error.HTTPError('url', code, f'HTTP {code}', {}, None)
+
+        err = urllib.error.HTTPError("url", code, f"HTTP {code}", {}, None)
         err.read = MagicMock(side_effect=OSError("body already consumed"))
         return err
 
     def test_unreadable_body_falls_back_to_empty_string_in_500_log(self):
         with (
-            patch('urllib.request.urlopen', side_effect=self._unreadable_http_error(500)),
-            self.assertLogs('nibe.commands', level='DEBUG') as ctx,
+            patch("urllib.request.urlopen", side_effect=self._unreadable_http_error(500)),
+            self.assertLogs("nibe.commands", level="DEBUG") as ctx,
         ):
-            result = self.client.write_device_mode('smartmode', 'away')
+            result = self.client.write_device_mode("smartmode", "away")
         self.assertIs(result, False)
-        final = [line for line in ctx.output if 'Device mode smartmode failed: HTTP 500' in line]
-        self.assertTrue(final, f"expected a 'Device mode smartmode failed' log line, got: {ctx.output}")
-        self.assertTrue(final[0].endswith(' — '),
-                         f"expected body to render as empty string, got: {final[0]!r}")
-        self.assertNotIn('None', final[0])
-        self.assertNotIn('XXXX', final[0])
+        final = [line for line in ctx.output if "Device mode smartmode failed: HTTP 500" in line]
+        self.assertTrue(
+            final, f"expected a 'Device mode smartmode failed' log line, got: {ctx.output}"
+        )
+        self.assertTrue(
+            final[0].endswith(" — "), f"expected body to render as empty string, got: {final[0]!r}"
+        )
+        self.assertNotIn("None", final[0])
+        self.assertNotIn("XXXX", final[0])
 
 
 class TestResetNotificationsHeaders(unittest.TestCase):
@@ -2862,29 +3093,32 @@ class TestResetNotificationsHeaders(unittest.TestCase):
 
     def setUp(self):
         from nibe_api import NibeApiClient
+
         self.client = NibeApiClient.__new__(NibeApiClient)
-        self.client.base_url = 'https://192.0.2.1:8443'
-        self.client.auth = 'Basic dXNlcjpwYXNz'
+        self.client.base_url = "https://192.0.2.1:8443"
+        self.client.auth = "Basic dXNlcjpwYXNz"
         self.client.ssl_context = MagicMock()
 
     def _capture(self):
         captured = []
+
         def capture(req, **kwargs):
             captured.append(req)
             return MagicMock()
+
         return captured, capture
 
     def test_authorization_header_present_and_correct(self):
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.reset_notifications()
-        self.assertEqual(captured[0].get_header('Authorization'), 'Basic dXNlcjpwYXNz')
+        self.assertEqual(captured[0].get_header("Authorization"), "Basic dXNlcjpwYXNz")
 
     def test_accept_header_present_and_correct(self):
         captured, capture = self._capture()
-        with patch('urllib.request.urlopen', side_effect=capture):
+        with patch("urllib.request.urlopen", side_effect=capture):
             self.client.reset_notifications()
-        self.assertEqual(captured[0].get_header('Accept'), 'application/json')
+        self.assertEqual(captured[0].get_header("Accept"), "application/json")
 
 
 class TestNibeApiClientInit(unittest.TestCase):
@@ -2902,11 +3136,13 @@ class TestNibeApiClientInit(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
-        client = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0',
-                                'Basic dGVzdC1hdXRoLXZhbHVl', ctx)
-        self.assertEqual(client.base_url, 'https://192.0.2.9:8443/api/v1/devices/0')
-        self.assertEqual(client.auth, 'Basic dGVzdC1hdXRoLXZhbHVl')
+        client = NibeApiClient(
+            "https://192.0.2.9:8443/api/v1/devices/0", "Basic dGVzdC1hdXRoLXZhbHVl", ctx
+        )
+        self.assertEqual(client.base_url, "https://192.0.2.9:8443/api/v1/devices/0")
+        self.assertEqual(client.auth, "Basic dGVzdC1hdXRoLXZhbHVl")
         self.assertIs(client.ssl_context, ctx)
         self.assertIsNone(client.last_error)
 
@@ -2918,9 +3154,10 @@ class TestNibeApiClientInit(unittest.TestCase):
         import ssl
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
-        client_a = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0', 'Basic a', ctx)
-        client_b = NibeApiClient('https://192.0.2.10:8443/api/v1/devices/0', 'Basic b', ctx)
+        client_a = NibeApiClient("https://192.0.2.9:8443/api/v1/devices/0", "Basic a", ctx)
+        client_b = NibeApiClient("https://192.0.2.10:8443/api/v1/devices/0", "Basic b", ctx)
         self.assertIsNot(client_a._lock, client_b._lock)
 
 
@@ -2938,8 +3175,9 @@ class TestRequestConcurrencyLock(unittest.TestCase):
         import time as time_module
 
         from nibe_api import NibeApiClient
+
         ctx = ssl.create_default_context()
-        client = NibeApiClient('https://192.0.2.9:8443/api/v1/devices/0', 'Basic x', ctx)
+        client = NibeApiClient("https://192.0.2.9:8443/api/v1/devices/0", "Basic x", ctx)
 
         overlap_detected = []
         in_flight = []
@@ -2954,19 +3192,20 @@ class TestRequestConcurrencyLock(unittest.TestCase):
             with in_flight_lock:
                 in_flight.pop()
             resp = MagicMock()
-            resp.read.return_value = b'{}'
+            resp.read.return_value = b"{}"
             return resp
 
         threads = []
-        with patch('urllib.request.urlopen', side_effect=slow_urlopen):
+        with patch("urllib.request.urlopen", side_effect=slow_urlopen):
             for _ in range(5):
-                t = threading.Thread(target=client.request, args=('https://192.0.2.9:8443/test',))
+                t = threading.Thread(target=client.request, args=("https://192.0.2.9:8443/test",))
                 threads.append(t)
                 t.start()
             for t in threads:
                 t.join(timeout=5)
 
         self.assertEqual(
-            overlap_detected, [],
+            overlap_detected,
+            [],
             "two request() calls executed their HTTP I/O concurrently — the lock did not serialize them",
         )

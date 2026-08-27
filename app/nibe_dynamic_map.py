@@ -30,14 +30,16 @@ imports are from the standard library and nibe_utils.
 import json
 import logging
 import os
+from collections.abc import ItemsView, ValuesView
 from dataclasses import dataclass, field
 
-log = logging.getLogger('nibe.dynamic_map')
+log = logging.getLogger("nibe.dynamic_map")
 
 
 # ============================================================================
 # DATA MODEL
 # ============================================================================
+
 
 @dataclass
 class DynamicPointEntry:
@@ -76,14 +78,14 @@ class DynamicPointEntry:
         Entry is retained for historical reference.
     """
 
-    point_id:                int
-    title:                   str
-    entity_type:             str                      # 'switch' | 'select'
-    processed_values:        set[int]                 = field(default_factory=set)
-    unprocessed_values:      set[int]                 = field(default_factory=set)
-    is_controlling:          bool | None              = None
-    dynamic_points_by_value: dict[int, list[int]]     = field(default_factory=dict)
-    firmware_removed:        bool                     = False
+    point_id: int
+    title: str
+    entity_type: str  # 'switch' | 'select'
+    processed_values: set[int] = field(default_factory=set)
+    unprocessed_values: set[int] = field(default_factory=set)
+    is_controlling: bool | None = None
+    dynamic_points_by_value: dict[int, list[int]] = field(default_factory=dict)
+    firmware_removed: bool = False
 
     # ------------------------------------------------------------------
     # Convenience queries
@@ -111,34 +113,30 @@ class DynamicPointEntry:
     def to_dict(self) -> dict:
         """Serialise to a JSON-compatible dict."""
         return {
-            'point_id':                self.point_id,
-            'title':                   self.title,
-            'entity_type':             self.entity_type,
-            'processed_values':        sorted(self.processed_values),
-            'unprocessed_values':      sorted(self.unprocessed_values),
-            'is_controlling':          self.is_controlling,
-            'dynamic_points_by_value': {
-                str(k): v
-                for k, v in self.dynamic_points_by_value.items()
-            },
-            'firmware_removed':        self.firmware_removed,
+            "point_id": self.point_id,
+            "title": self.title,
+            "entity_type": self.entity_type,
+            "processed_values": sorted(self.processed_values),
+            "unprocessed_values": sorted(self.unprocessed_values),
+            "is_controlling": self.is_controlling,
+            "dynamic_points_by_value": {str(k): v for k, v in self.dynamic_points_by_value.items()},
+            "firmware_removed": self.firmware_removed,
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'DynamicPointEntry':
+    def from_dict(cls, d: dict) -> "DynamicPointEntry":
         """Deserialise from a dict produced by ``to_dict``."""
         return cls(
-            point_id                = int(d['point_id']),
-            title                   = str(d.get('title', '')),
-            entity_type             = str(d.get('entity_type', 'switch')),
-            processed_values        = {int(v) for v in d.get('processed_values', [])},
-            unprocessed_values      = {int(v) for v in d.get('unprocessed_values', [])},
-            is_controlling          = d.get('is_controlling'),
-            dynamic_points_by_value = {
-                int(k): list(v)
-                for k, v in d.get('dynamic_points_by_value', {}).items()
+            point_id=int(d["point_id"]),
+            title=str(d.get("title", "")),
+            entity_type=str(d.get("entity_type", "switch")),
+            processed_values={int(v) for v in d.get("processed_values", [])},
+            unprocessed_values={int(v) for v in d.get("unprocessed_values", [])},
+            is_controlling=d.get("is_controlling"),
+            dynamic_points_by_value={
+                int(k): list(v) for k, v in d.get("dynamic_points_by_value", {}).items()
             },
-            firmware_removed        = bool(d.get('firmware_removed', False)),
+            firmware_removed=bool(d.get("firmware_removed", False)),
         )
 
 
@@ -146,7 +144,7 @@ class DynamicPointEntry:
 # TABLE
 # ============================================================================
 
-_FILE_FALLBACK = '/data/dynamic_point_map.json'
+_FILE_FALLBACK = "/data/dynamic_point_map.json"
 
 
 class DynamicPointMap:
@@ -183,13 +181,15 @@ class DynamicPointMap:
     def __len__(self) -> int:
         return len(self._table)
 
-    def get(self, point_id: int, default=None) -> DynamicPointEntry | None:
+    def get(
+        self, point_id: int, default: DynamicPointEntry | None = None
+    ) -> DynamicPointEntry | None:
         return self._table.get(point_id, default)
 
-    def values(self):
+    def values(self) -> ValuesView[DynamicPointEntry]:
         return self._table.values()
 
-    def items(self):
+    def items(self) -> ItemsView[int, DynamicPointEntry]:
         return self._table.items()
 
     # ------------------------------------------------------------------
@@ -198,10 +198,7 @@ class DynamicPointMap:
 
     def is_known_dynamic(self, point_id: int) -> bool:
         """Return True if point_id appears as a dynamic point in any entry."""
-        for entry in self._table.values():
-            if point_id in entry.all_known_dynamic_points():
-                return True
-        return False
+        return any(point_id in entry.all_known_dynamic_points() for entry in self._table.values())
 
     def all_known_dynamic_point_ids(self) -> set[int]:
         """Return the union of all known dynamic point_ids across all entries."""
@@ -244,7 +241,9 @@ class DynamicPointMap:
             pts = entry.dynamic_points_for_value(current_value)
             if pts:
                 active.update(pts)
-        log.debug("DynamicPointMap: expected active set = %d points", len(active))  # pragma: no mutate
+        log.debug(
+            "DynamicPointMap: expected active set = %d points", len(active)
+        )  # pragma: no mutate
         return active
 
     # ------------------------------------------------------------------
@@ -279,13 +278,13 @@ class DynamicPointMap:
         added = 0
         for point_id, point in all_points_by_id.items():
             etype = entity_types.get(point_id)
-            if etype not in ('switch', 'select'):
+            if etype not in ("switch", "select"):
                 continue
             if point_id in self._table:
                 continue
-            meta      = point.get('metadata', {})
-            min_val   = meta.get('minValue', 0)
-            max_val   = meta.get('maxValue', 1)
+            meta = point.get("metadata", {})
+            min_val = meta.get("minValue", 0)
+            max_val = meta.get("maxValue", 1)
             all_vals: set[int] = set(range(min_val, max_val + 1))
             if not all_vals:
                 all_vals = {0, 1}
@@ -294,13 +293,13 @@ class DynamicPointMap:
             # field defaults (set(), None, False respectively) — dropping
             # any of them entirely is unobservable.
             entry = DynamicPointEntry(
-                point_id           = point_id,
-                title              = point.get('display_title', f'Point {point_id}'),
-                entity_type        = etype,
-                processed_values   = set(),
-                unprocessed_values = all_vals,
-                is_controlling     = None,
-                firmware_removed   = False,
+                point_id=point_id,
+                title=point.get("display_title", f"Point {point_id}"),
+                entity_type=etype,
+                processed_values=set(),
+                unprocessed_values=all_vals,
+                is_controlling=None,
+                firmware_removed=False,
             )
             self._table[point_id] = entry
             added += 1
@@ -316,7 +315,9 @@ class DynamicPointMap:
         entry = self._table.get(point_id)
         if entry and not entry.firmware_removed:
             entry.firmware_removed = True
-            log.debug("DynamicPointMap: point %d marked firmware_removed", point_id)  # pragma: no mutate
+            log.debug(
+                "DynamicPointMap: point %d marked firmware_removed", point_id
+            )  # pragma: no mutate
 
     def restore_from_bulk(self, bulk_point_ids: set[int]) -> None:
         """Clear firmware_removed for points that have reappeared in a bulk fetch.
@@ -327,7 +328,9 @@ class DynamicPointMap:
         for point_id, entry in self._table.items():
             if entry.firmware_removed and point_id in bulk_point_ids:
                 entry.firmware_removed = False
-                log.debug("DynamicPointMap: point %d restored (reappeared in bulk)", point_id)  # pragma: no mutate
+                log.debug(
+                    "DynamicPointMap: point %d restored (reappeared in bulk)", point_id
+                )  # pragma: no mutate
 
     def mark_absent_as_firmware_removed(self, bulk_point_ids: set[int]) -> set[int]:
         """Mark every known point absent from bulk_point_ids as firmware_removed.
@@ -340,7 +343,8 @@ class DynamicPointMap:
         Returns the set of point_ids newly marked (for logging).
         """
         newly_marked = {
-            point_id for point_id, entry in self._table.items()
+            point_id
+            for point_id, entry in self._table.items()
             if point_id not in bulk_point_ids and not entry.firmware_removed
         }
         for point_id in newly_marked:
@@ -353,8 +357,8 @@ class DynamicPointMap:
 
     def record_outcome(
         self,
-        point_id:      int,
-        value:         int,
+        point_id: int,
+        value: int,
         new_point_ids: list[int],
     ) -> None:
         """Record the result of a learning-mode discovery cycle.
@@ -372,9 +376,7 @@ class DynamicPointMap:
         entry = self._table.get(point_id)
         if entry is None:
             # pragma: no mutate start
-            log.warning(
-                "DynamicPointMap.record_outcome: point %d not in table", point_id
-            )
+            log.warning("DynamicPointMap.record_outcome: point %d not in table", point_id)
             # pragma: no mutate end
             return
 
@@ -387,23 +389,25 @@ class DynamicPointMap:
             # pragma: no mutate start
             log.debug(
                 "DynamicPointMap: recorded %d dynamic point(s) for controlling point %d (%s) value=%d",
-                len(new_point_ids), point_id, entry.title, value,
+                len(new_point_ids),
+                point_id,
+                entry.title,
+                value,
             )
             # pragma: no mutate end
         else:
             # Non-controlling for this value — update is_controlling only
             # when the point is now fully processed and no value was controlling.
             if entry.is_controlling is None and not entry.unprocessed_values:
-                all_empty = all(
-                    len(pts) == 0
-                    for pts in entry.dynamic_points_by_value.values()
-                )
+                all_empty = all(len(pts) == 0 for pts in entry.dynamic_points_by_value.values())
                 if all_empty:
                     entry.is_controlling = False
             # pragma: no mutate start
             log.debug(
                 "DynamicPointMap: value %d for point %d (%s) produced no dynamic points",
-                value, point_id, entry.title,
+                value,
+                point_id,
+                entry.title,
             )
             # pragma: no mutate end
 
@@ -423,7 +427,9 @@ class DynamicPointMap:
                 log.debug(
                     "Learning: %s (point %d) value=%d inferred as inverse "
                     "(no dynamic points — 2-value switch)",
-                    entry.title, point_id, inverse_value,
+                    entry.title,
+                    point_id,
+                    inverse_value,
                 )
                 # pragma: no mutate end
             # Update is_controlling now that all values are processed
@@ -446,21 +452,25 @@ class DynamicPointMap:
         Debug use only.  Called by the flush management button, which is
         only registered when the debug_mode option is enabled.
         """
-        log.warning("DynamicPointMap: FLUSH requested — resetting all entries to unprocessed")  # pragma: no mutate
+        log.warning(
+            "DynamicPointMap: FLUSH requested — resetting all entries to unprocessed"
+        )  # pragma: no mutate
         for entry in self._table.values():
-            meta    = all_points_by_id.get(entry.point_id, {}).get('metadata', {})
-            min_val = meta.get('minValue', 0)
-            max_val = meta.get('maxValue', 1)
+            meta = all_points_by_id.get(entry.point_id, {}).get("metadata", {})
+            min_val = meta.get("minValue", 0)
+            max_val = meta.get("maxValue", 1)
             all_vals: set[int] = set(range(min_val, max_val + 1))
             if not all_vals:
                 all_vals = {0, 1}
-            entry.processed_values        = set()
-            entry.unprocessed_values      = all_vals
-            entry.is_controlling          = None
+            entry.processed_values = set()
+            entry.unprocessed_values = all_vals
+            entry.is_controlling = None
             entry.dynamic_points_by_value = {}
         # Add any new entries that appeared since the table was built
         self.populate_from_bulk(all_points_by_id, entity_types)
-        log.warning("DynamicPointMap: flush complete — %d entries reset", len(self._table))  # pragma: no mutate
+        log.warning(
+            "DynamicPointMap: flush complete — %d entries reset", len(self._table)
+        )  # pragma: no mutate
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -468,10 +478,7 @@ class DynamicPointMap:
 
     def serialise(self) -> str:
         """Serialise the full table to a JSON string for MQTT persistence."""
-        payload = {
-            str(pid): entry.to_dict()
-            for pid, entry in self._table.items()
-        }
+        payload = {str(pid): entry.to_dict() for pid, entry in self._table.items()}
         return json.dumps(payload)
 
     def deserialise(self, json_str: str) -> int:
@@ -484,7 +491,9 @@ class DynamicPointMap:
         try:
             raw = json.loads(json_str)
             if not isinstance(raw, dict):
-                log.warning("DynamicPointMap.deserialise: expected dict, got %s", type(raw))  # pragma: no mutate
+                log.warning(
+                    "DynamicPointMap.deserialise: expected dict, got %s", type(raw)
+                )  # pragma: no mutate
                 return 0
             loaded = 0
             for pid_str, entry_dict in raw.items():
@@ -499,9 +508,7 @@ class DynamicPointMap:
                     # from malformed JSON), so .get()/.items() don't exist.
                     # One malformed entry must not abort the rest of the table.
                     # pragma: no mutate start
-                    log.warning(
-                        "DynamicPointMap: could not deserialise entry %s: %s", pid_str, e
-                    )
+                    log.warning("DynamicPointMap: could not deserialise entry %s: %s", pid_str, e)
                     # pragma: no mutate end
             log.debug("DynamicPointMap: loaded %d entries from JSON", loaded)  # pragma: no mutate
             return loaded
@@ -521,8 +528,8 @@ class DynamicPointMap:
         if path is None:
             path = _FILE_FALLBACK
         try:
-            tmp = path + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as f:  # pragma: no mutate
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:  # pragma: no mutate
                 f.write(self.serialise())
             os.replace(tmp, path)
             log.debug("DynamicPointMap: saved to %s", path)  # pragma: no mutate
@@ -540,10 +547,12 @@ class DynamicPointMap:
         if path is None:
             path = _FILE_FALLBACK
         try:
-            with open(path, encoding='utf-8') as f:  # pragma: no mutate
+            with open(path, encoding="utf-8") as f:  # pragma: no mutate
                 data = f.read()
             count = self.deserialise(data)
-            log.info("DynamicPointMap: loaded %d entries from file %s", count, path)  # pragma: no mutate
+            log.info(
+                "DynamicPointMap: loaded %d entries from file %s", count, path
+            )  # pragma: no mutate
             return count
         except FileNotFoundError:
             log.debug("DynamicPointMap: no file at %s (first run)", path)  # pragma: no mutate

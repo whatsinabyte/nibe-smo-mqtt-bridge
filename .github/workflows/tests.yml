@@ -23,5 +23,14 @@ jobs:
           pip install -r requirements-dev.txt
           pip install -r requirements-test.txt
 
+      - name: Ruff check
+        run: ruff check app/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check app/ tests/
+
+      - name: Mypy
+        run: mypy app/
+
       - name: Run test suite
-        run: pytest --cov=app --cov-report=term-missing
+        run: pytest -n auto --dist=loadscope --cov=app --cov-report=term-missing

@@ -22,6 +22,7 @@ What this module does NOT do
 import threading
 import time
 from collections import OrderedDict
+from typing import Any
 
 # ============================================================================
 # VALUE CACHE
@@ -39,12 +40,13 @@ class ValueCache:
     _last_publish stores the timestamp of the last publish per point_id.
     These are kept separate so _cache stays a simple int lookup.
     """
-    __slots__ = ('_cache', '_last_publish', '_lock')
 
-    def __init__(self):
-        self._cache        = {}   # point_id → last published raw int value
-        self._last_publish = {}   # point_id → timestamp of last publish
-        self._lock         = threading.Lock()
+    __slots__ = ("_cache", "_last_publish", "_lock")
+
+    def __init__(self) -> None:
+        self._cache: dict = {}  # point_id → last published raw int value
+        self._last_publish: dict = {}  # point_id → timestamp of last publish
+        self._lock = threading.Lock()
 
     def should_publish(
         self,
@@ -66,7 +68,7 @@ class ValueCache:
         current_time = time.time()
         with self._lock:
             if force or point_id not in self._cache:
-                self._cache[point_id]        = raw_value
+                self._cache[point_id] = raw_value
                 self._last_publish[point_id] = current_time
                 return True
 
@@ -79,7 +81,7 @@ class ValueCache:
 
             old_value = self._cache[point_id]
             if abs(raw_value - old_value) >= threshold:
-                self._cache[point_id]        = raw_value
+                self._cache[point_id] = raw_value
                 self._last_publish[point_id] = current_time
                 return True
         return False
@@ -128,7 +130,7 @@ class LRUCache:
         self._misses = 0
         self._lock = threading.Lock()
 
-    def get(self, key):
+    def get(self, key: Any) -> Any:
         """Get item from cache, marking it as recently used."""
         with self._lock:
             try:
@@ -140,7 +142,7 @@ class LRUCache:
                 self._misses += 1
                 return None
 
-    def put(self, key, value):
+    def put(self, key: Any, value: Any) -> None:
         """Add item to cache, removing LRU item if max_size exceeded."""
         with self._lock:
             if key in self._cache:
@@ -155,15 +157,15 @@ class LRUCache:
 
             self._cache[key] = value
 
-    def __contains__(self, key):
+    def __contains__(self, key: Any) -> bool:
         with self._lock:
             return key in self._cache
 
-    def __len__(self):
+    def __len__(self) -> int:
         with self._lock:
             return len(self._cache)
 
-    def pop(self, key, default=None):
+    def pop(self, key: Any, default: Any = None) -> Any:
         """Remove and return item from cache. Compatible with dict.pop()."""
         with self._lock:
             if key in self._cache:
@@ -171,28 +173,30 @@ class LRUCache:
                 return value
             return default
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         """Support dict-like access: cache[key]. Promotes to MRU and counts as a hit."""
         with self._lock:
-            value = self._cache.pop(key)        # raises KeyError if absent — correct
-            self._cache[key] = value            # re-insert at end (most recently used)
+            value = self._cache.pop(key)  # raises KeyError if absent — correct
+            self._cache[key] = value  # re-insert at end (most recently used)
             self._hits += 1
             return value
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the cache."""
         with self._lock:
             self._cache.clear()
             self._hits = 0
             self._misses = 0
 
-    def get_stats(self):
+    def get_stats(self) -> dict:
         """Return cache statistics."""
         with self._lock:
             return {
-                'size': len(self._cache),
-                'capacity': self.max_size,
-                'hit_rate': self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0,
-                'hits': self._hits,
-                'misses': self._misses
+                "size": len(self._cache),
+                "capacity": self.max_size,
+                "hit_rate": self._hits / (self._hits + self._misses)
+                if (self._hits + self._misses) > 0
+                else 0,
+                "hits": self._hits,
+                "misses": self._misses,
             }
