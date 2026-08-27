@@ -185,8 +185,13 @@ mypy app/
 **Vulture** (dead code):
 
 ```bash
-vulture app/
+vulture app/ vulture_whitelist.py
 ```
+
+`vulture_whitelist.py` documents the small number of known false positives —
+symbols only ever exercised from `tests/`, which a plain `vulture app/` scan
+can't see. Regenerate it with `vulture app/ --make-whitelist` after
+confirming a new finding is a genuine false positive, not real dead code.
 
 **Bandit** (security):
 

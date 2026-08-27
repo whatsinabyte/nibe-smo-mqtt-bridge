@@ -893,9 +893,9 @@ def _setup_menu_dashboard(
             active_dynamic,
         )
     finally:
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
-        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
 
 
@@ -1044,9 +1044,9 @@ def _open_ha_websocket() -> tuple[Any, Callable[[], int]] | None:
         return ws, _next_id
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("HA WebSocket auth error: %s", e)
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
-        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
         return None
 
@@ -1135,9 +1135,9 @@ def _setup_lovelace(
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
         log_startup.warning("Lovelace setup failed: %s", e)
     finally:
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
-        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
 
 
@@ -1517,9 +1517,9 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
             log_startup.warning("Resource removal failed: %s", e)
 
     finally:
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
-        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
 
     # Remove the provisioned flag so the dashboard is recreated if the
@@ -1604,9 +1604,9 @@ def _remove_menu_dashboard() -> None:
         # Same False/None-truthiness equivalence as above.
         list_succeeded = False
     finally:
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
-        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged
+        except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
 
     # Remove the flag only when we know the list call succeeded — if the call

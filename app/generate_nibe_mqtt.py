@@ -1479,7 +1479,7 @@ def _poll_loop(
                 backoff,
             )
             if _loop_consecutive_errors >= 5:
-                try:
+                try:  # noqa: SIM105 — deliberately broad, documented on the except line below
                     publisher.publish_bridge_alert(
                         alert_type="main_loop_error",
                         severity="error",
@@ -1492,7 +1492,7 @@ def _poll_loop(
                             "error": str(e),
                         },
                     )
-                except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged
+                except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged  # nosec B110
                     pass
             time.sleep(backoff)
 
@@ -1639,7 +1639,7 @@ def main() -> None:  # pragma: no cover
         try:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
-        except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged
+        except Exception:  # noqa: BLE001, S110 — secondary failure during error/shutdown handling; primary already logged  # nosec B110
             pass
 
     atexit.register(_atexit_cleanup)

@@ -181,7 +181,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         """_decompress_payload must never raise for any byte sequence."""
         from nibe_entity_manager import _decompress_payload
 
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             _decompress_payload(data)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any exception is acceptable — crash is not
@@ -208,7 +208,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         """_decompress_payload must never raise for any string input."""
         from nibe_entity_manager import _decompress_payload
 
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             _decompress_payload(text)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # any exception is acceptable — crash is not
@@ -220,7 +220,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
         from nibe_entity_manager import _GZIP_SENTINEL, _decompress_payload
 
         payload = _GZIP_SENTINEL.encode() + suffix
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             _decompress_payload(payload)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass  # graceful failure expected
@@ -230,7 +230,7 @@ class TestDecompressPayloadFuzzing(unittest.TestCase):
     def test_very_short_binary_never_crashes(self, data):
         from nibe_entity_manager import _decompress_payload
 
-        try:
+        try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             _decompress_payload(data)
         except Exception:  # noqa: BLE001, S110 — deliberate fuzz test, any non-crash outcome is acceptable
             pass

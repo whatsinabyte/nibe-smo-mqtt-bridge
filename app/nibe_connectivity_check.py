@@ -29,11 +29,20 @@ What this module does NOT do
 
 import contextlib
 import logging
-import subprocess
+import shutil
+import subprocess  # deliberate: runs ping/curl as isolated diagnostic subprocesses, see module docstring  # nosec B404
 
 from nibe_utils import TLS_COMPAT_CIPHERS
 
 log_commands = logging.getLogger("nibe.commands")
+
+# Resolved once at import time to a full path rather than passing the bare
+# "ping"/"curl" name to subprocess.run — avoids relying on PATH resolution
+# at call time. Falls back to the bare name if resolution fails so a
+# container missing either tool still gets the same clear FileNotFoundError
+# as before, rather than a confusing "resolved to None" failure.
+_PING_PATH = shutil.which("ping") or "ping"
+_CURL_PATH = shutil.which("curl") or "curl"
 
 # curl exit codes that are worth a specific, actionable message rather than
 # a bare "curl exited with code N". See `man curl` EXIT CODES.
@@ -58,8 +67,8 @@ def _run_ping(host: str, count: int = 3, timeout: int = 5) -> dict:
     from "the device is up but the REST API specifically is unreachable".
     """
     try:
-        result = subprocess.run(
-            ["ping", "-c", str(count), "-W", str(timeout), host],
+        result = subprocess.run(  # args are a fixed literal list, not shell/untrusted input  # nosec B603
+            [_PING_PATH, "-c", str(count), "-W", str(timeout), host],
             capture_output=True,
             text=True,
             timeout=timeout * count + 5,
@@ -102,7 +111,7 @@ def _run_curl(
     """
     url = f"{base_url}/points"
     cmd = [
-        "curl",
+        _CURL_PATH,
         "-sS",
         "--max-time",
         str(timeout),
@@ -125,12 +134,14 @@ def _run_curl(
 
     tls_verified = bool(ca_cert_path)
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout + 5,
-            check=False,
+        result = (
+            subprocess.run(  # cmd is a fixed literal list, not shell/untrusted input  # nosec B603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 5,
+                check=False,
+            )
         )
     except FileNotFoundError:
         return {
