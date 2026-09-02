@@ -1937,7 +1937,6 @@ class TestBuildSslContext(unittest.TestCase):
         that silently drops or breaks the set_ciphers() call would pass
         the sibling minimum_version-only test above undetected."""
         from generate_nibe_mqtt import _build_ssl_context
-
         from nibe_utils import TLS_COMPAT_CIPHERS
 
         with patch("ssl.SSLContext.set_ciphers") as mock_set_ciphers:

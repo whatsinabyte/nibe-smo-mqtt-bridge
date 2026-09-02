@@ -50,7 +50,6 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import run_test_suite
-
 from nibe_utils import fmt_ts as _fmt_ts
 
 if TYPE_CHECKING:

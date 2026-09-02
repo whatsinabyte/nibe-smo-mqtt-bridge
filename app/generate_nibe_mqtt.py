@@ -107,7 +107,6 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import abort_test_suite
-
 from nibe_utils import TLS_COMPAT_CIPHERS
 
 # ============================================================================

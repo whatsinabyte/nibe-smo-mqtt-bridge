@@ -77,7 +77,6 @@ from nibe_entity_detection import (
     reverse_divisor,
 )
 from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_config
-
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_api = logging.getLogger("nibe.api")
