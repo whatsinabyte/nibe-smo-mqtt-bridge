@@ -107,6 +107,7 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import abort_test_suite
+
 from nibe_utils import TLS_COMPAT_CIPHERS
 
 # ============================================================================
@@ -1078,7 +1079,20 @@ def _build_infrastructure(
     _em: list = []
     _auth_failed: threading.Event = threading.Event()
     shutting_down: list[bool] = [False]  # returned to caller
-    _FATAL_RC = {4, 5}
+    # These are MQTTv5 CONNACK reason codes (134 = "Bad user name or
+    # password", 135 = "Not authorized"), not the old MQTT 3.1.1 CONNACK
+    # return codes (4, 5) they numerically correspond to. paho's
+    # CallbackAPIVersion.VERSION2 on_connect always delivers a ReasonCode
+    # object using the MQTTv5 numbering scheme, even for a plain MQTT 3.1.1
+    # connection (this client's actual wire protocol, via mqtt.Client()'s
+    # own default) — confirmed empirically against a real mosquitto broker
+    # rejecting bad credentials, which reports reason_code.value == 135,
+    # never 5. {4, 5} silently never matched, so bad credentials never set
+    # _auth_failed or triggered the startup sys.exit(1) below — the add-on
+    # would instead retry the same wrong credentials forever, logging only
+    # the misleading "MQTT not yet connected after 2s — broker may be slow,
+    # continuing" rather than a clear "check your credentials" failure.
+    _FATAL_RC = {134, 135}
     keepalive = _keepalive_from_config(cfg.poll_interval)
 
     def on_connect(

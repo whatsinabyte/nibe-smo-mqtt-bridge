@@ -77,6 +77,7 @@ from nibe_entity_detection import (
     reverse_divisor,
 )
 from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_config
+
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_api = logging.getLogger("nibe.api")
@@ -3187,18 +3188,26 @@ class EntityManager:
         # pragma: no mutate end
 
     def republish_availability(self) -> None:
-        """Republish 'online' for all active entities after a broker restart."""
+        """Republish 'online' for all active entities after a broker restart.
+
+        The management/bridge availability topic is republished
+        unconditionally on _mgmt_avail_topic being set, independent of
+        whether there happen to be any active entities — an early return
+        here when active_entities_by_id is empty (e.g. zero entities
+        enabled, a legitimate state) would otherwise leave the bridge's own
+        top-level "available" sensor stuck on the LWT's "offline" forever
+        after a reconnect, with nothing left to bring it back online.
+        """
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())
-        if not snapshot:
-            return
         for entity_info in snapshot:
             self.mqtt.publish(entity_info["availability_topic"], "online", retain=True)
         if self._mgmt_avail_topic:
             self.mqtt.publish(self._mgmt_avail_topic, "online", retain=True)
-        log_mqtt.info(
-            "Reconnect: republished availability for %d entities", len(snapshot)
-        )  # pragma: no mutate
+        if snapshot or self._mgmt_avail_topic:
+            log_mqtt.info(
+                "Reconnect: republished availability for %d entities", len(snapshot)
+            )  # pragma: no mutate
 
     # ------------------------------------------------------------------ #
     # Enabled-state publish                                                #
