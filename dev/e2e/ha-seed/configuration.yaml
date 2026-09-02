@@ -1,0 +1,29 @@
+# Minimal HA configuration for the dev/e2e harness. Not used in production —
+# the real add-on never touches HA's configuration.yaml.
+default_config:
+
+http:
+  server_host: 0.0.0.0
+  # Onboarding + Playwright both talk to HA over plain http://localhost:8123
+  # inside the compose network; no external proxy is in front of it here.
+
+logger:
+  default: warning
+
+# The bridge's own Lovelace resource/dashboard auto-provisioning
+# (nibe_lovelace.py) needs a live Supervisor WebSocket, which does not exist
+# in this plain-Docker harness — it no-ops with a logged warning. Card
+# resource + dashboard are seeded here instead, in YAML mode, which needs no
+# API/auth round-trip and is fully reproducible from this file.
+lovelace:
+  mode: yaml
+  resources:
+    - url: /local/nibe-entity-manager-card.js
+      type: module
+  dashboards:
+    nibe-bridge:
+      mode: yaml
+      filename: nibe-bridge.yaml
+      title: Nibe Bridge
+      icon: mdi:heat-pump
+      show_in_sidebar: true

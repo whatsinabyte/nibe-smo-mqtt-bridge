@@ -1,0 +1,12 @@
+{
+  "name": "nibe-e2e-harness",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Manual, on-demand real-stack end-to-end test (real HA + real Mosquitto + real bridge). Not part of CI.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

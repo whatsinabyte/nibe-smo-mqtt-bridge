@@ -11,7 +11,11 @@ ENTRYPOINT []
 # iputils provides `ping`, used by the "Test API Connection" debug button's
 # connectivity check (nibe_connectivity_check.py) — explicit rather than
 # relying on whatever busybox applets happen to be built into the base image.
-RUN apk add --no-cache python3 py3-pip bash curl jq iputils
+# openssl provides the `openssl` CLI, used by tests/test_api_integration.py's
+# TestTlsCertificateValidationAgainstARealServer to generate a throwaway
+# self-signed cert — needed for the "Run Test Suite" debug button to pass
+# inside this container, not by the bridge itself at runtime.
+RUN apk add --no-cache python3 py3-pip bash curl jq iputils openssl
 
 # Set working directory
 WORKDIR /app

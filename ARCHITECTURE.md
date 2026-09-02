@@ -368,6 +368,24 @@ Note: `run-mutmut.sh` regenerates the `mutants/` sandbox from scratch on every i
 
 Pragma syntax: `# pragma: no mutate` (space required) on the **closing `)` line** of the statement.
 
+**JavaScript test suite (`app/nibe-entity-manager-card.js`):** Vitest+jsdom
+(the real card element driven through a stubbed `hass`) plus a Playwright
+smoke suite, at 99%+ line coverage on the card file, with ESLint as its
+lint gate — entirely separate tooling from the Python suite above, scoped
+to `app/`. See [CONTRIBUTING.md](CONTRIBUTING.md#javascript-test-suite-entity-manager-card)
+for setup/run instructions.
+
+**Real end-to-end harness (`dev/e2e/`):** a Docker Compose stack — real
+Home Assistant, real Mosquitto, the actual bridge built from this repo's
+own `Dockerfile`, and a mock Nibe REST API replaying real firmware dumps
+(`reference-dumps/`) — proving the full loop through a real browser driving
+the real card against a real HA frontend, not any suite's approximation of
+one. Manual/on-demand only, not wired into CI; run via `dev/e2e/run.sh`.
+This resolves what §7's Parked Work table used to list as "Contract
+emulator / end-to-end testing" — the REST API side is satisfied by
+replaying real dumps rather than a full hardware emulation, which turned
+out to be sufficient. See [dev/e2e/README.md](dev/e2e/README.md).
+
 ---
 
 ## 6a. Backlog — planned, not yet started
@@ -385,7 +403,6 @@ These items were considered and deliberately not pursued. Recorded here to avoid
 | Speculative refactoring of `_fetch_bulk_data` (~297 lines) | Complexity is inherent to the algorithm; fully covered; no current bug |
 | Speculative refactoring of `_publish_dynamic_changes` (~215 lines) | Same rationale |
 | Moving EntityManager constructor params to `__init__` | `device_info` requires an API response — awkward at construction time; low benefit for single-developer project |
-| Contract emulator / end-to-end testing | Requires hardware emulation of the Nibe REST API; high effort |
 | Spot price registers 26817–26840 | Modbus TCP write path; undocumented format |
 | Zone temperature setpoints 32342–32380 | Zones 2–40 report value 0; unclear if real hardware |
 | Modbus TCP sensor injection | Safety concern — writing arbitrary Modbus registers |

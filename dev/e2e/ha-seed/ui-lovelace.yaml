@@ -1,0 +1,6 @@
+title: Home
+views:
+  - title: Home
+    cards:
+      - type: markdown
+        content: "Nibe e2e harness — see the **Nibe Bridge** dashboard in the sidebar."

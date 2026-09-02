@@ -83,6 +83,13 @@ class TestWantedPointsFileCorruptionAgainstARealFilesystem:
 
 
 class TestWantedPointsPersistPermissionDeniedAgainstARealFilesystem:
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="chmod-based permission denial is meaningless as root (Linux DAC "
+        "override lets root write regardless of directory mode) -- this add-on's "
+        "container runs as root, so the 'Run Test Suite' debug button hits this "
+        "unconditionally, not just in CI",
+    )
     def test_unwritable_directory_logs_a_warning_not_a_crash(self, tmp_path) -> None:
         """A real permission-denied write -- e.g. a misconfigured bind
         mount, or /data/ owned by the wrong user -- must degrade to a
@@ -144,6 +151,13 @@ class TestDynamicPointMapFileCorruptionAgainstARealFilesystem:
         count = reader.from_file(path=str(target))
         assert count == 1
 
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="chmod-based permission denial is meaningless as root (Linux DAC "
+        "override lets root write regardless of directory mode) -- this add-on's "
+        "container runs as root, so the 'Run Test Suite' debug button hits this "
+        "unconditionally, not just in CI",
+    )
     def test_unwritable_directory_logs_a_warning_and_returns_false_not_a_crash(
         self, tmp_path
     ) -> None:
