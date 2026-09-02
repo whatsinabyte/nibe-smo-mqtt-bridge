@@ -12,6 +12,7 @@ Before contributing code, read [ARCHITECTURE.md](ARCHITECTURE.md) to understand 
 - [Repository layout](#repository-layout)
 - [Development environment](#development-environment)
 - [Running the test suite](#running-the-test-suite)
+- [JavaScript test suite (Entity Manager card)](#javascript-test-suite-entity-manager-card)
 - [Static analysis](#static-analysis)
 - [Coding conventions](#coding-conventions)
 - [Submitting changes](#submitting-changes)
@@ -273,9 +274,11 @@ discovery config is readable as a real retained message by an independent
 subscriber on the real broker. Every other integration suite above proves
 one interface's failure handling in isolation; this is the only one that
 proves the three actually interact correctly during a real startup.
-Deliberately does not test the Lovelace card's own JavaScript — there is
-no JS test tooling in this repo; this suite only proves the bridge's side
-of the `docs/card-api.md` MQTT contract the card depends on.
+Deliberately does not test the Lovelace card's own JavaScript — that has
+its own, separate test suite under `app/tests-js/` (see
+[JavaScript test suite (Entity Manager card)](#javascript-test-suite-entity-manager-card)
+below); this suite only proves the bridge's side of the
+`docs/card-api.md` MQTT contract the card depends on.
 
 Skipped unless `NIBE_MQTT_TEST_HOST` is set, same as the MQTT broker
 suite. **Must not** be run concurrently with `test_mqtt_broker_integration.py`
@@ -284,6 +287,93 @@ real, unscoped `scan_mqtt_discovery()`, which subscribes to the wildcard
 `homeassistant/+/+/config` across the *entire* broker, so it can pick up
 another suite's own in-flight retained topics and flake. See the module's
 own docstring for the full reasoning.
+
+---
+
+## JavaScript test suite (Entity Manager card)
+
+`app/nibe-entity-manager-card.js` — the Lovelace custom card — has its own
+test tooling, entirely separate from the Python `pytest` suite above: a
+`package.json` scoped to `app/`, so it never touches the repo-root
+`requirements*.txt`/`pytest.ini` and can't accidentally get pulled into a
+Python dependency install.
+
+**Prerequisites:** Node.js 18+ (for the built-in `node:stream/web`
+`DecompressionStream`/`CompressionStream` used by the gzip test coverage)
+and `npm`.
+
+**1. Install dependencies** (once, from `app/`):
+
+```bash
+cd app
+npm install
+```
+
+**2. Run the primary suite** — Vitest + jsdom, instantiating the real
+`<nibe-entity-manager-card>` custom element against a fake `hass` object
+that records MQTT subscribe/publish calls (`app/tests-js/support/fake-hass.js`)
+and drives it through fixtures built from `docs/card-api.md`
+(`app/tests-js/support/fixtures.js`):
+
+```bash
+npm test
+```
+
+Watch mode while iterating: `npm run test:watch`. Coverage report:
+`npm run test:coverage` — scoped to `nibe-entity-manager-card.js` itself
+(test support files excluded) and enforced via thresholds in
+`app/vitest.config.js` (90% statements/lines, 80% functions, 75% branches);
+the command exits non-zero if coverage drops below them.
+
+**3. Run the Playwright smoke suite** — a handful of tests for what jsdom
+can't verify: real CSS media-query-driven responsive layout (the 600px
+desktop/mobile breakpoint), real pointer/click behaviour, and modal
+visibility as actually laid out by a browser. Loads the card through the
+static fixture page `app/tests-js/e2e/fixture.html` (a stub `hass` injected
+via `<script type="module">`, no real Home Assistant needed):
+
+```bash
+npm run test:e2e:install   # once, downloads the Chromium browser
+npm run test:e2e
+```
+
+**What's covered where:** every inbound MQTT topic's happy path plus
+malformed/missing/empty/null payload handling, gzip decompression
+round-tripping, the Fuse.js CDN-load fallback to substring search, every
+outbound publish (enable/disable, snapshot save/restore/delete, mark-read)
+asserted against the exact topic and payload shape in `docs/card-api.md`,
+and all filter/sort/pagination/selection logic live in Vitest. Responsive
+layout switching and real click/modal behaviour live in the Playwright
+smoke suite. Neither suite modifies `nibe-entity-manager-card.js` itself —
+see the suite's own test files for any testability findings.
+
+**Linting:** ESLint (flat config, `app/eslint.config.js`), the JS-side
+equivalent of ruff — run it before submitting a PR:
+
+```bash
+npm run lint
+```
+
+Three scopes, each with the global set that actually applies to it: the
+card file itself (browser globals only — no Node.js globals may appear
+there, since it runs inside Home Assistant's frontend), the Vitest suite
+(Node + browser, since Vitest drives jsdom), and the Playwright suite
+(Node, plus browser globals in the top-level spec file since
+`page.evaluate()` callbacks are serialised into the browser page inline).
+
+**CI:** lint and both test suites run on every push/PR to `main` in the
+`js-tests` job of `.github/workflows/tests.yml`, independent of the Python
+`pytest` job.
+
+**Real end-to-end harness:** `dev/e2e/` is a separate, heavier-weight,
+manual-only harness — a real Home Assistant instance, a real Mosquitto
+broker, and the actual bridge container (built from this repo's own
+`Dockerfile`) via Docker Compose, with one Playwright test driving a real
+browser through the real card. It proves the one thing the suites above
+structurally can't: that the real HA frontend's `hass.connection`/
+`hass.callService` actually agrees with `app/tests-js/support/fake-hass.js`'s
+approximation of it. Not wired into CI — see `dev/e2e/README.md` for how
+to run it.
 
 ---
 

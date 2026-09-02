@@ -1,0 +1,7 @@
+title: Nibe Bridge
+views:
+  - title: Entity Manager
+    path: entity-manager
+    cards:
+      - type: custom:nibe-entity-manager-card
+        title: Nibe Entity Manager

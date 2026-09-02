@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Nibe Entity Manager Card — Playwright fixture</title>
+    <style>
+      body { margin: 0; padding: 16px; font-family: sans-serif; }
+      nibe-entity-manager-card { display: block; max-width: 900px; }
+    </style>
+  </head>
+  <body>
+    <nibe-entity-manager-card id="card"></nibe-entity-manager-card>
+
+    <script type="module">
+      import '../../nibe-entity-manager-card.js';
+
+      // Minimal fake hass — enough for setConfig()/hass setter and MQTT
+      // subscribe/publish plumbing to run without a real Home Assistant
+      // instance. Exposed on window so Playwright tests can drive it
+      // (window.__publish(topic, payload)) and inspect what was published
+      // (window.__published).
+      const subscriptions = [];
+      window.__published = [];
+
+      const hass = {
+        locale: { language: 'en', time_format: '24' },
+        connection: {
+          subscribeMessage(cb, { topic }) {
+            const wildcard = topic.endsWith('#');
+            const prefix = wildcard ? topic.slice(0, -1) : topic;
+            subscriptions.push({ topic, prefix, wildcard, cb });
+            return Promise.resolve(() => {});
+          },
+        },
+        callService(domain, service, data) {
+          if (domain === 'mqtt' && service === 'publish') {
+            window.__published.push({ ...data });
+          }
+          return Promise.resolve();
+        },
+      };
+
+      window.__publish = (topic, payload) => {
+        subscriptions
+          .filter((s) => (s.wildcard ? topic.startsWith(s.prefix) : s.topic === topic))
+          .forEach((s) => s.cb({ topic, payload }));
+      };
+
+      const card = document.getElementById('card');
+      card.setConfig({ pageSize: 50 });
+      card.hass = hass;
+      window.__card = card;
+      window.__cardReady = true;
+    </script>
+  </body>
+</html>

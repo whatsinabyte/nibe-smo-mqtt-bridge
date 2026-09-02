@@ -1,0 +1,23 @@
+{
+  "nibe_host": "mock-nibe-api",
+  "nibe_port": 8443,
+  "nibe_username": "dev",
+  "nibe_password": "dev",
+  "mqtt_host": "mosquitto",
+  "mqtt_port": 1883,
+  "mqtt_username": "",
+  "mqtt_password": "",
+  "device_name": "Nibe SMO S40",
+  "language": "en",
+  "poll_interval": 15,
+  "mode": "essential",
+  "mode_switch_behavior": "replace",
+  "log_level": "debug",
+  "debug_mode": false,
+  "api_failure_threshold": 3,
+  "changelog_retention_days": 90,
+  "remove_frontend": false,
+  "nibe_ca_cert": "",
+  "mqtt_tls": false,
+  "mqtt_ca_cert": ""
+}
