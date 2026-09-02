@@ -212,7 +212,13 @@ def main() -> None:
     setup_mqtt(token)
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    with open(os.path.join(OUT_DIR, "credentials.json"), "w") as f:
+    # Plaintext by design, not an oversight: USERNAME/PASSWORD are the
+    # synthetic, hardcoded dev-harness admin credentials from
+    # docker-compose.yml (HA_SEED_USERNAME/HA_SEED_PASSWORD), not real
+    # secrets -- this file exists specifically so the Playwright test
+    # (running as a separate host process, same Docker Compose network)
+    # can read them back. Never used outside this throwaway local harness.
+    with open(os.path.join(OUT_DIR, "credentials.json"), "w") as f:  # lgtm[py/clear-text-storage-sensitive-data]
         json.dump({"username": USERNAME, "password": PASSWORD, "ha_url": HA_URL}, f)
     with open(os.path.join(OUT_DIR, "token.txt"), "w") as f:
         f.write(token)
