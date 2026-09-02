@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.2] — 2026-09-02
+
+### Fixed
+- **Bad MQTT credentials never triggered the intended startup failure** —
+  the add-on checked a rejected connection's reason code against the old
+  MQTT 3.1.1 CONNACK values (`4`, `5`), but paho's `CallbackAPIVersion.VERSION2`
+  `on_connect` always delivers MQTT5-style reason codes (`134`, `135`) even
+  over a plain MQTT 3.1.1 connection. Wrong credentials silently never
+  matched, so instead of exiting with a clear "check your credentials"
+  error, the add-on retried the same bad credentials forever, logging only
+  a misleading "MQTT not yet connected after 2s — broker may be slow,
+  continuing." Confirmed empirically against a real broker rejecting bad
+  credentials.
+- **Bridge's own availability sensor stayed offline after a reconnect with
+  zero entities enabled** — `republish_availability()` skipped its
+  unconditional top-level "available" republish whenever no per-entity
+  availability topics existed to republish alongside it, so a bridge
+  running with everything disabled (e.g. `mode: none`) never came back
+  online in Home Assistant after a broker reconnect.
+
 ## [1.1.1] — 2026-08-26
 
 ### Fixed
