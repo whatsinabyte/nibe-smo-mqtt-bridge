@@ -156,21 +156,6 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 
 ---
 
-### `nibe/browser/device_info`
-
-**Retained.** Controller device information fetched from the API on startup.
-
-```json
-{
-  "name": "SMO S40",
-  "productName": "SMO S40",
-  "serialNumber": "123456789",
-  "firmwareVersion": "4.12.6"
-}
-```
-
----
-
 ### `nibe/browser/changelog/history`
 
 **Retained.** The full changelog of dynamic point appearances and disappearances. Gzip-compressed JSON. The card decompresses and displays this in the Changelog panel.
