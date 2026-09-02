@@ -203,6 +203,7 @@ class TestRunCurl(unittest.TestCase):
         false negative against a controller the real polling connection can
         actually reach."""
         from nibe_connectivity_check import _run_curl
+
         from nibe_utils import TLS_COMPAT_CIPHERS
 
         with patch(
@@ -235,6 +236,7 @@ class TestRunCurl(unittest.TestCase):
         `cmd += [...]` in the CA branch could all slip past `assertIn`
         checks elsewhere in this file."""
         from nibe_connectivity_check import _CURL_PATH, _run_curl
+
         from nibe_utils import TLS_COMPAT_CIPHERS
 
         with patch(

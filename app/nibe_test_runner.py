@@ -44,6 +44,7 @@ from threading import Event
 from typing import Any, cast
 
 from nibe_mqtt_publisher import MgmtTopic
+
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_commands = logging.getLogger("nibe.commands")

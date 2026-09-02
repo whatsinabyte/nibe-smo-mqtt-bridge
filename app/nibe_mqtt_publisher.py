@@ -47,6 +47,7 @@ from nibe_entity_detection import (
     create_entity_id,
     get_value_mapping,
 )
+
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_mqtt = logging.getLogger("nibe.mqtt")
