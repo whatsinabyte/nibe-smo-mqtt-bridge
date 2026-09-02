@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.3] — 2026-09-02
+
+### Fixed
+- **Entity Manager card could crash on a malformed retained `snapshots`
+  message** — `handleSnapshotsMessage` had no shape validation
+  (`JSON.parse(payload) || []` accepts any valid JSON), and its "is the
+  snapshots modal open" check defaults true for a modal that has never yet
+  been hidden, so a non-array payload (a stray retained message, a future
+  schema change) could throw synchronously inside the MQTT message handler.
+  Now validates the parsed payload is actually an array before using it.
+- **A malformed `changelog/history` payload could produce an unhandled
+  promise rejection in the card** — the gzip-decompression helper's write
+  side wasn't awaited or error-guarded, so a corrupted retained message
+  triggered console noise alongside the already-correctly-handled read-side
+  error.
+- **"Run Test Suite" debug button failed 4 tests when actually run on
+  real ODROID/Home Assistant hardware**, despite passing in normal
+  development: the add-on's container image was missing the `openssl` CLI
+  that two TLS-verification tests shell out to, and two filesystem
+  permission-denied tests assumed a non-root process — the add-on's
+  container runs as root, and Linux lets root bypass directory permission
+  bits entirely, so those two now correctly skip in that environment
+  instead of asserting something that isn't true there.
+
+### Changed
+- Removed the Entity Manager card's `device_info`-driven "controller
+  model" text — `docs/card-api.md` documented a payload shape
+  (`name`/`productName`/`serialNumber`/`firmwareVersion`) the bridge never
+  actually sent, so the card's displayed model name silently never updated
+  from its hardcoded default in production. This information is still
+  used elsewhere in the bridge; only the card's now-corrected unused
+  reference to it was removed.
+
+---
+
 ## [1.1.2] — 2026-09-02
 
 ### Fixed
