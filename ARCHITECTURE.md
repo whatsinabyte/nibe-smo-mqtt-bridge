@@ -321,7 +321,7 @@ Alarms use a separate fast poll (`_ALARM_POLL_INTERVAL = 10s`) independent of th
 
 ## 6. Test suite
 
-~3,999 tests (plus 19 Hypothesis subtests) across 20 files, at 100% line coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
+~4,337 tests (plus 19 Hypothesis subtests) across 26 files, at 100% line coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
 
 For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -329,6 +329,12 @@ For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](C
 - `conftest.py` — shared fixtures, Hypothesis strategies, profile registration
 - One test file per source module for most modules — see the ownership table in [CONTRIBUTING.md](CONTRIBUTING.md#test-file-ownership)
 - `test_entity_manager.py` plus 8 subsystem-split files (`test_entity_manager_snapshots.py`, `_changelog.py`, `_dynamic.py`, `_polling.py`, `_commands.py`, `_lifecycle.py`, `_state.py`, `_discovery.py`) cover `nibe_entity_manager.py`, which outgrew a single test file
+- **Real-infrastructure integration suites** — every other file above proves the code calls its collaborators (an MQTT client, `urlopen`, a WebSocket) correctly using mocks; these instead run the real thing (a real mosquitto broker, a real `http.server`, a hand-built real WebSocket server, real filesystem operations) to prove the actual wire/OS-level behaviour, not just the mocked contract:
+  - `test_api_integration.py` — `NibeApiClient` against a real HTTP(S) server (retry/error handling, TLS verification, real Authorization-header checking, chunked transfer-encoding)
+  - `test_mqtt_broker_integration.py` — discovery publish/cleanup, unclean disconnect + resubscribe, broker restart, outbound queue backpressure, broker auth rejection, corrupted retained configs, oversized packets — against a real mosquitto broker. Skipped unless `NIBE_MQTT_TEST_HOST` is set (see `dev/mosquitto.sh`)
+  - `test_ha_supervisor_integration.py` — `notify_ha`/`dismiss_ha` and `HAEntityRegistryWatcher` against a real HTTP + hand-built WebSocket stub Supervisor (auth rejection, dropped connections, ping/pong keepalive, reconnect racing a debounced refresh)
+  - `test_filesystem_integration.py` — `wanted_points.json`, `dynamic_point_map.json`, and `menu_structure.yaml` recovery against real file corruption, permission-denied, and disk-full conditions
+  - `test_end_to_end_startup.py` — a full `_build_infrastructure()` + `_run_startup_sequence()` + `_shutdown()` run against real stubs for all three external interfaces (Nibe API, MQTT broker, HA Supervisor) at once. Skipped unless `NIBE_MQTT_TEST_HOST` is set; must not run concurrently with `test_mqtt_broker_integration.py` against the same broker (see that file's own docstring)
 
 **Testing approaches used:**
 - `unittest.TestCase` + `MagicMock` for unit tests

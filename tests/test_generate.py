@@ -4248,23 +4248,27 @@ class TestBuildInfrastructure(unittest.TestCase):
         mock_log.error.assert_not_called()
 
     def test_on_connect_fatal_rc_as_plain_int_sets_auth_failed(self):
-        """reason_code=4 (bad credentials) as a plain int — not a paho enum
-        with .value — must still be recognised as fatal and log an error,
-        not silently fall through to the generic 'connection failed' branch."""
+        """reason_code=134 (bad credentials) as a plain int — not a paho
+        enum with .value — must still be recognised as fatal and log an
+        error, not silently fall through to the generic 'connection
+        failed' branch. 134 (not the old MQTT 3.1.1 return code 4) is what
+        paho's CallbackAPIVersion.VERSION2 on_connect actually delivers,
+        confirmed against a real broker rejecting bad credentials — see
+        _FATAL_RC's own comment in generate_nibe_mqtt.py."""
         mc, _, _ = self._call_infrastructure()
         with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
-            mc.on_connect(mc, None, None, 4, None)
+            mc.on_connect(mc, None, None, 134, None)
         mock_log.error.assert_called_once()
         self.assertIn("check mqtt_username and mqtt_password", mock_log.error.call_args.args[0])
 
-    def test_on_connect_rc_5_is_fatal(self):
-        """rc=5 (not authorised) must also be treated as fatal — pins the
-        _FATAL_RC set's exact membership {4, 5} against a mutation like
-        {4, 6}, which existing tests (using rc=4, already in both sets)
-        can't distinguish."""
+    def test_on_connect_rc_135_is_fatal(self):
+        """rc=135 (not authorized) must also be treated as fatal — pins the
+        _FATAL_RC set's exact membership {134, 135} against a mutation like
+        {134, 136}, which existing tests (using rc=134, already in both
+        sets) can't distinguish."""
         mc, _, _ = self._call_infrastructure()
         with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
-            mc.on_connect(mc, None, None, 5, None)
+            mc.on_connect(mc, None, None, 135, None)
         self.assertIn("refused", str(mock_log.error.call_args))
 
     def _call_infrastructure(self, cfg=None):
@@ -7020,8 +7024,10 @@ class TestBuildInfrastructureRemainingBranches(unittest.TestCase):
         mock_mc.username_pw_set.assert_called_once_with("user", "secret")
 
     def test_on_connect_fatal_rc_logs_error_and_sets_auth_failed(self):
-        """on_connect with reason code 4 (bad credentials) must log an error
-        and set _auth_failed — exercising lines 854–862.
+        """on_connect with reason code 134 (bad credentials, MQTTv5 CONNACK
+        numbering — what paho's VERSION2 on_connect actually delivers, see
+        _FATAL_RC's own comment) must log an error and set _auth_failed —
+        exercising lines 854–862.
 
         We fire on_connect directly on the captured callback rather than
         waiting for a real MQTT broker, which makes the FATAL_RC branch
@@ -7036,7 +7042,7 @@ class TestBuildInfrastructureRemainingBranches(unittest.TestCase):
         self.assertIsNotNone(on_connect, "on_connect callback was not registered")
 
         rc = MagicMock()
-        rc.value = 4  # MQTT bad credentials — in _FATAL_RC = {4, 5}
+        rc.value = 134  # MQTT bad credentials — in _FATAL_RC = {134, 135}
 
         with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
             on_connect(mock_mc, None, None, rc, None)
@@ -7046,8 +7052,9 @@ class TestBuildInfrastructureRemainingBranches(unittest.TestCase):
         self.assertIn("refused", msg)
 
     def test_on_connect_non_fatal_non_zero_rc_logs_error(self):
-        """on_connect with rc=3 (broker unavailable, not in FATAL_RC) must
-        reach the else branch and log an error — lines 861–864."""
+        """on_connect with rc=3 (some non-fatal, non-zero code, not in
+        FATAL_RC) must reach the else branch and log an error — lines
+        861–864."""
         cfg = self._cfg()
         mock_mc = MagicMock()
         mock_mc.is_connected.return_value = True
@@ -7979,14 +7986,14 @@ class TestBuildInfrastructureExactLogsAndArgs(unittest.TestCase):
         cfg = self._cfg(mqtt_broker="real-broker", mqtt_port=1884)
         import types
 
-        rc = types.SimpleNamespace(value=4)
+        rc = types.SimpleNamespace(value=134)
         mock_log = self._fire_on_connect(cfg, rc)
         mock_log.error.assert_called_once_with(
             "MQTT broker %s:%d refused the connection (reason %d) — "
             "check mqtt_username and mqtt_password in the add-on options.",
             "real-broker",
             1884,
-            4,
+            134,
         )
 
     def test_on_connect_other_failure_logs_exact_text_and_real_args(self):
@@ -8008,13 +8015,13 @@ class TestBuildInfrastructureExactLogsAndArgs(unittest.TestCase):
         A MagicMock can't test this branch — it auto-vivifies any attribute
         name, so hasattr(mock, 'anything') is always True."""
         cfg = self._cfg(mqtt_broker="real-broker", mqtt_port=1884)
-        mock_log = self._fire_on_connect(cfg, 4)  # bare int, in _FATAL_RC
+        mock_log = self._fire_on_connect(cfg, 134)  # bare int, in _FATAL_RC
         mock_log.error.assert_called_once_with(
             "MQTT broker %s:%d refused the connection (reason %d) — "
             "check mqtt_username and mqtt_password in the add-on options.",
             "real-broker",
             1884,
-            4,
+            134,
         )
 
     def test_on_connect_generic_failure_log_has_exact_text_and_real_args(self):

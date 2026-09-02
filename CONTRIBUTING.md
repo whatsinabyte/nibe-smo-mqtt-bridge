@@ -154,6 +154,11 @@ Each source module has a corresponding test file:
 | `nibe_utils.py` | `test_utils.py` |
 | Card JS logic | `test_card.py` |
 
+Real-infrastructure integration suites (not tied to a single source
+module — see their own sections below): `test_api_integration.py`,
+`test_mqtt_broker_integration.py`, `test_ha_supervisor_integration.py`,
+`test_filesystem_integration.py`, `test_end_to_end_startup.py`.
+
 `test_entity_manager.py` was split into 9 files as it grew unwieldy (~9,800 lines). The remaining `test_entity_manager.py` holds shared test utilities and base classes used by the other 8; the rest are grouped by subsystem (snapshots, changelog, dynamic points, polling, commands, lifecycle, state, discovery). New `EntityManager` tests go in whichever of the 9 files matches their subsystem — create a new file only if a subsystem genuinely doesn't fit any existing one, not as a default.
 
 ### Critical constraints
@@ -162,6 +167,123 @@ Each source module has a corresponding test file:
 - **All test paths must patch `notify_ha` and `dismiss_ha`** — live calls during test runs create persistent HA notifications. The `_trigger_and_wait` helper patches these by default.
 - **Create fresh `EntityManager` instances inside `@given` tests** — `setUp` runs once per method, not once per Hypothesis example.
 - **`database=None` is required in all Hypothesis profiles** — prevents `FlakyStrategyDefinition` errors from non-deterministic Unicode surrogate hashing on Python 3.12+.
+
+### MQTT broker integration tests
+
+`tests/test_mqtt_broker_integration.py` runs the discovery/cleanup logic
+against a real MQTT broker instead of a mocked client. It exists because a
+mock's message delivery order is whatever the test script says it is — a
+real broker's is not, and that gap is exactly what let
+[GitHub issue #23](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/23)
+through undetected by the rest of the (mocked) suite. See the module's own
+docstring for the full reasoning.
+
+Skipped by default — every other test file still runs with a plain `pytest`
+invocation. To run it:
+
+```bash
+./dev/mosquitto.sh start   # disposable, isolated eclipse-mosquitto container
+NIBE_MQTT_TEST_HOST=127.0.0.1 NIBE_MQTT_TEST_PORT=1894 \
+  pytest tests/test_mqtt_broker_integration.py
+./dev/mosquitto.sh stop
+```
+
+Never point `NIBE_MQTT_TEST_HOST` at a broker serving a real Home Assistant
+instance — this suite publishes real (retained) discovery configs on it.
+
+`TestBrokerRestartAgainstARealBroker` (opt-in via
+`NIBE_MQTT_TEST_ALLOW_BROKER_RESTART=1`) actually restarts the shared dev
+broker container. If running this file together with other suites under
+`-n auto`, use `--dist=loadfile` (not `--dist=loadscope`) — loadscope only
+keeps one *class's* tests on the same worker, but the broker is shared at
+the *file* level, so a different class's tests can still land on another
+worker and race the restart. Confirmed empirically: this combination
+flaked under `--dist=loadscope` (2-3 of 4 full-suite runs) and was
+completely stable across repeated runs once switched to `--dist=loadfile`.
+
+### Nibe REST API integration tests
+
+`tests/test_api_integration.py` runs `NibeApiClient` against a real
+`http.server` instance on an ephemeral localhost port — proving the retry
+logic, error handling, and body reading behave correctly over a real
+socket, not just that the right mocked `urlopen` calls happen. Unlike the
+MQTT broker suite above, this needs no external service or setup: it's
+part of the normal, always-run suite. Response codes and payload shapes
+are checked against the vendor's own Local REST API documentation, not
+just against what `nibe_api.py`'s own code assumes — this is what caught
+`reset_notifications()`/`write_device_mode()` using their own separate
+`urlopen` calls (204/405/500 and 400/401/403 respectively) with no
+coverage at all until this suite added it.
+
+`TestRealMisbehaviourAgainstARealServer` goes further than vanilla/
+documented-happy-path behaviour: it proves `self._lock` actually
+serializes concurrent requests on a real socket (the real controller has
+been observed, per community reports, to stop responding under
+overlapping request load — this is the whole reason that lock exists),
+that a malformed/truncated JSON body is handled gracefully rather than
+crashing, and that a real connection refusal (device rebooting, API not
+yet up) is retried and reported like any other transient failure. It also
+proves `ssl_context` is genuinely wired into `urlopen()`'s TLS handshake
+against a real self-signed certificate (both rejecting an untrusted one
+and accepting one signed by a trusted CA), that a server which actually
+inspects the `Authorization` header value — not a scripted 401 — is
+handled correctly, and that a large, genuinely `Transfer-Encoding:
+chunked` `/points` response decodes correctly end to end. None of these
+are exercisable through a mocked `urlopen`.
+
+### HA Supervisor integration tests
+
+`tests/test_ha_supervisor_integration.py` runs `notify_ha`/`dismiss_ha`
+and `HAEntityRegistryWatcher` against a real `http.server` (for the REST
+calls) plus a hand-built WebSocket server implementing the RFC 6455
+handshake and frame (un)masking by hand — no WebSocket *server* library
+was available in the venv, only the client-side `websocket-client` this
+project already depends on. Message shapes are checked against the
+official [HA WebSocket API docs](https://developers.home-assistant.io/docs/api/websocket/),
+not just against what `nibe_ha_integration.py`'s own code assumes.
+
+No external service or opt-in env var needed — part of the normal,
+always-run suite. Covers real misbehaviour on both sides: auth rejection,
+a connection dropped mid-handshake, a malformed greeting, a missing
+app-level pong triggering reconnect, a real RFC 6455 protocol-level ping
+frame (opcode 0x9) from the server getting a real pong back without
+disrupting the event stream, `notify_ha` genuinely timing out (not
+hanging forever) against a server that accepts the connection and then
+goes silent, and a debounced `refresh_registry()` call racing a real
+reconnect on two concurrent connections to the same stub server.
+
+### Filesystem integration tests
+
+`tests/test_filesystem_integration.py` proves the recovery logic around
+`wanted_points.json`, `dynamic_point_map.json`, and `menu_structure.yaml`
+against real filesystem failures — a truncated file (crash mid-write), a
+permission-denied directory, and (via `RLIMIT_FSIZE` + ignoring
+`SIGXFSZ`) a real `OSError` from the OS reproducing what a genuinely full
+disk does — not a mocked `open()` that only ever fails in the shape a
+test tells it to. No external service or opt-in env var needed.
+
+### End-to-end startup test
+
+`tests/test_end_to_end_startup.py` drives `_build_infrastructure()` +
+`_run_startup_sequence()` + `_shutdown()` directly against real stub
+servers for all three external interfaces at once (Nibe API, MQTT broker,
+HA Supervisor REST + WebSocket) plus a real filesystem, then confirms a
+real point from the real Nibe stub was discovered, classified, and its
+discovery config is readable as a real retained message by an independent
+subscriber on the real broker. Every other integration suite above proves
+one interface's failure handling in isolation; this is the only one that
+proves the three actually interact correctly during a real startup.
+Deliberately does not test the Lovelace card's own JavaScript — there is
+no JS test tooling in this repo; this suite only proves the bridge's side
+of the `docs/card-api.md` MQTT contract the card depends on.
+
+Skipped unless `NIBE_MQTT_TEST_HOST` is set, same as the MQTT broker
+suite. **Must not** be run concurrently with `test_mqtt_broker_integration.py`
+(or another instance of itself) against the same broker — it calls the
+real, unscoped `scan_mqtt_discovery()`, which subscribes to the wildcard
+`homeassistant/+/+/config` across the *entire* broker, so it can pick up
+another suite's own in-flight retained topics and flake. See the module's
+own docstring for the full reasoning.
 
 ---
 

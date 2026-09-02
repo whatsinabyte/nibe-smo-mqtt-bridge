@@ -2324,6 +2324,24 @@ class TestRepublishAvailability(unittest.TestCase):
         topics = [c[0][0] for c in em.mqtt.publish.call_args_list]
         self.assertIn("homeassistant/nibe/management/available", topics)
 
+    def test_mgmt_avail_topic_published_even_with_zero_active_entities(self):
+        """Regression test: found via a real-broker integration test
+        (tests/test_mqtt_broker_integration.py), where the bridge's own
+        management-availability topic was never republished after a
+        reconnect whenever zero entities happened to be enabled — an early
+        `if not snapshot: return` skipped the unconditional
+        _mgmt_avail_topic publish along with the (correctly skippable)
+        per-entity loop. Zero enabled entities is a legitimate state (e.g.
+        mode 'none', or a fresh install), and the bridge's own top-level
+        HA availability sensor must still come back online after a
+        reconnect regardless of how many entities are enabled."""
+        em = _make_em()
+        em.active_entities_by_id.clear()
+        em._mgmt_avail_topic = "homeassistant/nibe/management/available"
+        em.republish_availability()
+        topics = [c[0][0] for c in em.mqtt.publish.call_args_list]
+        self.assertIn("homeassistant/nibe/management/available", topics)
+
     def test_entity_availability_published_with_retain_true(self):
         """Availability must be retained — otherwise HA (which may itself
         reconnect after this republish) sees no availability state until
