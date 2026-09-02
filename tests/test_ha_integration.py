@@ -1405,6 +1405,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("os.getpgid", return_value=99999) as mock_getpgid,
             patch("os.killpg") as mock_killpg,
         ):
@@ -1451,6 +1452,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1481,6 +1483,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1505,6 +1508,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1526,6 +1530,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1559,6 +1564,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1581,6 +1587,7 @@ class TestManagementHandlers(unittest.TestCase):
         ]
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("nibe_ha_integration.notify_ha"),
             patch("builtins.open", MagicMock()),
             patch("os.getpgid", return_value=99999),
             patch("os.killpg"),
@@ -1599,7 +1606,10 @@ class TestManagementHandlers(unittest.TestCase):
         not 'failed' or 'timed_out'."""
         from nibe_mqtt_publisher import MgmtTopic
 
-        with patch("subprocess.Popen", side_effect=OSError("no such file: python3")):
+        with (
+            patch("subprocess.Popen", side_effect=OSError("no such file: python3")),
+            patch("nibe_ha_integration.notify_ha"),
+        ):
             self._run("RUN_TESTS_PRESS", "")
         states = [p for t, p in self._run_tests_call_args() if t == MgmtTopic.RUN_TESTS_STATE]
         self.assertIn("error", states)
@@ -1707,6 +1717,7 @@ class TestManagementHandlers(unittest.TestCase):
     def test_run_tests_launch_exception_logged_with_exact_text(self):
         with (
             patch("subprocess.Popen", side_effect=OSError("boom")),
+            patch("nibe_ha_integration.notify_ha"),
             patch("nibe_ha_integration.dismiss_ha"),
             patch("nibe_test_runner.log_commands") as mock_log,
         ):

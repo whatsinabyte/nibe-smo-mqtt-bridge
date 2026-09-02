@@ -6898,12 +6898,19 @@ class TestSetupLovelaceDashboardFlagWriteFailure(unittest.TestCase):
     """Flag file write failures (OSError) in all three paths of _setup_lovelace_dashboard."""
 
     def _make_ws_and_call(self, ws_responses):
+        import os
         import tempfile
 
         import nibe_lovelace as nl
 
         ws = MagicMock()
-        flag_file = tempfile.mktemp()
+        # tempfile.mktemp() is deprecated (TOCTOU race between generating
+        # the name and creating the file) -- mkstemp() creates it securely.
+        # The real file's existence doesn't matter here: patched_open below
+        # always intercepts a write to this exact path with a raised
+        # OSError before any real write happens.
+        fd, flag_file = tempfile.mkstemp()
+        os.close(fd)
 
         calls = []
 
