@@ -1,0 +1,74 @@
+name: nibe-e2e
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.18
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "18830:1883"
+
+  mock-nibe-api:
+    build: ./mock-api
+    container_name: nibe-e2e-mock-api
+    environment:
+      MOCK_NIBE_DUMP: /data/all_points_en.json
+      MOCK_NIBE_PORT: "8443"
+    volumes:
+      - ../../reference-dumps/all_points_en.json:/data/all_points_en.json:ro
+
+  homeassistant:
+    image: homeassistant/home-assistant:2024.10.1
+    container_name: nibe-e2e-homeassistant
+    volumes:
+      - ha-config:/config
+      - ./ha-seed/configuration.yaml:/config/configuration.yaml:ro
+      - ./ha-seed/ui-lovelace.yaml:/config/ui-lovelace.yaml:ro
+      - ./ha-seed/nibe-bridge.yaml:/config/nibe-bridge.yaml:ro
+    ports:
+      - "18123:8123"
+    depends_on:
+      - mosquitto
+
+  # One-shot: drives HA's onboarding + MQTT config-flow REST APIs headlessly.
+  # Runs once per fresh `ha-config` volume and exits; safe to re-run (see
+  # seed_ha.py docstring). The playwright test waits on this container's
+  # exit code via `docker compose run` / healthcheck-less "depends_on"
+  # ordering — see README.md for the exact invocation.
+  ha-seed:
+    build: ./ha-seed
+    container_name: nibe-e2e-ha-seed
+    environment:
+      HA_URL: http://homeassistant:8123
+      HA_SEED_USERNAME: admin
+      HA_SEED_PASSWORD: adminpass123
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: "1883"
+    volumes:
+      - ./seed-out:/seed-out
+    depends_on:
+      - homeassistant
+
+  bridge:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: nibe-e2e-bridge
+    depends_on:
+      - mosquitto
+      - mock-nibe-api
+      - homeassistant
+    volumes:
+      - ./bridge/options.json:/data/options.json:ro
+      - ha-config:/homeassistant
+    # No SUPERVISOR_TOKEN / Supervisor API in this harness — the bridge's
+    # Lovelace resource/dashboard auto-provisioning (nibe_lovelace.py,
+    # ws://supervisor/core/websocket) is Supervisor-only and no-ops cleanly
+    # without it (logs a warning, does not crash). See dev/e2e/README.md
+    # for how the card resource + dashboard are seeded instead (YAML-mode
+    # lovelace in ha-seed/configuration.yaml). The bridge still copies the
+    # card JS file itself to /homeassistant/www — that needs no Supervisor
+    # token, just the shared ha-config volume mounted above.
+
+volumes:
+  ha-config:

@@ -93,9 +93,6 @@ class NibeEntityManager extends HTMLElement {
     this.writableFilter = '';
     this.dynamicFilter = '';  // '' | 'dynamic' | 'static'
 
-    // Device model from bridge — used in UI text instead of hardcoded 'SMO S40'
-    this.deviceModel = 'Nibe controller';
-    
     this.updateTimeout = null;
     this.debounceTime = 200;
 
@@ -1296,8 +1293,12 @@ class NibeEntityManager extends HTMLElement {
     const writer = ds.writable.getWriter();
     const reader = ds.readable.getReader();
 
-    writer.write(bytes);
-    writer.close();
+    // Errors on the write side surface separately from the awaited read loop
+    // below (which is what actually reports a malformed/non-gzip payload to
+    // the caller) — swallow here so a bad payload doesn't also produce an
+    // unhandled promise rejection alongside the handled error.
+    writer.write(bytes).catch(() => {});
+    writer.close().catch(() => {});
 
     const chunks = [];
     while (true) {
@@ -1408,10 +1409,6 @@ class NibeEntityManager extends HTMLElement {
           { type: 'mqtt/subscribe', topic: 'nibe/browser/applied_mode' }
         ),
         this._hass.connection.subscribeMessage(
-          (msg) => this.handleDeviceInfoMessage(msg),
-          { type: 'mqtt/subscribe', topic: 'nibe/browser/device_info' }
-        ),
-        this._hass.connection.subscribeMessage(
           (msg) => this.handlePointListMessage(msg),
           { type: 'mqtt/subscribe', topic: 'nibe/browser/point_list' }
         )
@@ -1514,23 +1511,6 @@ class NibeEntityManager extends HTMLElement {
       }
     } catch (e) {
       console.error('Error processing all_metadata:', e);
-    }
-  }
-
-  /**
-   * Handle the retained nibe/browser/device_info message.
-   * Updates this.deviceModel so UI text reflects the actual connected device
-   * (e.g. 'SMO S40', 'VVM S320', 'S1155') instead of a hardcoded string.
-   */
-  handleDeviceInfoMessage(msg) {
-    try {
-      if (!msg.payload) return;
-      const info = JSON.parse(msg.payload);
-      if (info.model) {
-        this.deviceModel = info.model;
-      }
-    } catch (e) {
-      console.warn('Failed to parse device_info:', e);
     }
   }
 
@@ -2833,10 +2813,9 @@ class NibeEntityManager extends HTMLElement {
       <div style="margin-top:16px;padding:10px 12px;
            background:rgba(255,152,0,0.08);border-left:3px solid var(--warning-color,#ff9800);
            border-radius:4px;font-size:13px;color:var(--primary-text-color);">
-        ⚠ Writing to this entity sends a command directly to the
-        ${this.deviceModel} controller. Verify the current value before
-        changing it — some registers affect heating/cooling operation
-        immediately.
+        ⚠ Writing to this entity sends a command directly to the controller.
+        Verify the current value before changing it — some registers affect
+        heating/cooling operation immediately.
       </div>` : ''}
       <div style="margin-top:12px;font-size:12px;color:var(--secondary-text-color,#727272);
            font-style:italic;">
@@ -2893,8 +2872,9 @@ class NibeEntityManager extends HTMLElement {
       const payload = typeof msg.payload === 'string'
                       ? msg.payload
                       : new TextDecoder().decode(msg.payload);
-      this.snapshots = JSON.parse(payload) || [];
-    } catch (e) {
+      const parsed = JSON.parse(payload);
+      this.snapshots = Array.isArray(parsed) ? parsed : [];
+    } catch {
       this.snapshots = [];
     }
     // Re-render if the modal is currently open
@@ -2910,7 +2890,7 @@ class NibeEntityManager extends HTMLElement {
                       ? msg.payload
                       : new TextDecoder().decode(msg.payload);
       this.appliedMode = payload.trim();
-    } catch (e) {
+    } catch {
       this.appliedMode = '';
     }
   }

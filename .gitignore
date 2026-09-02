@@ -50,3 +50,10 @@ data/
 *.egg-info/
 dist/
 build/
+
+# JS test tooling (app/) — Vitest + Playwright for nibe-entity-manager-card.js
+app/node_modules/
+app/coverage/
+app/test-results/
+app/playwright-report/
+app/.vitest-cache/
