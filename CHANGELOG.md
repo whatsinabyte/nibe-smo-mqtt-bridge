@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.4] — 2026-09-04
+
+### Fixed
+- **Point 1021 ("Operating mode PV panels", register 579) was misclassified
+  as a permanently-`on` `binary_sensor`** — the register reports a 2-value
+  domain (`10`/`40`) rather than a boolean, and the binary auto-detection
+  check only excluded points with 3+ mapped states, so this 2-state point
+  slipped through. Now excluded from binary auto-detection and exposed as a
+  plain `sensor`, `10 -> "Off"` / `40 -> "On"`.
+- **Entity Manager card search on ID/Modbus register used a bare substring
+  match** — searching `"1021"` also matched `11021`, `21021`, etc., since
+  digits anywhere in the identifier counted as a hit. Matching is now
+  exact-or-prefix, so a search narrows progressively as more digits are
+  typed without false-positive noise. Exact/prefix ID, Modbus register, and
+  unit matches now also rank ahead of fuzzy title matches in the results
+  list instead of being sorted behind them.
+
 ## [1.1.3] — 2026-09-02
 
 ### Fixed
