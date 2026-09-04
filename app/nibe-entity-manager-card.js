@@ -2114,6 +2114,13 @@ class NibeEntityManager extends HTMLElement {
       this._fuseResultOrder = null;
     }
 
+    // Entities matched via the ID/unit/Modbus checks below — sortEntities()
+    // ranks these ahead of fuzzy title matches (exact ahead of prefix, prefix
+    // ahead of fuzzy), since a precise or narrowing ID search should surface
+    // its target first rather than burying it behind fuzzy title noise.
+    this._exactMatchIds  = new Set();
+    this._prefixMatchIds = new Set();
+
     return Array.from(this.entities.values()).filter(entity => {
       // Guard: skip malformed entities that have no id yet (e.g. stubs
       // added by handlePointListMessage before metadata arrives).
@@ -2125,18 +2132,30 @@ class NibeEntityManager extends HTMLElement {
         const term      = this.searchTerm.trim();
         const termLower = term.toLowerCase();
 
-        // Exact substring match on ID, unit, and Modbus register ID.
-        // These fields are short, unambiguous, and benefit from exact matching
-        // (e.g. typing "°C" or "5001" or "40004" should be precise).
+        // ID and Modbus register ID are numeric identifiers: a bare substring
+        // match would make "1021" also match 11021, 21021, 51021, etc., so
+        // matching is exact-or-prefix instead — "1021" matches 1021 and
+        // 10210+ (narrowing as more digits are typed) but not 11021.
+        // Unit stays a substring match since it's a short label, not an
+        // identifier (e.g. typing "C" should still find "°C").
         const idStr      = entity.id != null ? entity.id.toString() : '';
         const unitLower  = (entity.unit || '').toLowerCase();
         const modbus     = entity.modbusRegisterID != null
                            ? entity.modbusRegisterID.toString() : '';
-        const exactMatch = idStr.includes(termLower)
-                        || unitLower.includes(termLower)
-                        || modbus.includes(termLower);
 
-        if (exactMatch) return true;
+        const exactMatch = termLower !== '' && (idStr === termLower || modbus === termLower)
+                        || unitLower.includes(termLower);
+        if (exactMatch) {
+          this._exactMatchIds.add(entity.id);
+          return true;
+        }
+
+        const prefixMatch = termLower !== ''
+                          && (idStr.startsWith(termLower) || modbus.startsWith(termLower));
+        if (prefixMatch) {
+          this._prefixMatchIds.add(entity.id);
+          return true;
+        }
 
         // Fuzzy match on title via Fuse.js (when loaded and query ≥ 3 chars).
         // Falls back to substring matching if Fuse is not yet available.
@@ -2176,13 +2195,19 @@ class NibeEntityManager extends HTMLElement {
   sortEntities() {
     if (this._fuseResultOrder) {
       // Fuse search active — sort by match quality (score rank) first.
-      // Entities that matched via exact unit/ID (not in _fuseResultOrder) get
-      // rank Infinity so they appear after fuzzy title matches.
+      // Entities matched via the exact ID/unit/Modbus check rank first (-2),
+      // ahead of prefix ID/Modbus matches (-1), ahead of every fuzzy title
+      // match: a precise or narrowing ID search should surface its target
+      // first, not bury it behind fuzzy title noise. Entities matched only
+      // by fuzzy title (not in _fuseResultOrder) get rank Infinity.
+      const rankOf = (id) => {
+        if (this._exactMatchIds?.has(id)) return -2;
+        if (this._prefixMatchIds?.has(id)) return -1;
+        return this._fuseResultOrder.has(id) ? this._fuseResultOrder.get(id) : Infinity;
+      };
       this.filteredEntities.sort((a, b) => {
-        const rankA = this._fuseResultOrder.has(a.id)
-                      ? this._fuseResultOrder.get(a.id) : Infinity;
-        const rankB = this._fuseResultOrder.has(b.id)
-                      ? this._fuseResultOrder.get(b.id) : Infinity;
+        const rankA = rankOf(a.id);
+        const rankB = rankOf(b.id);
         if (rankA !== rankB) return rankA - rankB;
         // Tiebreaker: fall through to column sort for equal ranks
         return a.id - b.id;

@@ -130,4 +130,66 @@ describe('Fuse.js active path (fake global Fuse injected directly)', () => {
     el.sortEntities();
     expect(el.filteredEntities.map((e) => e.id)).toEqual([15, 20]);
   });
+
+  it('ranks an exact ID match ahead of every fuzzy title match (regression: point 1021 buried behind 108 fuzzy "101" hits)', () => {
+    const { el, harness } = createCard();
+    harness.publish(
+      'nibe/browser/all_metadata',
+      allMetadataPayload([
+        sampleMetadataEntry({ id: 1021, title: 'Operating mode PV panels', unit: '' }),
+        sampleMetadataEntry({ id: 101, title: 'Compressor status EB101', unit: '' }),
+        sampleMetadataEntry({ id: 1015, title: 'EB101 alarm code', unit: '' }),
+      ])
+    );
+    globalThis.Fuse = class {
+      constructor(items) {
+        this.items = items;
+      }
+      // Simulates Fuse fuzzily matching titles containing "101" against the
+      // query "1021" — id 1021 itself never appears in Fuse's own results
+      // because its title doesn't fuzzy-match "1021" at all; it only gets
+      // into filteredEntities via the exact ID check.
+      search() {
+        return [
+          { item: this.items.find((i) => i.id === 101) },
+          { item: this.items.find((i) => i.id === 1015) },
+        ];
+      }
+    };
+    el._fuseLoaded = true;
+    el._rebuildFuseIndex();
+    el.searchTerm = '1021';
+    el.filteredEntities = el.getFilteredEntities();
+    el.sortEntities();
+    expect(el.filteredEntities.map((e) => e.id)).toEqual([1021, 101, 1015]);
+  });
+
+  it('ranks exact ID match ahead of prefix ID match ahead of fuzzy title match', () => {
+    const { el, harness } = createCard();
+    harness.publish(
+      'nibe/browser/all_metadata',
+      allMetadataPayload([
+        // Prefix match only: "102" is a prefix of 10210, not equal to it.
+        sampleMetadataEntry({ id: 10210, title: 'Some other title', unit: '' }),
+        // Exact match: id equals the search term itself.
+        sampleMetadataEntry({ id: 102, title: 'Yet another title', unit: '' }),
+        // Fuzzy title match only (Fuse mock below returns this one).
+        sampleMetadataEntry({ id: 999, title: 'Contains 102 in title', unit: '' }),
+      ])
+    );
+    globalThis.Fuse = class {
+      constructor(items) {
+        this.items = items;
+      }
+      search() {
+        return [{ item: this.items.find((i) => i.id === 999) }];
+      }
+    };
+    el._fuseLoaded = true;
+    el._rebuildFuseIndex();
+    el.searchTerm = '102';
+    el.filteredEntities = el.getFilteredEntities();
+    el.sortEntities();
+    expect(el.filteredEntities.map((e) => e.id)).toEqual([102, 10210, 999]);
+  });
 });
