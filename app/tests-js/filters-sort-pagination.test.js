@@ -82,6 +82,34 @@ describe('filters', () => {
     expect(el.getFilteredEntities().length).toBe(5); // all share the same unit fixture
   });
 
+  it('search on id/modbus register is exact-or-prefix, not bare substring (regression: "1021" must not match 11021/21021)', () => {
+    const { el, harness } = createCard();
+    harness.publish(
+      'nibe/browser/all_metadata',
+      allMetadataPayload([
+        sampleMetadataEntry({ id: 1021, title: 'Operating mode PV panels', modbusRegisterID: 579 }),
+        sampleMetadataEntry({ id: 11021, title: 'Unrelated point', modbusRegisterID: 5790 }),
+        sampleMetadataEntry({ id: 21021, title: 'Another unrelated point', modbusRegisterID: 15790 }),
+      ])
+    );
+
+    // "1021" is not a prefix of 11021 or 21021 (they start with "1102"/"2102"),
+    // so a bare substring match would wrongly include them but exact-or-prefix does not.
+    el.searchTerm = '1021';
+    expect(el.getFilteredEntities().map((e) => e.id)).toEqual([1021]);
+
+    // "579" is an exact match for point 1021's register and a *prefix* match for
+    // 11021's register (5790) — prefix matching is intentional (lets a search
+    // narrow progressively as more digits are typed), so both are included, but
+    // the exact match must still rank first.
+    el.searchTerm = '579';
+    const results = el.getFilteredEntities();
+    expect(results.map((e) => e.id).sort((a, b) => a - b)).toEqual([1021, 11021]);
+    el.filteredEntities = results;
+    el.sortEntities();
+    expect(el.filteredEntities[0].id).toBe(1021);
+  });
+
   it('clearFilters resets every filter, search term, and page', () => {
     const { el, harness } = createCard();
     seedEntities(el, harness);

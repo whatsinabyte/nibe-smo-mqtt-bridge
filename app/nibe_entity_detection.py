@@ -154,7 +154,7 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         1765: {10: "Off", 20: "Opening", 30: "Closing"},
         1766: {10: "Off", 20: "Active", 30: "Passive", 40: "Opening", 50: "Closing"},
         # PV panels — verified empirically, no firmware description
-        1021: {10: "PV surplus active", 40: "Normal operation"},
+        1021: {10: "Off", 40: "On"},
         # ACS (Active Cooling System) — no firmware description
         2701: {3: "Passive", 7: "Active"},
         2702: {10: "Off", 20: "Opening", 30: "Closing"},
@@ -847,6 +847,10 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset(
         55000,  # Priority (5-state)
         55335,  # EEV Control Mode (EB101) — multi-state valve control
         1760,  # Operating mode internal add. heat (4-state: off/step1/step2/step3)
+        # Operating mode PV panels — 2-state {10,40} value domain, so the
+        # VALUE_MAPPINGS length check alone can't tell it apart from a real
+        # boolean; excluded explicitly. See GitHub issue #29.
+        1021,
     }
 )
 
