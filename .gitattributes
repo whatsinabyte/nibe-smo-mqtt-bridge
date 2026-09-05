@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Force LF regardless of platform — a CRLF-corrupted shell script fails
+# with a confusing `$'\r': command not found` rather than a clear error,
+# and this project's scripts already target bash 3.2 specifically (see
+# CONTRIBUTING.md's ShellCheck section), so this closes off one more way
+# for a script to work for one contributor and mysteriously not another.
+*.sh eol=lf

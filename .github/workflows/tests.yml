@@ -7,6 +7,67 @@ on:
     branches: [main]
 
 jobs:
+  pre-commit:
+    # Exercises .pre-commit-config.yaml itself, not just the underlying
+    # tools it wraps (ruff/mypy/eslint are already independently enforced
+    # by the pytest and js-tests jobs below) — this job's only real job is
+    # to catch the config file rotting or its pinned hook versions drifting
+    # from what the other jobs actually run, since nothing else would
+    # notice that on its own.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Create .venv-check and install Python dependencies
+        # The config's local mypy/eslint hooks invoke .venv-check/bin/python
+        # directly (see .pre-commit-config.yaml's own comment on why —
+        # matches every other documented command in this repo), so this job
+        # needs a real .venv-check here too, not just packages on $PATH.
+        run: |
+          python -m venv .venv-check
+          .venv-check/bin/pip install --upgrade pip
+          .venv-check/bin/pip install -r requirements-dev.txt -r requirements-test.txt
+
+      - name: Install JS dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run pre-commit
+        run: .venv-check/bin/pre-commit run --all-files --show-diff-on-failure
+
+      - name: Shell script syntax check
+        # Catches a script that doesn't even parse (e.g. the bash 3.2
+        # incompatibility dev/setup.sh shipped with once — a negative array
+        # index that's silently invalid on the bash 3.2 this repo's scripts
+        # target, not just a shellcheck-style style/portability warning).
+        # shellcheck itself (above) doesn't catch every such case; `bash -n`
+        # is a cheap, orthogonal second check for "does this parse at all".
+        run: |
+          for f in run.sh run-mutmut.sh dev/setup.sh dev/mosquitto.sh dev/e2e/run.sh; do
+            bash -n "$f"
+          done
+
+      - name: dev/setup.sh --check smoke test
+        # Side-effect-free (--check only reports, never installs) — this
+        # just confirms the script actually runs to completion and exits
+        # 0 in a fresh environment, which the bash-3.2 bug above would have
+        # failed silently and fast, with no signal anywhere that it broke.
+        run: ./dev/setup.sh --check
+
   pytest:
     runs-on: ubuntu-latest
     steps:

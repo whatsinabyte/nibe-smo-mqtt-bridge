@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "description": "Manual, on-demand real-stack end-to-end test (real HA + real Mosquitto + real bridge). Not part of CI.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "playwright test"
   },

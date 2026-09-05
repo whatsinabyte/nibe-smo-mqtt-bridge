@@ -62,6 +62,20 @@ All production Python source lives in `nibe_s_series/app/`. The test suite lives
 
 ## Development environment
 
+**Shortcut:** steps 2-4 below (venv, dependencies, verification), plus the
+JS test tooling in `app/` and `dev/e2e/`, the pre-commit hook, and a check
+for Docker/Colima/`gh` CLI, are all handled by:
+
+```bash
+./dev/setup.sh          # set up / update everything
+./dev/setup.sh --check  # report what's missing without installing anything
+./dev/setup.sh --doctor # run lint + type-check + both test suites for real
+```
+
+Safe to re-run any time — see its own header comment for details. The
+manual walkthrough below is what it automates, useful if you want to
+understand or do these steps individually.
+
 **1. Clone the repository**
 
 ```bash
@@ -379,7 +393,7 @@ to run it.
 
 ## Static analysis
 
-All four tools must pass clean before submitting a PR.
+All five tools must pass clean before submitting a PR.
 
 **Ruff** (linting and formatting):
 
@@ -397,7 +411,7 @@ mypy app/
 **Vulture** (dead code):
 
 ```bash
-vulture app/ vulture_whitelist.py
+vulture --exclude node_modules app/ vulture_whitelist.py
 ```
 
 `vulture_whitelist.py` documents the small number of known false positives —
@@ -412,6 +426,14 @@ bandit -r app/
 ```
 
 Fix all findings before submitting. If a finding is a false positive, add a `# noqa` or `# nosec` comment with a brief explanation of why.
+
+**ShellCheck** (shell scripts):
+
+```bash
+shellcheck run.sh run-mutmut.sh dev/setup.sh dev/mosquitto.sh dev/e2e/run.sh
+```
+
+Not installed via pip/npm — MacPorts: `sudo port install shellcheck` (or your platform's equivalent). This repo's shell scripts target bash 3.2 (macOS's shipped version, not a newer one from a package manager), and this catches the class of bug that assumption creates — e.g. a negative array index (`${arr[-1]}`, needs bash 4.3+) that would otherwise fail silently and fast on a contributor's Mac with no error message pointing at why.
 
 ---
 

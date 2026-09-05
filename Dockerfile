@@ -45,7 +45,7 @@ COPY pytest.ini /
 # machine's repo checkout.
 COPY translations/ /translations/
 
-# BRIDGE_VERSION in generate_nibe_mqtt.py matches the version: field in config.yaml 
+# BRIDGE_VERSION in generate_nibe_mqtt.py matches the version: field in config.yaml
 # so they can't drift apart without the test catching it.
 COPY config.yaml /
 

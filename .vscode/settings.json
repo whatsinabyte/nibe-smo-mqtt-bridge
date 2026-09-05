@@ -1,0 +1,42 @@
+{
+    // Point Pylance/the Python extension at the project's real venv —
+    // without this it silently falls back to the system Python (no
+    // dependencies installed), causing spurious "could not be resolved"
+    // warnings on every third-party import (paho, yaml, hypothesis, etc).
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+    // Fix imports in tests (the main thing you need)
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/app"
+    ],
+
+    // Enable Ruff (linting and formatting)
+    "ruff.enable": true,
+
+    // Bandit doesn't auto-discover pyproject.toml like ruff does — point it
+    // explicitly at the [tool.bandit] skips config there.
+    "bandit.args": ["-c", "pyproject.toml"],
+
+    // Use the project's own mypy (from .venv-check, matching [tool.mypy] in
+    // pyproject.toml) instead of the extension's bundled copy — otherwise it
+    // won't see types-PyYAML or any other dev dependency you install.
+    "mypy-type-checker.importStrategy": "fromEnvironment",
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+
+    // Enable testing
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["tests"],
+
+    // Schema validation + autocomplete for the Lovelace menu structure file,
+    // generated from docs/menu-structure-schema.md.
+    "yaml.schemas": {
+        "./.vscode/schemas/menu-structure.schema.json": "app/menu_structure.yaml"
+    }
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Nibe Menus dashboard structure",
+  "description": "See docs/menu-structure-schema.md for the full field reference.",
+  "type": "object",
+  "required": ["menus"],
+  "additionalProperties": false,
+  "properties": {
+    "menus": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/menu" }
+    }
+  },
+  "definitions": {
+    "menu": {
+      "type": "object",
+      "required": ["id", "title", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Menu number as shown on the controller display, e.g. '1', '1.1', '7.5.15'. Always quote — bare decimals parse as floats."
+        },
+        "title": {
+          "type": "string",
+          "description": "Menu title as shown on the controller display."
+        },
+        "description": {
+          "type": "string",
+          "description": "2-4 sentences covering what this menu does and when to use it. Rendered as Markdown."
+        },
+        "settings": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/setting" },
+          "description": "List of data point entries. Omit if the menu has no data points accessible via the local REST API."
+        },
+        "submenus": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/menu" },
+          "description": "Nested menus, rendered as sub-sections within the same dashboard view."
+        },
+        "tip": {
+          "type": "string",
+          "description": "Green callout — actionable guidance: what to do, in what order, how long to wait."
+        },
+        "note": {
+          "type": "string",
+          "description": "Blue callout — context, caveats, cross-references."
+        },
+        "warning": {
+          "type": "string",
+          "description": "Red callout — safety-critical information: condensation risk, electricity bills, system-wide overrides."
+        },
+        "local_api": {
+          "type": "boolean",
+          "description": "Set to false when the menu exists on the controller display but has no data points accessible via the local REST API. Omit entirely when the menu does have API-accessible points."
+        }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "required": ["label", "point_id", "range"],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Human-readable name for this setting, as it appears in the controller's display menu."
+        },
+        "point_id": {
+          "type": ["integer", "null"],
+          "description": "The firmware variableId for this data point. Must exist in the firmware's bulk fetch response. null is used for settings that are documented for reference but only configurable on the controller display (no local-API point)."
+        },
+        "range": {
+          "type": "string",
+          "description": "The valid value range, unit, and type — e.g. '5 – 30 °C', '0 – 100 %', 'off/on', '°C (read-only)'. Free-form, not machine-parsed."
+        },
+        "tip": {
+          "type": "string",
+          "description": "Green callout — actionable guidance specific to this setting."
+        },
+        "note": {
+          "type": "string",
+          "description": "Blue callout — context, caveats, cross-references specific to this setting."
+        },
+        "warning": {
+          "type": "string",
+          "description": "Red callout — safety-critical information specific to this setting."
+        }
+      }
+    }
+  }
+}

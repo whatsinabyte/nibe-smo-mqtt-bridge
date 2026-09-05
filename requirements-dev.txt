@@ -23,3 +23,4 @@ vulture>=2.16
 bandit>=1.9.4
 pip-audit>=2.10.1
 mutmut>=3.7.0
+pre-commit>=4.4.0

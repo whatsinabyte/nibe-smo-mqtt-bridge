@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Test tooling for nibe-entity-manager-card.js (Vitest + jsdom unit/integration tests, Playwright smoke tests). Scoped to app/ and independent of the repo's Python pytest suite.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

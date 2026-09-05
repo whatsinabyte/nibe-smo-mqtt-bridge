@@ -442,7 +442,7 @@ Every entity exposes `point_id`, `modbus_register`, `writable`, and `default_val
 
 ```yaml
 # Show current heating curve offset vs factory default
-{{ states('number.nibe_curve_offset') }} 
+{{ states('number.nibe_curve_offset') }}
 (default: {{ state_attr('number.nibe_curve_offset', 'default_value') }})
 ```
 

@@ -11,8 +11,15 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Virtual environments — .venv-check is a symlink to .venv (see
+# dev/setup.sh), covered by the same pattern since the glob matches the
+# symlink name itself, not what it points to.
+.venv/
+.venv-check
+
 # Type checking
 .mypy_cache/
+.ruff_cache/
 
 # Test infrastructure
 .hypothesis/
@@ -40,8 +47,14 @@ data/
 .DS_Store
 .smb*
 
-# Editor / IDE
-.vscode/
+# Editor / IDE — settings.json and extensions.json are shared project
+# config (Ruff/mypy/interpreter setup, recommended extensions), not
+# personal preference, so they're carved out below and actually committed.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/schemas/
+!.vscode/schemas/*.json
 .idea/
 *.swp
 *.swo
