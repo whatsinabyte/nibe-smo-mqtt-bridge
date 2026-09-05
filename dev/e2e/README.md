@@ -52,6 +52,19 @@ either existing suite's coverage.
   ```
   After that, `docker compose` (space syntax, as used throughout `run.sh`
   and this README) works unmodified — no changes needed to `run.sh` itself.
+  **Colima resource sizing:** the default Colima profile (2 CPU / 2GiB RAM)
+  is not enough to run HA + the bridge + Mosquitto + the mock API + a
+  headless Chromium at once — under that default, this harness produced
+  flaky failures that looked exactly like application bugs (frontend/card
+  not rendering in time, login/websocket glitches, even the Docker daemon
+  itself becoming unresponsive under load) but were actually the VM
+  starving. Give it more room before running this harness:
+  ```bash
+  colima stop
+  colima start --cpu 4 --memory 4
+  ```
+  4 CPU / 4GiB is confirmed sufficient; this is a one-time host-level
+  change (`colima list` shows the current allocation), not a repo change.
 - Node.js (for Playwright). From the repo's `dev/e2e/` directory:
   ```bash
   npm install
@@ -60,7 +73,7 @@ either existing suite's coverage.
 - `reference-dumps/all_points_en.json` must exist at the repo root (it's
   gitignored, developer-local reference data — see the top-level
   `CLAUDE.md`). If your worktree doesn't have it, copy it from the main
-  checkout at `/Users/marcel/nibe-smo-mqtt-bridge-local/reference-dumps/`.
+  checkout at `/Users/M/Developer/nibe-smo-mqtt-bridge/reference-dumps/`.
 
 ## What's in here
 

@@ -1,0 +1,54 @@
+# pre-commit config — catches lint/type issues locally before a commit,
+# rather than only at CI or the next time someone happens to run `ruff` by
+# hand. Install once per clone with:
+#
+#   .venv-check/bin/pip install pre-commit
+#   .venv-check/bin/pre-commit install
+#
+# mypy and eslint are run as "local" hooks against this project's own
+# .venv-check / app/node_modules rather than pre-commit's own managed,
+# isolated environments — those hooks would otherwise miss this project's
+# actual dependencies (mypy needs the real runtime/test packages installed
+# to resolve imports; eslint needs this repo's own eslint.config.js and
+# plugin versions), the same reasoning CLAUDE.md gives for why every
+# documented command in this repo invokes .venv-check/bin/python directly
+# rather than a bare `mypy`/`ruff` on $PATH.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^(app|tests)/
+      - id: ruff-format
+        files: ^(app|tests)/
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (app/)
+        entry: .venv-check/bin/python -m mypy app/
+        language: system
+        pass_filenames: false
+        files: ^app/.*\.py$
+
+      - id: eslint
+        name: eslint (app/)
+        entry: bash -c 'cd app && npx eslint .'
+        language: system
+        pass_filenames: false
+        files: ^app/.*\.(js|mjs|cjs)$
+
+      - id: shellcheck
+        name: shellcheck
+        # System shellcheck (MacPorts: sudo port install shellcheck), same
+        # local-hook reasoning as mypy/eslint above. This repo's shell
+        # scripts default to bash 3.2 (macOS's shipped version, not a
+        # newer one from a package manager) — pass_filenames: false and an
+        # explicit file list rather than letting pre-commit pass whatever
+        # changed, so a shellcheck run always checks every script even if
+        # only one changed (cheap enough not to matter).
+        entry: shellcheck run.sh run-mutmut.sh dev/setup.sh dev/mosquitto.sh dev/e2e/run.sh
+        language: system
+        pass_filenames: false
+        files: \.sh$

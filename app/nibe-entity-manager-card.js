@@ -67,12 +67,12 @@ class NibeEntityManager extends HTMLElement {
    */
   constructor() {
     super();
-    
+
     this.entities = new Map();
     this.filteredEntities = [];
     this.selectedIds = new Set();
     this.dynamicEntityIds = new Set();
-    
+
     this.config = {
       title:                 '',
       mqttTopicPrefix:       'nibe/browser/meta/',
@@ -81,13 +81,13 @@ class NibeEntityManager extends HTMLElement {
       pageSize:              50,
       suppressInitialToasts: true,
     };
-    
+
     this.currentPage = 0;
     this.searchTerm = '';
     this.sortField = 'id';
     this.sortAscending = true;
     this.isLoading = true;
-    
+
     this.typeFilter    = '';
     this.statusFilter  = '';
     this.writableFilter = '';
@@ -153,7 +153,7 @@ class NibeEntityManager extends HTMLElement {
           display: block;
           font-family: var(--ha-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
         }
-        
+
         .container {
           padding: 16px;
           background: var(--card-background-color, white);
@@ -161,7 +161,7 @@ class NibeEntityManager extends HTMLElement {
           box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.1);
           color: var(--primary-text-color, #212121);
         }
-        
+
         .header {
           display: flex;
           justify-content: space-between;
@@ -170,45 +170,45 @@ class NibeEntityManager extends HTMLElement {
           flex-wrap: wrap;
           gap: 12px;
         }
-        
+
         .title {
           font-size: 20px;
           font-weight: 500;
           margin: 0;
         }
-        
+
         .stats {
           display: flex;
           gap: 12px;
           font-size: 12px;
           flex-wrap: wrap;
         }
-        
+
         .stat {
           padding: 6px 12px;
           background: var(--secondary-background-color, #f5f5f5);
           border-radius: 16px;
           border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
         }
-        
+
         .stat-value {
           font-weight: 600;
           color: var(--primary-color, #03a9f4);
         }
-        
+
         .controls {
           display: flex;
           gap: 12px;
           margin-bottom: 16px;
           flex-wrap: wrap;
         }
-        
+
         .search-container {
           flex: 1;
           min-width: 200px;
           position: relative;
         }
-        
+
         .search-box {
           width: 100%;
           padding: 8px 36px 8px 12px;
@@ -219,7 +219,7 @@ class NibeEntityManager extends HTMLElement {
           color: var(--primary-text-color, #212121);
           box-sizing: border-box;
         }
-        
+
         .search-clear {
           position: absolute;
           right: 8px;
@@ -234,75 +234,75 @@ class NibeEntityManager extends HTMLElement {
           height: 24px;
           opacity: 0.6;
         }
-        
+
         .search-clear:hover {
           opacity: 1;
         }
-        
+
         .search-clear:disabled {
           opacity: 0.3;
           cursor: not-allowed;
         }
-        
+
         .button {
           padding: 8px 16px;
           border: none;
-          border-radius: 12px; 
+          border-radius: 12px;
           font-size: 14px;
           font-weight: 500;
           cursor: pointer;
           transition: all 0.2s;
           white-space: nowrap;
         }
-        
+
         .button-primary {
           background: var(--primary-color, #03a9f4);
           color: white;
         }
-        
+
         .button-secondary {
           background: var(--secondary-background-color, #e5e5e5);
           color: var(--primary-text-color, #212121);
           border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
         }
-        
+
         .button-success {
           background: #43a047;
           color: white;
         }
-        
+
         .button-danger {
           background: #db4437;
           color: white;
         }
-        
+
         .button-warning {
           background: #f4b400;
           color: white;
         }
-        
+
         .button-small {
           padding: 6px 10px;
           font-size: 12px;
           border-radius: 8px;
         }
-        
+
         .button:disabled {
           opacity: 0.5;
           cursor: not-allowed;
         }
-        
+
         .button:hover:not(:disabled) {
           box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
           transform: translateY(-1px);
         }
-        
+
         /* Mobile Filter Bar */
         .mobile-filter-bar {
           display: none;
           margin-bottom: 16px;
         }
-        
+
         .mobile-filter-toggle {
           width: 100%;
           display: flex;
@@ -317,7 +317,7 @@ class NibeEntityManager extends HTMLElement {
           cursor: pointer;
           box-sizing: border-box; /* Ensures padding doesn't add to width */
         }
-        
+
         .mobile-filter-panel {
           display: none; /* Always start hidden, JS controls visibility */
           margin-top: 12px;
@@ -325,11 +325,11 @@ class NibeEntityManager extends HTMLElement {
           background: var(--secondary-background-color, #f5f5f5);
           border-radius: 12px;
         }
-        
+
         .mobile-filter-group {
           margin-bottom: 16px;
         }
-        
+
         .mobile-filter-label {
           display: block;
           margin-bottom: 6px;
@@ -338,7 +338,7 @@ class NibeEntityManager extends HTMLElement {
           color: var(--secondary-text-color, #727272);
           text-transform: uppercase;
         }
-        
+
         /* Mobile filter selects */
         .mobile-filter-select {
           width: 100%;
@@ -348,17 +348,17 @@ class NibeEntityManager extends HTMLElement {
           background: var(--card-background-color, white);
           font-size: 16px; /* Better for mobile readability */
         }
-        
+
         .mobile-filter-actions {
           display: flex;
           gap: 12px;
           margin-top: 8px;
         }
-        
+
         .mobile-filter-actions .button {
           flex: 1;
         }
-        
+
         /* Desktop Table */
         .table-container {
           border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
@@ -367,13 +367,13 @@ class NibeEntityManager extends HTMLElement {
           max-height: 70vh;
           overflow-y: auto;
         }
-        
+
         .entity-table {
           width: 100%;
           border-collapse: collapse;
           font-size: 14px;
         }
-        
+
         .entity-table th {
           background: var(--primary-color, #03a9f4);
           padding: 12px 8px;
@@ -387,12 +387,12 @@ class NibeEntityManager extends HTMLElement {
           font-size: 12px;
           text-transform: uppercase;
         }
-        
+
         .entity-table td {
           padding: 12px 8px;
           border-bottom: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
         }
-        
+
         .entity-table tbody tr:hover {
           background: var(--secondary-background-color, #f5f5f5);
         }
@@ -402,12 +402,12 @@ class NibeEntityManager extends HTMLElement {
             min-width: 150px;
             max-width: 150px;
         }
-        
+
         /* Mobile Cards */
         .mobile-cards {
           display: none;
         }
-        
+
         .entity-card {
           background: var(--card-background-color, white);
           border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
@@ -415,28 +415,28 @@ class NibeEntityManager extends HTMLElement {
           padding: 12px;
           margin-bottom: 8px;
         }
-        
+
         .card-row {
           display: flex;
           align-items: center;
           margin-bottom: 8px;
         }
-        
+
         .card-row:last-child {
           margin-bottom: 0;
         }
-        
+
         .card-checkbox {
           margin-right: 12px;
         }
-        
+
         .checkbox-large {
           width: 22px;
           height: 22px;
           accent-color: var(--primary-color, #03a9f4);
           cursor: pointer;
         }
-        
+
         .card-id {
           font-family: monospace;
           font-weight: 700;
@@ -444,7 +444,7 @@ class NibeEntityManager extends HTMLElement {
           color: var(--primary-color, #03a9f4);
           margin-right: 8px;
         }
-        
+
         .card-title {
           font-size: 15px;
           font-weight: 500;
@@ -454,20 +454,20 @@ class NibeEntityManager extends HTMLElement {
           word-break: break-word;
           color: var(--primary-text-color, #212121);
         }
-        
+
         .card-badges {
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
           align-items: center;
         }
-        
+
         .card-actions {
           display: flex;
           gap: 8px;
           margin-top: 4px;
         }
-        
+
         .card-button {
           flex: 1;
           padding: 10px 8px;
@@ -478,23 +478,23 @@ class NibeEntityManager extends HTMLElement {
           cursor: pointer;
           text-align: center;
         }
-        
+
         .card-button-success {
           background: #43a047;
           color: white;
         }
-        
+
         .card-button-danger {
           background: #db4437;
           color: white;
         }
-        
+
         .card-button-secondary {
           background: var(--secondary-background-color, #e5e5e5);
           color: var(--primary-text-color, #212121);
           border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
         }
-        
+
         .detail-badge {
           display: inline-block;
           padding: 3px 8px;
@@ -544,7 +544,7 @@ class NibeEntityManager extends HTMLElement {
         .badge-writable {
           background: var(--primary-color, #03a9f4);
         }
-        
+
         .page-info {
           font-size: 12px;
           color: var(--secondary-text-color, #727272);
@@ -569,13 +569,13 @@ class NibeEntityManager extends HTMLElement {
           margin-top: 14px;
           margin-bottom: 6px;
         }
-        
+
         .loading, .empty {
           text-align: center;
           padding: 40px;
           color: var(--secondary-text-color, #727272);
         }
-        
+
         .toast-container {
           position: fixed;
           top: 80px;
@@ -583,7 +583,7 @@ class NibeEntityManager extends HTMLElement {
           z-index: 1000;
           max-width: 300px;
         }
-        
+
         .toast {
           padding: 12px 16px;
           margin-bottom: 8px;
@@ -597,16 +597,16 @@ class NibeEntityManager extends HTMLElement {
           overflow-wrap: break-word;
           word-break: break-word;
         }
-        
+
         .toast.show {
           opacity: 1;
           transform: translateX(0);
         }
-        
+
         .toast-success { background: #43a047; color: white; }
         .toast-error { background: #db4437; color: white; }
         .toast-info { background: #03a9f4; color: white; }
-        
+
         .modal {
           position: fixed;
           top: 0;
@@ -620,11 +620,11 @@ class NibeEntityManager extends HTMLElement {
           justify-content: center;
           padding: 20px;
         }
-        
+
         .modal.show {
           display: flex;
         }
-        
+
         .modal-content {
           background: var(--card-background-color, white);
           border-radius: 12px;
@@ -634,7 +634,7 @@ class NibeEntityManager extends HTMLElement {
           overflow-y: auto;
           box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
         }
-        
+
         .modal-header {
           padding: 16px 20px;
           border-bottom: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
@@ -642,7 +642,7 @@ class NibeEntityManager extends HTMLElement {
           justify-content: space-between;
           align-items: center;
         }
-        
+
         .modal-title {
           margin: 0;
           font-size: 20px;
@@ -651,7 +651,7 @@ class NibeEntityManager extends HTMLElement {
           overflow-wrap: break-word;
           word-break: break-word;
         }
-        
+
         .modal-close {
           background: none;
           border: none;
@@ -661,42 +661,42 @@ class NibeEntityManager extends HTMLElement {
           width: 30px;
           height: 30px;
         }
-        
+
         .modal-body {
           padding: 20px;
         }
-        
+
         .entity-details {
           display: grid;
           gap: 12px;
         }
-        
+
         .detail-row {
           display: flex;
           gap: 12px;
         }
-        
+
         .detail-label {
           font-weight: 600;
           min-width: 120px;
           flex-shrink: 0;
           color: var(--secondary-text-color, #727272);
         }
-        
+
         .detail-value {
           flex: 1;
           min-width: 0;
           overflow-wrap: break-word;
           word-break: break-word;
         }
-        
+
         .actions-container {
             display: flex;
             gap: 6px;
             min-width: 130px;
             max-width: 130px;
         }
-        
+
         .button-fixed {
             flex: 1;
             min-width: 60px;
@@ -709,19 +709,19 @@ class NibeEntityManager extends HTMLElement {
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        
+
         .button-fixed-success {
             background: #43a047;
             color: white;
             border: none;
         }
-        
+
         .button-fixed-danger {
             background: #db4437;
             color: white;
             border: none;
         }
-        
+
         .button-fixed-secondary {
             background: var(--secondary-background-color, #e5e5e5);
             color: var(--primary-text-color, #212121);
@@ -732,37 +732,37 @@ class NibeEntityManager extends HTMLElement {
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
             transform: translateY(-2px);
         }
-        
+
         .button-fixed:disabled {
             opacity: 0.5;
             cursor: not-allowed;
             transform: none !important;
             box-shadow: none !important;
         }
-        
+
         /* Responsive Breakpoint */
         @media screen and (max-width: 600px) {
           .filter-row {
             display: none;
           }
-          
+
           .mobile-filter-bar {
             display: block;
           }
-          
+
           .table-container {
             display: none;
           }
-          
+
           .mobile-cards {
             display: block;
           }
-          
+
           .controls .button {
             padding: 8px 12px;
             font-size: 13px;
           }
-          
+
           .stats {
             width: 100%;
             justify-content: space-between;
@@ -773,11 +773,11 @@ class NibeEntityManager extends HTMLElement {
             font-size: 13px;
             margin: 0;  /* Remove any default margins */
           }
-          
+
           .mobile-filter-toggle span:first-child {
             white-space: nowrap;  /* Prevents "Filter & Sort" from wrapping */
           }
-          
+
           .mobile-filter-toggle span:last-child {
             padding-left: 8px;  /* Space for the arrow */
           }
@@ -786,16 +786,16 @@ class NibeEntityManager extends HTMLElement {
             font-size: 16px;  /* Prevents iOS zoom */
           }
         }
-        
+
         @media screen and (min-width: 601px) {
           .mobile-filter-bar {
             display: none;
           }
-          
+
           .mobile-cards {
             display: none;
           }
-          
+
           .table-container {
             display: block;
           }
@@ -807,22 +807,22 @@ class NibeEntityManager extends HTMLElement {
             flex-direction: column;
             gap: 8px;
           }
-          
+
           .filter-select {
             width: 100%;
             flex: 1 1 100%;
             max-width: 100%;
           }
-          
+
           #clear-filters {
             width: 100%;
           }
         }
       </style>
-      
+
       <div class="container">
         <div class="toast-container"></div>
-        
+
         <div class="header">
           ${this.config.title ? `<h1 class="title">${this._esc(this.config.title)}</h1>` : ''}
           <div class="stats">
@@ -840,13 +840,13 @@ class NibeEntityManager extends HTMLElement {
             </div>
           </div>
         </div>
-        
+
         <div class="controls">
           <div class="search-container">
             <input type="text" class="search-box" placeholder="Search..." id="search-input">
             <button class="search-clear" id="search-clear" disabled>&times;</button>
           </div>
-          
+
           <button class="button button-secondary" id="select-all" title="Select all data points on the current filtered page for bulk enable/disable operations">Select All</button>
           <button class="button button-warning" id="clear-selection" title="Deselect all selected data points" disabled>Clear</button>
           <button class="button button-success" id="enable-selected" title="Enable all selected data points — they will appear as Home Assistant entities" disabled>Enable</button>
@@ -854,7 +854,7 @@ class NibeEntityManager extends HTMLElement {
           <button class="button button-secondary" id="show-changelog" title="View the history of dynamic data point appearances and disappearances, and HA entity disable events">Changelog</button>
           <button class="button button-secondary" id="show-snapshots" title="Save and restore named snapshots of your enabled entity selection">Snapshots</button>
         </div>
-        
+
         <!-- Desktop Filter Row -->
         <div class="filter-row">
           <select class="filter-select" id="type-filter">
@@ -870,13 +870,13 @@ class NibeEntityManager extends HTMLElement {
             <option value="date">Date</option>
             <option value="time">Time</option>
           </select>
-          
+
           <select class="filter-select" id="status-filter">
             <option value="">All Status</option>
             <option value="enabled">Enabled</option>
             <option value="disabled">Disabled</option>
           </select>
-          
+
           <select class="filter-select" id="writable-filter"
                   title="Filter by access type: writable entities send commands to the controller">
             <option value="">All Access</option>
@@ -893,7 +893,7 @@ class NibeEntityManager extends HTMLElement {
 
           <button class="button button-secondary" id="clear-filters">Clear Filters</button>
         </div>
-        
+
         <!-- Mobile Filter Bar -->
         <div class="mobile-filter-bar">
           <div class="mobile-filter-toggle" id="mobile-filter-toggle">
@@ -917,7 +917,7 @@ class NibeEntityManager extends HTMLElement {
                 <option value="time">Time</option>
               </select>
             </div>
-            
+
             <div class="mobile-filter-group">
               <div class="mobile-filter-label">Status</div>
               <select class="mobile-filter-select" id="mobile-status-filter">
@@ -926,7 +926,7 @@ class NibeEntityManager extends HTMLElement {
                 <option value="disabled">Disabled</option>
               </select>
             </div>
-            
+
             <div class="mobile-filter-group">
               <div class="mobile-filter-label">Access</div>
               <select class="mobile-filter-select" id="mobile-writable-filter">
@@ -944,7 +944,7 @@ class NibeEntityManager extends HTMLElement {
                 <option value="static">Static only</option>
               </select>
             </div>
-            
+
             <div class="mobile-filter-group">
               <div class="mobile-filter-label">Sort By</div>
               <select class="mobile-filter-select" id="mobile-sort-filter">
@@ -958,14 +958,14 @@ class NibeEntityManager extends HTMLElement {
                 <option value="enabled-asc">Disabled First</option>
               </select>
             </div>
-            
+
             <div class="mobile-filter-actions">
               <button class="button button-secondary" id="mobile-apply-filters">Apply</button>
               <button class="button button-secondary" id="mobile-clear-filters">Clear</button>
             </div>
           </div>
         </div>
-        
+
         <!-- Desktop Table View -->
         <div class="table-container">
           <table class="entity-table">
@@ -988,12 +988,12 @@ class NibeEntityManager extends HTMLElement {
             </tbody>
           </table>
         </div>
-        
+
         <!-- Mobile Card View -->
         <div class="mobile-cards" id="mobile-cards-container">
           <!-- Cards will be rendered here -->
         </div>
-        
+
         <div class="pagination" style="display:flex;align-items:center;width:100%;">
           <div class="page-info">
             Showing <span id="page-start">0</span>–<span id="page-end">0</span> of <span id="total-filtered">0</span>
@@ -1006,7 +1006,7 @@ class NibeEntityManager extends HTMLElement {
           </div>
         </div>
       </div>
-      
+
       <div class="modal" id="changelog-modal">
         <div class="modal-content">
           <div class="modal-header">
@@ -1050,7 +1050,7 @@ class NibeEntityManager extends HTMLElement {
           </div>
         </div>
       </div>
-      
+
       <div class="modal" id="details-modal">
         <div class="modal-content">
           <div class="modal-header">
@@ -1075,7 +1075,7 @@ class NibeEntityManager extends HTMLElement {
       this.setupMobileEventListeners();
       this.eventListenersSet = true;
     }
-    
+
     if (this._hass && !this.mqttSetupDone) {
       this.setupMqttSubscriptions();
       this.mqttSetupDone = true;
@@ -1368,7 +1368,7 @@ class NibeEntityManager extends HTMLElement {
    */
   setupMqttSubscriptions() {
     if (!this._hass) return;
-  
+
     try {
       this.mqttSubscriptions.push(
         // Batch metadata: one retained message with all point metadata keyed
@@ -1413,7 +1413,7 @@ class NibeEntityManager extends HTMLElement {
           { type: 'mqtt/subscribe', topic: 'nibe/browser/point_list' }
         )
       );
-  
+
     } catch (error) {
       console.error('MQTT setup failed:', error);
     }
@@ -1705,7 +1705,7 @@ class NibeEntityManager extends HTMLElement {
       this.changelog = [];
     }
   }
-  
+
   /**
    * Handle a retained message from nibe/browser/changelog/unread.
    * Updates the badge count on the Changelog button without needing to
@@ -1716,9 +1716,9 @@ class NibeEntityManager extends HTMLElement {
   handleChangelogUnreadMessage(msg) {
     try {
       if (!msg.payload) return;
-      
+
       const data = JSON.parse(msg.payload);
-      
+
       if (typeof data.unread_count === 'number') {
         this.unreadChanges = data.unread_count;
         this.updateChangelogBadge();
@@ -1727,7 +1727,7 @@ class NibeEntityManager extends HTMLElement {
       console.error('Error loading unread count:', error);
     }
   }
-  
+
   /**
    * Handle a non-retained message from nibe/browser/dynamic.
    * Shows a toast for immediate user feedback only.  The local changelog
@@ -1792,7 +1792,7 @@ class NibeEntityManager extends HTMLElement {
     try {
       const pointId = parseInt(msg.topic.split('/').pop());
       if (isNaN(pointId)) return;
-      
+
       if (!msg.payload || msg.payload.trim() === '') {
         if (this.entities.has(pointId)) {
           this.entities.delete(pointId);
@@ -1801,10 +1801,10 @@ class NibeEntityManager extends HTMLElement {
         }
         return;
       }
-      
+
       const metadata = JSON.parse(msg.payload);
       const existingEntity = this.entities.get(pointId);
-      
+
       const entity = {
         id: pointId,
         title: metadata.title || `Point ${pointId}`,
@@ -1831,7 +1831,7 @@ class NibeEntityManager extends HTMLElement {
         stringDefaultValue: metadata.stringDefaultValue || '',
         lastUpdated: metadata.last_updated ? metadata.last_updated * 1000 : Date.now()
       };
-      
+
       this.entities.set(pointId, entity);
 
       if (entity.isDynamic) {
@@ -1846,7 +1846,7 @@ class NibeEntityManager extends HTMLElement {
       if (!existingEntity || dynamicChanged) {
         this.debouncedUpdate();
       }
-      
+
     } catch (error) {
       console.error('Error processing metadata:', error);
     }
@@ -1903,17 +1903,17 @@ class NibeEntityManager extends HTMLElement {
    */
   formatDateTimeHA(date) {
     if (!date) return 'N/A';
-    
+
     const dateObj = date instanceof Date ? date : new Date(date);
-    
+
     if (window.hassUtil?.formatDateTime && this._hass?.locale) {
       return window.hassUtil.formatDateTime(dateObj, this._hass.locale);
     }
-    
+
     if (this._hass?.formatDateTime) {
       return this._hass.formatDateTime(dateObj, this._hass.locale);
     }
-    
+
     if (this._hass?.locale) {
       const locale = this._hass.locale.language || 'en';
       const options = {
@@ -1926,7 +1926,7 @@ class NibeEntityManager extends HTMLElement {
       };
       return dateObj.toLocaleString(locale, options);
     }
-    
+
     return dateObj.toLocaleString();
   }
 
@@ -2081,7 +2081,7 @@ class NibeEntityManager extends HTMLElement {
     if (this.isLoading && this.entities.size > 0) {
       this.isLoading = false;
     }
-    
+
     this.filteredEntities = this.getFilteredEntities();
     this.sortEntities();
     this.updatePagination();
@@ -2169,7 +2169,7 @@ class NibeEntityManager extends HTMLElement {
         // Fuse not loaded or query < 3 chars: exact substring on title.
         if (!title.includes(termLower)) return false;
       }
-      
+
       if (this.typeFilter && entity.type !== this.typeFilter) return false;
       if (this.statusFilter === 'enabled' && !entity.enabled) return false;
       if (this.statusFilter === 'disabled' && entity.enabled) return false;
@@ -2177,7 +2177,7 @@ class NibeEntityManager extends HTMLElement {
       if (this.writableFilter === 'false' && entity.writable) return false;
       if (this.dynamicFilter === 'dynamic' && !entity.isDynamic) return false;
       if (this.dynamicFilter === 'static'  &&  entity.isDynamic) return false;
-      
+
       return true;
     });
   }
@@ -2218,7 +2218,7 @@ class NibeEntityManager extends HTMLElement {
     this.filteredEntities.sort((a, b) => {
       let aVal = a[this.sortField];
       let bVal = b[this.sortField];
-      
+
       if (this.sortField === 'id') {
         aVal = parseInt(aVal);
         bVal = parseInt(bVal);
@@ -2229,7 +2229,7 @@ class NibeEntityManager extends HTMLElement {
         aVal = String(aVal || '').toLowerCase();
         bVal = String(bVal || '').toLowerCase();
       }
-      
+
       if (aVal === bVal) return 0;
       return this.sortAscending ? (aVal > bVal ? 1 : -1) : (aVal < bVal ? 1 : -1);
     });
@@ -2264,11 +2264,11 @@ class NibeEntityManager extends HTMLElement {
   renderTable() {
     const tbody = this.shadowRoot.getElementById('entity-table-body');
     if (!tbody) return;
-    
+
     const startIndex = this.currentPage * this.config.pageSize;
     const endIndex = startIndex + this.config.pageSize;
     const pageEntities = this.filteredEntities.slice(startIndex, endIndex);
-    
+
     if (pageEntities.length === 0) {
       tbody.innerHTML = `
         <tr>
@@ -2279,11 +2279,11 @@ class NibeEntityManager extends HTMLElement {
       `;
       return;
     }
-    
+
     tbody.innerHTML = pageEntities.map(entity => `
       <tr data-id="${entity.id}" tabindex="0" role="button" aria-label="View details for ${this._esc(entity.title)}">
         <td>
-          <input type="checkbox" class="checkbox entity-checkbox" 
+          <input type="checkbox" class="checkbox entity-checkbox"
                 ${this.selectedIds.has(entity.id) ? 'checked' : ''}
                 data-id="${entity.id}">
         </td>
@@ -2314,29 +2314,29 @@ class NibeEntityManager extends HTMLElement {
           <div class="actions-container">
             ${entity.enabled
               ? (entity.isDynamic
-                  ? `<button class="button-fixed" 
+                  ? `<button class="button-fixed"
                        data-id="${entity.id}"
                        title="Dynamic entities cannot be disabled — they are controlled by the Nibe firmware"
                        disabled style="opacity:0.4;cursor:not-allowed;">Disable</button>`
-                  : `<button class="button-fixed button-fixed-danger" 
-                       data-action="disable" 
+                  : `<button class="button-fixed button-fixed-danger"
+                       data-action="disable"
                        data-id="${entity.id}"
                        title="Disable this entity">Disable</button>`
                 )
-              : `<button class="button-fixed button-fixed-success" 
-                   data-action="enable" 
+              : `<button class="button-fixed button-fixed-success"
+                   data-action="enable"
                    data-id="${entity.id}"
                    title="Enable this entity">Enable</button>`
             }
-            <button class="button-fixed button-fixed-secondary" 
-                    data-action="details" 
+            <button class="button-fixed button-fixed-secondary"
+                    data-action="details"
                     data-id="${entity.id}"
                     title="View entity details">Details</button>
           </div>
         </td>
       </tr>
     `).join('');
-    
+
     this.attachTableEventListeners();
   }
 
@@ -2352,7 +2352,7 @@ class NibeEntityManager extends HTMLElement {
     const startIndex = this.currentPage * this.config.pageSize;
     const endIndex = startIndex + this.config.pageSize;
     const pageEntities = this.filteredEntities.slice(startIndex, endIndex);
-    
+
     if (pageEntities.length === 0) {
       container.innerHTML = `
         <div class="empty">
@@ -2361,20 +2361,20 @@ class NibeEntityManager extends HTMLElement {
       `;
       return;
     }
-    
+
     container.innerHTML = pageEntities.map(entity => `
       <div class="entity-card" data-id="${entity.id}" tabindex="0" role="button" aria-label="View details for ${this._esc(entity.title)}">
         <!-- Row 1: Checkbox + ID + Title -->
         <div class="card-row">
           <div class="card-checkbox">
-            <input type="checkbox" class="checkbox-large mobile-entity-checkbox" 
+            <input type="checkbox" class="checkbox-large mobile-entity-checkbox"
                   ${this.selectedIds.has(entity.id) ? 'checked' : ''}
                   data-id="${entity.id}">
           </div>
           <span class="card-id">${entity.id}</span>
           <span class="card-title">${this._esc(entity.title)}</span>
         </div>
-        
+
         <!-- Row 2: Badges (Type + Status + Writable + Dynamic) -->
         <div class="card-row">
           <div class="card-badges">
@@ -2384,7 +2384,7 @@ class NibeEntityManager extends HTMLElement {
             ${entity.isDynamic ? '<span class="badge" style="background:#9c27b0;">Dynamic</span>' : ''}
           </div>
         </div>
-        
+
         <!-- Row 3: Action Buttons -->
         <div class="card-actions">
           ${entity.enabled
@@ -2401,13 +2401,13 @@ class NibeEntityManager extends HTMLElement {
                  data-action="enable"
                  data-id="${entity.id}">Enable</button>`
           }
-          <button class="card-button card-button-secondary" 
-                  data-action="details" 
+          <button class="card-button card-button-secondary"
+                  data-action="details"
                   data-id="${entity.id}">Details</button>
         </div>
       </div>
     `).join('');
-    
+
     this.attachMobileEventListeners();
   }
 
@@ -2420,7 +2420,7 @@ class NibeEntityManager extends HTMLElement {
   attachTableEventListeners() {
     const tbody = this.shadowRoot.getElementById('entity-table-body');
     if (!tbody) return;
-    
+
     tbody.querySelectorAll('.entity-checkbox').forEach(checkbox => {
       checkbox.addEventListener('change', (e) => {
         const pointId = parseInt(e.target.dataset.id);
@@ -2434,12 +2434,12 @@ class NibeEntityManager extends HTMLElement {
         this.renderMobileCards(); // Keep mobile view in sync
       });
     });
-    
+
     tbody.querySelectorAll('[data-action]').forEach(button => {
       button.addEventListener('click', (e) => {
         const action = e.target.dataset.action;
         const pointId = parseInt(e.target.dataset.id);
-        
+
         switch (action) {
           case 'enable':
             this.enableEntities([pointId]);
@@ -2453,7 +2453,7 @@ class NibeEntityManager extends HTMLElement {
         }
       });
     });
-    
+
     tbody.querySelectorAll('tr[data-id]').forEach(row => {
       row.addEventListener('click', (e) => {
         if (!e.target.matches('input, button') && !e.target.closest('button')) {
@@ -2502,7 +2502,7 @@ class NibeEntityManager extends HTMLElement {
         }
       });
     });
-    
+
     container.querySelectorAll('[data-action]').forEach(button => {
       button.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2542,18 +2542,18 @@ class NibeEntityManager extends HTMLElement {
   updateStats() {
     const total = this.entities.size;
     const enabled = Array.from(this.entities.values()).filter(e => e.enabled).length;
-    
+
     this.setElementText('total-count', total);
     this.setElementText('enabled-count', enabled);
   }
-  
+
   /** Show or hide the "Selected: N" stat chip based on current selection size. */
   updateSelectionInfo() {
     const selectedCount = this.selectedIds.size;
     const selectionStat = this.shadowRoot.getElementById('selection-stat');
     const clearSelectionBtn = this.shadowRoot.getElementById('clear-selection');
     const selectedCountElement = this.shadowRoot.getElementById('selected-count');
-    
+
     if (selectedCount > 0) {
       if (selectionStat) selectionStat.style.display = 'block';
       if (selectedCountElement) selectedCountElement.textContent = selectedCount;
@@ -2563,7 +2563,7 @@ class NibeEntityManager extends HTMLElement {
       if (clearSelectionBtn) clearSelectionBtn.disabled = true;
     }
   }
-  
+
   /** Refresh pagination counters and enable/disable Prev/Next buttons. */
   /**
    * Clamp a page index into range for the current result count — a filter
@@ -2588,14 +2588,14 @@ class NibeEntityManager extends HTMLElement {
     const totalPages = Math.ceil(total / this.config.pageSize);
     const start = Math.min(this.currentPage * this.config.pageSize + 1, total) || 0;
     const end = Math.min(start + this.config.pageSize - 1, total) || 0;
-    
+
     this.setElementText('total-filtered', total);
     this.setElementText('page-start', start);
     this.setElementText('page-end', end);
-    
+
     const prevButton = this.shadowRoot.getElementById('prev-page');
     const nextButton = this.shadowRoot.getElementById('next-page');
-    
+
     if (prevButton) prevButton.disabled = this.currentPage === 0;
     if (nextButton) nextButton.disabled = this.currentPage >= totalPages - 1;
   }
@@ -2609,19 +2609,19 @@ class NibeEntityManager extends HTMLElement {
     const enableButton = this.shadowRoot.getElementById('enable-selected');
     const disableButton = this.shadowRoot.getElementById('disable-selected');
     const selectAllCheckbox = this.shadowRoot.getElementById('select-all-checkbox');
-    
+
     const hasSelection = this.selectedIds.size > 0;
     if (enableButton) enableButton.disabled = !hasSelection;
     if (disableButton) disableButton.disabled = !hasSelection;
-    
+
     if (selectAllCheckbox) {
-      const allFilteredSelected = this.filteredEntities.length > 0 && 
+      const allFilteredSelected = this.filteredEntities.length > 0 &&
         this.filteredEntities.every(e => this.selectedIds.has(e.id));
       selectAllCheckbox.checked = allFilteredSelected;
-      selectAllCheckbox.indeterminate = !allFilteredSelected && 
+      selectAllCheckbox.indeterminate = !allFilteredSelected &&
         this.filteredEntities.some(e => this.selectedIds.has(e.id));
     }
-    
+
     this.updateSearchClearButton();
   }
 
@@ -2694,7 +2694,7 @@ class NibeEntityManager extends HTMLElement {
   showEntityDetails(pointId) {
     const entity = this.entities.get(pointId);
     if (!entity) return;
-    
+
     const displayValue = (value, defaultValue = 'N/A') => {
       if (value === null || value === undefined || value === '') {
         return defaultValue;
@@ -2702,16 +2702,16 @@ class NibeEntityManager extends HTMLElement {
       // Always escape — displayValue is used in innerHTML contexts.
       return this._esc(String(value));
     };
-    
+
     const formattedLastUpdated = this.formatDateTimeHA(new Date(entity.lastUpdated));
-    
+
     const content = `
       <div class="entity-details">
         <div class="detail-row">
           <div class="detail-label">Point ID</div>
           <div class="detail-value" style="font-family: monospace; font-weight: bold;">${this._num(entity.id)}</div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">MODBUS Register ID</div>
           <div class="detail-value" style="font-family: monospace;">${displayValue(entity.modbusRegisterID)}</div>
@@ -2720,7 +2720,7 @@ class NibeEntityManager extends HTMLElement {
           <div class="detail-label">MODBUS Register Type</div>
           <div class="detail-value">${displayValue(entity.modbusRegisterType)}</div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">Title</div>
           <div class="detail-value">${this._esc(entity.title)}</div>
@@ -2729,7 +2729,7 @@ class NibeEntityManager extends HTMLElement {
           <div class="detail-label">Description</div>
           <div class="detail-value" style="font-style: italic;">${entity.description ? this._esc(entity.description) : 'No description'}</div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">Type</div>
           <div class="detail-value">
@@ -2759,7 +2759,7 @@ class NibeEntityManager extends HTMLElement {
             </span>
           </div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">Variable Type</div>
           <div class="detail-value">${displayValue(entity.variableType)}</div>
@@ -2768,7 +2768,7 @@ class NibeEntityManager extends HTMLElement {
           <div class="detail-label">Variable Size</div>
           <div class="detail-value">${displayValue(entity.variableSize)}</div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">Unit</div>
           <div class="detail-value">
@@ -2789,7 +2789,7 @@ class NibeEntityManager extends HTMLElement {
           </div>
         </div>
         ` : ''}
-        
+
         <div class="detail-row">
           <div class="detail-label">Value Range</div>
           <div class="detail-value">
@@ -2811,7 +2811,7 @@ class NibeEntityManager extends HTMLElement {
           <div class="detail-label">Change Threshold</div>
           <div class="detail-value">${displayValue(entity.change, '0 (no threshold)')}</div>
         </div>
-        
+
         <div class="detail-row">
           <div class="detail-label">Default Values</div>
           <div class="detail-value">
@@ -2820,20 +2820,20 @@ class NibeEntityManager extends HTMLElement {
             ${(entity.intDefaultValue === null || !(typeof entity.intDefaultValue === 'number' && isFinite(entity.intDefaultValue))) && !entity.stringDefaultValue ? 'Not specified' : ''}
           </div>
         </div>
-        
+
         ${entity.category ? `
         <div class="detail-row">
           <div class="detail-label">Category</div>
           <div class="detail-value">${this._esc(entity.category)}</div>
         </div>
         ` : ''}
-        
+
         <div class="detail-row">
           <div class="detail-label">Last Updated</div>
           <div class="detail-value">${this._esc(formattedLastUpdated)}</div>
         </div>
       </div>
-      
+
       ${entity.writable ? `
       <div style="margin-top:16px;padding:10px 12px;
            background:rgba(255,152,0,0.08);border-left:3px solid var(--warning-color,#ff9800);
@@ -2847,10 +2847,10 @@ class NibeEntityManager extends HTMLElement {
         To enable or disable this data point use the table row button.
       </div>
     `;
-    
+
     this.setModalContent('details-modal', 'Entity Details', content);
     this.showModal('details-modal');
-    
+
     // Enable/disable is handled via the table row button only — not from the details popup.
   }
 
@@ -3115,7 +3115,7 @@ class NibeEntityManager extends HTMLElement {
   _renderChangelogContent() {
 
     if (this.changelog.length === 0) {
-      this.setModalContent('changelog-modal', 'Discovery Changelog', 
+      this.setModalContent('changelog-modal', 'Discovery Changelog',
         '<p style="color: var(--ha-color-secondary-text);">No changes recorded yet.</p>');
     } else {
       const content = this.changelog.map(entry => {
@@ -3223,7 +3223,7 @@ class NibeEntityManager extends HTMLElement {
         </div>
         `;
       }).filter(html => html.trim() !== '').join('');
-      
+
       const entryCount = this.changelog.filter(e =>
         (Array.isArray(e.added) && e.added.length > 0) ||
         (Array.isArray(e.removed) && e.removed.length > 0)
@@ -3259,10 +3259,10 @@ class NibeEntityManager extends HTMLElement {
   updateChangelogBadge() {
     const button = this.shadowRoot.getElementById('show-changelog');
     if (!button) return;
-    
+
     const oldBadge = button.querySelector('.change-badge');
     if (oldBadge) oldBadge.remove();
-    
+
     if (this.unreadChanges > 0) {
       const badge = document.createElement('span');
       badge.className = 'change-badge';
@@ -3297,10 +3297,10 @@ class NibeEntityManager extends HTMLElement {
   setModalContent(modalId, title, content) {
     const modal = this.shadowRoot.getElementById(modalId);
     if (!modal) return;
-    
+
     const titleEl = modal.querySelector('.modal-title');
     const contentEl = modal.querySelector('.modal-body');
-    
+
     if (titleEl) titleEl.textContent = title;
     if (contentEl) contentEl.innerHTML = content;
   }
@@ -3347,15 +3347,15 @@ class NibeEntityManager extends HTMLElement {
     if (this.config.suppressInitialToasts && this.isLoading) {
       return;
     }
-    
+
     const container = this.shadowRoot.querySelector('.toast-container');
     if (!container) return;
-    
+
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
     toast.textContent = message;
     container.appendChild(toast);
-    
+
     setTimeout(() => toast.classList.add('show'), 10);
     setTimeout(() => {
       toast.classList.remove('show');
@@ -3388,7 +3388,7 @@ class NibeEntityManager extends HTMLElement {
     this.setElementValue('mobile-writable-filter', '');
     this.setElementValue('mobile-dynamic-filter', '');
     this.setElementValue('mobile-sort-filter', 'id-asc');
-    
+
     this.updateSearchClearButton();
     this.updateTable();
   }
@@ -3400,7 +3400,7 @@ class NibeEntityManager extends HTMLElement {
       searchClear.disabled = !this.searchTerm.trim();
     }
   }
-  
+
   /**
    * Set the textContent of a shadow-DOM element by ID.
    * No-ops silently when the element is not found, which avoids the need
@@ -3438,7 +3438,7 @@ class NibeEntityManager extends HTMLElement {
     this.cleanupSubscriptions();
     this.mqttSetupDone = false;
     this.eventListenersSet = false;
-    
+
     if (this.updateTimeout) {
       clearTimeout(this.updateTimeout);
     }

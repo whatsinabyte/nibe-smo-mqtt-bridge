@@ -390,7 +390,28 @@ out to be sufficient. See [dev/e2e/README.md](dev/e2e/README.md).
 
 ## 6a. Backlog — planned, not yet started
 
-Nothing currently pending. Recently-closed items are folded into §4 (module reference) where the knowledge is permanently relevant.
+- **`dev/e2e/` harness hardening.** While adding a second scenario to this
+  harness (binary_sensor -> sensor reclassification), three unrelated bugs
+  surfaced in the harness itself, none in the feature being tested: a test
+  that hardcoded a single guessed point ID instead of trying multiple
+  eligible candidates (not every point that passes the Python-side shape
+  check reliably becomes a fresh HA entity through the card, in practice);
+  a test that assumed a `nibe_<id>` naming convention for the resulting
+  entity_id, when HA actually derives it from the discovery config's
+  `name` field; and a transient `RemoteDisconnected`/connection-refused
+  window around HA's onboarding-triggered internal reloads that needed a
+  retry-with-backoff. Given how manual and infrequent this harness's use
+  is (not wired into CI, run on-demand), it's more brittle than its small
+  test count suggests — worth a dedicated pass to make it more resilient
+  by default rather than discovering each sharp edge the next time someone
+  adds a scenario.
+- **`dev/setup.sh`** (added) automates the one-time dev-environment setup
+  this project needs beyond a bare `git clone` — see its own header
+  comment for what it covers. Consider extending it if new one-time setup
+  steps get discovered the way tonight's Colima/`.venv-check`/`gh` gaps
+  were (each found by hand, mid-session).
+
+Recently-closed items are folded into §4 (module reference) where the knowledge is permanently relevant.
 
 ---
 

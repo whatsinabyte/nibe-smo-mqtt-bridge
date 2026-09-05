@@ -1,0 +1,21 @@
+{
+    // Matches what .vscode/settings.json already assumes/configures:
+    // Ruff formatting+linting, the official Mypy Type Checker extension
+    // (settings.json's "mypy-type-checker.*" key), Pylance for the
+    // extraPaths/interpreter config, ESLint for app/'s JS suite, and the
+    // YAML schema binding for app/menu_structure.yaml.
+    //
+    // Deliberately not recommending a Bandit extension here even though
+    // settings.json has a "bandit.args" entry — there are several
+    // similarly-named ones on the Marketplace and this file shouldn't
+    // guess at which one a past contributor meant. If you know which
+    // Bandit extension pairs with that setting, add its ID here.
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker",
+        "dbaeumer.vscode-eslint",
+        "redhat.vscode-yaml"
+    ]
+}
