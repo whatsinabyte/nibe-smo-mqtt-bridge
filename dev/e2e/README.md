@@ -38,6 +38,20 @@ either existing suite's coverage.
 - Docker Desktop / a working `docker compose` (this was developed and
   verified against Docker Compose v2 via `docker compose`, using Colima on
   macOS — any Docker Engine with the compose plugin works).
+  **Intel Mac / MacPorts Colima note:** MacPorts' `docker` port does not
+  ship the v2 `compose` CLI plugin — only the standalone `docker-compose`
+  v1.29.2 binary, which cannot parse this directory's `docker-compose.yml`
+  (v1 rejects the top-level `name:` key, which is v2-only). Fix: download
+  the v2 plugin binary and drop it where the Docker CLI looks for plugins:
+  ```bash
+  mkdir -p ~/.docker/cli-plugins
+  curl -sL -o ~/.docker/cli-plugins/docker-compose \
+    "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-darwin-x86_64"
+  chmod +x ~/.docker/cli-plugins/docker-compose
+  docker compose version   # should now print v2.29.7
+  ```
+  After that, `docker compose` (space syntax, as used throughout `run.sh`
+  and this README) works unmodified — no changes needed to `run.sh` itself.
 - Node.js (for Playwright). From the repo's `dev/e2e/` directory:
   ```bash
   npm install
@@ -54,11 +68,12 @@ either existing suite's coverage.
 |---|---|
 | `run.sh` | One-command runner — wraps everything below into a single script. `./run.sh -h` for usage. |
 | `docker-compose.yml` | Brings up mosquitto, the mock Nibe API, HA, the one-shot HA seeder, and the bridge itself (built from the repo's real `Dockerfile`). |
-| `mock-api/` | Minimal stdlib-only HTTPS server replaying `reference-dumps/all_points_en.json` in the exact shapes `app/nibe_api.py` expects (self-signed TLS, any Basic auth accepted). |
+| `mock-api/` | Minimal stdlib-only HTTPS server replaying `reference-dumps/all_points_en.json` in the exact shapes `app/nibe_api.py` expects (self-signed TLS, any Basic auth accepted). Also exposes a test-only `POST /mock-control/points/{id}` control channel (host port `18443`) so tests can simulate a firmware value change across polls — not part of the real Nibe API surface. |
 | `mosquitto/mosquitto.conf` | Anonymous-auth Mosquitto config — dev only. |
 | `bridge/options.json` | Mounted at `/data/options.json` — the standard HA add-on config path `load_config()` reads first; points the bridge at the mock API and the compose-network broker. |
 | `ha-seed/` | `configuration.yaml` (+ YAML-mode Lovelace dashboards) and `seed_ha.py`, a one-shot container that headlessly onboards HA and configures the MQTT integration via HA's real REST APIs. |
-| `tests/enable-entity.spec.ts` | The one Playwright test. |
+| `tests/enable-entity.spec.ts` | Happy path: enable one disabled entity, confirm it appears in real HA. |
+| `tests/binary-sensor-reclassification.spec.ts` | Enables the first working candidate from a list of genuinely auto-detected binary_sensor points, then uses the mock API's control channel to change its raw value to a non-boolean one, and confirms via HA's own REST API that the old `binary_sensor.nibe_*` entity disappears and a new, available `sensor.nibe_*` entity takes its place — proving `nibe_entity_manager.py`'s dynamic `_reclassify_binary_sensor` is visible correctly in a real HA entity registry, not just at the MQTT-message level. |
 
 ## How the bridge runs without a Supervisor
 

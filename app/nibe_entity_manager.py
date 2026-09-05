@@ -280,6 +280,14 @@ class EntityManager:
             max_size=2000
         )  # pragma: no mutate — capacity tuning constant, no observable behavioral difference at ±1
 
+        # Points dynamically reclassified from binary_sensor -> sensor after
+        # being observed reporting a raw value other than 0/1 (see
+        # _reclassify_binary_sensor). Tracked so the loud warning log fires
+        # once per point (on the reclassifying transition) rather than on
+        # every subsequent poll while the point stays reclassified — see
+        # _reclassify_binary_sensor's docstring for the full rationale.
+        self._binary_sensor_reclassified: set[int] = set()
+
         # ── Point registry ────────────────────────────────────────────────────
         # Single source of truth: dict keyed by variableId.
         # .all_points property exposes list(values()) for callers that need a list.
@@ -1455,7 +1463,20 @@ class EntityManager:
             # than a misleading zero value regardless of entity type.
             self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
             return
-        elif entity_type == "text":
+
+        if entity_type == "binary_sensor" and raw_value not in (0, 1):
+            # Static firmware metadata cannot distinguish a genuine boolean
+            # flag from a multi-state enum masquerading as one (see
+            # _BINARY_SENSOR_EXCLUSIONS in nibe_entity_detection.py — every
+            # metadata field was found byte-identical between confirmed
+            # booleans and confirmed disguised enums in a real firmware
+            # dump). This is the dynamic safety net for cases not yet known
+            # about: reassigning entity_type here (not just entity_info's
+            # copy) lets this same poll fall through into the "sensor"
+            # dispatch below instead of duplicating its value formatting.
+            entity_type = self._reclassify_binary_sensor(point_id, entity_info, raw_value)
+
+        if entity_type == "text":
             state_value = string_value
         elif entity_type == "switch":
             state_value = "1" if raw_value else "0"
@@ -1599,6 +1620,81 @@ class EntityManager:
             self.mqtt.publish(entity_info["state_topic"], state_value, retain=True)
             with self._em_lock:
                 self.last_states[point_id] = state_value
+
+    def _reclassify_binary_sensor(self, point_id: int, entity_info: dict, raw_value: int) -> str:
+        """Reclassify a binary_sensor point to sensor after observing a raw
+        value other than 0/1, and return the new entity_type ("sensor").
+
+        Static firmware metadata cannot reliably distinguish a genuine
+        boolean flag from a multi-state enum masquerading as one — see
+        _BINARY_SENSOR_EXCLUSIONS in nibe_entity_detection.py, whose
+        docstring records that every metadata field was found byte-identical
+        between confirmed-boolean and confirmed-disguised-enum points in a
+        real firmware dump (GitHub issue #35 and related reports). That
+        static list only ever fixes points already reported; this is the
+        dynamic, forward-looking counterpart for firmware/hardware we
+        haven't seen yet — it reclassifies on the first observed violation
+        rather than waiting for a bug report.
+
+        Deliberately loud, not silent: this is a one-time, user-visible
+        correction (renames the HA entity binary_sensor.nibe_<id> ->
+        sensor.nibe_<id> and resets its history — an accepted, unavoidable
+        cost, same as the static fix), so it must never look like an
+        ambient, unlogged behavior change.
+
+        Three things happen, in order:
+          1. Warn at WARNING level — but only once per point_id (tracked in
+             _binary_sensor_reclassified). This is the reclassifying
+             transition itself; every subsequent poll of an already-
+             reclassified point is expected (not surprising) behavior, and
+             warning again on every single poll thereafter would just be
+             log noise for a condition that is no longer misclassified.
+             publish_entity_discovery's own config_hash / entity_type-change
+             bookkeeping (see nibe_mqtt_publisher.py) independently already
+             prevents any duplicate MQTT republish on repeat polls, so this
+             per-point warning gate mirrors, rather than papers over, that
+             existing behavior.
+          2. Update point_data["entity_type"] (the actual dict referenced by
+             both all_points_by_id and this entity_info's "point_data" key —
+             not a copy) and the _entity_type_cache, so _get_cached_entity_type
+             doesn't hand back the stale "binary_sensor" verdict on the next
+             lookup and flip this point back.
+          3. Re-publish MQTT discovery under the new domain. publish_entity_discovery
+             compares the new entity_type against its own last-published-type
+             and retained-domain bookkeeping and automatically clears the old
+             binary_sensor discovery topic — see that function's stale_domains
+             handling. entity_info is mutated in place (not reassigned) so the
+             caller's existing reference — including the one held in
+             active_entities_by_id — picks up the new state_topic/entity_type
+             immediately, this same poll.
+        """
+        if point_id not in self._binary_sensor_reclassified:
+            self._binary_sensor_reclassified.add(point_id)
+            title = entity_info.get("point_data", {}).get("display_title", f"Point {point_id}")
+            # pragma: no mutate start
+            log_entities.warning(
+                "Point %d (%s) classified as binary_sensor observed value %r, "
+                "expected 0/1 — reclassifying as sensor. This may indicate an "
+                "undocumented multi-state register; please consider filing a "
+                "GitHub issue with this point's ID and raw value.",
+                point_id,
+                title,
+                raw_value,
+            )
+            # pragma: no mutate end
+
+        point = entity_info.get("point_data")
+        if point is not None:
+            point["entity_type"] = "sensor"
+            # category is left as whatever detect_entity_type() originally
+            # assigned — we have no more information about the correct
+            # category than we did before; only entity_type is known-wrong.
+            self._entity_type_cache.put(point_id, ("sensor", point.get("entity_category", "")))
+            new_entity_info = self._pub.publish_entity_discovery(point, self.bulk_data)
+            if new_entity_info:
+                entity_info.clear()
+                entity_info.update(new_entity_info)
+        return "sensor"
 
     # ------------------------------------------------------------------ #
     # Bulk data fetch                                                      #

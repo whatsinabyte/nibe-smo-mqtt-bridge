@@ -16,6 +16,12 @@ services:
       MOCK_NIBE_PORT: "8443"
     volumes:
       - ../../reference-dumps/all_points_en.json:/data/all_points_en.json:ro
+    ports:
+      # Exposed to the host so Playwright tests (running outside Docker) can
+      # reach the /mock-control/points/{id} test-only endpoint directly —
+      # see mock-api/mock_nibe_api.py's module docstring. Not needed by the
+      # bridge itself, which reaches this service over the compose network.
+      - "18443:8443"
 
   homeassistant:
     image: homeassistant/home-assistant:2024.10.1

@@ -59,16 +59,40 @@ def _req(method: str, path: str, token: str | None = None, body: dict | None = N
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read()
+
+    # HA briefly drops in-flight connections around each onboarding step —
+    # onboarding a fresh install triggers an internal reload (new user/auth
+    # provider, config entries, etc.), and the HTTP server can momentarily
+    # close a keep-alive socket mid-request while that happens. This shows
+    # up as urllib.error.URLError/http.client.RemoteDisconnected, not an
+    # HTTP error status, and is transient — a short retry clears it. Not a
+    # bug in this harness's onboarding sequence itself (confirmed: the same
+    # request succeeds a moment later against the same, still-running HA).
+    last_exc: Exception | None = None
+    for attempt in range(5):
         try:
-            return e.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return e.code, {"raw": raw.decode(errors="replace")}
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read()
+                return resp.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except json.JSONDecodeError:
+                return e.code, {"raw": raw.decode(errors="replace")}
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            last_exc = e
+            print(f"seed_ha: transient error on {method} {path} (attempt {attempt + 1}/5): {e!r}")
+            time.sleep(2)
+    # Re-raise the original exception type (not wrapped) so callers that
+    # already catch URLError/ConnectionError/etc. around _req() — notably
+    # wait_for_ha()'s own outer retry loop, which polls for up to 180s while
+    # HA is still starting up — keep working exactly as before. Wrapping
+    # this in a different exception type here would make wait_for_ha() see
+    # an uncaught RuntimeError after ~10s instead of continuing to poll for
+    # its full timeout.
+    assert last_exc is not None
+    raise last_exc
 
 
 def wait_for_ha(timeout: int = 180) -> None:
@@ -138,37 +162,40 @@ def onboard() -> str:
     return token
 
 
-def _exchange_code(auth_code: str) -> str:
+def _token_request(form: str) -> str:
     url = f"{HA_URL}/auth/token"
-    form = (
-        f"grant_type=authorization_code&code={auth_code}&client_id={urllib.parse.quote(CLIENT_ID)}"
-    )
-    req = urllib.request.Request(
-        url,
-        data=form.encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        payload = json.loads(resp.read())
-    return payload["access_token"]
+    last_exc: Exception | None = None
+    for attempt in range(5):
+        req = urllib.request.Request(
+            url,
+            data=form.encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read())
+            return payload["access_token"]
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            # See _req()'s docstring comment — same transient-disconnect
+            # behavior around onboarding, applies here too.
+            last_exc = e
+            print(f"seed_ha: transient error on POST /auth/token (attempt {attempt + 1}/5): {e!r}")
+            time.sleep(2)
+    raise RuntimeError("POST /auth/token failed after retries") from last_exc
+
+
+def _exchange_code(auth_code: str) -> str:
+    form = f"grant_type=authorization_code&code={auth_code}&client_id={urllib.parse.quote(CLIENT_ID)}"
+    return _token_request(form)
 
 
 def _password_login() -> str:
-    url = f"{HA_URL}/auth/token"
     form = (
         f"grant_type=password&username={urllib.parse.quote(USERNAME)}"
         f"&password={urllib.parse.quote(PASSWORD)}&client_id={urllib.parse.quote(CLIENT_ID)}"
     )
-    req = urllib.request.Request(
-        url,
-        data=form.encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        payload = json.loads(resp.read())
-    return payload["access_token"]
+    return _token_request(form)
 
 
 def setup_mqtt(token: str) -> None:

@@ -14,9 +14,21 @@ replaying real firmware data from reference-dumps/all_points_<lang>.json:
   GET  /api/v1/devices/0/notifications  → {"alarms": []}
   DELETE /api/v1/devices/0/notifications → 204
 
+  POST /mock-control/points/{id}        → test-only control channel (see below)
+
 Any HTTP Basic Authorization header is accepted (this is a dev harness, not
 an auth test). Runs over HTTPS with a generated self-signed certificate,
 since NibeApiClient always connects over TLS.
+
+The /mock-control/points/{id} endpoint is not part of the real Nibe API
+surface — it exists purely so the e2e harness's own tests can simulate a
+firmware value change across polls (e.g. to exercise dynamic binary_sensor
+reclassification: a point starts out reporting a boolean 0/1 value, and a
+later poll needs to see it report something else). It unconditionally
+overwrites a point's value.integerValue/stringValue, bypassing the
+isWritable check the real PATCH .../points endpoint enforces — this
+simulates the device itself changing the value, not an HA-side write.
+Body: {"integerValue": <int>} and/or {"stringValue": <str>}.
 """
 
 from __future__ import annotations
@@ -140,6 +152,34 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        # Test-only control channel — see module docstring. Not part of the
+        # real Nibe API; used by dev/e2e/tests/*.spec.ts to simulate a
+        # firmware value change across polls without restarting the mock.
+        path = self.path.split("?", 1)[0]
+        prefix = "/mock-control/points/"
+        if not path.startswith(prefix):
+            self._send_json(404, {"error": "not found"})
+            return
+        point_id = path[len(prefix) :]
+        point = POINTS.get(point_id)
+        if point is None:
+            self._send_json(404, {"error": "not found"})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if "integerValue" in body:
+            point["value"]["integerValue"] = body["integerValue"]
+        if "stringValue" in body:
+            point["value"]["stringValue"] = body["stringValue"]
+        point["value"]["isOk"] = True
+        self._send_json(200, {"status": "ok", "point": point})
 
 
 def main() -> None:

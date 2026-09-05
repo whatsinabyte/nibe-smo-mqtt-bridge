@@ -3047,3 +3047,142 @@ class TestDynamicMapFileFallbackSurvivesSimulatedRestart(unittest.TestCase):
                 os.unlink(tmp)
             if os.path.exists(tmp + ".tmp"):
                 os.unlink(tmp + ".tmp")
+
+
+class TestBinarySensorDynamicReclassification(unittest.TestCase):
+    """Points classified as binary_sensor observed reporting a raw value
+    other than 0/1 must log a loud one-time WARNING and reclassify to
+    sensor — see nibe_entity_manager.EntityManager._reclassify_binary_sensor.
+    """
+
+    POINT_ID = 55501
+
+    def _entity_info(self):
+        """Build an entity_info dict shaped like publish_entity_discovery's
+        real return value (see nibe_mqtt_publisher.py) for a binary_sensor
+        point — including the "point_data" dict that is the SAME object
+        as what would live in all_points_by_id, since _reclassify_binary_sensor
+        mutates it in place rather than through a copy.
+        """
+        point_data = {
+            "variableId": self.POINT_ID,
+            "entity_type": "binary_sensor",
+            "entity_category": "",
+            "display_title": "Test Disguised Enum",
+            "description": "",
+            "metadata": {},
+        }
+        return {
+            "point_id": self.POINT_ID,
+            "entity_type": "binary_sensor",
+            "availability_topic": f"nibe/binary_sensor/nibe_{self.POINT_ID}/availability",
+            "state_topic": f"nibe/binary_sensor/nibe_{self.POINT_ID}/state",
+            "command_topic": None,
+            "attributes_topic": None,
+            "metadata": {},
+            "is_writable": False,
+            "point_data": point_data,
+            "is_degenerate_range": False,
+            "value_mapping": None,
+        }
+
+    def _reclassified_entity_info(self):
+        """What publish_entity_discovery would return once point_data has
+        been reclassified to entity_type='sensor' — used as the mocked
+        return value of em._pub.publish_entity_discovery for these tests.
+        """
+        return {
+            "point_id": self.POINT_ID,
+            "entity_type": "sensor",
+            "availability_topic": f"nibe/sensor/nibe_{self.POINT_ID}/availability",
+            "state_topic": f"nibe/sensor/nibe_{self.POINT_ID}/state",
+            "command_topic": None,
+            "attributes_topic": None,
+            "metadata": {},
+            "is_writable": False,
+            "point_data": {
+                "variableId": self.POINT_ID,
+                "entity_type": "sensor",
+                "entity_category": "",
+                "display_title": "Test Disguised Enum",
+                "description": "",
+                "metadata": {},
+            },
+            "is_degenerate_range": False,
+            "value_mapping": None,
+        }
+
+    def test_boolean_value_stays_binary_sensor_no_warning(self):
+        """A genuine 0/1 reading must not reclassify or warn."""
+        em = _make_em()
+        entity_info = self._entity_info()
+
+        with self.assertLogs("nibe.entities", level="INFO") as cm:
+            # Emit a benign INFO log so assertLogs has something to capture
+            # even though we expect no WARNING — assertLogs requires at
+            # least one record or it raises AssertionError itself.
+            import logging
+
+            logging.getLogger("nibe.entities").info("marker")
+            em._process_and_publish_state(entity_info, 1, "1", {})
+
+        self.assertFalse(any(r.levelname == "WARNING" for r in cm.records))
+        self.assertEqual(entity_info["entity_type"], "binary_sensor")
+        self.assertEqual(entity_info["point_data"]["entity_type"], "binary_sensor")
+        em._pub.publish_entity_discovery.assert_not_called()
+        self.assertNotIn(self.POINT_ID, em._binary_sensor_reclassified)
+
+    def test_non_boolean_value_warns_and_reclassifies(self):
+        """A disguised-enum reading (e.g. 30) must log a WARNING naming the
+        point id and observed value, and reclassify to sensor.
+        """
+        em = _make_em()
+        entity_info = self._entity_info()
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+
+        with self.assertLogs("nibe.entities", level="WARNING") as cm:
+            em._process_and_publish_state(entity_info, 30, "30", {})
+
+        warning_messages = [r.getMessage() for r in cm.records if r.levelname == "WARNING"]
+        self.assertTrue(any(str(self.POINT_ID) in m and "30" in m for m in warning_messages))
+
+        # Reclassified: in-memory cache, the point_data dict passed to
+        # publish_entity_discovery, and entity_info itself (mutated in
+        # place so active_entities_by_id sees it too) must all agree.
+        self.assertIn(self.POINT_ID, em._binary_sensor_reclassified)
+        self.assertEqual(em._entity_type_cache.get(self.POINT_ID), ("sensor", ""))
+        em._pub.publish_entity_discovery.assert_called_once()
+        published_point = em._pub.publish_entity_discovery.call_args.args[0]
+        self.assertEqual(published_point["entity_type"], "sensor")
+        self.assertEqual(entity_info["entity_type"], "sensor")
+        self.assertEqual(entity_info["state_topic"], f"nibe/sensor/nibe_{self.POINT_ID}/state")
+
+        # This same poll's state must be published as a plain sensor value
+        # (raw "30"), not the binary_sensor "ON"/"OFF" formatting.
+        em.mqtt.publish.assert_any_call(entity_info["state_topic"], "30", retain=True)
+
+    def test_non_boolean_value_does_not_rewarn_or_republish_every_poll(self):
+        """Once reclassified, a subsequent poll reporting the same (still
+        non-boolean) value must not re-log the WARNING or call
+        publish_entity_discovery again — this is a one-time transition,
+        not a per-poll condition. (publish_entity_discovery's own
+        config_hash/entity_type bookkeeping already makes a second real
+        call a no-op republish-wise, but we assert on the call count here
+        to also pin down the warning-suppression side of the contract,
+        which has no such existing guard of its own.)
+        """
+        em = _make_em()
+        entity_info = self._entity_info()
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+
+        em._process_and_publish_state(entity_info, 30, "30", {})
+        em._pub.publish_entity_discovery.reset_mock()
+
+        with self.assertLogs("nibe.entities", level="INFO") as cm:
+            import logging
+
+            logging.getLogger("nibe.entities").info("marker")
+            em._process_and_publish_state(entity_info, 30, "30", {})
+
+        self.assertFalse(any(r.levelname == "WARNING" for r in cm.records))
+        em._pub.publish_entity_discovery.assert_not_called()
