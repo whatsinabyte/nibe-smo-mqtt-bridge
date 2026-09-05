@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.5] — 2026-09-05
 
 ### Fixed
 - **Points 242/243/244/245 ("Oper. mode shunt climate system 5-8"), 998
