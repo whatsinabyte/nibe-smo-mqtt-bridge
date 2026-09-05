@@ -123,7 +123,33 @@ fi
 # copied there) on (re)start.
 echo "==> Restarting HA once so it picks up the card JS"
 docker restart nibe-e2e-homeassistant >/dev/null
-sleep 15
+# 15s was occasionally too short in practice: whichever spec file happens to
+# run first (Playwright runs specs in a fixed order, alphabetical by
+# filename) can hit HA before its frontend/dashboard config has fully
+# reloaded post-restart, and never finds nibe-entity-manager-card in time —
+# a later spec in the same run passes fine, having gotten a few more
+# seconds of warm-up "for free". 25s reliably clears that race.
+sleep 25
+
+echo "==> Waiting for seed-out/credentials.json to appear on the host"
+# ha-seed writes these inside its bind-mounted /seed-out just before exiting,
+# but on this host's virtiofs (Colima) the write can take a moment to become
+# visible through the bind mount after the container exits — seen in
+# practice as a spurious ENOENT from the Playwright test's readCredentials()
+# immediately after ha-seed reported "done". Poll for it rather than assume
+# it's already there.
+seed_ready=0
+for _ in $(seq 1 30); do
+    if [ -f seed-out/credentials.json ] && [ -f seed-out/token.txt ]; then
+        seed_ready=1
+        break
+    fi
+    sleep 1
+done
+if [ "$seed_ready" -ne 1 ]; then
+    echo "seed-out/credentials.json never appeared on the host — check the ha-seed step" >&2
+    exit 1
+fi
 
 echo "==> Running the Playwright test"
 set +e

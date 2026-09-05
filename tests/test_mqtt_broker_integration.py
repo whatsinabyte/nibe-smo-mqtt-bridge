@@ -264,6 +264,148 @@ class TestEntityTypeChangeCleanupAgainstARealBroker:
             setup_client.disconnect()
 
 
+class TestDynamicBinarySensorReclassificationAgainstARealBroker:
+    """Regression coverage for the dynamic-reclassification feature added
+    this session: a point classified as binary_sensor that is then polled
+    with a raw value other than 0/1 flips its cached entity_type to
+    "sensor" and republishes MQTT discovery under the new domain (see
+    EntityManager._reclassify_binary_sensor / _process_and_publish_state in
+    nibe_entity_manager.py).
+
+    TestEntityTypeChangeCleanupAgainstARealBroker above proves the GENERAL
+    stale-domain cleanup mechanism inside publish_entity_discovery() works
+    against a real broker when entity_type simply changes between two
+    publish_entity_discovery() calls. It does not drive the NEW trigger
+    path at all -- this test does: a real EntityManager.active_entities_by_id
+    entry classified as binary_sensor, fed a live poll (via the same
+    _update_entity_state() the normal polling loop calls) whose bulk_data
+    raw_value is a non-boolean int, must itself detect the mismatch,
+    reclassify, and republish -- exercising _reclassify_binary_sensor's own
+    warn-once/mutate-in-place/republish sequence, not just the cleanup
+    mechanism it happens to depend on."""
+
+    def test_a_live_poll_with_a_non_boolean_value_reclassifies_and_republishes(self) -> None:
+        from nibe_entity_manager import EntityManager
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher, create_entity_id, t_config, t_state
+
+        pid = _TEST_POINT_ID + 30
+        entity_id = create_entity_id(pid)
+        old_topic = t_config("binary_sensor", entity_id)
+        new_topic = t_config("sensor", entity_id)
+        state_topic = t_state("sensor", entity_id)
+
+        setup_client = _real_client()
+        try:
+            # Publish the pre-reclassification state: a real retained
+            # binary_sensor discovery config on the broker, exactly as if
+            # this point had been running correctly (as a real boolean, or
+            # not yet observed with an offending value) since the bridge
+            # last started.
+            old_pub = MqttDiscoveryPublisher(
+                mqtt_client=setup_client,
+                device_info={"identifiers": ["nibe_integration_test"], "name": "Integration Test"},
+                device_id="nibe_integration_test",
+                device_name="Integration Test Device",
+            )
+            binary_point = _point(pid, "binary_sensor")
+            entity_info = old_pub.publish_entity_discovery(binary_point, {})
+            assert entity_info is not None
+            time.sleep(0.2)
+
+            observer = _Subscriber([old_topic, new_topic, state_topic])
+            try:
+                with (
+                    patch("nibe_entity_manager.EntityManager.resubscribe_all"),
+                    patch("nibe_entity_manager.EntityManager._setup_history_loading"),
+                    patch("nibe_entity_manager.EntityManager._setup_dynamic_map_loading"),
+                ):
+                    fresh_client = _real_client()
+                    try:
+                        fresh_pub = MqttDiscoveryPublisher(
+                            mqtt_client=fresh_client,
+                            device_info={
+                                "identifiers": ["nibe_integration_test"],
+                                "name": "Integration Test",
+                            },
+                            device_id="nibe_integration_test",
+                            device_name="Integration Test Device",
+                        )
+                        em = EntityManager(
+                            api_client=MagicMock(),
+                            publisher=fresh_pub,
+                            notify_fn=MagicMock(),
+                            dismiss_fn=MagicMock(),
+                            mqtt_client=fresh_client,
+                        )
+                        # Seed fresh_pub's stale-domain tracking from the
+                        # real broker, exactly like the general-mechanism
+                        # test above -- otherwise publish_entity_discovery's
+                        # cleanup has no retained old_topic to know about,
+                        # since fresh_pub itself never published it.
+                        em.scan_mqtt_discovery()
+
+                        # entity_info carries this point's real
+                        # binary_sensor topics/point_data, exactly what
+                        # active_entities_by_id would hold after a real
+                        # startup discovery scan. bulk_data supplies the
+                        # live-poll value under test: 30, not 0/1 -- the
+                        # actual NEW trigger condition
+                        # (`raw_value not in (0, 1)`), not a directly-called
+                        # entity_type swap.
+                        em.active_entities_by_id[pid] = entity_info
+                        em.bulk_data[pid] = {
+                            "is_ok": True,
+                            "raw_value": 30,
+                            "string_value": "30",
+                            "metadata": binary_point["metadata"],
+                        }
+
+                        # The real trigger path: the same method the normal
+                        # polling loop calls per active entity.
+                        em._update_entity_state(entity_info)
+
+                        assert observer.wait_for_value(old_topic, "", timeout=10.0) == "", (
+                            "Stale binary_sensor config was not cleared after "
+                            "a live poll triggered dynamic reclassification"
+                        )
+                        # wait_for_value's exact-match contract needs a
+                        # concrete expected payload; the real config's exact
+                        # JSON isn't known ahead of time, so poll for
+                        # *any* non-empty payload on new_topic instead of
+                        # asserting equality against a fabricated one.
+                        deadline = time.monotonic() + 10.0
+                        while not observer.messages.get(new_topic) and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        new_raw = observer.messages.get(new_topic)
+                        assert new_raw, "No new sensor discovery config was published/retained"
+                        new_payload = json.loads(new_raw)
+                        assert new_payload["state_topic"] == state_topic
+                        assert new_payload["unique_id"] == f"nibe_{pid}"
+
+                        assert observer.wait_for_value(state_topic, "30", timeout=10.0) == "30", (
+                            "State topic did not carry the raw value after reclassification"
+                        )
+
+                        # entity_info is mutated in place (see
+                        # _reclassify_binary_sensor's docstring) -- confirm
+                        # the caller's own reference actually picked up the
+                        # new entity_type/state_topic, not just the broker.
+                        assert entity_info["entity_type"] == "sensor"
+                        assert entity_info["state_topic"] == state_topic
+                    finally:
+                        fresh_client.loop_stop()
+                        fresh_client.disconnect()
+            finally:
+                observer.close()
+        finally:
+            setup_client.publish(old_topic, "", retain=True)
+            setup_client.publish(new_topic, "", retain=True)
+            setup_client.publish(state_topic, "", retain=True)
+            time.sleep(0.1)
+            setup_client.loop_stop()
+            setup_client.disconnect()
+
+
 class TestCorruptedRetainedConfigAgainstARealBroker:
     """A retained discovery config already on the broker at startup can be
     corrupted (truncated by a killed process mid-publish, hand-edited,

@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Points 242/243/244/245 ("Oper. mode shunt climate system 5-8"), 998
+  ("Fan status EB101-EP14"), and 3292 ("Operating mode Smart Price
+  Adaption", register 1918) were misclassified as permanently-`on`
+  `binary_sensor`s** — same root cause as the point 1021 fix in 1.1.4: each
+  register reports a multiple-of-ten operating-mode/status value rather
+  than a boolean, and the firmware provides no description text for any of
+  these five points, so the binary auto-detection check had nothing to
+  reject them on. Now excluded from binary auto-detection and exposed as
+  plain `sensor`s. Point 3292 additionally gets a confirmed text mapping,
+  `10 -> "Off"` / `30 -> "On"` — verified empirically across two
+  independent installations (GitHub issue #35: `10` observed with SPA
+  confirmed off; a second installation: `30` observed with SPA confirmed
+  active). The other four points have no confirmed value domain and are
+  published as raw integers only.
+- **Points 632-638 and 2804 ("Frost protection heat exchanger, heat pumps
+  1-8") were misclassified as permanently-`on` `binary_sensor`s** — all
+  eight report a raw value of `2`. Now excluded from binary auto-detection
+  and exposed as a plain `sensor` with a text mapping, `0 -> "Off"` /
+  `1 -> "Active"` / `2 -> "Passive"`. This mapping is inferred by analogy
+  with this manufacturer's outdoor-unit "Defrost" registers, which share
+  the identical 0/1/2 domain and are officially documented with these exact
+  labels — it is not independently confirmed against the frost-protection
+  registers themselves. Please open an issue if your installation shows
+  this label set doesn't match what the controller's own display reports.
+- **Point 24961 ("Relay status") was misclassified as a permanently-`on`
+  `binary_sensor`** — this point is a bitmask of several relays' individual
+  on/off states packed into one integer (this manufacturer's
+  step-controlled additional heat can combine relays in on/off patterns for
+  "binary stepping"), not a single boolean flag, and its raw value can
+  legitimately be any combination of bits. Now excluded from binary
+  auto-detection and exposed as a plain `sensor` with the raw integer
+  value. Splitting it into individual relay states is left to an HA-side
+  template sensor — the bridge has no way to know how many relays exist or
+  what each bit means on a given installation.
+- **Removed an incorrect `VALUE_MAPPINGS` entry for point 3292** in the
+  `holding`-register table (`{0: "Normal", 1: "Low price", 2:
+  "Overcapacity", 3: "Blocking"}`). Point 3292 is an `INPUT` register, not
+  `HOLDING`, and this label set actually describes SG Ready's operating
+  mode (menu 4.2.3), not Smart Price Adaption — an apparent copy/paste
+  mix-up. The correct point ID for SG Ready's operating-mode status has not
+  been identified in this codebase; if you rely on that mapping, please
+  open an issue with your installation's raw value for the SG Ready status
+  point.
+
+  **⚠️ Upgrading past this fix will rename the affected entities.** MQTT
+  discovery does not support changing a point's platform (`binary_sensor`
+  -> `sensor`) in place — Home Assistant sees this as the old entity
+  disappearing and a new one appearing (typically
+  `binary_sensor.nibe_<id>` -> `sensor.nibe_<id>`). Any automation,
+  script, or dashboard card referencing one of these 15 points (242, 243,
+  244, 245, 632, 633, 634, 635, 636, 637, 638, 998, 2804, 3292, 24961) by
+  its old `entity_id` will need to be repointed at the new one, and that
+  entity's history/statistics will restart from zero. This is a one-time,
+  unavoidable consequence of the reclassification, not an ongoing behavior
+  change.
+
+### Added
+- **Dynamic binary_sensor reclassification** — static firmware metadata alone
+  cannot reliably distinguish a genuine boolean flag from a multi-state enum
+  masquerading as one (see the `_BINARY_SENSOR_EXCLUSIONS` static list in
+  `nibe_entity_detection.py`, which is fixed after the fact, per bug report,
+  for cases we've already seen). As a forward-looking safety net for
+  firmware/hardware we haven't seen yet, the bridge now watches every
+  point currently classified as `binary_sensor`: the first time one is
+  observed reporting a raw value other than 0/1, it logs a prominent
+  `WARNING` naming the point ID and the observed value (asking the user to
+  consider filing a GitHub issue), reclassifies the point to `sensor` going
+  forward (both the in-memory detection cache and the MQTT discovery
+  config, which is republished under the new domain), and does not repeat
+  the warning on subsequent polls of the same, now-correctly-classified
+  point. This intentionally renames the HA entity
+  (`binary_sensor.nibe_<id>` -> `sensor.nibe_<id>`) and resets its history —
+  a one-time, unavoidable cost, same as the static exclusions above — the
+  point is that this is loud and visible rather than a silent correction.
+
 ## [1.1.4] — 2026-09-04
 
 ### Fixed

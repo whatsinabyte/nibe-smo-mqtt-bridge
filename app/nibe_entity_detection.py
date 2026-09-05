@@ -155,6 +155,28 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         1766: {10: "Off", 20: "Active", 30: "Passive", 40: "Opening", 50: "Closing"},
         # PV panels — verified empirically, no firmware description
         1021: {10: "Off", 40: "On"},
+        # Operating mode (Smart Price Adaption) — no firmware description.
+        # 10/30 confirmed empirically across two independent installations:
+        # GitHub issue #35 reported 10 with SPA confirmed off (point 4789 read
+        # 0), and a separate installation with SPA confirmed active (point
+        # 4789 read 1) observed 30. See GitHub issue #35 and #29 for the same
+        # multiple-of-ten encoding on a different register (1021/579).
+        3292: {10: "Off", 30: "On"},
+        # Frost protection heat exchanger, heat pumps 1-8 — no firmware
+        # description. Mapping inferred by analogy with this same
+        # manufacturer's outdoor-unit "Defrost" registers (e.g. modbus
+        # registers 1763/1777/1791/1805), which share the identical 0/1/2
+        # domain and are officially documented as Off/Active/Passive — not
+        # independently confirmed against these specific registers. See
+        # GitHub issue #35.
+        632: {0: "Off", 1: "Active", 2: "Passive"},
+        633: {0: "Off", 1: "Active", 2: "Passive"},
+        634: {0: "Off", 1: "Active", 2: "Passive"},
+        635: {0: "Off", 1: "Active", 2: "Passive"},
+        636: {0: "Off", 1: "Active", 2: "Passive"},
+        637: {0: "Off", 1: "Active", 2: "Passive"},
+        638: {0: "Off", 1: "Active", 2: "Passive"},
+        2804: {0: "Off", 1: "Active", 2: "Passive"},
         # ACS (Active Cooling System) — no firmware description
         2701: {3: "Passive", 7: "Active"},
         2702: {10: "Off", 20: "Opening", 30: "Closing"},
@@ -224,8 +246,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         4821: {0: "Intermittent", 1: "Auto"},
         4729: {0: "Intermittent", 1: "Auto"},
         4778: {0: "Intermittent", 1: "Auto"},
-        # Smart Price Adaption status and settings
-        3292: {0: "Normal", 1: "Low price", 2: "Overcapacity", 3: "Blocking"},
         # Operating prioritisation
         56150: {10: "Off", 20: "Hot water", 30: "Heating", 40: "Pool", 60: "Cooling"},
         # Heat pump type codes (best-effort, not officially documented)
@@ -851,6 +871,32 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset(
         # VALUE_MAPPINGS length check alone can't tell it apart from a real
         # boolean; excluded explicitly. See GitHub issue #29.
         1021,
+        # Operating mode (Smart Price Adaption) — 2-state {10,30} value
+        # domain, same shape as 1021 above; excluded explicitly for the same
+        # reason. See GitHub issue #35.
+        3292,
+        # Oper. mode shunt climate system 5-8 — same multiple-of-ten
+        # operating-mode encoding as 1758/1762-1766/3292, but the firmware
+        # gives no description text and no confirmed value domain, so no
+        # VALUE_MAPPINGS entry is added; published as a plain sensor with the
+        # raw integer value. See GitHub issue #35.
+        242,
+        243,
+        244,
+        245,
+        # Fan status (EB101-EP14) — same undocumented multiple-of-ten shape.
+        998,
+        # Relay status — a bitmask of individual relay on/off states packed
+        # into one integer (this manufacturer's step-controlled additional
+        # heat can combine relays in on/off patterns for "binary stepping" —
+        # see menu_structure.yaml), not a single boolean flag. modbusRegisterID
+        # is 0 (unlike every other point), suggesting this is a synthetic
+        # aggregate rather than one real Modbus register. Published as a
+        # plain sensor with the raw integer; splitting it into individual
+        # relay states is left to an HA-side template, since the bridge has
+        # no way to know how many relays exist or what each bit means on a
+        # given installation. See GitHub issue #35.
+        24961,
     }
 )
 
