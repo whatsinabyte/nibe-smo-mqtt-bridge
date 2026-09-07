@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Point 10614 ("Req. op. mode (SG Ready)") now gets a proper `select`
+  dropdown** instead of a raw 0-3 number field — `0 -> "Cut off"`,
+  `1 -> "Standard"`, `2 -> "Encouraged"`, `3 -> "Ordered"`. The numeric
+  order is confirmed tested on real hardware (Home Assistant Community
+  forum, firmware 4.12.8/S1256); the labels use NIBE's own official SG
+  Ready terminology. This is also the correct home for the state-label set
+  that was mistakenly attached to point 3292 and removed in 1.1.5 — same
+  4-state SG Ready concept, filed under the wrong point, with the domain
+  rotated by one position. See GitHub issue #35.
+
+  **⚠️ Upgrading past this fix will rename this entity.** MQTT discovery
+  can't change a point's platform in place — Home Assistant sees the
+  `number.nibe_10614` entity disappear and a new `select.nibe_10614`
+  appear in its place. Same one-time, unavoidable consequence as the
+  `binary_sensor` -> `sensor` renames above: repoint any automation,
+  script, or dashboard card that referenced the old `entity_id`, and
+  expect its history/statistics to restart from zero.
+- **Point 3260 ("Operating mode SG Ready")** is confirmed, via real-world
+  log evidence, to follow the same undocumented multiple-of-ten encoding
+  as 1758/1032/1034/3292 — `10` is confirmed (both by the ten-multiple
+  family's consistent convention and by cross-checking against 10614's
+  now-confirmed `1 = "Standard"`) to mean the equivalent "no active grid
+  signal" state. The other three raw values remain unconfirmed — needs
+  testing against a real, active grid service to observe the raw values
+  for Encouraged/Ordered/Cut off. No mapping added yet; published as a
+  plain sensor with the raw integer.
+- **Hardcoded `VALUE_MAPPINGS` labels (Off/On/Active/Passive/etc.) are now
+  translated** for the 12 languages this add-on already ships
+  `translations/*.yaml` for (`cs`/`da`/`de`/`es`/`fi`/`fr`/`it`/`nl`/`no`/
+  `pl`/`sv`) — Nibe's actual main markets, not the fuller list of language
+  codes `config.yaml`'s schema accepts (13 of those have no translation
+  file of any kind, config UI included — a pre-existing gap, unrelated to
+  this). Fixes #39: firmware-supplied enum text was already correctly
+  localized (the Nibe controller itself translates it, server-side, based
+  on the configured `language`), but this bridge's own hardcoded fallback
+  labels — used only for points the firmware gives no description text
+  for — had no connection to that mechanism at all and were always
+  English regardless of the language setting.
+
+  Covers `select` entities too, not just read-only `sensor`s: the
+  published `options` list, the reported state, and the write-back
+  label-to-value lookup (falling back to the English label, then to a raw
+  integer payload, if neither the translated nor English label matches —
+  same graceful-degradation philosophy already used for a language change
+  across a restart) all now agree on the same translated strings.
+
+  Translations are bulk-generated, not sourced from native speakers —
+  please open a PR to fix any wrong wording, especially the handful of
+  technical HVAC terms. The Dutch (`nl`) set is the one exception: it uses
+  the exact wording confirmed against real firmware output in #39 itself
+  (`Off`/`On`/`Active`/`Passive` → `Uit`/`Aan`/`Actief`/`Passief`).
+
 ## [1.1.5] — 2026-09-05
 
 ### Fixed

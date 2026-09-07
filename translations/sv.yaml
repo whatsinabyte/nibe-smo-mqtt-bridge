@@ -170,3 +170,46 @@ configuration:
       certifikat signerat av en offentlig CA. Ställ in detta om din
       broker använder ett självsignerat eller privat signerat certifikat.
       Exempel: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12h
+  24h: 24h
+  Active: Aktiv
+  Active alarm: Aktivt larm
+  Additional heat only: Endast tillsatsvärme
+  Auto: Auto
+  CO2: CO2
+  Closed: Stängd
+  Closed to pool: Stängd mot pool
+  Closing: Stänger
+  Comfort: Komfort
+  Cooling: Kylning
+  Cut off: Avstängd
+  Encouraged: Uppmuntrad
+  Heating: Uppvärmning
+  Hot water: Varmvatten
+  Inactive: Inaktiv
+  Intermittent: Intermittent
+  Manual: Manuell
+  No alarm: Inget larm
+  'Off': Av
+  'On': På
+  Open: Öppen
+  Open to pool: Öppen mot pool
+  Opening: Öppnar
+  Ordered: Beordrad
+  Own setting: Egen inställning
+  Passive: Passiv
+  Pool: Pool
+  Price per kWh: Pris per kWh
+  Radiator: Radiator
+  Radiator & Underfloor heating: Radiator och golvvärme
+  Saving: Besparing
+  Saving PLUS: Besparing PLUS
+  Standard: Standard
+  Underfloor heating: Golvvärme

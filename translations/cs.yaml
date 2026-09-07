@@ -171,3 +171,46 @@ configuration:
       podepsaným veřejnou CA. Nastavte toto, pokud váš broker používá
       samopodepsaný nebo soukromě podepsaný certifikát.
       Příklad: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12h
+  24h: 24h
+  Active: Aktivní
+  Active alarm: Aktivní alarm
+  Additional heat only: Pouze přídavné topení
+  Auto: Auto
+  CO2: CO2
+  Closed: Zavřeno
+  Closed to pool: Uzavřeno do bazénu
+  Closing: Zavírání
+  Comfort: Komfort
+  Cooling: Chlazení
+  Cut off: Odpojeno
+  Encouraged: Podporováno
+  Heating: Topení
+  Hot water: Teplá voda
+  Inactive: Neaktivní
+  Intermittent: Přerušovaný
+  Manual: Ruční
+  No alarm: Žádný alarm
+  'Off': Vypnuto
+  'On': Zapnuto
+  Open: Otevřeno
+  Open to pool: Otevřeno do bazénu
+  Opening: Otevírání
+  Ordered: Nařízeno
+  Own setting: Vlastní nastavení
+  Passive: Pasivní
+  Pool: Bazén
+  Price per kWh: Cena za kWh
+  Radiator: Radiátor
+  Radiator & Underfloor heating: Radiátor a podlahové topení
+  Saving: Úspora
+  Saving PLUS: Úspora PLUS
+  Standard: Standardní
+  Underfloor heating: Podlahové topení

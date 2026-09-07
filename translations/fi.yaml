@@ -183,3 +183,46 @@ configuration:
       Aseta tämä, jos välittäjäsi käyttää itse allekirjoitettua tai
       yksityisesti allekirjoitettua varmennetta.
       Esimerkki: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12h
+  24h: 24h
+  Active: Aktiivinen
+  Active alarm: Aktiivinen hälytys
+  Additional heat only: Vain lisälämmitys
+  Auto: Auto
+  CO2: CO2
+  Closed: Suljettu
+  Closed to pool: Suljettu altaaseen
+  Closing: Sulkeutuu
+  Comfort: Mukavuus
+  Cooling: Jäähdytys
+  Cut off: Katkaistu
+  Encouraged: Kannustettu
+  Heating: Lämmitys
+  Hot water: Lämmin vesi
+  Inactive: Ei aktiivinen
+  Intermittent: Ajoittainen
+  Manual: Manuaalinen
+  No alarm: Ei hälytystä
+  'Off': Pois
+  'On': Päällä
+  Open: Auki
+  Open to pool: Auki altaaseen
+  Opening: Avautuu
+  Ordered: Määrätty
+  Own setting: Oma asetus
+  Passive: Passiivinen
+  Pool: Allas
+  Price per kWh: Hinta / kWh
+  Radiator: Lämpöpatteri
+  Radiator & Underfloor heating: Lämpöpatteri ja lattialämmitys
+  Saving: Säästö
+  Saving PLUS: Säästö PLUS
+  Standard: Vakio
+  Underfloor heating: Lattialämmitys

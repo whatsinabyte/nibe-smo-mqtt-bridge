@@ -156,17 +156,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         # Test-only control channel — see module docstring. Not part of the
         # real Nibe API; used by dev/e2e/tests/*.spec.ts to simulate a
-        # firmware value change across polls without restarting the mock.
+        # firmware value change across polls without restarting the mock,
+        # and (see the "new point" branch below) to simulate a point that
+        # only becomes available once some other point's value changes —
+        # e.g. SG Ready's 3260/4694/10614, gated behind writing to 10613,
+        # which reference-dumps/all_points_en.json has no data for at all
+        # since it was captured with SG Ready never enabled.
         path = self.path.split("?", 1)[0]
         prefix = "/mock-control/points/"
         if not path.startswith(prefix):
             self._send_json(404, {"error": "not found"})
             return
         point_id = path[len(prefix) :]
-        point = POINTS.get(point_id)
-        if point is None:
-            self._send_json(404, {"error": "not found"})
-            return
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -174,6 +175,31 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(400, {"error": "bad json"})
             return
+
+        point = POINTS.get(point_id)
+        if point is None:
+            # New point: the request body must be a full point definition
+            # (title/description/metadata/value), in the same shape every
+            # other entry in POINTS already has — this bypasses the real
+            # controller's own "this point doesn't exist until some other
+            # point unlocks it" behavior, which this mock has no model of
+            # at all; the test itself is responsible for injecting the
+            # right shape at the right time.
+            for required in ("title", "metadata", "value"):
+                if required not in body:
+                    self._send_json(
+                        400, {"error": f"new point definition missing required key: {required}"}
+                    )
+                    return
+            POINTS[point_id] = {
+                "title": body["title"],
+                "description": body.get("description", ""),
+                "metadata": body["metadata"],
+                "value": body["value"],
+            }
+            self._send_json(201, {"status": "created", "point": POINTS[point_id]})
+            return
+
         if "integerValue" in body:
             point["value"]["integerValue"] = body["integerValue"]
         if "stringValue" in body:

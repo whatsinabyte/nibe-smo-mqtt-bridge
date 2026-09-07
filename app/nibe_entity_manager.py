@@ -53,6 +53,7 @@ import concurrent.futures
 import gzip
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -65,6 +66,7 @@ from datetime import date as _date
 from datetime import timedelta as _timedelta
 from typing import Any
 
+import yaml
 from nibe_caching import LRUCache, ValueCache
 from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
 from nibe_entity_detection import (
@@ -233,6 +235,67 @@ def decide_startup_action(
 
 
 # ============================================================================
+# VALUE MAPPING TRANSLATIONS
+# ============================================================================
+
+
+def _load_value_mapping_translations(language: str | None) -> dict[str, str]:
+    """Load the value_mappings: table from translations/<language>.yaml.
+
+    nibe_entity_detection.py's VALUE_MAPPINGS dict is hardcoded English —
+    that module must stay pure (no I/O, no state — see CLAUDE.md), so it
+    has no way to know the configured language itself. This loader is the
+    other half: it reads this repo's existing translations/*.yaml files
+    (previously only read by the HA Supervisor directly, for the add-on's
+    config UI — see the Dockerfile's COPY translations/ comment) and
+    returns a flat {english_label: translated_label} dict that
+    _process_and_publish_state uses to translate a resolved VALUE_MAPPINGS
+    label before publishing it as an entity's state.
+
+    Scoped to Nibe's actual main markets — the 12 languages this repo
+    already ships a translations/*.yaml for (cs/da/de/en/es/fi/fr/it/nl/
+    no/pl/sv) — not the full ~25 language codes config.yaml's schema
+    accepts; 13 of those have no translations file of any kind yet, config
+    UI included, a pre-existing gap unrelated to this.
+
+    Returns {} (meaning: no translation, callers fall back to the English
+    label unchanged) for language None/""/"en", for any language outside
+    the 12 above, or if the file is missing/malformed/lacks a
+    value_mappings: key — this must never raise or crash startup over a
+    translation file problem.
+    """
+    if not language or language == "en":
+        return {}
+
+    candidates = [
+        f"/translations/{language}.yaml",
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "translations", f"{language}.yaml"
+        ),
+        f"/mnt/project/translations/{language}.yaml",
+    ]
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            mapping = data.get("value_mappings") if isinstance(data, dict) else None
+            if isinstance(mapping, dict):
+                # Both keys and values must be strings — a malformed file
+                # (e.g. YAML parsing "no"/"yes" as booleans) must not crash
+                # translation lookups later; skip non-string entries rather
+                # than propagate them.
+                return {
+                    k: v for k, v in mapping.items() if isinstance(k, str) and isinstance(v, str)
+                }
+            return {}
+        except OSError:
+            continue
+        except yaml.YAMLError:
+            return {}
+    return {}
+
+
+# ============================================================================
 # ENTITY MANAGER
 # ============================================================================
 
@@ -266,12 +329,26 @@ class EntityManager:
         # behavioral difference at ±1
         max_cache_size: int = 5000,
         # pragma: no mutate end
+        value_translations: dict[str, str] | None = None,
     ) -> None:
         self._api = api_client
         self._pub = publisher
         self._notify = notify_fn
         self._dismiss = dismiss_fn
         self.mqtt = mqtt_client
+
+        # {english_label: translated_label} for nibe_entity_detection.py's
+        # hardcoded VALUE_MAPPINGS labels — see _load_value_mapping_translations's
+        # own docstring for why this can't live in that (pure) module
+        # instead. Loaded once by the caller (main()) and passed in here —
+        # not loaded internally — because MqttDiscoveryPublisher needs the
+        # exact same dict for its select-entity options list, and a
+        # select's state (here) and its published options (there) must
+        # agree on the same translated strings or HA rejects/mismatches the
+        # selection. Defaults to {} (no translation, English passthrough)
+        # so every existing direct EntityManager(...) construction in tests
+        # keeps working unmodified.
+        self._value_translations: dict[str, str] = value_translations or {}
 
         # Performance optimization: Cache entity type detection results.
         # Metadata, title, and description are static within a single run
@@ -1575,7 +1652,11 @@ class EntityManager:
                 if mapping is not None:
                     # Cache miss — populate for future polls
                     entity_info["value_mapping"] = mapping
-            state_value = mapping[raw_value] if mapping and raw_value in mapping else str(raw_value)
+            if mapping and raw_value in mapping:
+                label = mapping[raw_value]
+                state_value = self._value_translations.get(label, label)
+            else:
+                state_value = str(raw_value)
         elif entity_type == "sensor":
             mapping = entity_info.get("value_mapping")
             if mapping is None:
@@ -1588,7 +1669,8 @@ class EntityManager:
                     # Cache miss — populate for future polls
                     entity_info["value_mapping"] = mapping
             if mapping and raw_value in mapping:
-                state_value = mapping[raw_value]
+                label = mapping[raw_value]
+                state_value = self._value_translations.get(label, label)
             else:
                 divisor = metadata.get("divisor", 1)  # pragma: no mutate
                 state_value = apply_divisor(raw_value, divisor)
@@ -2645,6 +2727,22 @@ class EntityManager:
                 reverse_map = {v.strip(): k for k, v in mapping.items()}
                 if payload in reverse_map:
                     return reverse_map[payload]
+                # Translated select options (see _value_translations /
+                # nibe_discovery_config.build_select_config) mean the
+                # payload HA actually sends back is the translated label,
+                # not the English one reverse_map above is keyed by — check
+                # that too before falling through to the raw-int fallback.
+                # Same {} default as everywhere else _value_translations is
+                # read: an untranslated bridge (English, or no matching
+                # translations file) makes this a no-op, reverse_map already
+                # covered it above.
+                translated_reverse_map = {
+                    self._value_translations[v].strip(): k
+                    for k, v in mapping.items()
+                    if v in self._value_translations
+                }
+                if payload in translated_reverse_map:
+                    return translated_reverse_map[payload]
                 # Fallback: mapping labels can be built from the API's live
                 # description text, which is language-dependent. If the
                 # options published to HA were built under a different query

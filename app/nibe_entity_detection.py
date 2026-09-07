@@ -246,6 +246,37 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         4821: {0: "Intermittent", 1: "Auto"},
         4729: {0: "Intermittent", 1: "Auto"},
         4778: {0: "Intermittent", 1: "Auto"},
+        # Requested operating mode (SG Ready) — no firmware description.
+        # Numeric order confirmed tested on real hardware (firmware 4.12.8,
+        # S1256) via the Home Assistant community: "You set that to 0-3 for
+        # high price/normal/low price/free electricity modes." Labels here
+        # use NIBE's own official SG Ready terminology (product page: the
+        # four states are Standard/Encouraged/Ordered/Cut off) rather than
+        # that informal phrasing — 0=high price maps to Cut off (reduce
+        # usage, discouraged), 1=normal maps to Standard, 2=low price maps
+        # to Encouraged, 3=free electricity maps to Ordered (full power).
+        # A previous VALUE_MAPPINGS entry for this same 4-state SG Ready
+        # concept was mistakenly filed under point 3292 (Smart Price
+        # Adaption, a different feature) with this exact domain rotated by
+        # one position — removed in the same release this entry was added.
+        # See GitHub issue #35.
+        10614: {0: "Cut off", 1: "Standard", 2: "Encouraged", 3: "Ordered"},
+        # Point 3260 ("Operating mode SG Ready", register 1911) is this
+        # register's read-only counterpart — same 4-state SG Ready concept,
+        # reported rather than requested. It follows this codebase's usual
+        # undocumented multiple-of-ten encoding instead of 10614's plain
+        # 0-3. Only `10` is actually confirmed (real-world log evidence,
+        # cross-checked against 10614's confirmed 1="Standard" — see GitHub
+        # issue #35): the equivalent "no active grid signal" state. The
+        # values below for the other three states are an UNVERIFIED GUESS
+        # only — naively assuming the same index order as 10614 at 20/30/40
+        # spacing, which is exactly the kind of stacked assumption that
+        # turned out wrong for 10614 itself (both the previously-removed
+        # mapping and an earlier bit-encoding guess predicted 10614's
+        # values incorrectly; only real hardware testing confirmed them).
+        # Left commented out — do not enable without confirming these
+        # three values on hardware with an active grid service:
+        # 3260: {10: "Standard", 20: "Encouraged", 30: "Cut off", 40: "Ordered"},
         # Operating prioritisation
         56150: {10: "Off", 20: "Hot water", 30: "Heating", 40: "Pool", 60: "Cooling"},
         # Heat pump type codes (best-effort, not officially documented)

@@ -320,11 +320,21 @@ class MqttDiscoveryPublisher:
         device_info: dict,
         device_id: str,
         device_name: str,
+        value_translations: dict[str, str] | None = None,
     ) -> None:
         self.mqtt = mqtt_client
         self.device_info = device_info
         self.device_id = device_id
         self.device_name = device_name
+        # {english_label: translated_label} for select entities' options
+        # list — must be the exact same dict EntityManager uses for its
+        # state-value translation, or a select's published state and its
+        # published options disagree. See
+        # nibe_entity_manager._load_value_mapping_translations's docstring.
+        # Defaults to {} (English passthrough) so every existing direct
+        # MqttDiscoveryPublisher(...) construction in tests keeps working
+        # unmodified.
+        self._value_translations: dict[str, str] = value_translations or {}
         # Per-session set of point IDs for which a firmware range inconsistency
         # warning has already been logged.  Prevents repeat warnings every poll.
         self._range_warnings_issued: set[int] = set()
@@ -526,6 +536,7 @@ class MqttDiscoveryPublisher:
                 t_command("select", entity_id),
                 point_id,
                 description,
+                self._value_translations,
             )
         elif entity_type == "time":
             config["state_topic"] = t_state("time", entity_id)
