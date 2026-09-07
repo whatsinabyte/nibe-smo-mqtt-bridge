@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.6] — 2026-09-07
 
 ### Added
 - **Point 10614 ("Req. op. mode (SG Ready)") now gets a proper `select`
