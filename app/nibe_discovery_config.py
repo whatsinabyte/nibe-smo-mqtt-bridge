@@ -148,13 +148,22 @@ def build_select_config(
     command_topic: str,
     point_id: int,
     description: str,
+    value_translations: dict[str, str] | None = None,
 ) -> None:
     config["state_topic"] = state_topic
     config["command_topic"] = command_topic
     config["optimistic"] = False
     options = get_entity_options(point_id, description)
     if options:
-        config["options"] = options
+        # Translate each option label so the published dropdown agrees
+        # with the translated state value _process_and_publish_state
+        # publishes for this same point (and with the translated reverse
+        # lookup _parse_command_payload checks first on write) — see
+        # nibe_entity_manager._load_value_mapping_translations's docstring
+        # for why this module (pure, no I/O) receives an already-loaded
+        # dict instead of loading translations itself.
+        translations = value_translations or {}
+        config["options"] = [translations.get(opt, opt) for opt in options]
 
 
 def build_binary_sensor_config(config: dict, state_topic: str, title: str) -> None:

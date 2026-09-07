@@ -187,3 +187,46 @@ configuration:
       einem von einer öffentlichen CA signierten Zertifikat korrekt ist.
       Setzen Sie dies, wenn Ihr Broker ein selbstsigniertes oder privat
       signiertes Zertifikat verwendet. Beispiel: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12h
+  24h: 24h
+  Active: Aktiv
+  Active alarm: Aktiver Alarm
+  Additional heat only: Nur Zusatzheizung
+  Auto: Auto
+  CO2: CO2
+  Closed: Geschlossen
+  Closed to pool: Geschlossen zum Pool
+  Closing: Schließt
+  Comfort: Komfort
+  Cooling: Kühlung
+  Cut off: Abgeschaltet
+  Encouraged: Gefördert
+  Heating: Heizung
+  Hot water: Warmwasser
+  Inactive: Inaktiv
+  Intermittent: Intermittierend
+  Manual: Manuell
+  No alarm: Kein Alarm
+  'Off': Aus
+  'On': Ein
+  Open: Offen
+  Open to pool: Offen zum Pool
+  Opening: Öffnet
+  Ordered: Angefordert
+  Own setting: Eigene Einstellung
+  Passive: Passiv
+  Pool: Pool
+  Price per kWh: Preis pro kWh
+  Radiator: Heizkörper
+  Radiator & Underfloor heating: Heizkörper & Fußbodenheizung
+  Saving: Sparen
+  Saving PLUS: Sparen PLUS
+  Standard: Standard
+  Underfloor heating: Fußbodenheizung

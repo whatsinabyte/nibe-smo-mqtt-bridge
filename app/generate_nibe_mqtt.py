@@ -78,7 +78,12 @@ import contextlib
 
 from nibe_api import NibeApiClient
 from nibe_entity_detection import MODES
-from nibe_entity_manager import EntityManager, _build_device_info, decide_startup_action
+from nibe_entity_manager import (
+    EntityManager,
+    _build_device_info,
+    _load_value_mapping_translations,
+    decide_startup_action,
+)
 from nibe_ha_integration import (
     HAEntityRegistryWatcher,
     ManagementCommandHandler,
@@ -1226,11 +1231,19 @@ def _run_startup_sequence(
 
     device_info = _build_device_info(response, device_id, cfg.device_name, cfg.api_base_url)
 
+    # Loaded once, here, and passed to both the publisher and the entity
+    # manager — they must agree on the exact same translated labels for a
+    # select entity's published options list, its state, and its write-back
+    # lookup to all stay consistent. See
+    # nibe_entity_manager._load_value_mapping_translations's own docstring.
+    value_translations = _load_value_mapping_translations(cfg.language)
+
     publisher = MqttDiscoveryPublisher(
         mqtt_client=mqtt_client,
         device_info=device_info,
         device_id=device_id,
         device_name=cfg.device_name,
+        value_translations=value_translations,
     )
 
     entity_manager = EntityManager(
@@ -1239,6 +1252,7 @@ def _run_startup_sequence(
         notify_fn=notify_ha,
         dismiss_fn=dismiss_ha,
         mqtt_client=mqtt_client,
+        value_translations=value_translations,
     )
 
     entity_manager.bulk_interval = cfg.poll_interval

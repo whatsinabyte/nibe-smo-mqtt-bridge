@@ -96,8 +96,16 @@ fi
 echo "==> Seeding HA (onboarding + MQTT integration)"
 docker compose run --rm ha-seed
 
-echo "==> Starting the bridge (builds from the repo's real Dockerfile on first run)"
-docker compose up -d bridge
+echo "==> Starting the bridge (rebuilding from the repo's real Dockerfile)"
+# --build is not optional: `docker compose up` alone only builds an image
+# the first time a service has never been built, and silently reuses
+# whatever image already exists on every run after that — even when app/
+# or translations/ have since changed. Confirmed as a real, dated bug here:
+# every e2e run for two days quietly tested a two-day-stale image instead
+# of the code actually being worked on, with no error or warning of any
+# kind. Rebuilding is cheap when nothing changed (Docker's own layer cache
+# still applies), so there's no real cost to always doing it.
+docker compose up -d --build bridge
 echo "==> Waiting for 'Bridge ready' in bridge logs (up to 120s)"
 # Deliberately NOT `docker logs -f | grep -qm1 ...`: grep -q exits as soon as
 # it sees a match, closing the pipe early and sending SIGPIPE upstream to

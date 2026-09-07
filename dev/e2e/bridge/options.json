@@ -8,7 +8,7 @@
   "mqtt_username": "",
   "mqtt_password": "",
   "device_name": "Nibe SMO S40",
-  "language": "en",
+  "language": "nl",
   "poll_interval": 15,
   "mode": "essential",
   "mode_switch_behavior": "replace",

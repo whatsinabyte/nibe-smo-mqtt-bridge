@@ -175,3 +175,46 @@ configuration:
       certifikat underskrevet af en offentlig CA. Angiv dette, hvis din
       broker bruger et selvsigneret eller privat underskrevet
       certifikat. Eksempel: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12t
+  24h: 24t
+  Active: Aktiv
+  Active alarm: Aktiv alarm
+  Additional heat only: Kun tilskudsvarme
+  Auto: Auto
+  CO2: CO2
+  Closed: Lukket
+  Closed to pool: Lukket til pool
+  Closing: Lukker
+  Comfort: Komfort
+  Cooling: Køling
+  Cut off: Afbrudt
+  Encouraged: Opfordret
+  Heating: Opvarmning
+  Hot water: Varmt vand
+  Inactive: Inaktiv
+  Intermittent: Intermitterende
+  Manual: Manuel
+  No alarm: Ingen alarm
+  'Off': Fra
+  'On': Til
+  Open: Åben
+  Open to pool: Åben til pool
+  Opening: Åbner
+  Ordered: Beordret
+  Own setting: Egen indstilling
+  Passive: Passiv
+  Pool: Pool
+  Price per kWh: Pris pr. kWh
+  Radiator: Radiator
+  Radiator & Underfloor heating: Radiator og gulvvarme
+  Saving: Besparelse
+  Saving PLUS: Besparelse PLUS
+  Standard: Standard
+  Underfloor heating: Gulvvarme

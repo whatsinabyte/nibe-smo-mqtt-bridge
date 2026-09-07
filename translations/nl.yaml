@@ -172,3 +172,46 @@ configuration:
       ondertekend certificaat. Stel dit in als uw broker een zelfondertekend
       of privé-ondertekend certificaat gebruikt.
       Voorbeeld: /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12u
+  24h: 24u
+  Active: Actief
+  Active alarm: Actief alarm
+  Additional heat only: Alleen bijverwarming
+  Auto: Auto
+  CO2: CO2
+  Closed: Gesloten
+  Closed to pool: Gesloten naar zwembad
+  Closing: Sluiten
+  Comfort: Comfort
+  Cooling: Koelen
+  Cut off: Afgesloten
+  Encouraged: Aangemoedigd
+  Heating: Verwarmen
+  Hot water: Warm water
+  Inactive: Inactief
+  Intermittent: Onderbroken
+  Manual: Handmatig
+  No alarm: Geen alarm
+  'Off': Uit
+  'On': Aan
+  Open: Open
+  Open to pool: Open naar zwembad
+  Opening: Openen
+  Ordered: Opgedragen
+  Own setting: Eigen instelling
+  Passive: Passief
+  Pool: Zwembad
+  Price per kWh: Prijs per kWh
+  Radiator: Radiator
+  Radiator & Underfloor heating: Radiator en vloerverwarming
+  Saving: Besparen
+  Saving PLUS: Besparen PLUS
+  Standard: Standaard
+  Underfloor heating: Vloerverwarming

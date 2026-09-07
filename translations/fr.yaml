@@ -183,3 +183,46 @@ configuration:
       un certificat signé par une AC publique. Définissez ceci si votre
       courtier utilise un certificat auto-signé ou signé de manière
       privée. Exemple : /ssl/mqtt-ca.pem
+
+# Value mapping translations for nibe_entity_detection.py's hardcoded
+# VALUE_MAPPINGS labels (English is the canonical source) — see
+# nibe_entity_manager._load_value_mapping_translations. Bulk-generated,
+# not sourced from native speakers — please open a PR to fix any wrong
+# wording, especially technical HVAC terms.
+value_mappings:
+  12h: 12h
+  24h: 24h
+  Active: Actif
+  Active alarm: Alarme active
+  Additional heat only: Chauffage d'appoint uniquement
+  Auto: Auto
+  CO2: CO2
+  Closed: Fermé
+  Closed to pool: Fermé vers la piscine
+  Closing: Fermeture
+  Comfort: Confort
+  Cooling: Refroidissement
+  Cut off: Coupure
+  Encouraged: Encouragé
+  Heating: Chauffage
+  Hot water: Eau chaude
+  Inactive: Inactif
+  Intermittent: Intermittent
+  Manual: Manuel
+  No alarm: Aucune alarme
+  'Off': Arrêt
+  'On': Marche
+  Open: Ouvert
+  Open to pool: Ouvert vers la piscine
+  Opening: Ouverture
+  Ordered: Ordonné
+  Own setting: Réglage personnalisé
+  Passive: Passif
+  Pool: Piscine
+  Price per kWh: Prix par kWh
+  Radiator: Radiateur
+  Radiator & Underfloor heating: Radiateur et chauffage au sol
+  Saving: Économie
+  Saving PLUS: Économie PLUS
+  Standard: Standard
+  Underfloor heating: Chauffage au sol
