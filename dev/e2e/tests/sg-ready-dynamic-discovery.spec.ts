@@ -356,4 +356,26 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
     point3260BinarySensor,
     'no new binary_sensor.* entity should exist after SG Ready discovery — 3260 must not stay misclassified'
   ).toBeUndefined();
+
+  // 7. The discovery just performed is exactly what the changelog exists to
+  // record — dynamic points appearing is its primary event source, not
+  // ordinary user enables. Checking it here rather than in a spec of its
+  // own reuses this scenario instead of paying for a second real detection
+  // window, and it covers the whole path in one go: the bridge appending
+  // the entry, gzip-compressing it onto a retained MQTT topic, and the card
+  // subscribing, decompressing and rendering it.
+  //
+  // Worth knowing when reading this: the changelog is the one piece of
+  // persisted state with no /data file fallback — retained MQTT is its only
+  // home — so it is the only thing here that a broker wipe loses outright.
+  await card.locator('#show-changelog').click();
+  const changelogModal = card.locator('#changelog-modal');
+  await expect(changelogModal).toBeVisible({ timeout: 10_000 });
+
+  const changelogText = card.locator('#changelog-content');
+  await expect(changelogText).toBeVisible({ timeout: 10_000 });
+  await expect(changelogText).not.toContainText('No changes recorded yet', { timeout: 30_000 });
+
+  // The entry must name the points that actually appeared, not just exist.
+  await expect(changelogText).toContainText('10614', { timeout: 30_000 });
 });

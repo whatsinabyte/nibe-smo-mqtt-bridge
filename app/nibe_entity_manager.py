@@ -50,11 +50,13 @@ EntityManager(api_client, publisher, notify_fn, dismiss_fn, mqtt_client)
 
 import base64
 import concurrent.futures
+import contextlib
 import gzip
 import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -102,14 +104,14 @@ _POST_WRITE_SCAN_S = 90  # seconds to keep accelerated bulk polling
 # Nibe firmware has ~60s internal cache refresh
 # cycle; 90s gives comfortable margin.
 
-# Pending-write staleness: entries older than this are treated as timed-out.
-# Must exceed _POST_WRITE_SCAN_S — the write executor is single-worker
-# (deliberately, to serialize writes), so a write queued behind another
-# write's in-progress _POST_WRITE_SCAN_S-long learning-detection scan can
-# legitimately still be pending that long without anything actually being
-# stuck. A threshold shorter than the scan window would evict a perfectly
-# healthy queued write and log a misleading "write executor may be stuck"
-# warning during expected serialization.
+# Pending-write staleness: a write that has been *executing* this long is
+# treated as timed-out. Measured from the moment the write executor picked
+# the write up, never from when the command arrived — time spent queued
+# behind other writes doesn't count, since the executor is single-worker
+# (deliberately, to serialize writes) and a queue can legitimately be many
+# minutes deep with nothing wrong. Must still exceed _POST_WRITE_SCAN_S,
+# because a write that opens a learning-detection window holds the worker
+# for the whole of that window before finishing.
 _STALE_WRITE_AGE_S = _POST_WRITE_SCAN_S + 10  # seconds
 
 # Changelog
@@ -190,6 +192,44 @@ def _decompress_payload(payload: bytes | str) -> bytes:
 # ============================================================================
 
 
+def _known_mode_or_none(mode: str | None) -> str | None:
+    """Return *mode* if this build recognises it, otherwise None.
+
+    An unrecognised applied-mode record carries no usable information, so it
+    must read as "unknown" rather than as a mode. decide_startup_action()
+    treats any *known* value differing from the configured mode as a
+    deliberate mode change and reconciles the enabled set — which under the
+    default "replace" behaviour disables everything outside the new mode,
+    including entities the user enabled by hand. Inferring that from a value
+    we cannot even resolve to a point set would be destructive on the basis
+    of nothing.
+
+    Mapping it to None instead routes through the existing migration path:
+    startup restores unchanged and then re-records the configured mode, so a
+    corrupt or stale record repairs itself on the next start rather than
+    persisting indefinitely.
+
+    Real cause, found on live hardware: the "Run Test Suite" debug button
+    runs the suite inside the add-on container, and a property test wrote
+    its sentinel "__test_named_mode__" into /data/applied_mode. The test
+    isolation for that is fixed separately (see tests/conftest.py); this
+    makes the bridge resilient to such a record regardless of origin —
+    a half-written file, or a mode removed in a later release.
+    """
+    if mode is None:
+        return None
+    if mode in MODES:
+        return mode
+    log_restore.warning(
+        "Ignoring unrecognised applied-mode record %r — treating it as no record at all. "
+        "The current mode will be re-recorded, and no entities will be disabled on its "
+        "account. Known modes: %s",
+        mode,
+        ", ".join(sorted(MODES)),
+    )
+    return None
+
+
 def decide_startup_action(
     has_existing_entities: bool,
     applied_mode: str | None,
@@ -237,6 +277,53 @@ def decide_startup_action(
 # ============================================================================
 # VALUE MAPPING TRANSLATIONS
 # ============================================================================
+
+
+def _atomic_write_text(path: str, payload: str) -> None:
+    """Write ``payload`` to ``path`` so a reader never sees a partial file.
+
+    ``open(path, "w")`` truncates immediately, so a process killed partway
+    through leaves an empty or half-written file behind. Every one of these
+    fallback files is read back with a ``json.loads`` (or equivalent) whose
+    failure is swallowed as "no data", so a truncated write doesn't surface
+    as an error — it silently discards whatever it held. That matters here
+    because being killed mid-write is a real scenario, not a theoretical
+    one: the shutdown drain budget can exceed a supervisor's stop grace
+    period, so SIGKILL during shutdown genuinely happens.
+
+    Writing to a sibling temp file and renaming avoids it — ``os.replace``
+    is atomic on POSIX, so the destination only ever contains the previous
+    complete contents or the new complete contents.
+
+    The temp file gets a unique name rather than a fixed ``path + ".tmp"``.
+    None of the callers hold a common lock, and they are reachable from the
+    MQTT command thread, the management executor, the registry watcher
+    thread and the poll thread at once — two of them sharing one temp path
+    would have each truncated the other's half-written file, and whichever
+    renamed last would promote the resulting mixture to the destination.
+    That is precisely the corruption this function exists to prevent. With
+    distinct temp files each writer renames a complete payload and the last
+    one wins, which is the expected outcome for concurrent writers.
+
+    Raises ``OSError`` like a plain write would, so callers keep their own
+    error handling.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        # mkstemp creates the file 0600; the plain open() this replaced left
+        # it at the process umask (0644 in practice). Keep that, so nothing
+        # reading these files sees a permissions change.
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError:
+        # Don't leave the temp file behind on a failed write — /data is
+        # small on the embedded targets this runs on.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _load_value_mapping_translations(language: str | None) -> dict[str, str]:
@@ -469,6 +556,16 @@ class EntityManager:
         self._write_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="nibe_write"
         )
+        # Writes submitted to _write_executor that haven't finished yet
+        # (queued or currently running). Read by _submit_write to tell a
+        # caller how many writes are ahead of it; see that method for why
+        # this is tracked explicitly rather than inferred from scan state.
+        self._write_queue_lock = threading.Lock()
+        self._write_queue_depth: int = 0
+        # Set by begin_shutdown() to break out of long in-flight waits on the
+        # write worker so the executors can actually drain within the
+        # shutdown budget. Never cleared — a shutdown is terminal.
+        self._shutdown_event = threading.Event()
 
         # ── Learning mode ─────────────────────────────────────────────────────
         # When True, writes to unprocessed switches/selects are serialised and
@@ -1369,8 +1466,11 @@ class EntityManager:
         with self._post_write_lock:
             if self.post_write_active and current_time > self._post_write_until:
                 self.post_write_active = False
+                ended_point = self._post_write_controlling_point
                 self._post_write_controlling_point = None
-                log_commands.debug("Post-write scan window ended")  # pragma: no mutate
+                log_commands.info(
+                    "Post-write scan window ended for point %s", ended_point
+                )  # pragma: no mutate
             _post_write_now_active = self.post_write_active
 
         effective_interval = (
@@ -1410,8 +1510,19 @@ class EntityManager:
         with self._pending_writes_lock:
             pending_entry = self.pending_writes.get(point_id)
             if pending_entry:
-                age = time.time() - pending_entry.get("timestamp", 0)
-                if age > _STALE_WRITE_AGE_S:
+                # Age from when the write actually started executing, not from
+                # when the command arrived. The write executor is single-worker,
+                # so a write can sit in the queue arbitrarily long behind other
+                # writes' detection windows while nothing at all is wrong — ageing
+                # from arrival evicted those healthy queued writes, which dropped
+                # this very guard and let the pre-write value be republished (the
+                # HA toggle visibly flipping back before the write had even run).
+                # A write that has not started yet is never stale, however long
+                # it has been waiting; only one the worker picked up and never
+                # finished is.
+                started_at = pending_entry.get("started_at")
+                age = time.time() - started_at if started_at is not None else 0.0
+                if started_at is not None and age > _STALE_WRITE_AGE_S:
                     # cmd_id (get key/default/value) is only ever used as
                     # this log's %s arg — never reused after — so it's
                     # unobservable. Not pragma'd: point_id/int(age) on this
@@ -2889,7 +3000,7 @@ class EntityManager:
         # Snapshot point set before detection
         points_before = set(self.bulk_data.keys())
 
-        # Activate post-write scan mode to get 5s polling
+        # Activate post-write scan mode to get 5s polling.
         with self._post_write_lock:
             self.post_write_active = True
             self._post_write_until = time.time() + _POST_WRITE_SCAN_S
@@ -2899,7 +3010,28 @@ class EntityManager:
         last_size = len(points_before)
 
         while True:
-            time.sleep(poll_interval)
+            # Interruptible wait rather than time.sleep(): this loop runs on
+            # the single write-executor worker and can hold it for the whole
+            # window. Executor threads are non-daemon, so an uninterruptible
+            # sleep here blocks process exit (via Python's own atexit join)
+            # well past the shutdown budget, leaving the container to be
+            # SIGKILLed mid-shutdown — the same failure mode abort_test_suite
+            # already exists to prevent for an in-flight test subprocess.
+            if self._shutdown_event.wait(poll_interval):
+                # Abandon without recording an outcome: a window cut short by
+                # shutdown proves nothing about this value, and persisting
+                # "no dynamic points appeared" from it would teach the map a
+                # false negative that survives the restart. Leaving the value
+                # unprocessed just means detection runs again next time.
+                log_commands.info(
+                    "%sLearning detection for point %d value=%d abandoned — shutting down "
+                    "(value stays unprocessed and will be retried)",
+                    prefix,
+                    point_id,
+                    value,
+                )
+                return
+
             current_size = len(self.bulk_data)
 
             if current_size != last_size:
@@ -2995,7 +3127,15 @@ class EntityManager:
                     "cmd_id": cmd_id,
                 }
 
-            self._submit_write(self._handle_command_worker, entity_info, value, payload, cmd_id)
+            self._submit_write(
+                self._handle_command_worker,
+                entity_info,
+                value,
+                payload,
+                cmd_id,
+                point_id=point_id,
+                cmd_id_for_log=cmd_id,
+            )
         except Exception:
             # pragma: no mutate start
             log_commands.exception(
@@ -3003,7 +3143,13 @@ class EntityManager:
             )
             # pragma: no mutate end
 
-    def _submit_write(self, fn: Callable, *args: Any) -> None:
+    def _submit_write(
+        self,
+        fn: Callable,
+        *args: Any,
+        point_id: int | None = None,
+        cmd_id_for_log: str = "",
+    ) -> None:
         """Submit a write-handler call to ``_write_executor`` with logging.
 
         A bare ``self._write_executor.submit(fn, *args)`` silently swallows
@@ -3012,7 +3158,41 @@ class EntityManager:
         no log line and the point's ``pending_writes`` entry is never
         explicitly cleared. Wrapping it here ensures every write failure is
         at least logged, mirroring ``ManagementCommandHandler._submit``.
+
+        ``_write_executor`` has a single worker, and a learning-detection
+        write holds that worker for up to ``_post_write_duration`` seconds
+        (it polls in a loop rather than returning immediately) — so a write
+        submitted while one is already running won't even start until it
+        finishes. If several switches are flipped in quick succession, each
+        one landing in this situation stacks the wait additively (e.g. three
+        such writes can take up to 3x that duration before the last one is
+        even attempted), which is not obvious from either write's own log
+        lines alone. Check here, before submitting, and say so if so.
+
+        Depth is counted directly rather than inferred from whether a
+        learning detection is currently running: that state is only
+        established once the *previous* write's PATCH has already returned,
+        so several switches flipped together (an HA scene, say) all submit
+        inside that gap and would every one of them look unqueued. It also
+        deliberately reports how many writes are ahead rather than an
+        estimated wait in seconds — how long each of those takes depends on
+        whether it opens a detection window at all, which isn't known until
+        it runs, so any total here would be a guess stated as a fact.
         """
+        with self._write_queue_lock:
+            ahead = self._write_queue_depth
+            self._write_queue_depth += 1
+        if ahead > 0 and point_id is not None:
+            prefix = f"[{cmd_id_for_log}] " if cmd_id_for_log else ""  # pragma: no mutate
+            log_commands.info(
+                "%sWrite for point %d queued behind %d unfinished write(s) — writes run one "
+                "at a time, and each can hold the queue for up to %ds while it scans for new "
+                "dynamic points",
+                prefix,
+                point_id,
+                ahead,
+                self._post_write_duration,
+            )
 
         def _wrapped() -> None:
             try:
@@ -3021,8 +3201,37 @@ class EntityManager:
                 log_commands.exception(
                     "Unhandled exception in write command handler"
                 )  # pragma: no mutate
+            finally:
+                with self._write_queue_lock:
+                    self._write_queue_depth -= 1
 
-        self._write_executor.submit(_wrapped)
+        try:
+            self._write_executor.submit(_wrapped)
+        except RuntimeError:
+            # submit() raises once the executor has been shut down, so
+            # _wrapped never runs and never decrements. Undo the increment
+            # here or the count stays permanently high and every later write
+            # reports a queue that isn't there.
+            with self._write_queue_lock:
+                self._write_queue_depth -= 1
+            raise
+
+    def begin_shutdown(self) -> None:
+        """Signal in-flight write work to stop waiting and wind up.
+
+        Call before draining ``_write_executor``: a learning detection in
+        progress otherwise holds the single write worker for the rest of its
+        90s window, which is longer than the whole shutdown budget, so the
+        drain cannot complete and the executors that share that budget never
+        get a chance to drain at all.
+
+        Also signals the API client, whose retry can hold a worker for
+        roughly as long again — see ``NibeApiClient.begin_shutdown``.
+
+        Idempotent, and safe to call even if no write is in flight.
+        """
+        self._shutdown_event.set()
+        self._api.begin_shutdown()
 
     def _open_post_write_scan(self, point_id: int) -> None:
         """Activate the post-write scan window for a write to ``point_id``.
@@ -3072,6 +3281,14 @@ class EntityManager:
         prefix = f"[{cmd_id}] " if cmd_id else ""  # pragma: no mutate
 
         log_commands.info("%sWriting %s to point %d", prefix, value, point_id)  # pragma: no mutate
+
+        # Mark the moment this write actually left the queue and began
+        # executing. _update_entity_state's staleness check ages from here,
+        # not from when the command arrived — see _STALE_WRITE_AGE_S.
+        with self._pending_writes_lock:
+            pending_entry = self.pending_writes.get(point_id)
+            if pending_entry is not None:
+                pending_entry["started_at"] = time.time()
 
         self._write_total += 1
         success = self._api.write_point(point_id, value, entity_info)
@@ -3154,9 +3371,11 @@ class EntityManager:
                     # the post-write scan caught it anyway.)
                     # pragma: no mutate start
                     log_commands.debug(
-                        "%sPoint %d is fully-processed controlling — opening scan window",
+                        "%sPoint %d is fully-processed controlling — opening scan window "
+                        "(up to %ds to detect new points)",
                         prefix,
                         point_id,
+                        self._post_write_duration,
                     )
                     # pragma: no mutate end
                     self._open_post_write_scan(point_id)
@@ -3175,24 +3394,32 @@ class EntityManager:
                     ):
                         # pragma: no mutate start
                         log_commands.info(
-                            "%sPoint %d value=%d is unprocessed — "
-                            "starting detection window (learning always active)",
+                            "%sPoint %d value=%d is unprocessed — starting detection window "
+                            "(learning always active, up to %ds to detect new points)",
                             prefix,
                             point_id,
                             int_value,
+                            self._post_write_duration,
                         )
                         # pragma: no mutate end
                         self._run_learning_detection(point_id, int_value, cmd_id)
                     else:
                         # The ternary below only feeds the log message's 4th
-                        # arg — it has no effect outside this debug call.
+                        # arg — it has no effect outside this info call. Kept
+                        # at INFO (not debug) so a first-time-seen point's
+                        # scan window is visible at the default log level,
+                        # with its expected duration, rather than only its
+                        # "window ended" line — otherwise a user watching the
+                        # log at default verbosity sees a point appear with
+                        # no indication of how long detection might take.
                         # pragma: no mutate start
-                        log_commands.debug(
-                            "%sPost-write scan activated (%ds) for point %d (%s)",
+                        log_commands.info(
+                            "%sPost-write scan activated for point %d (%s) — "
+                            "up to %ds to detect new points",
                             prefix,
-                            self._post_write_duration,
                             point_id,
                             "unprocessed" if entry is not None else "not in map",
+                            self._post_write_duration,
                         )
                         # pragma: no mutate end
 
@@ -3847,8 +4074,7 @@ class EntityManager:
             path = _WANTED_POINTS_FILE
         payload = json.dumps(sorted(self._wanted_points))
         try:
-            with open(path, "w", encoding="utf-8") as f:  # pragma: no mutate
-                f.write(payload)
+            _atomic_write_text(path, payload)
         except OSError as e:
             log_discovery.warning(
                 "Could not write wanted-points fallback file: %s", e
@@ -3902,8 +4128,7 @@ class EntityManager:
         if path is None:
             path = _APPLIED_MODE_FILE
         try:
-            with open(path, "w", encoding="utf-8") as f:  # pragma: no mutate
-                f.write(mode_name)
+            _atomic_write_text(path, mode_name)
         except OSError as e:
             log_restore.warning(
                 "Could not write applied-mode fallback file: %s", e
@@ -3912,7 +4137,8 @@ class EntityManager:
         log_restore.debug("Persisted applied mode: %s", mode_name)  # pragma: no mutate
 
     def _read_applied_mode_from_file(self, path: str | None = None) -> str | None:
-        """Read the last-applied mode from the file fallback. None if absent/unreadable.
+        """Read the last-applied mode from the file fallback. None if absent,
+        unreadable, or not a mode this build recognises.
 
         See _persist_applied_mode for why path resolves dynamically
         instead of using a plain default argument.
@@ -3922,7 +4148,7 @@ class EntityManager:
         try:
             with open(path, encoding="utf-8") as f:
                 mode = f.read().strip()
-            return mode or None
+            return _known_mode_or_none(mode or None)
         except OSError:
             return None
 
@@ -3957,8 +4183,14 @@ class EntityManager:
             self.mqtt.message_callback_remove(BrowserTopic.APPLIED_MODE)
             self.mqtt.unsubscribe(BrowserTopic.APPLIED_MODE)
 
-        if result[0] is not None:
-            return result[0]
+        # Validate the retained copy too, not just the file fallback — a
+        # record this build doesn't recognise is equally uninformative
+        # whichever store it came from. Falling through to the file when the
+        # broker's copy is unusable is deliberate: it may well hold a valid
+        # record. See _known_mode_or_none.
+        broker_mode = _known_mode_or_none(result[0])
+        if broker_mode is not None:
+            return broker_mode
         return self._read_applied_mode_from_file()
 
     def _reconcile_dynamic_points(self) -> None:
@@ -4327,8 +4559,7 @@ class EntityManager:
         if path is None:
             path = _SNAPSHOTS_FILE
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(snapshots, f, indent=2)
+            _atomic_write_text(path, json.dumps(snapshots, indent=2))
         except OSError as e:
             log_restore.warning("Could not write snapshots file: %s", e)  # pragma: no mutate
         payload = json.dumps(snapshots)

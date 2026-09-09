@@ -366,6 +366,34 @@ def run_test_suite(
             # (vs. being skipped) is real/tested elsewhere.
             log_commands.exception("Failed to launch test suite subprocess")
         finally:
+            # Never drop the handle while the process is still alive. It is
+            # detached (start_new_session=True), so this reference is the only
+            # way to reach it: once cleared, abort_test_suite() reads the same
+            # global and no-ops — including on the shutdown path that exists
+            # precisely to stop a run from holding the container open — and
+            # the stale-process check at the top of this function cannot see
+            # it either. A 4-hour `-n auto` run would keep saturating every
+            # core with nothing able to stop it.
+            #
+            # Reached when communicate() raises something other than
+            # TimeoutExpired (an OSError on the pipes, say) while pytest is
+            # still running. The success and timeout paths have already
+            # exited or been killed, so poll() short-circuits this for them,
+            # and a failed Popen() leaves _current_proc None.
+            if _current_proc is not None and _current_proc.poll() is None:
+                # pid is real/tested (crashes on None via %d); the message
+                # text itself is log-only.
+                log_commands.warning(
+                    "Test subprocess (pid %d) still running after an error — killing its "
+                    "process group so it cannot outlive this run untracked",
+                    _current_proc.pid,
+                )
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(os.getpgid(_current_proc.pid), signal.SIGKILL)
+                # Reap it, so the kill doesn't just leave a zombie behind for
+                # the lifetime of the add-on process.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    _current_proc.wait(timeout=10)
             _current_proc = None
 
         # Post-process the HTML report: inject a mobile viewport meta tag

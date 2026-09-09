@@ -128,6 +128,14 @@ class NibeApiClient:
     # gives it its own lock (see below) — this default is only a fallback.
     _lock: threading.Lock = threading.Lock()
 
+    # Set on shutdown to stop starting new requests and to abandon a pending
+    # retry. Deliberately None rather than a class-level Event(): an Event
+    # here would be shared by every __new__()-built test double, so one test
+    # setting it would leak "already shutting down" into later ones. None
+    # simply reads as "not shutting down", preserving current behaviour for
+    # doubles that never ran __init__.
+    _shutting_down: threading.Event | None = None
+
     def __init__(
         self,
         base_url: str,
@@ -143,6 +151,7 @@ class NibeApiClient:
         # this exists. The class-level default above is only a fallback for
         # test doubles built via __new__() that bypass this constructor.
         self._lock = threading.Lock()
+        self._shutting_down = threading.Event()
         # Human-readable reason for the most recent request() failure, or
         # None after a successful request. Read by EntityManager to include
         # an actual diagnostic reason in the "API Unreachable" HA
@@ -151,6 +160,20 @@ class NibeApiClient:
         # problem from a firewall block from an overloaded device without
         # digging through container logs.
         self.last_error: str | None = None
+
+    def begin_shutdown(self) -> None:
+        """Stop starting new requests and abandon any pending retry.
+
+        See ``request()`` for why: one logical request can take ~62s against
+        an unresponsive controller, which outlasts the whole shutdown drain
+        budget and blocks interpreter exit with it.
+
+        Idempotent. Requests already in flight are left to finish or time
+        out on their own — interrupting those would mean tearing down the
+        socket underneath urllib.
+        """
+        if self._shutting_down is not None:
+            self._shutting_down.set()
 
     # ------------------------------------------------------------------ #
     # Low-level request                                                    #
@@ -183,6 +206,17 @@ class NibeApiClient:
         socket I/O — guarantees at most one request is in flight against the
         device at a time, the same effect a serializing reverse proxy in
         front of the controller was independently found to provide.
+
+        That serialization is also why shutdown is handled here. Two 30s
+        socket timeouts plus the backoff between them make one logical
+        request take ~62s against an unresponsive controller, and a caller
+        waiting on the lock behind it waits that long again before its own
+        request even starts. Both far exceed the shutdown drain budget in
+        ``generate_nibe_mqtt._shutdown``, which is shared across every
+        executor, and the executor threads are non-daemon, so the delay also
+        blocks interpreter exit. After ``begin_shutdown()`` no new attempt is
+        started and a pending retry is abandoned, bounding the wait to
+        whichever single request was already in flight.
         """
         # Header key casing is irrelevant — urllib.request.Request normalises
         # header names internally, so mutating the case here is unobservable.
@@ -203,6 +237,14 @@ class NibeApiClient:
         with self._lock:
             for attempt in range(2):  # attempt 0 = first try, attempt 1 = single retry
                 last_attempt = attempt == 1
+                if self._shutting_down is not None and self._shutting_down.is_set():
+                    # Don't open a fresh 30s socket during shutdown. Callers
+                    # already treat None as a temporary outage, and the value
+                    # is worthless now anyway. Checked per attempt so a retry
+                    # is abandoned too — see the shutdown note in request()'s
+                    # docstring for why that matters to the drain budget.
+                    self.last_error = "shutting down"
+                    return None
                 try:
                     response = urllib.request.urlopen(  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
                         req, context=self.ssl_context, timeout=30
@@ -270,7 +312,11 @@ class NibeApiClient:
                     # pragma: no mutate end
                     return None
 
-                # Transient failure on first attempt — sleep before retry
+                # Transient failure on first attempt — sleep before retry.
+                # Left uninterruptible: it is at most _RETRY_BASE_S, and the
+                # shutdown check at the top of the next iteration abandons
+                # the retry itself, so the delay a shutdown can inherit here
+                # is negligible next to the 30s attempt it prevents.
                 delay = _retry_delay()
                 log_api.debug("Retry delay: %.2fs", delay)  # pragma: no mutate
                 time.sleep(delay)

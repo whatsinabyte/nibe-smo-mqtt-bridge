@@ -2118,18 +2118,17 @@ class TestDeriveDeviceId(unittest.TestCase):
         )
 
     def test_persist_write_uses_utf8_encoding(self):
-        """Real-file round-trip tests can't distinguish encoding='utf-8'
-        from encoding=None, since both resolve to UTF-8 on this machine's
-        locale — mock open() directly to pin the actual kwarg passed."""
-        seen_kwargs = []
+        """The persisted file must be UTF-8 encoded.
 
-        def fake_open(_path, mode="r", **kw):
-            seen_kwargs.append(kw)
-            raise OSError("mocked — no real write")
-
-        with patch("builtins.open", side_effect=fake_open):
-            self.fn({"product": {"serialNumber": "ABC123"}}, "fallback", self.persist_path)
-        self.assertEqual(seen_kwargs[0].get("encoding"), "utf-8")
+        Asserted by round-tripping a non-ASCII payload rather than by
+        inspecting the encoding kwarg: the write goes through
+        _atomic_write_text (temp file + rename), so there is no single
+        open() call to intercept, and pinning the kwarg would test the
+        mechanism rather than the property. A non-ASCII serial decodes
+        correctly only if both ends really are UTF-8."""
+        self.fn({"product": {"serialNumber": "ÅBC123"}}, "fallback", self.persist_path)
+        with open(self.persist_path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "nibe_åbc123")
 
     def test_persisted_id_read_uses_utf8_encoding(self):
         with open(self.persist_path, "w", encoding="utf-8") as f:
@@ -4270,6 +4269,38 @@ class TestBuildInfrastructure(unittest.TestCase):
         with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
             mc.on_connect(mc, None, None, 135, None)
         self.assertIn("refused", str(mock_log.error.call_args))
+
+    def test_on_connect_survives_a_raising_resubscribe(self):
+        """The client uses paho's default suppress_exceptions=False, so an
+        exception escaping on_connect kills the network thread — which is
+        also paho's reconnect loop, so the bridge would go permanently deaf
+        to Home Assistant while still looking alive. resubscribe_all()
+        issues a real subscribe per active entity, so it can genuinely
+        raise; the callback must swallow and log instead."""
+        mc, set_em, _ = self._call_infrastructure()
+        fake_em = MagicMock()
+        fake_em.resubscribe_all.side_effect = ValueError("Invalid subscription filter")
+        set_em(fake_em)
+        with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
+            mc.on_connect(mc, None, None, 0, None)  # must not raise
+        mock_log.exception.assert_called_once()
+
+    def test_on_connect_survives_a_raising_republish(self):
+        mc, set_em, _ = self._call_infrastructure()
+        fake_em = MagicMock()
+        fake_em.republish_availability.side_effect = RuntimeError("publish failed")
+        set_em(fake_em)
+        with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
+            mc.on_connect(mc, None, None, 0, None)  # must not raise
+        mock_log.exception.assert_called_once()
+
+    def test_on_disconnect_survives_an_unusable_reason_code(self):
+        """Same network-thread reasoning: a reason_code that is neither a
+        paho enum nor int-able must not take the thread down."""
+        mc, _, _ = self._call_infrastructure()
+        with patch("generate_nibe_mqtt.log_mqtt") as mock_log:
+            mc.on_disconnect(mc, None, None, object(), None)  # must not raise
+        mock_log.exception.assert_called_once()
 
     def _call_infrastructure(self, cfg=None):
         """Helper: run _build_infrastructure and return (mqtt_client, set_em, shutting_down)."""
@@ -8547,6 +8578,41 @@ class TestConfigTranslationsParity(unittest.TestCase):
             self.assertFalse(
                 missing,
                 f"{path.name} is missing translation entries for: {sorted(missing)}",
+            )
+
+    def test_value_mappings_translations_are_unique_within_each_language(self):
+        """Two English labels must never translate to the same string.
+
+        Select options are published translated (build_select_config) and
+        written back by reversing that translation
+        (_parse_command_payload's translated_reverse_map). A collision
+        breaks both halves at once and does so silently: the HA dropdown
+        gets two identical-looking options, and the reverse map — a plain
+        dict comprehension — keeps only the last colliding key, so the
+        other value becomes impossible to select. Nothing would raise; the
+        option would simply never work.
+
+        There are no collisions today, so this guards the invariant rather
+        than fixing a present fault. It is cheap to keep honest and easy to
+        break by accident, since translations are edited per-language by
+        hand with no view of the resulting reverse mapping."""
+        import collections
+
+        import yaml as _yaml
+
+        for path in self.translation_files:
+            with open(path, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            mappings = data.get("value_mappings") or {}
+            by_translation = collections.defaultdict(list)
+            for english, translated in mappings.items():
+                by_translation[str(translated).strip()].append(english)
+            collisions = {t: sorted(e) for t, e in by_translation.items() if len(e) > 1}
+            self.assertFalse(
+                collisions,
+                f"{path.name} translates different labels to the same string, which makes "
+                f"the colliding select options indistinguishable and one of them "
+                f"unwritable: {collisions}",
             )
 
     def test_no_stale_translation_keys_for_removed_options(self):

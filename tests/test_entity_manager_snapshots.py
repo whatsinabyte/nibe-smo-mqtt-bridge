@@ -70,7 +70,9 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
     def test_save_defaults_to_production_snapshots_file_path(self):
         """_save_snapshots(snaps) with no explicit path — the default
         parameter path — must use _SNAPSHOTS_FILE ('/data/snapshots.json'),
-        not silently no-op. Mocks open() so no real file I/O occurs."""
+        not silently no-op. Patches the atomic writer so no real file I/O
+        occurs; the write goes via a temp file and rename, so asserting on
+        open() directly would pin the temp path rather than the target."""
         from nibe_entity_manager import _SNAPSHOTS_FILE
 
         em = _make_em()
@@ -83,9 +85,10 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
                 "mode": "essential",
             }
         ]
-        with patch("builtins.open", mock_open()) as m:
+        with patch("nibe_entity_manager._atomic_write_text") as m:
             em._save_snapshots(snaps)
-        m.assert_called_once_with(_SNAPSHOTS_FILE, "w", encoding="utf-8")
+        m.assert_called_once()
+        self.assertEqual(m.call_args.args[0], _SNAPSHOTS_FILE)
 
     def test_load_defaults_to_production_snapshots_file_path(self):
         """_load_snapshots() with no explicit path must read from
@@ -112,7 +115,10 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
             }
         ]
         with (
-            patch("builtins.open", side_effect=OSError("read-only filesystem")),
+            patch(
+                "nibe_entity_manager._atomic_write_text",
+                side_effect=OSError("read-only filesystem"),
+            ),
             self.assertLogs("nibe.restore", level="WARNING") as cm,
         ):
             em._save_snapshots(snaps, path=self._path)
@@ -147,7 +153,11 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
         self.assertEqual(r2, data)
 
     def test_save_snapshots_writes_indent_2_json(self):
-        """json.dump must be called with indent=2 (pretty-printed file on disk)."""
+        """The file on disk must be pretty-printed with indent=2. Asserts on
+        the real written file rather than the serialiser call, so it holds
+        regardless of how the write is performed."""
+        import json as _json
+
         em = _make_em()
         snaps = [
             {
@@ -158,15 +168,11 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
                 "mode": "essential",
             }
         ]
-        with (
-            patch("builtins.open", mock_open()),
-            patch("nibe_entity_manager.json.dump") as mock_dump,
-        ):
-            em._save_snapshots(snaps, path=self._path)
-        mock_dump.assert_called_once()
-        args, kwargs = mock_dump.call_args
-        self.assertEqual(args[0], snaps)
-        self.assertEqual(kwargs.get("indent"), 2)
+        em._save_snapshots(snaps, path=self._path)
+        with open(self._path, encoding="utf-8") as f:
+            written = f.read()
+        self.assertEqual(_json.loads(written), snaps)
+        self.assertEqual(written, _json.dumps(snaps, indent=2))
 
     def test_save_snapshots_logs_exception_text_on_write_failure(self):
         """The warning must include the actual exception string, not a
@@ -174,7 +180,7 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
         exception object."""
         em = _make_em()
         with (
-            patch("builtins.open", side_effect=OSError("disk full")),
+            patch("nibe_entity_manager._atomic_write_text", side_effect=OSError("disk full")),
             self.assertLogs("nibe.restore", level="WARNING") as cm,
         ):
             em._save_snapshots([{"name": "X"}], path=self._path)

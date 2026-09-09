@@ -34,6 +34,10 @@ from nibe_mqtt_publisher import (
     t_state,
 )
 
+# The mode names this build recognises. _read_applied_mode_from_file returns
+# only these; anything else reads as "no record" (see _known_mode_or_none).
+_MODE_NAMES = frozenset(__import__("nibe_entity_manager").MODES)
+
 
 class TestTopicFunctionProperties(unittest.TestCase):
     """Hypothesis properties for MQTT topic builder functions."""
@@ -1743,14 +1747,10 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    @given(
-        st.text(
-            min_size=1,
-            max_size=20,
-            alphabet=st.characters(categories=["L", "N"], include_characters="_"),
-        )
-    )
-    def test_file_with_content_returns_stripped_content(self, mode):
+    @given(st.sampled_from(sorted(_MODE_NAMES)))
+    def test_file_with_a_known_mode_returns_it_stripped(self, mode):
+        """Surrounding whitespace is stripped and the recognised mode is
+        returned unchanged."""
         import os
         import tempfile
 
@@ -1760,7 +1760,35 @@ class TestReadAppliedModeFromFileProperties(unittest.TestCase):
             path = f.name
         try:
             result = em._read_applied_mode_from_file(path)
-            self.assertEqual(result, mode.strip())
+            self.assertEqual(result, mode)
+        finally:
+            os.unlink(path)
+
+    @given(
+        st.text(
+            min_size=1,
+            max_size=20,
+            alphabet=st.characters(categories=["L", "N"], include_characters="_"),
+        ).filter(lambda s: s.strip() not in _MODE_NAMES)
+    )
+    def test_file_with_an_unknown_mode_returns_none(self, mode):
+        """A record this build cannot resolve to a point set must read as "no
+        record" rather than being handed back as a mode.
+
+        decide_startup_action treats any known-but-different value as a
+        deliberate mode change and reconciles the enabled set, disabling
+        everything outside the new mode — including entities enabled by hand.
+        Returning an unresolvable value would invite exactly that on the
+        basis of nothing. See _known_mode_or_none."""
+        import os
+        import tempfile
+
+        em = _make_em()
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write(f"  {mode}  \n")
+            path = f.name
+        try:
+            self.assertIsNone(em._read_applied_mode_from_file(path))
         finally:
             os.unlink(path)
 
@@ -9305,6 +9333,93 @@ class TestPublishEntityDiscoveryConfigStructure(unittest.TestCase):
         self.assertEqual(len(clear_calls), 1, f"Expected exactly one clear publish to {old_topic}")
         self.assertEqual(clear_calls[0].args[1], "")
         self.assertIs(clear_calls[0].kwargs.get("retain"), True)
+
+    def test_seeded_domains_survive_a_failed_publish_and_are_cleared_on_retry(self):
+        """Regression: the seeded record must not be consumed by an attempt
+        that fails.
+
+        _point_retained_domains is populated once, at startup, from the
+        broker's retained configs, and is never rebuilt during the session.
+        publish_entity_discovery used to pop it before publishing, so a
+        publish that failed (rc != 0 — a broker hiccup while startup
+        discovery runs is exactly when this is plausible) took the record
+        with it. The stale domain then stayed retained with nothing left in
+        the process that knew to clear it: an orphaned duplicate entity in
+        HA until the next restart reseeded from the broker."""
+        from nibe_mqtt_publisher import t_config
+
+        pub, mqtt = self._pub()
+        pub.seed_entity_type_from_retained(2002, "binary_sensor")
+
+        # First attempt fails at the config publish.
+        mqtt.publish.return_value = MagicMock(rc=1)
+        point = self._point(2002, entity_type="sensor")
+        self.assertIsNone(pub.publish_entity_discovery(point, {}))
+        self.assertEqual(
+            pub._point_retained_domains.get(2002),
+            {"binary_sensor"},
+            "a failed publish must not consume the startup-seeded record",
+        )
+
+        # Second attempt succeeds — the stale domain must still get cleared.
+        mqtt.publish.return_value = MagicMock(rc=0)
+        mqtt.reset_mock()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        pub.publish_entity_discovery(point, {})
+
+        old_topic = t_config("binary_sensor", "nibe_2002")
+        clear_calls = [c for c in mqtt.publish.call_args_list if c.args[0] == old_topic]
+        self.assertTrue(clear_calls, f"stale {old_topic} was never cleared on the retry")
+        self.assertEqual(clear_calls[0].args[1], "")
+
+    def test_attributes_hash_not_recorded_when_that_publish_fails(self):
+        """The attributes payload is republished purely on hash inequality,
+        so recording the hash after a failed publish would permanently
+        suppress the retry — the attributes would stay missing in HA until
+        something else happened to change them. Mirrors the rc check the
+        config publish just above it already does."""
+        pub, mqtt = self._pub()
+
+        # Only the attributes publish may fail: a blanket rc=1 would fail the
+        # *config* publish first, which returns early and never reaches the
+        # attributes block at all — the assertion below would then hold for
+        # entirely the wrong reason.
+        def publish_result(topic, *_a, **_kw):
+            return MagicMock(rc=1 if topic.endswith("/attributes") else 0)
+
+        mqtt.publish.side_effect = publish_result
+
+        point = self._point(4242, entity_type="sensor")
+        pub.publish_entity_discovery(point, {})
+
+        attributes_publishes = [
+            c for c in mqtt.publish.call_args_list if c.args[0].endswith("/attributes")
+        ]
+        self.assertTrue(
+            attributes_publishes, "the attributes publish must actually have been attempted"
+        )
+        self.assertNotIn(4242, pub._attributes_hashes)
+
+    def test_attributes_hash_recorded_when_that_publish_succeeds(self):
+        pub, mqtt = self._pub()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        point = self._point(4242, entity_type="sensor")
+        pub.publish_entity_discovery(point, {})
+        self.assertIn(4242, pub._attributes_hashes)
+
+    def test_seeded_domains_dropped_once_the_publish_succeeds(self):
+        """The flip side: after a successful publish the record has served
+        its purpose and must be dropped, or every later call would re-clear
+        the same domains and re-publish the config forever (the stale branch
+        also invalidates the config hash), turning a steady state into
+        constant MQTT traffic."""
+        pub, mqtt = self._pub()
+        mqtt.publish.return_value = MagicMock(rc=0)
+        pub.seed_entity_type_from_retained(2002, "binary_sensor")
+
+        point = self._point(2002, entity_type="sensor")
+        pub.publish_entity_discovery(point, {})
+        self.assertIsNone(pub._point_retained_domains.get(2002))
 
     def test_regression_both_stale_and_current_domain_retained_simultaneously(self):
         """Real-world reproduction (verified on hardware while testing the
