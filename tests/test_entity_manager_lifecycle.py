@@ -2807,3 +2807,124 @@ class TestDisableEntityUsesDiscard(unittest.TestCase):
             "_disable_entity_locked must use .discard() not .remove() to be thread-safe",
         )
         self.assertIn("mqtt_enabled_points.discard", src)
+
+
+class TestDataFilePersistenceIsIsolatedFromTests(unittest.TestCase):
+    """The nightly suite runs inside the real add-on container via the "Run
+    Test Suite" debug button, where /data is the live installation's own
+    state directory. Any test that persists without an explicit path would
+    write straight into it.
+
+    That is not hypothetical: a Hypothesis state machine calls
+    apply_mode("__test_named_mode__"), whose _persist_applied_mode() wrote
+    that sentinel into a real /data/applied_mode. It was found on real
+    hardware, via a snapshot that recorded its mode as "__test_named_mode__".
+    Startup reads that file as a fallback and treats an unrecognised value as
+    a deliberate mode change, reconciling the enabled set and disabling
+    everything the user had enabled by hand.
+
+    conftest's _isolate_data_file_persistence fixture redirects these paths
+    for every test. These assertions pin that it is actually in effect, so
+    the protection cannot be silently removed or fail to apply."""
+
+    def test_no_data_path_points_at_the_live_directory(self):
+        import nibe_dynamic_map as ndm
+        import nibe_entity_manager as nem
+
+        for label, path in (
+            ("applied_mode", nem._APPLIED_MODE_FILE),
+            ("wanted_points", nem._WANTED_POINTS_FILE),
+            ("snapshots", nem._SNAPSHOTS_FILE),
+            ("dynamic_point_map", ndm._FILE_FALLBACK),
+        ):
+            self.assertFalse(
+                path.startswith("/data/"),
+                f"{label} still resolves to the live add-on state directory "
+                f"({path}) — a test persisting without an explicit path would "
+                f"overwrite a real installation's file",
+            )
+
+    def test_persisting_without_a_path_stays_inside_the_sandbox(self):
+        """The end-to-end property: a real persist call with no explicit path
+        must land on the redirected file, not /data."""
+        import os
+
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em._persist_applied_mode("essential")
+        self.assertTrue(
+            os.path.exists(nem._APPLIED_MODE_FILE),
+            "the redirected applied_mode file was not written",
+        )
+        with open(nem._APPLIED_MODE_FILE, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "essential")
+
+
+class TestUnrecognisedAppliedModeIsTreatedAsNoRecord(unittest.TestCase):
+    """An applied-mode record this build cannot resolve to a point set must
+    read as "no record", never as a mode change.
+
+    decide_startup_action treats any known-but-different value as a
+    deliberate mode change and reconciles the enabled set, which under the
+    default "replace" behaviour disables everything outside the new mode —
+    including entities enabled by hand. Concluding that from a value we
+    cannot even resolve would destroy the user's selection on the basis of
+    nothing.
+
+    Found on live hardware: the "Run Test Suite" debug button runs the suite
+    inside the add-on container, and a property test wrote its sentinel
+    "__test_named_mode__" into the real /data/applied_mode. Test isolation
+    for that is fixed separately in conftest; this makes the bridge robust to
+    such a record whatever its origin — a half-written file, or a mode
+    removed in a later release."""
+
+    def test_unknown_mode_reads_as_none_from_the_file(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        with open(nem._APPLIED_MODE_FILE, "w", encoding="utf-8") as f:
+            f.write("__test_named_mode__")
+        self.assertIsNone(em._read_applied_mode_from_file())
+
+    def test_known_mode_still_reads_back_unchanged(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        with open(nem._APPLIED_MODE_FILE, "w", encoding="utf-8") as f:
+            f.write("essential")
+        self.assertEqual(em._read_applied_mode_from_file(), "essential")
+
+    def test_unknown_mode_does_not_trigger_a_reconcile(self):
+        """The destructive outcome this exists to prevent: reconcile would
+        disable every entity outside the configured mode's set."""
+        from nibe_entity_manager import decide_startup_action
+
+        self.assertEqual(
+            decide_startup_action(
+                has_existing_entities=True, applied_mode=None, config_mode="essential"
+            ),
+            "restore",
+        )
+
+    def test_unknown_mode_is_logged_so_it_is_diagnosable(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        with open(nem._APPLIED_MODE_FILE, "w", encoding="utf-8") as f:
+            f.write("__test_named_mode__")
+        with self.assertLogs("nibe.restore", level="WARNING") as cm:
+            em._read_applied_mode_from_file()
+        self.assertTrue(any("unrecognised applied-mode record" in m for m in cm.output), cm.output)
+
+    def test_startup_rerecords_the_configured_mode_so_the_file_self_heals(self):
+        """Mapping the bogus value to None routes through the migration path,
+        which re-records the configured mode — so a poisoned file repairs
+        itself on the next start instead of persisting indefinitely."""
+        em = _make_em()
+        with (
+            patch.object(em, "restore_from_mqtt"),
+            patch.object(em, "record_applied_mode") as mock_record,
+        ):
+            em.apply_startup_action("restore", None, "essential")
+        mock_record.assert_called_once_with("essential")

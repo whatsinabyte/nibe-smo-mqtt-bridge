@@ -161,17 +161,65 @@ class TestSubProperties(unittest.TestCase):
 
     @given(st.text(min_size=1, max_size=100))
     def test_calls_message_callback_add(self, topic):
+        """The registered callback is a guarded wrapper, not the raw handler
+        (see _sub), so this asserts it delegates rather than pinning object
+        identity."""
         h, mqtt, _em = self._handler()
         handler = MagicMock()
         h._sub(topic, handler)
-        mqtt.message_callback_add.assert_called_once_with(topic, handler)
+        mqtt.message_callback_add.assert_called_once()
+        registered_topic, registered = mqtt.message_callback_add.call_args.args
+        self.assertEqual(registered_topic, topic)
+        registered(None, None, MagicMock())
+        handler.assert_called_once()
 
     @given(st.text(min_size=1, max_size=100))
     def test_calls_register_mgmt_subscription(self, topic):
+        """Resubscription after a broker reconnect must replay the *guarded*
+        callback, not the bare handler — otherwise the protection would
+        silently disappear on the first reconnect."""
         h, _mqtt, em = self._handler()
         handler = MagicMock()
         h._sub(topic, handler)
-        em.register_mgmt_subscription.assert_called_once_with(topic, handler, 1)
+        em.register_mgmt_subscription.assert_called_once()
+        registered_topic, registered, qos = em.register_mgmt_subscription.call_args.args
+        self.assertEqual((registered_topic, qos), (topic, 1))
+        registered(None, None, MagicMock())
+        handler.assert_called_once()
+
+    def test_sub_wraps_handler_so_exceptions_never_reach_pahos_thread(self):
+        """paho runs these on its network read loop with
+        suppress_exceptions=False: anything escaping kills that thread, and
+        with it paho's reconnect loop, leaving a bridge that looks alive but
+        ignores Home Assistant until restarted by hand."""
+        h, mqtt, _em = self._handler()
+
+        def exploding_handler(_client, _userdata, _message):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        h._sub("nibe/mgmt/test", exploding_handler)
+        _, registered = mqtt.message_callback_add.call_args.args
+
+        with self.assertLogs("nibe.commands", level="ERROR") as cm:
+            registered(None, None, MagicMock())  # must not raise
+        self.assertTrue(
+            any("Unhandled exception in management command handler" in m for m in cm.output),
+            cm.output,
+        )
+
+    def test_sub_wrapper_survives_submit_after_executor_shutdown(self):
+        """A command arriving once the management executor is shut down makes
+        _submit raise RuntimeError on the network thread — the same fatal
+        path as a malformed payload."""
+        h, mqtt, _em = self._handler()
+
+        def submitting_handler(_client, _userdata, _message):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        h._sub("nibe/mgmt/test", submitting_handler)
+        _, registered = mqtt.message_callback_add.call_args.args
+        with self.assertLogs("nibe.commands", level="ERROR"):
+            registered(None, None, MagicMock())  # must not raise
 
     @given(st.text(min_size=1, max_size=100), st.integers(min_value=0, max_value=2))
     def test_qos_passed_correctly(self, topic, qos):
@@ -288,7 +336,11 @@ class TestRegisterAllRecordsEveryTopic(unittest.TestCase):
             for call in mock_register.call_args_list
             if call.args[0] == BrowserTopic.SNAPSHOTS_CMD
         )
-        self.assertEqual(snapshots_call.args[1], handler._handle_snapshot_cmd)
+        # _sub registers a guarded wrapper rather than the bare method (see
+        # its docstring), so identify the handler through __wrapped__, which
+        # functools.wraps preserves — this still pins that the *right*
+        # handler was registered, not merely that something was.
+        self.assertEqual(snapshots_call.args[1].__wrapped__, handler._handle_snapshot_cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -8285,6 +8337,102 @@ class TestRunTestSuiteOuterCrashRecovery(unittest.TestCase):
             )
         )
         self.assertFalse(done_event.is_set())
+
+
+class TestRunTestSuiteNeverLeaksALiveSubprocess(unittest.TestCase):
+    """run_test_suite must not clear _current_proc while the subprocess is
+    still alive.
+
+    The subprocess is detached (start_new_session=True), so that global is
+    the only handle to it. Clearing it while pytest is still running strands
+    a 4-hour `-n auto` run saturating every core with nothing able to stop
+    it: abort_test_suite() reads the same global and would no-op — including
+    on the shutdown path that exists to stop a run holding the container
+    open — and the stale-process check at the top of run_test_suite cannot
+    see it either.
+
+    Reached when communicate() raises something other than TimeoutExpired
+    (an OSError on the pipes, say) with the process still running."""
+
+    def _run_with_failing_communicate(self, exc, poll_result):
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        proc = MagicMock()
+        proc.pid = 5150
+        proc.communicate.side_effect = exc
+        proc.poll.return_value = poll_result
+        proc.wait.return_value = None
+
+        done_event = threading.Event()
+        done_event.set()
+        try:
+            with (
+                patch("subprocess.Popen", return_value=proc),
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=5150),
+            ):
+                run_test_suite(
+                    MagicMock(), MagicMock(), MagicMock(), lambda: "http://ha", done_event
+                )
+            return proc, mock_killpg, nibe_test_runner._current_proc
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_live_process_is_killed_before_the_handle_is_dropped(self):
+        _proc, mock_killpg, after = self._run_with_failing_communicate(
+            OSError("pipe blew up"),
+            poll_result=None,  # still running
+        )
+        mock_killpg.assert_called_once_with(5150, signal.SIGKILL)
+        self.assertIsNone(after, "the handle must still end up cleared")
+
+    def test_killed_process_is_reaped_so_it_does_not_linger_as_a_zombie(self):
+        proc, _killpg, _after = self._run_with_failing_communicate(
+            OSError("pipe blew up"), poll_result=None
+        )
+        proc.wait.assert_called_once_with(timeout=10)
+
+    def test_already_exited_process_is_not_killed(self):
+        """A launch/handling error where the process has already exited must
+        not trigger a pointless killpg — poll() short-circuits it."""
+        _proc, mock_killpg, _after = self._run_with_failing_communicate(
+            OSError("boom"),
+            poll_result=0,  # already exited
+        )
+        mock_killpg.assert_not_called()
+
+    def test_a_reap_that_times_out_does_not_propagate(self):
+        """If the process somehow survives SIGKILL, the run must still finish
+        reporting rather than raising out of the finally block."""
+        import subprocess as _subprocess
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        proc = MagicMock()
+        proc.pid = 5150
+        proc.communicate.side_effect = OSError("pipe blew up")
+        proc.poll.return_value = None
+        proc.wait.side_effect = _subprocess.TimeoutExpired(cmd="pytest", timeout=10)
+
+        done_event = threading.Event()
+        done_event.set()
+        try:
+            with (
+                patch("subprocess.Popen", return_value=proc),
+                patch("os.killpg"),
+                patch("os.getpgid", return_value=5150),
+            ):
+                run_test_suite(
+                    MagicMock(), MagicMock(), MagicMock(), lambda: "http://ha", done_event
+                )
+            self.assertIsNone(nibe_test_runner._current_proc)
+        finally:
+            nibe_test_runner._current_proc = None
 
 
 class TestRunTestSuiteStaleProcessCleanup(unittest.TestCase):

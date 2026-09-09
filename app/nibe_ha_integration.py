@@ -32,6 +32,7 @@ create_management_handlers(mqtt_client, entity_manager, publisher, mgmt_executor
 """
 
 import concurrent.futures
+import functools
 import json
 import logging
 import os
@@ -943,10 +944,46 @@ class ManagementCommandHandler:
     # ── Internal helper ───────────────────────────────────────────────────────
 
     def _sub(self, topic: str, handler: Callable, qos: int = 1) -> None:
-        """Subscribe, add callback, and record for resubscription on reconnect."""
+        """Subscribe, add callback, and record for resubscription on reconnect.
+
+        The handler is wrapped so that nothing can escape it. These run
+        directly on paho's network thread, and the client uses paho's
+        default ``suppress_exceptions=False``, so an exception propagating
+        out of one leaves that thread's read loop and permanently kills it —
+        and since it is also paho's reconnect loop, the bridge then ignores
+        every future command while still appearing healthy.
+
+        Each handler does its risky work inside the closure it hands to
+        ``_submit`` (already wrapped), but the part that runs *here*, on the
+        network thread, is not covered by that: ``message.payload.decode()``
+        raises ``UnicodeDecodeError`` on a malformed payload, and
+        ``_submit`` itself raises ``RuntimeError`` if a command arrives
+        after the executor has been shut down. ``EntityManager._handle_command``
+        guards its own callbacks for exactly this reason; these were missed.
+
+        Wrapping at the single registration point rather than per handler
+        means a handler added later cannot forget — which is how this was
+        missed in the first place.
+        """
+        guarded = self._guard_callback(topic, handler)
         self._mqtt.subscribe(topic, qos=qos)
-        self._mqtt.message_callback_add(topic, handler)
-        self._em.register_mgmt_subscription(topic, handler, qos)
+        self._mqtt.message_callback_add(topic, guarded)
+        self._em.register_mgmt_subscription(topic, guarded, qos)
+
+    @staticmethod
+    def _guard_callback(topic: str, handler: Callable) -> Callable:
+        """Return `handler` wrapped so no exception reaches paho's thread."""
+
+        @functools.wraps(handler)
+        def _guarded(client: Any, userdata: Any, message: Any) -> None:
+            try:
+                handler(client, userdata, message)
+            except Exception:
+                log_commands.exception(
+                    "Unhandled exception in management command handler for %s", topic
+                )
+
+        return _guarded
 
     def _submit(self, fn: Callable) -> None:
         """Submit a handler's blocking work to mgmt_executor with logging.

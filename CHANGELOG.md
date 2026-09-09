@@ -7,6 +7,155 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Seventeen defects found in a systematic audit: twelve pre-existing, and five
+introduced by the log-clarity work started for this release and fixed before
+it shipped. Two were found only by testing on real hardware. No behaviour was
+changed intentionally beyond the fixes below.
+
+### Fixed
+
+- **A queued write could be evicted mid-flight, making a Home Assistant
+  toggle flip back on its own.** Writes are serialised through a
+  single-worker executor, and a write that opens a dynamic-point detection
+  window holds that worker for up to 90 seconds. Pending writes were aged
+  from when the *command arrived*, so flipping several switches in quick
+  succession left the third one queued past the 100-second staleness
+  threshold while perfectly healthy. It was then evicted with a misleading
+  "the write executor may be stuck" warning, which dropped the pending-write
+  guard and republished the pre-write value: the entity visibly reverted,
+  then flipped again ~70 seconds later when the write actually ran. Writes
+  are now aged from when the executor *picked them up*; one still waiting in
+  the queue is never stale, however long it waits.
+- **The add-on could be SIGKILLed during shutdown instead of stopping
+  cleanly.** The shutdown drain budget is shared across all three executors,
+  and an in-flight learning detection could not be interrupted, so it
+  consumed the entire budget without finishing and left the management and
+  test executors no time to drain at all. Executor threads are non-daemon,
+  so the wait also blocked interpreter exit. Long in-flight waits are now
+  signalled to stop before the drain begins. An interrupted detection
+  deliberately records *no* outcome — persisting "no dynamic points
+  appeared" from a truncated scan would teach the learned map a false
+  negative that survived the restart.
+- **The same shutdown stall via the API client.** One logical request against
+  an unresponsive controller runs two 30-second socket timeouts plus a
+  backoff (~62s) while holding the client's serialising lock, so a second
+  caller waited that long again before starting. After shutdown begins no new
+  request is started and a pending retry is abandoned.
+- **A single unexpected error could leave the bridge permanently deaf to
+  Home Assistant while still appearing healthy.** The MQTT client runs with
+  paho's default `suppress_exceptions=False`, so anything escaping a callback
+  kills the network thread — which is also paho's reconnect loop, making the
+  failure terminal in both directions and recoverable only by a manual
+  restart. `on_connect`/`on_disconnect` were unguarded (the connect path
+  re-subscribes and republishes availability for every entity), as were four
+  of the five management command handlers, which decoded their MQTT payload
+  on that thread: a malformed payload, or a command arriving after shutdown,
+  was enough. Management handlers are now guarded centrally where they are
+  registered, so one added later cannot forget, and the guard is preserved in
+  the record replayed on reconnect.
+- **State files in `/data` could be silently emptied.** `applied_mode`,
+  `wanted_points.json`, `snapshots.json` and `device_id` were written by
+  truncating the destination, so a process killed mid-write left a truncated
+  file — and each is read back with its parse failure swallowed as "no data",
+  silently discarding whatever it held (your enabled-entity set, your saved
+  snapshots, or the device identity whose loss recreates every entity under a
+  new Home Assistant device). They are now written to a uniquely-named temp
+  file and renamed, which is atomic. The unique name matters: these writers
+  hold no common lock and run on four different threads, so a shared temp
+  path let concurrent writers truncate each other and promote the mixture —
+  reproduced as corruption in roughly half of concurrent runs.
+- **Ghost/duplicate entities could be left behind in Home Assistant.** The
+  record of which discovery topics a point still has retained on the broker is
+  seeded once at startup and never rebuilt, but it was consumed *before* the
+  publish that depends on it. A publish failure — plausible during a broker
+  hiccup while startup discovery runs — took the record with it, so those
+  stale topics were never cleared and nothing left in the process knew to
+  clear them. It is now dropped only once the publish succeeds.
+- **Entity attributes could go permanently missing.** The attributes payload
+  is republished purely on hash inequality, and the hash was recorded whether
+  or not the publish succeeded — so a failed publish was remembered as done
+  and never retried.
+- **A snapshot whose name contains a double quote broke the restore UI.**
+  Names are free-form (only stripped and checked non-empty), so
+  `Winter "cold snap"` is legal. Three restore handlers interpolated the raw
+  name into a CSS attribute selector, which a quote makes unparseable;
+  `querySelector` threw and aborted the rest of the click handler. The restore
+  itself still ran, but the confirmation never appeared, the options panel
+  never closed, and Cancel did nothing. (The rendered markup was always
+  escaped — this was never a markup-injection issue.)
+- **Running the built-in "Run Test Suite" debug button corrupted live add-on
+  state.** That button runs the real test suite *inside the add-on
+  container*, where `/data` is your installation's own state directory, and
+  tests that persist without an explicit path wrote straight into it. A
+  property test exercising named modes wrote its throwaway sentinel
+  `__test_named_mode__` into `/data/applied_mode` — found on real hardware,
+  via a snapshot that recorded its mode as `__test_named_mode__`. The
+  damage is not cosmetic: startup reads that file and treats an
+  unrecognised value as a deliberate mode change, reconciling the enabled
+  set and disabling every entity enabled by hand. It only bites once the
+  broker has lost its retained copy — precisely the situation the file
+  fallback exists for. `applied_mode`, `wanted_points.json`,
+  `snapshots.json` and the learned dynamic-point map are now redirected to
+  a temporary directory for every test, the protection that already existed
+  for `device_id` alone. **If you have pressed "Run Test Suite" on a live
+  installation, see the note under Upgrading below.**
+- **A test-suite run could be left running with nothing able to stop it.**
+  The subprocess handle was cleared unconditionally on error, but the
+  surrounding block also covers reading the process's output — so an error
+  there dropped the only reference to a detached process group. The
+  shutdown abort then silently did nothing, leaving a four-hour full-core
+  run with no way to stop it. It is now killed and reaped before the handle
+  is released.
+
+### Changed
+
+- **Post-write scan logging is clearer and consistent between switches.**
+  The window-ended line now names the point it belonged to and is visible at
+  the default log level, every line that opens a scan states how long
+  detection may take, and a write that has to queue behind others now says
+  how many are ahead of it. It reports the queue depth rather than an
+  estimated wait, because whether each queued write opens a detection window
+  at all is not knowable until it runs.
+- **`docker logs` / the Supervisor log viewer now show output as it
+  happens.** Python was block-buffering its output because it is not writing
+  to a terminal, so log lines could lag behind real time by an unpredictable
+  amount.
+
+- **An unrecognised applied-mode record is no longer treated as a mode
+  change.** A value that cannot be resolved to a point set carries no usable
+  information, but startup previously read any value differing from the
+  configured mode as a deliberate change and reconciled the enabled set —
+  disabling everything outside the new mode, including entities enabled by
+  hand. It now reads as "no record", which routes through the existing
+  migration path: entities are restored unchanged and the configured mode is
+  re-recorded, so a corrupt or stale record repairs itself on the next
+  restart instead of persisting. This applies whatever the cause — the test
+  sentinel above, a half-written file, or a mode removed in a later release.
+
+### Upgrading
+
+- **If you have ever pressed "Run Test Suite" on a live installation**, your
+  `/data/applied_mode` may contain a test sentinel rather than your real
+  mode. Nothing further is needed: this release ignores an unrecognised
+  record and re-records your configured mode on the next restart, so the file
+  repairs itself. Snapshots saved while the file was poisoned keep the wrong
+  mode label in their stored entry — that is cosmetic, and only affects the
+  label shown next to the snapshot, not which points it restores.
+
+### Internal
+
+- Test coverage grew from 4,341 to 4,390 Python tests plus 314 frontend
+  tests, including regression tests for every fix above. Four end-to-end
+  scenarios were added against a real Home Assistant, broker and bridge —
+  disabling an entity, a switch write round-trip, snapshot save/restore, and
+  changelog rendering — plus `/data` persistence assertions, and a fix for an
+  existing end-to-end test that sat exactly on its timeout and passed or
+  failed on luck.
+
+---
+
 ## [1.1.6] — 2026-09-07
 
 ### Added

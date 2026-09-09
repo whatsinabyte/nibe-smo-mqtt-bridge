@@ -1536,32 +1536,28 @@ class TestUpdateEntityStatePendingWriteEviction(unittest.TestCase):
             "state_topic": f"nibe/state/{point_id}",
         }
 
-    def test_stale_pending_write_missing_timestamp_is_evicted(self):
-        """mutant 30: pending_entry.get('timestamp', 0) -> default 1.
-
-        With no 'timestamp' key and time.time() mocked to exactly
-        _STALE_WRITE_AGE_S + 1, the real default (0) makes age = 61,
-        which is > 60 -> stale -> evicted -> normal publishing resumes.
-        The mutant's default (1) makes age = 60, which is NOT > 60 ->
-        the entry survives -> the function returns early without
-        publishing state.
-        """
-        import nibe_entity_manager as nem
-
-        em = _make_em()
-        point_id = 700
-        # Deliberately no 'timestamp' key so the .get(...) default is used.
-        # 'value' (999) deliberately does NOT match the bulk raw_value (5)
-        # below, so the write-confirmed-by-API branch cannot also clear the
-        # pending entry — only the stale-age eviction can, isolating the
-        # mutation under test.
-        em.pending_writes[point_id] = {"cmd_id": "abc", "value": 999}
+    def _add_unconfirmed_pending(self, em, point_id, entry):
+        """Register `entry` as a pending write whose value deliberately does
+        not match the bulk raw_value below, so the confirmed-by-API branch
+        cannot clear it — isolating the stale-age eviction under test."""
+        em.pending_writes[point_id] = entry
         em.bulk_data[point_id] = {
             "raw_value": 5,
             "string_value": "",
             "is_ok": True,
             "metadata": {"divisor": 1},
         }
+
+    def test_stale_pending_write_that_started_is_evicted(self):
+        """A write the executor picked up and never finished must go stale,
+        be evicted, and let normal state publishing resume."""
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        point_id = 700
+        self._add_unconfirmed_pending(
+            em, point_id, {"cmd_id": "abc", "value": 999, "timestamp": 0, "started_at": 0}
+        )
         info = self._entity_info(point_id)
         with patch.object(nem.time, "time", return_value=nem._STALE_WRITE_AGE_S + 1):
             em._update_entity_state(info)
@@ -1570,10 +1566,34 @@ class TestUpdateEntityStatePendingWriteEviction(unittest.TestCase):
         ]
         self.assertTrue(
             state_calls,
-            "Real default of 0 must make the entry stale (age=61>60), "
-            "evicting it and allowing normal state publishing to resume",
+            "age (61) > _STALE_WRITE_AGE_S (60) must evict the entry and "
+            "allow normal state publishing to resume",
         )
         self.assertNotIn(point_id, em.pending_writes)
+
+    def test_pending_write_still_queued_is_not_evicted_or_published(self):
+        """A write with no started_at has not left the single-worker queue
+        yet. However old the command is, it is not stale — evicting it would
+        drop the write guard and republish the pre-write value, flipping the
+        HA entity back before the write has even been attempted."""
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        point_id = 700
+        # No 'started_at': still queued behind other writes' detection windows.
+        self._add_unconfirmed_pending(em, point_id, {"cmd_id": "abc", "value": 999, "timestamp": 0})
+        info = self._entity_info(point_id)
+        with patch.object(nem.time, "time", return_value=nem._STALE_WRITE_AGE_S * 10):
+            em._update_entity_state(info)
+        state_calls = [
+            c for c in em.mqtt.publish.call_args_list if c.args[0] == f"nibe/state/{point_id}"
+        ]
+        self.assertFalse(
+            state_calls,
+            "a queued-but-not-started write must keep holding its guard, "
+            "not republish the pre-write value",
+        )
+        self.assertIn(point_id, em.pending_writes)
 
     def test_bulk_data_missing_point_during_pending_check_no_crash(self):
         """mutant 60: self.bulk_data.get(point_id, {}) -> default None.

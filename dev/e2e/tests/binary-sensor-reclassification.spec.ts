@@ -141,6 +141,14 @@ async function setMockPointValue(pointId: string, integerValue: number): Promise
 test('a binary_sensor that starts reporting a non-boolean value is reclassified to sensor in real HA', async ({
   page,
 }) => {
+  // Reclassification only happens once the poll loop observes the offending
+  // value, so this test's duration is bounded by real bulk-poll intervals
+  // rather than by anything it does itself — in practice right around 90s.
+  // Without this it inherits playwright.config.ts's global 90s timeout and
+  // sits exactly on that boundary, passing or failing on luck; it was the
+  // only long-running spec here not setting its own budget.
+  test.setTimeout(240_000);
+
   const { username, password } = readCredentials();
   const token = readToken();
 

@@ -80,6 +80,7 @@ from nibe_api import NibeApiClient
 from nibe_entity_detection import MODES
 from nibe_entity_manager import (
     EntityManager,
+    _atomic_write_text,
     _build_device_info,
     _load_value_mapping_translations,
     decide_startup_action,
@@ -759,8 +760,12 @@ def _derive_device_id(response: dict, fallback: str, persist_path: str | None = 
         device_id = f"nibe_{safe}"
         log_startup.info("Device ID derived from serial number: %s", device_id)
         try:
-            with open(persist_path, "w", encoding="utf-8") as f:
-                f.write(device_id)
+            # Atomic: this file is read back as `f.read().strip()` and used
+            # only `if persisted:`, so a truncated write reads as empty and
+            # silently falls through to the generic fallback id — producing
+            # exactly the duplicate HA device this persistence exists to
+            # prevent. See _atomic_write_text.
+            _atomic_write_text(persist_path, device_id)
         except OSError as e:
             log_startup.warning(
                 "Could not persist device_id to %s: %s — a future startup during "
@@ -1102,6 +1107,24 @@ def _build_infrastructure(
     def on_connect(
         _client: Any, _userdata: Any, _flags: Any, reason_code: Any, _properties: Any
     ) -> None:
+        try:
+            _on_connect_inner(reason_code)
+        except Exception:
+            # Deliberately broad, matching every other paho callback in this
+            # codebase: the client is constructed with paho's default
+            # suppress_exceptions=False, so anything escaping here propagates
+            # out of the network thread's read loop and permanently kills it.
+            # That thread is also paho's own reconnect loop, so the failure is
+            # terminal in both directions — no further MQTT commands are ever
+            # delivered and no later reconnect is ever attempted, leaving a
+            # bridge that looks alive but silently ignores Home Assistant
+            # until it is restarted by hand. resubscribe_all() and
+            # republish_availability() below iterate every active entity
+            # issuing real subscribe/publish calls, so this is not a
+            # theoretical path.
+            log_mqtt.exception("Unhandled exception in MQTT on_connect — connection setup aborted")
+
+    def _on_connect_inner(reason_code: Any) -> None:
         rc_value = reason_code.value if hasattr(reason_code, "value") else int(reason_code)
         if rc_value == 0:
             log_mqtt.info(
@@ -1133,6 +1156,13 @@ def _build_infrastructure(
     def on_disconnect(
         _client: Any, _userdata: Any, _disconnect_flags: Any, reason_code: Any, _properties: Any
     ) -> None:
+        try:
+            _on_disconnect_inner(reason_code)
+        except Exception:
+            # Same network-thread reasoning as on_connect above.
+            log_mqtt.exception("Unhandled exception in MQTT on_disconnect")
+
+    def _on_disconnect_inner(reason_code: Any) -> None:
         if shutting_down[0]:
             return
         rc_value = reason_code.value if hasattr(reason_code, "value") else int(reason_code)
@@ -1561,6 +1591,13 @@ def _shutdown(
     # that ever happens. Killing the subprocess directly lets the worker
     # thread return immediately so the executor drain below is fast.
     abort_test_suite("add-on shutting down")
+
+    # Same reasoning for the write executor: a learning detection in flight
+    # holds its single worker for the rest of a 90s window — longer than the
+    # entire shutdown budget below, which all three executors share, so the
+    # write drain would consume the whole budget without finishing and leave
+    # the other two no time to drain at all.
+    entity_manager.begin_shutdown()
 
     log_startup.info("Waiting for in-flight commands to complete...")
     # Share one _SHUTDOWN_TIMEOUT deadline across all three executors rather

@@ -61,6 +61,11 @@ if [ "${REMOVE_FRONTEND}" = "true" ]; then
 fi
 
 cd /app
-exec python3 generate_nibe_mqtt.py \
+# -u: unbuffered stdout/stderr. Without it, Python block-buffers output when
+# it's not a TTY (i.e. always, under Docker) — `docker logs` (and therefore
+# the HA Supervisor's own log viewer) can then lag behind real time by an
+# unpredictable amount until the buffer happens to fill or flush, rather
+# than showing lines as they're actually logged.
+exec python3 -u generate_nibe_mqtt.py \
     --log-level "${LOG_LEVEL}" \
     --mode      "${MODE}"

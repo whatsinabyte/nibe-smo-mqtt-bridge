@@ -613,7 +613,13 @@ class MqttDiscoveryPublisher:
         # entity_type we're about to publish now is stale and must be
         # cleared, not just a single remembered "previous" value — a point
         # can have more than one leftover domain retained simultaneously.
-        stale_domains = self._point_retained_domains.pop(point_id, set())
+        # Read, don't consume: this record is seeded once at startup from the
+        # broker's retained configs and is never rebuilt during the session.
+        # Popping it here would discard it even when the publish below fails
+        # and returns early, leaving those domains retained forever with
+        # nothing left that knows to clear them — the exact ghost entity this
+        # is here to prevent. It is dropped only once the publish succeeds.
+        stale_domains = set(self._point_retained_domains.get(point_id, set()))
         prev_entity_type = self._point_entity_types.get(point_id)
         if prev_entity_type is not None:
             stale_domains.add(prev_entity_type)
@@ -668,6 +674,10 @@ class MqttDiscoveryPublisher:
                 return None
             self._config_hashes[point_id] = config_hash
             self._point_entity_types[point_id] = entity_type
+            # Only now is the startup-seeded record safe to drop: the stale
+            # domains above were cleared and the replacement config is live.
+            # _point_entity_types carries the same information from here on.
+            self._point_retained_domains.pop(point_id, None)
 
         # Gated on its own hash, independent of config_hash: description and
         # intDefaultValue feed this payload but are NOT part of the hashed
@@ -686,8 +696,26 @@ class MqttDiscoveryPublisher:
             ).hexdigest()
             # pragma: no mutate end
             if self._attributes_hashes.get(point_id) != attributes_hash:
-                self.mqtt.publish(attributes_topic, attributes_json, retain=True)
-                self._attributes_hashes[point_id] = attributes_hash
+                attributes_result = self.mqtt.publish(
+                    attributes_topic, attributes_json, retain=True
+                )
+                # Record the hash only once the publish actually succeeded,
+                # matching the config publish above. Storing it regardless
+                # would mark a failed publish as done, and since this is
+                # gated purely on hash equality the payload would then never
+                # be retried — the attributes would stay missing in HA until
+                # something else happened to change them.
+                if attributes_result.rc == 0:
+                    self._attributes_hashes[point_id] = attributes_hash
+                else:
+                    # pragma: no mutate start
+                    log_mqtt.warning(
+                        "Failed to publish attributes for point %d: MQTT error %d — "
+                        "will retry on the next discovery publish",
+                        point_id,
+                        attributes_result.rc,
+                    )
+                    # pragma: no mutate end
 
         return {
             "point_id": point_id,

@@ -320,3 +320,52 @@ def _isolate_device_id_persistence(tmp_path):
     gn._DEVICE_ID_FILE = str(tmp_path / "device_id")
     yield
     gn._DEVICE_ID_FILE = original
+
+
+# Every other /data file the bridge persists, isolated for exactly the same
+# reason as _isolate_device_id_persistence above — that fixture fixed this
+# hazard for device_id only, and these four were left exposed.
+#
+# This is not hypothetical. The nightly suite runs inside the real add-on
+# container (the "Run Test Suite" debug button), and a Hypothesis state
+# machine calls apply_mode("__test_named_mode__") on a real EntityManager;
+# apply_mode ends by calling _persist_applied_mode(), which wrote that
+# throwaway sentinel straight into a live installation's
+# /data/applied_mode. Confirmed on real hardware: a snapshot saved
+# afterwards recorded its mode as "__test_named_mode__", because
+# save_snapshot reads that file directly.
+#
+# The consequence is worse than a mislabelled snapshot. Startup feeds the
+# persisted mode to decide_startup_action(), and a value that is neither
+# None nor the configured mode reads as a deliberate mode change ->
+# "reconcile" -> apply_mode(), which under the default "replace" behaviour
+# disables everything outside the new mode's set, including entities the
+# user enabled by hand. read_applied_mode() prefers the retained MQTT copy,
+# which tests do not touch (the client is a mock), so this only bites once
+# the broker has lost its retained messages — i.e. precisely the situation
+# the file fallback exists for.
+#
+# Autouse so no test can forget, matching the device_id lesson: isolating
+# individual call sites was tried and missed 51 of them.
+@pytest.fixture(autouse=True)
+def _isolate_data_file_persistence(tmp_path):
+    import nibe_dynamic_map as ndm
+    import nibe_entity_manager as nem
+
+    originals = (
+        nem._APPLIED_MODE_FILE,
+        nem._WANTED_POINTS_FILE,
+        nem._SNAPSHOTS_FILE,
+        ndm._FILE_FALLBACK,
+    )
+    nem._APPLIED_MODE_FILE = str(tmp_path / "applied_mode")
+    nem._WANTED_POINTS_FILE = str(tmp_path / "wanted_points.json")
+    nem._SNAPSHOTS_FILE = str(tmp_path / "snapshots.json")
+    ndm._FILE_FALLBACK = str(tmp_path / "dynamic_point_map.json")
+    yield
+    (
+        nem._APPLIED_MODE_FILE,
+        nem._WANTED_POINTS_FILE,
+        nem._SNAPSHOTS_FILE,
+        ndm._FILE_FALLBACK,
+    ) = originals

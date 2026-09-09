@@ -2239,6 +2239,16 @@ class NibeEntityManager extends HTMLElement {
   // Entity titles, descriptions, and all metadata strings come from Nibe
   // firmware via MQTT — escaping all five HTML special characters guards
   // against unexpected content in firmware strings or crafted MQTT payloads.
+  // Find a descendant of `container` matching `className` whose data-for
+  // equals `value`, without putting `value` into the selector string.
+  // See _renderSnapshotsList's restore handlers for why: a value containing
+  // a double quote makes an interpolated attribute selector unparseable and
+  // querySelector throws, killing the surrounding event handler.
+  _findByDataFor(container, className, value) {
+    return Array.from(container.querySelectorAll(className))
+      .find(el => el.dataset.for === value) || null;
+  }
+
   _esc(str) {
     if (str === null || str === undefined) return '';
     return String(str)
@@ -3024,6 +3034,17 @@ class NibeEntityManager extends HTMLElement {
     `).join('');
 
     // Wire Restore / Delete button clicks
+    // Match on the data-for property rather than interpolating the snapshot
+    // name into a CSS selector. Names are free-form user input — the bridge
+    // only strips whitespace and rejects empty (save_snapshot), so nothing
+    // stops a name like: Winter "cold snap". Interpolated, that closed the
+    // selector's quoted string early and querySelector threw a SyntaxError
+    // DOMException, which aborts the rest of the click handler: the restore
+    // confirmation never appeared, the options panel never closed, and
+    // Cancel did nothing at all. The restore-button handler below already
+    // compared dataset values this way; the other three lookups did not.
+    // The rendered HTML attributes are separately escaped via _esc, so this
+    // was never a markup-injection issue — only a selector-parsing one.
     container.querySelectorAll('.snapshot-restore-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const name = btn.dataset.snapName;
@@ -3036,8 +3057,8 @@ class NibeEntityManager extends HTMLElement {
 
     container.querySelectorAll('.snapshot-cancel-restore').forEach(btn => {
       btn.addEventListener('click', () => {
-        const panel = container.querySelector(
-          `.snapshot-restore-options[data-for="${btn.dataset.snapName}"]`
+        const panel = this._findByDataFor(
+          container, '.snapshot-restore-options', btn.dataset.snapName
         );
         if (panel) panel.style.display = 'none';
       });
@@ -3048,9 +3069,7 @@ class NibeEntityManager extends HTMLElement {
         const name = btn.dataset.snapName;
         const mode = btn.dataset.mode;
         this._sendSnapshotCmd({ action: 'restore', name, mode });
-        const msgEl = container.querySelector(
-          `.snapshot-restore-msg[data-for="${name}"]`
-        );
+        const msgEl = this._findByDataFor(container, '.snapshot-restore-msg', name);
         if (msgEl) {
           msgEl.textContent = mode === 'flush'
             ? 'Replacing selection… changes will appear within a few seconds.'
@@ -3058,9 +3077,7 @@ class NibeEntityManager extends HTMLElement {
         }
         // Hide options panel after a moment
         setTimeout(() => {
-          const panel = container.querySelector(
-            `.snapshot-restore-options[data-for="${name}"]`
-          );
+          const panel = this._findByDataFor(container, '.snapshot-restore-options', name);
           if (panel) panel.style.display = 'none';
         }, 3000);
       });

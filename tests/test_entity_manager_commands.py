@@ -6,9 +6,12 @@ for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
 import json
+import os
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+
+_UNSET = object()
 
 from conftest import (
     _make_em,
@@ -594,14 +597,26 @@ class TestPendingWriteGuard(unittest.TestCase):
         with self.em._active_entities_lock:
             self.em.active_entities_by_id[self.point_id] = self.entity_info
 
-    def _add_pending(self, value, age_offset=0):
-        self.em.pending_writes[self.point_id] = {
+    def _add_pending(self, value, age_offset=0, started_offset=_UNSET, started=True):
+        """Register a pending write ``age_offset`` seconds old.
+
+        ``started_at`` defaults to the same age as ``timestamp`` — the
+        ordinary case of a write that began executing as soon as it was
+        submitted, with nothing queued ahead of it. Pass ``started=False``
+        for a write still sitting in the executor queue, which has no
+        ``started_at`` at all and is never stale however long it waits.
+        """
+        entry = {
             "point_id": self.point_id,
             "value": value,
             "payload": str(value),
             "timestamp": time.time() - age_offset,
             "cmd_id": "test1234",
         }
+        if started:
+            offset = age_offset if started_offset is _UNSET else started_offset
+            entry["started_at"] = time.time() - offset
+        self.em.pending_writes[self.point_id] = entry
 
     # ── suppression ───────────────────────────────────────────────────────────
 
@@ -661,6 +676,7 @@ class TestPendingWriteGuard(unittest.TestCase):
         t0 = 1_700_000_000.0
         self._add_pending(value=1)
         self.em.pending_writes[self.point_id]["timestamp"] = t0
+        self.em.pending_writes[self.point_id]["started_at"] = t0
         self.em.bulk_data[self.point_id]["raw_value"] = 0  # not yet confirmed
         with patch("nibe_entity_manager.time.time", return_value=t0 + _STALE_WRITE_AGE_S):
             self.em._update_entity_state(self.entity_info)
@@ -679,6 +695,43 @@ class TestPendingWriteGuard(unittest.TestCase):
         self._add_pending(value=1, age_offset=1)  # 1 second old — well within limit
         self.em._update_entity_state(self.entity_info)
         self.assertIn(self.point_id, self.em.pending_writes)
+
+    def test_queued_write_never_evicted_however_long_it_waits(self):
+        """Regression: a write still sitting in the single-worker executor's
+        queue has no started_at and must never be treated as stale, no matter
+        how old the command is.
+
+        Flipping three switches at once queues the third behind two writes
+        that can each hold the worker for a full 90s detection window, so it
+        legitimately waits ~180s before it even begins. Ageing from the
+        command's arrival evicted it at 100s with a misleading "the write
+        executor may be stuck" warning, and dropping the pending-write guard
+        republished the pre-write bulk value — the HA toggle flipping back
+        off, then on again when the write finally ran.
+        """
+        from nibe_entity_manager import _STALE_WRITE_AGE_S
+
+        self._add_pending(value=1, age_offset=_STALE_WRITE_AGE_S * 3, started=False)
+        self.em.bulk_data[self.point_id]["raw_value"] = 0  # pre-write value
+        with self.assertNoLogs("nibe.commands", level="WARNING"):
+            self.em._update_entity_state(self.entity_info)
+        self.assertIn(self.point_id, self.em.pending_writes)
+
+    def test_write_stuck_after_starting_is_still_evicted(self):
+        """The guard must not become unbounded: a write the worker actually
+        picked up and never finished is still evicted, which is the genuine
+        "executor is stuck" case the threshold exists for."""
+        from nibe_entity_manager import _STALE_WRITE_AGE_S
+
+        self._add_pending(
+            value=1,
+            age_offset=_STALE_WRITE_AGE_S * 3,
+            started_offset=_STALE_WRITE_AGE_S + 5,
+        )
+        with self.assertLogs("nibe.commands", level="WARNING") as cm:
+            self.em._update_entity_state(self.entity_info)
+        self.assertTrue(any("may be stuck" in m for m in cm.output), cm.output)
+        self.assertNotIn(self.point_id, self.em.pending_writes)
 
     # ── edge cases ────────────────────────────────────────────────────────────
 
@@ -863,6 +916,226 @@ class TestHandleCommand(unittest.TestCase):
         with patch.object(em, "_write_executor"):
             em._handle_command(info, msg)
         self.assertEqual(em.pending_writes[100]["payload"], "ON")
+
+
+class TestAtomicWriteText(unittest.TestCase):
+    """_atomic_write_text: every /data fallback file is read back with its
+    parse failure swallowed as "no data", so a half-written file silently
+    discards whatever it held rather than surfacing an error. Being killed
+    mid-write is a real scenario here — the shutdown drain budget can exceed
+    a supervisor's stop grace period — so the destination must only ever
+    hold complete contents."""
+
+    def setUp(self):
+        import tempfile
+
+        self._dir = tempfile.mkdtemp()
+        self._path = os.path.join(self._dir, "state.json")
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def _read(self):
+        with open(self._path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_writes_the_payload(self):
+        from nibe_entity_manager import _atomic_write_text
+
+        _atomic_write_text(self._path, "hello")
+        self.assertEqual(self._read(), "hello")
+
+    def test_overwrites_existing_contents_completely(self):
+        from nibe_entity_manager import _atomic_write_text
+
+        _atomic_write_text(self._path, "a-much-longer-original-payload")
+        _atomic_write_text(self._path, "short")
+        self.assertEqual(self._read(), "short")
+
+    def test_failed_write_leaves_previous_contents_intact(self):
+        """The point of the temp-and-rename: a write that dies partway
+        must not destroy what was already there."""
+        from nibe_entity_manager import _atomic_write_text
+
+        _atomic_write_text(self._path, "original")
+        with (
+            patch("nibe_entity_manager.os.replace", side_effect=OSError("boom")),
+            self.assertRaises(OSError),
+        ):
+            _atomic_write_text(self._path, "replacement")
+        self.assertEqual(self._read(), "original")
+
+    def test_concurrent_writers_never_produce_a_corrupt_file(self):
+        """None of the callers hold a common lock, and they run on the MQTT
+        command thread, the management executor, the registry watcher thread
+        and the poll thread. Sharing one fixed temp path let two writers
+        truncate each other's half-written file and rename the mixture over
+        the destination — the corruption the atomic write exists to prevent.
+        Whichever writer lands last may win; what must never happen is a
+        destination that parses as neither payload."""
+        import json as _json
+        import threading as _threading
+
+        from nibe_entity_manager import _atomic_write_text
+
+        # Payloads of very different lengths, so a truncating collision shows
+        # up as trailing remnants of the longer one rather than clean JSON.
+        payloads = [_json.dumps([i] * (200 * (i + 1))) for i in range(6)]
+        errors: list[BaseException] = []
+        barrier = _threading.Barrier(len(payloads))
+
+        def writer(payload: str) -> None:
+            try:
+                barrier.wait(timeout=10)
+                for _ in range(20):
+                    _atomic_write_text(self._path, payload)
+            except BaseException as e:  # noqa: BLE001 — surfaced via `errors`
+                errors.append(e)
+
+        threads = [_threading.Thread(target=writer, args=(p,)) for p in payloads]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        self.assertEqual(errors, [], f"writer threads raised: {errors}")
+        self.assertIn(
+            self._read(), payloads, "destination held neither payload intact — a torn write"
+        )
+
+    def test_temp_files_are_not_left_behind_by_concurrent_writers(self):
+        from nibe_entity_manager import _atomic_write_text
+
+        for _ in range(5):
+            _atomic_write_text(self._path, "payload")
+        leftovers = [n for n in os.listdir(self._dir) if n != os.path.basename(self._path)]
+        self.assertEqual(leftovers, [], f"temp files left behind: {leftovers}")
+
+    def test_failed_write_leaves_no_temp_file_behind(self):
+        from nibe_entity_manager import _atomic_write_text
+
+        with (
+            patch("nibe_entity_manager.os.replace", side_effect=OSError("boom")),
+            self.assertRaises(OSError),
+        ):
+            _atomic_write_text(self._path, "replacement")
+        self.assertFalse(os.path.exists(self._path + ".tmp"))
+
+    def test_oserror_propagates_so_callers_can_log_it(self):
+        from nibe_entity_manager import _atomic_write_text
+
+        missing = os.path.join(self._dir, "no-such-dir", "state.json")
+        with self.assertRaises(OSError):
+            _atomic_write_text(missing, "x")
+
+
+class TestSubmitWriteQueueDepthWarning(unittest.TestCase):
+    """_write_executor has a single worker, and a write that opens a
+    learning-detection window occupies it for up to _post_write_duration
+    seconds by sleeping in a loop rather than returning immediately. A write
+    submitted while that's happening sits in the executor's queue with no
+    indication of why, so _submit_write logs how many unfinished writes are
+    ahead of it.
+
+    Depth is counted at submit time rather than inferred from whether a
+    detection is currently running. An earlier version of this gated the
+    warning on a "detection active" flag, which is only set after the
+    preceding write's PATCH has already returned — so several switches
+    flipped together (an HA scene) all submitted inside that gap and none of
+    them logged anything, defeating the warning in exactly the case it
+    exists for. test_burst_submitted_before_any_write_starts_still_warns
+    covers that regression directly."""
+
+    def test_logs_queue_depth_when_a_write_is_already_in_flight(self):
+        em = _make_em()
+        em._post_write_duration = 90
+        em._write_queue_depth = 1  # one write already submitted and unfinished
+        with self.assertLogs("nibe.commands", level="INFO") as cm:
+            em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="abc123")
+        self.assertTrue(
+            any(
+                "Write for point 3846 queued behind 1 unfinished write(s)" in msg
+                and "up to 90s" in msg
+                for msg in cm.output
+            ),
+            cm.output,
+        )
+
+    def test_reports_true_depth_for_the_third_write_in_a_burst(self):
+        """The depth reported must be the real number of writes ahead, not
+        just "something is running" — the third switch in a burst waits on
+        two full windows, not one."""
+        em = _make_em()
+        em._write_queue_depth = 2
+        with self.assertLogs("nibe.commands", level="INFO") as cm:
+            em._submit_write(lambda: None, point_id=4694, cmd_id_for_log="c3")
+        self.assertTrue(
+            any("queued behind 2 unfinished write(s)" in msg for msg in cm.output), cm.output
+        )
+
+    def test_burst_submitted_before_any_write_starts_still_warns(self):
+        """Regression: three switches flipped together submit within
+        milliseconds, before the first write's PATCH has returned and
+        therefore before any detection window exists. The second and third
+        must still report what's ahead of them."""
+        em = _make_em()
+        # Nothing has begun executing — the executor never runs these.
+        em._write_executor.submit = lambda fn, *a, **kw: None
+        with self.assertLogs("nibe.commands", level="INFO") as cm:
+            em._submit_write(lambda: None, point_id=1, cmd_id_for_log="a")
+            em._submit_write(lambda: None, point_id=2, cmd_id_for_log="b")
+            em._submit_write(lambda: None, point_id=3, cmd_id_for_log="c")
+        self.assertTrue(
+            any("Write for point 2 queued behind 1 unfinished write(s)" in m for m in cm.output),
+            cm.output,
+        )
+        self.assertTrue(
+            any("Write for point 3 queued behind 2 unfinished write(s)" in m for m in cm.output),
+            cm.output,
+        )
+
+    def test_no_warning_for_the_first_write_with_an_empty_queue(self):
+        """An ordinary write, submitted while nothing is in flight, must not
+        log a queued-write warning at all."""
+        em = _make_em()
+        with self.assertNoLogs("nibe.commands", level="INFO"):
+            em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="abc123")
+
+    def test_no_warning_when_point_id_is_omitted(self):
+        """Callers that don't pass point_id (there are none today besides
+        _handle_command, but the parameter is optional) must not crash or
+        log a message naming a nonexistent point."""
+        em = _make_em()
+        em._write_queue_depth = 1
+        with self.assertNoLogs("nibe.commands", level="INFO"):
+            em._submit_write(lambda: None)
+
+    def test_depth_unwound_when_submit_is_rejected_after_shutdown(self):
+        """submit() raises once the executor is shut down, so the wrapper
+        that would decrement never runs. Without unwinding here the count
+        stays high forever and every later write reports a phantom queue."""
+        em = _make_em()
+
+        def rejecting_submit(*_a, **_kw):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        em._write_executor.submit = rejecting_submit
+        with self.assertRaises(RuntimeError):
+            em._submit_write(lambda: None, point_id=3846)
+        self.assertEqual(em._write_queue_depth, 0)
+
+    def test_depth_returns_to_zero_after_the_write_finishes(self):
+        """The counter must be decremented even when the submitted handler
+        raises, or every later write would report a phantom queue."""
+        em = _make_em()
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
+        em._submit_write(lambda: None, point_id=3846)
+        self.assertEqual(em._write_queue_depth, 0)
+        with self.assertLogs("nibe.commands", level="ERROR"):
+            em._submit_write(lambda: (_ for _ in ()).throw(RuntimeError("boom")), point_id=3846)
+        self.assertEqual(em._write_queue_depth, 0)
 
 
 class TestHandleCommandWorkerFailurePath(unittest.TestCase):
@@ -1935,18 +2208,80 @@ class TestCardCommandToRealApiWriteFullChain(unittest.TestCase):
 class TestRunLearningDetectionActivatesPostWriteScan(unittest.TestCase):
     """_run_learning_detection must actually activate post-write scan mode
     before entering its wait loop — the loop itself is made to exit
-    immediately by having the mocked time.sleep() add a point to bulk_data,
-    triggering the 'size changed' early-exit on the first iteration."""
+    immediately by having the mocked interval wait add a point to bulk_data,
+    triggering the 'size changed' early-exit on the first iteration.
+
+    The loop waits on _shutdown_event rather than time.sleep() so a
+    shutdown can interrupt it, so that wait is what these tests patch."""
 
     def test_post_write_active_set_true_before_loop(self):
         em = _make_em()
         point_id = 700
         em.bulk_data = {point_id: {"raw_value": 1}}
 
-        def fake_sleep(_seconds):
+        def fake_wait(_timeout):
             # Simulate the bulk fetch picking up a new dynamic point.
             em.bulk_data[999999] = {"raw_value": 0}
+            return False  # not shutting down
 
-        with patch("time.sleep", side_effect=fake_sleep):
+        with patch.object(em._shutdown_event, "wait", side_effect=fake_wait):
             em._run_learning_detection(point_id, 1, "cmd1")
         self.assertIs(em.post_write_active, True)
+
+
+class TestRunLearningDetectionShutdownAbort(unittest.TestCase):
+    """The detection loop runs on the single write-executor worker and can
+    hold it for a full 90s window — longer than the entire shutdown budget
+    that all three executors share. begin_shutdown() breaks that wait so the
+    drain can complete instead of the container being SIGKILLed mid-exit."""
+
+    def test_loop_exits_immediately_when_shutdown_is_signalled(self):
+        em = _make_em()
+        em.bulk_data = {700: {"raw_value": 1}}
+        em.begin_shutdown()
+        with patch.object(em, "_persist_dynamic_map") as mock_persist:
+            em._run_learning_detection(700, 1, "cmd1")
+        mock_persist.assert_not_called()
+
+    def test_aborted_detection_records_no_outcome(self):
+        """A window cut short by shutdown proves nothing about this value.
+        Recording "no dynamic points appeared" would persist a false negative
+        that survives the restart and stops the point ever being learned."""
+        em = _make_em()
+        em.bulk_data = {700: {"raw_value": 1}}
+        em.begin_shutdown()
+        with patch.object(em.dynamic_point_map, "record_outcome") as mock_record:
+            em._run_learning_detection(700, 1, "cmd1")
+        mock_record.assert_not_called()
+
+    def test_aborted_detection_is_logged(self):
+        em = _make_em()
+        em.bulk_data = {700: {"raw_value": 1}}
+        em.begin_shutdown()
+        with self.assertLogs("nibe.commands", level="INFO") as cm:
+            em._run_learning_detection(700, 1, "cmd1")
+        self.assertTrue(any("abandoned — shutting down" in m for m in cm.output), cm.output)
+
+    def test_begin_shutdown_is_idempotent(self):
+        em = _make_em()
+        em.begin_shutdown()
+        em.begin_shutdown()
+        self.assertTrue(em._shutdown_event.is_set())
+
+    def test_normal_detection_completes_when_not_shutting_down(self):
+        """The interruptible wait must not change ordinary behaviour: a
+        detection that sees a bulk-size change still records its outcome."""
+        em = _make_em()
+        em.bulk_data = {700: {"raw_value": 1}}
+
+        def fake_wait(_timeout):
+            em.bulk_data[999999] = {"raw_value": 0}
+            return False
+
+        with (
+            patch.object(em._shutdown_event, "wait", side_effect=fake_wait),
+            patch.object(em.dynamic_point_map, "record_outcome") as mock_record,
+            patch.object(em, "_persist_dynamic_map"),
+        ):
+            em._run_learning_detection(700, 1, "cmd1")
+        mock_record.assert_called_once()

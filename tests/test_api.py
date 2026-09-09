@@ -691,6 +691,69 @@ class TestRequestRetryProperties(unittest.TestCase):
             client.request("https://host/api/v1/devices/test/points")
         mock_sleep.assert_not_called()
 
+    # ── shutdown ─────────────────────────────────────────────────────────────
+
+    def test_no_request_is_started_once_shutting_down(self):
+        """One logical request can take ~62s against an unresponsive
+        controller (two 30s timeouts plus backoff), and self._lock is held
+        throughout, so a caller queued behind it waits that long again. Both
+        outlast the whole shutdown drain budget, and executor threads are
+        non-daemon, so the delay blocks interpreter exit too. After
+        begin_shutdown() no new socket may be opened at all."""
+        client = self._client()
+        client.begin_shutdown()
+        with patch("urllib.request.urlopen") as mock_open:
+            result = client.request("https://host/api/v1/devices/test/points")
+        mock_open.assert_not_called()
+        self.assertIsNone(result)
+
+    def test_pending_retry_is_abandoned_when_shutdown_starts_mid_request(self):
+        """A shutdown arriving during the first attempt must abandon the
+        retry rather than opening a second 30s socket."""
+        import urllib.error
+
+        client = self._client()
+
+        def fail_then_signal(*_a, **_kw):
+            client.begin_shutdown()
+            raise urllib.error.URLError("timeout")
+
+        with (
+            patch("urllib.request.urlopen", side_effect=fail_then_signal) as mock_open,
+            patch("time.sleep"),
+        ):
+            result = client.request("https://host/api/v1/devices/test/points")
+        self.assertEqual(mock_open.call_count, 1, "the retry must not have been attempted")
+        self.assertIsNone(result)
+
+    def test_begin_shutdown_is_idempotent(self):
+        client = self._client()
+        client.begin_shutdown()
+        client.begin_shutdown()
+        with patch("urllib.request.urlopen") as mock_open:
+            client.request("https://host/api/v1/devices/test/points")
+        mock_open.assert_not_called()
+
+    def test_requests_work_normally_before_shutdown(self):
+        """The shutdown gate must not disturb the ordinary path."""
+        client = self._client()
+        with patch("urllib.request.urlopen", return_value=self._mock_resp({"ok": 1})):
+            result = client.request("https://host/api/v1/devices/test/points")
+        self.assertEqual(result, {"ok": 1})
+
+    def test_double_built_client_without_init_still_requests(self):
+        """Test doubles built via __new__() never run __init__, so they have
+        no _shutting_down of their own. The class-level default must read as
+        "not shutting down" rather than raising or blocking the request."""
+        from nibe_api import NibeApiClient
+
+        client = NibeApiClient.__new__(NibeApiClient)
+        client.auth = "user:pass"
+        client.ssl_context = None
+        with patch("urllib.request.urlopen", return_value=self._mock_resp({"ok": 1})):
+            result = client.request("https://host/api/v1/devices/test/points")
+        self.assertEqual(result, {"ok": 1})
+
 
 # ===========================================================================
 # 15. Pending write guard (_update_entity_state)

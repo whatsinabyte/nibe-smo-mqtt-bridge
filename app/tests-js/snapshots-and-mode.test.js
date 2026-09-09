@@ -148,3 +148,56 @@ describe('nibe/browser/applied_mode', () => {
     }
   );
 });
+
+describe('snapshot names containing characters that break CSS selectors', () => {
+  // Snapshot names are free-form user input: save_snapshot only strips
+  // whitespace and rejects empty, so a double quote is entirely legal.
+  // The restore handlers used to interpolate the name into an attribute
+  // selector, which a quote makes unparseable — querySelector threw a
+  // SyntaxError DOMException and aborted the rest of the handler. Note an
+  // exception inside an event listener does not propagate out of .click(),
+  // in jsdom or in a real browser, so these assert the observable outcome
+  // rather than expecting a throw.
+  const NAME = 'Winter "cold snap"';
+
+  function openSnapshots() {
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/snapshots', snapshotsPayload([sampleSnapshot({ name: NAME })]));
+    el.showSnapshots();
+    return el;
+  }
+
+  it('renders the name verbatim in data attributes', () => {
+    const el = openSnapshots();
+    expect(el.shadowRoot.querySelector('.snapshot-restore-btn').dataset.snapName).toBe(NAME);
+  });
+
+  it('Cancel closes the restore options panel', () => {
+    const el = openSnapshots();
+    const root = el.shadowRoot;
+    root.querySelector('.snapshot-restore-btn').click();
+    const panel = root.querySelector('.snapshot-restore-options');
+    expect(panel.style.display).toBe('block');
+
+    root.querySelector('.snapshot-cancel-restore').click();
+    expect(panel.style.display).toBe('none');
+  });
+
+  it('choosing a restore mode shows the confirmation message', () => {
+    const el = openSnapshots();
+    const root = el.shadowRoot;
+    root.querySelector('.snapshot-restore-btn').click();
+    root.querySelector('.snapshot-do-restore[data-mode="merge"]').click();
+
+    const msg = root.querySelector('.snapshot-restore-msg');
+    expect(msg.textContent).toContain('Adding to selection');
+  });
+
+  it('still sends the restore command with the exact name', () => {
+    const el = openSnapshots();
+    const sent = [];
+    el._sendSnapshotCmd = payload => sent.push(payload);
+    el.shadowRoot.querySelector('.snapshot-do-restore[data-mode="flush"]').click();
+    expect(sent).toEqual([{ action: 'restore', name: NAME, mode: 'flush' }]);
+  });
+});

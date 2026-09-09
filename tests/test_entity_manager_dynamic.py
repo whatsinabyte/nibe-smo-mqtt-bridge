@@ -1992,7 +1992,7 @@ class TestDynamicLearningDetection(unittest.TestCase):
             }
 
         with (
-            patch("nibe_entity_manager.time.sleep", side_effect=fake_sleep),
+            patch.object(em._shutdown_event, "wait", side_effect=fake_sleep),
             patch("nibe_entity_manager.time.time", return_value=0.0),
             patch.object(em.dynamic_point_map, "record_outcome") as mock_rec,
             patch.object(em, "_persist_dynamic_map"),
@@ -2015,9 +2015,9 @@ class TestDynamicLearningDetection(unittest.TestCase):
         # padded the iterator to survive that extra call without crashing;
         # it didn't stop the extra call from silently shifting deadline's
         # value to 999.0 + 90 while the loop's own "now" stayed pinned at
-        # 999.0 forever — deadline could never be reached, and since
-        # time.sleep is also mocked to a no-op, the loop spun as a genuine
-        # CPU-bound infinite loop until pytest-timeout killed it. That
+        # 999.0 forever — deadline could never be reached, and since the
+        # loop's interval wait is also mocked to a no-op, the loop spun as a
+        # genuine CPU-bound infinite loop until pytest-timeout killed it. That
         # depended on test execution order (whether the logger happened to
         # be INFO-enabled already), so it passed locally under one
         # pytest-randomly seed and hung for real under another — this is
@@ -2026,7 +2026,7 @@ class TestDynamicLearningDetection(unittest.TestCase):
         # calls, every time, regardless of what ran before this test.
         time_seq = itertools.chain([0.0, 0.0, 999.0], itertools.repeat(999.0))
         with (
-            patch("nibe_entity_manager.time.sleep"),
+            patch.object(em._shutdown_event, "wait", return_value=False),
             patch("nibe_entity_manager.time.time", side_effect=time_seq),
             patch("nibe_entity_manager.log_commands"),
             patch.object(em.dynamic_point_map, "record_outcome") as mock_rec,
@@ -2037,8 +2037,8 @@ class TestDynamicLearningDetection(unittest.TestCase):
 
     def test_post_write_until_and_poll_interval_use_correct_values(self):
         """_post_write_until must be time.time() + _POST_WRITE_SCAN_S (not None
-        or a subtraction), and time.sleep must be called with the configured
-        post_write_interval (not None)."""
+        or a subtraction), and the loop's interval wait must be given the
+        configured post_write_interval (not None)."""
         em = self._em_with_bulk(initial_size=1)
         em.post_write_interval = 7.5
         captured_sleep_args = []
@@ -2054,7 +2054,7 @@ class TestDynamicLearningDetection(unittest.TestCase):
             }
 
         with (
-            patch("nibe_entity_manager.time.sleep", side_effect=fake_sleep),
+            patch.object(em._shutdown_event, "wait", side_effect=fake_sleep),
             patch("nibe_entity_manager.time.time", return_value=1000.0),
             patch.object(em.dynamic_point_map, "record_outcome"),
             patch.object(em, "_persist_dynamic_map"),
@@ -2070,7 +2070,7 @@ class TestDynamicLearningDetection(unittest.TestCase):
         em = self._em_with_bulk(initial_size=1)
         time_seq = itertools.chain([100.0, 100.0, 50.0, 999.0], itertools.repeat(999.0))
         with (
-            patch("nibe_entity_manager.time.sleep") as mock_sleep,
+            patch.object(em._shutdown_event, "wait", return_value=False) as mock_sleep,
             patch("nibe_entity_manager.time.time", side_effect=time_seq),
             patch("nibe_entity_manager.log_commands"),
             patch.object(em.dynamic_point_map, "record_outcome"),
@@ -2086,7 +2086,7 @@ class TestDynamicLearningDetection(unittest.TestCase):
         em = self._em_with_bulk(initial_size=1)
         time_seq = itertools.chain([100.0, 100.0, 190.0], itertools.repeat(999.0))
         with (
-            patch("nibe_entity_manager.time.sleep") as mock_sleep,
+            patch.object(em._shutdown_event, "wait", return_value=False) as mock_sleep,
             patch("nibe_entity_manager.time.time", side_effect=time_seq),
             patch("nibe_entity_manager.log_commands"),
             patch.object(em.dynamic_point_map, "record_outcome"),
