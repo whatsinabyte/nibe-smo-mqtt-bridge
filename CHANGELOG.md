@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.7] — 2026-09-09
 
 Seventeen defects found in a systematic audit: twelve pre-existing, and five
 introduced by the log-clarity work started for this release and fixed before
