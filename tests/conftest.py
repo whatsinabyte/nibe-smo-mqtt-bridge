@@ -234,7 +234,7 @@ except ImportError:
 
 # ---------------------------------------------------------------------------
 # Path constants — derived from module location so tests work both in the
-# dev container (/home/claude/tests/) and on the Odroid (/app/)
+# dev container (a checkout-local tests/ path) and on the Odroid (/app/)
 # ---------------------------------------------------------------------------
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # Production modules may live in app/ (repo layout) or alongside tests

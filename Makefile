@@ -1,4 +1,4 @@
-# Thin convenience layer over commands documented in full in CLAUDE.md /
+# Thin convenience layer over commands documented in full in
 # CONTRIBUTING.md — this does not replace reading those, it just saves
 # retyping the fully-qualified .venv-check paths and directory changes
 # those commands need. Every target here is a one-line wrapper around a

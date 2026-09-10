@@ -69,7 +69,7 @@ fi
 
 if [ ! -f ../../reference-dumps/all_points_en.json ]; then
     echo "reference-dumps/all_points_en.json not found at the repo root." >&2
-    echo "This is gitignored, developer-local reference data — see the top-level CLAUDE.md." >&2
+    echo "This is gitignored, developer-local reference data — see CONTRIBUTING.md." >&2
     exit 1
 fi
 

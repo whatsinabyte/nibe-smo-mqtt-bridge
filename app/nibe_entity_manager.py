@@ -330,7 +330,7 @@ def _load_value_mapping_translations(language: str | None) -> dict[str, str]:
     """Load the value_mappings: table from translations/<language>.yaml.
 
     nibe_entity_detection.py's VALUE_MAPPINGS dict is hardcoded English —
-    that module must stay pure (no I/O, no state — see CLAUDE.md), so it
+    that module must stay pure (no I/O, no state — see ARCHITECTURE.md), so it
     has no way to know the configured language itself. This loader is the
     other half: it reads this repo's existing translations/*.yaml files
     (previously only read by the HA Supervisor directly, for the add-on's
@@ -478,7 +478,7 @@ class EntityManager:
         # (via _index_point/_deindex_point) mutate all_points_by_id under this
         # lock, but _fetch_bulk_data mutates both attributes directly from the
         # main poll thread WITHOUT acquiring it — that function is excluded
-        # from refactoring per CLAUDE.md, so this lock cannot give full mutual
+        # from refactoring by project policy, so this lock cannot give full mutual
         # exclusion against the poll thread for those two attributes. In
         # practice this is tolerable only because CPython's GIL makes each
         # individual dict/set get/set/add/discard atomic; anything doing more

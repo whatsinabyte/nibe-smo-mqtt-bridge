@@ -71,9 +71,9 @@ either existing suite's coverage.
   npx playwright install --with-deps chromium
   ```
 - `reference-dumps/all_points_en.json` must exist at the repo root (it's
-  gitignored, developer-local reference data — see the top-level
-  `CLAUDE.md`). If your worktree doesn't have it, copy it from the main
-  checkout at `/Users/M/Developer/nibe-smo-mqtt-bridge/reference-dumps/`.
+  gitignored, developer-local reference data — see `CONTRIBUTING.md`). If
+  your worktree doesn't have it, copy it from your main checkout's own
+  `reference-dumps/` directory.
 
 ## What's in here
 
