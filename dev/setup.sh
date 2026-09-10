@@ -159,7 +159,7 @@ if [ "$PY_VERSION" != "3.12" ]; then
         ok "python3 is $PY_VERSION, but .venv already exists (not re-checking an existing venv's own version)"
     else
         echo "  [FAIL] python3 resolves to $PY_VERSION, but this project targets 3.12" >&2
-        echo "         (see mypy.ini's python_version and CLAUDE.md's 'Python 3.12 target')." >&2
+        echo "         (see mypy.ini's python_version and CONTRIBUTING.md's Python version)." >&2
         echo "         Install/select a 3.12 python3 before creating .venv." >&2
         exit 1
     fi

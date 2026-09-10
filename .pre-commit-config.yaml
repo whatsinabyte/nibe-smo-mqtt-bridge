@@ -10,7 +10,7 @@
 # isolated environments — those hooks would otherwise miss this project's
 # actual dependencies (mypy needs the real runtime/test packages installed
 # to resolve imports; eslint needs this repo's own eslint.config.js and
-# plugin versions), the same reasoning CLAUDE.md gives for why every
+# plugin versions), the same reasoning CONTRIBUTING.md gives for why every
 # documented command in this repo invokes .venv-check/bin/python directly
 # rather than a bare `mypy`/`ruff` on $PATH.
 repos:

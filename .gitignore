@@ -40,9 +40,6 @@ data/
 # Local reference firmware data dumps — not committed, developer-local only
 /reference-dumps/
 
-# Claude Code project config — kept local-only
-.claude/
-
 # macOS
 .DS_Store
 .smb*

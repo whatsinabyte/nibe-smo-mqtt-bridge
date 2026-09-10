@@ -58,7 +58,7 @@ _PORT = int(os.environ.get("NIBE_MQTT_TEST_PORT", "1894"))
 # *retained* -- without a unique namespace, one run's leftover retained
 # config for point 2002 would seed a later run's scan_mqtt_discovery() with
 # stale state, corrupting exactly the behaviour under test. Same lesson as
-# test_entity_manager_snapshots.py's shared-/tmp-path race (see CLAUDE.md):
+# test_entity_manager_snapshots.py's shared-/tmp-path race (see CONTRIBUTING.md):
 # found by running this suite repeatedly, not by reasoning about it up front.
 _WORKER_TAG = f"{os.environ.get('PYTEST_XDIST_WORKER', 'solo')}_{os.getpid()}"
 _TEST_POINT_ID = 900000 + (hash(_WORKER_TAG) % 90000)

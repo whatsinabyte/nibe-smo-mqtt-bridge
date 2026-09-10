@@ -5418,7 +5418,7 @@ class TestManagementRunTestsFailures(unittest.TestCase):
         # no-ops there — but IS set when this suite runs for real inside the
         # deployed add-on (e.g. via the nightly "Run Test Suite" button),
         # where every test in this class would otherwise fire a real HA
-        # persistent notification. Must patch per CLAUDE.md's test-path rule.
+        # persistent notification. Must patch per CONTRIBUTING.md's test-path rule.
         self._notify_patcher = patch("nibe_ha_integration.notify_ha")
         self._dismiss_patcher = patch("nibe_ha_integration.dismiss_ha")
         # run_test_suite also gets _get_ha_base_url (for the report link),
