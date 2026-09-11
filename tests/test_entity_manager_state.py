@@ -994,22 +994,111 @@ class TestUpdateEntityStateMissingStateTopicWarningDedup(unittest.TestCase):
 
 
 class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
-    """When _post_write_active is False, absent points are simply disabled."""
+    """When _post_write_active is False, a point missing from the bulk
+    response is reported unavailable immediately but only disabled once it
+    has been continuously absent for _ABSENT_GRACE_S.
 
-    def test_absent_point_disables_entity(self):
+    Disabling is destructive: it clears the retained discovery config, so
+    Home Assistant deletes the entity and resets its history. A controller
+    reboot or firmware update serves an incomplete point list for a while —
+    observed on real hardware during a 4.13.12 update, where every
+    cooling-related point (BT25 among them) vanished for about a minute
+    across four polls and then returned. Disabling on the first miss deleted
+    all of them and broke the dashboards referencing them."""
+
+    def _entity_info(self, point_id=9999):
+        return {
+            "point_id": point_id,
+            "entity_type": "sensor",
+            "availability_topic": f"nibe/avail/{point_id}",
+            "state_topic": f"nibe/state/{point_id}",
+        }
+
+    def _absent_past_grace(self, em, entity_info):
+        """Drive two absent polls far enough apart that the grace period has
+        expired by the second one, which is where the disable happens."""
+        import nibe_entity_manager as nem
+
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            em._update_entity_state(entity_info)
+        with patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 1):
+            em._update_entity_state(entity_info)
+
+    def test_absent_point_is_not_disabled_immediately(self):
         em = _make_em()
         em.post_write_active = False
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
-        entity_info = {
-            "point_id": point_id,
-            "entity_type": "sensor",
-            "availability_topic": "nibe/avail/9999",
-            "state_topic": "nibe/state/9999",
-        }
         with patch.object(em, "disable_entity") as mock_disable:
-            em._update_entity_state(entity_info)
+            em._update_entity_state(self._entity_info(point_id))
+        mock_disable.assert_not_called()
+
+    def test_absent_point_is_published_unavailable_immediately(self):
+        """Honest and non-destructive: HA shows it unavailable and keeps the
+        entity, its history, and every reference to it."""
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        em.mqtt_enabled_points.add(point_id)
+        em._update_entity_state(self._entity_info(point_id))
+        em.mqtt.publish.assert_any_call(f"nibe/avail/{point_id}", "offline", retain=True)
+
+    def test_absent_point_is_disabled_once_the_grace_period_elapses(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        em.mqtt_enabled_points.add(point_id)
+        info = self._entity_info(point_id)
+
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            em._update_entity_state(info)
+        with (
+            patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 1),
+            patch.object(em, "disable_entity") as mock_disable,
+        ):
+            em._update_entity_state(info)
         mock_disable.assert_called_once_with(point_id, remove_from_wanted=False)
+
+    def test_reappearing_within_grace_resets_the_absence_clock(self):
+        """A point that comes back must not carry its old absence forward, or
+        a second brief gap would disable it almost immediately."""
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        em.mqtt_enabled_points.add(point_id)
+        info = self._entity_info(point_id)
+
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            em._update_entity_state(info)
+        self.assertIn(point_id, em._absent_since)
+
+        # Point returns.
+        em.bulk_data[point_id] = {
+            "raw_value": 1,
+            "string_value": "",
+            "is_ok": True,
+            "metadata": {"divisor": 1},
+        }
+        with patch("nibe_entity_manager.time.time", return_value=t0 + 10):
+            em._update_entity_state(info)
+        self.assertNotIn(point_id, em._absent_since)
+
+        # Absent again, just after the original grace window would have
+        # expired. The clock restarted, so this must not disable it.
+        del em.bulk_data[point_id]
+        with (
+            patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 5),
+            patch.object(em, "disable_entity") as mock_disable,
+        ):
+            em._update_entity_state(info)
+        mock_disable.assert_not_called()
 
     def test_absent_point_is_discarded_from_baseline_point_ids(self):
         """A point that disappears outside a post-write scan must be removed
@@ -1025,14 +1114,9 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         em.baseline_point_ids.add(point_id)
-        entity_info = {
-            "point_id": point_id,
-            "entity_type": "sensor",
-            "availability_topic": "nibe/avail/9999",
-            "state_topic": "nibe/state/9999",
-        }
+        entity_info = self._entity_info(point_id)
         with patch.object(em, "disable_entity"):
-            em._update_entity_state(entity_info)
+            self._absent_past_grace(em, entity_info)
         self.assertNotIn(point_id, em.baseline_point_ids)
 
     def test_absent_point_stays_wanted_and_reappears_on_next_fetch(self):
@@ -1046,13 +1130,8 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         em._wanted_points.add(point_id)
-        entity_info = {
-            "point_id": point_id,
-            "entity_type": "sensor",
-            "availability_topic": "nibe/avail/9999",
-            "state_topic": "nibe/state/9999",
-        }
-        em._update_entity_state(entity_info)
+        entity_info = self._entity_info(point_id)
+        self._absent_past_grace(em, entity_info)
         self.assertIn(point_id, em._wanted_points)
         self.assertNotIn(point_id, em.mqtt_enabled_points)
 
