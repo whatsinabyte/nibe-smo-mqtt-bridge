@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.8] — 2026-09-11
 
 Two defects found on real hardware during a NIBE firmware update to 4.13.12.
 Between them they destroyed thirteen entities — including BT25, an essential
@@ -44,6 +44,18 @@ sensor — and then failed to bring any of them back.
   deliberately at some point, which is exactly what the set is meant to
   record. A later mode change still un-marks whatever it disables, so a
   restore-then-apply-mode startup sequence stays correct.
+
+### Upgrading
+
+- **If a firmware update or controller restart already deleted some of your
+  entities**, this release stops it happening again but cannot bring back
+  what was lost — the retained discovery configs were cleared, so Home
+  Assistant removed the entities and their history. Restore a snapshot if
+  you have one (the Entity Manager card's Snapshots section), or re-enable
+  the affected points from the card. The add-on log names every point it
+  disabled, so searching it for `absent from bulk data` will list them.
+- No configuration changes are needed, and no action is required if nothing
+  went missing.
 
 ---
 
