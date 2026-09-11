@@ -505,6 +505,17 @@ menus:
         tip: 'Desired room temperature when external AUX switch is active. Only used when a room sensor is installed.
 
           '
+      - label: External adjustment, cooling (offset, no room sensor)
+        range: -10 – +10
+        point_id: 6844
+        note: The cooling counterpart of the offset above. Identical -10 to +10 range, applied to the cooling curve instead
+          of the heating curve when the external contact closes.
+      - label: External adjustment, cooling (with room sensor)
+        range: 5 – 30 °C
+        point_id: 6853
+        note: The cooling counterpart of the room-sensor setpoint above, with the same 5-30 °C range and the same divisor.
+          The installer manual documents both ranges for this menu without distinguishing heating from cooling, and both
+          heating variants were already mapped here while neither cooling variant was.
     - id: 1.30.4
       title: Lowest supply heating
       description: 'Sets the minimum permitted supply temperature during heating operation. The controller will never calculate
