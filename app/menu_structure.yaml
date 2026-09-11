@@ -3571,6 +3571,186 @@ menus:
         note: Controls how strongly the room sensor influences the supply temperature calculation for climate system 2 cooling.
           Higher factor = greater influence of room temperature deviation on the calculated supply temperature. See the AXC
           30 installer manual for detailed guidance.
+      - label: Climate system 3 activated
+        range: off/on
+        point_id: 3871
+        note: Activates extra climate system 3. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 3
+        range: off/on
+        point_id: 3939
+        note: Whether climate system 3 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 3 (heating)
+        range: 5 – 30 °C
+        point_id: 3943
+        note: Desired room temperature for climate system 3 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 3 (heating)
+        range: 0.0 – 6.0
+        point_id: 3947
+        note: How strongly the room sensor influences the supply temperature for system 3 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 3 (cooling)
+        range: 5 – 35 °C
+        point_id: 5077
+        note: Desired room temperature for climate system 3 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 3 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5085
+        note: How strongly the room sensor influences the supply temperature for system 3 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Climate system 4 activated
+        range: off/on
+        point_id: 3872
+        note: Activates extra climate system 4. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 4
+        range: off/on
+        point_id: 3938
+        note: Whether climate system 4 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 4 (heating)
+        range: 5 – 30 °C
+        point_id: 3942
+        note: Desired room temperature for climate system 4 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 4 (heating)
+        range: 0.0 – 6.0
+        point_id: 3946
+        note: How strongly the room sensor influences the supply temperature for system 4 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 4 (cooling)
+        range: 5 – 35 °C
+        point_id: 5076
+        note: Desired room temperature for climate system 4 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 4 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5084
+        note: How strongly the room sensor influences the supply temperature for system 4 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Climate system 5 activated
+        range: off/on
+        point_id: 4910
+        note: Activates extra climate system 5. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 5
+        range: off/on
+        point_id: 4979
+        note: Whether climate system 5 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 5 (heating)
+        range: 5 – 30 °C
+        point_id: 4983
+        note: Desired room temperature for climate system 5 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 5 (heating)
+        range: 0.0 – 6.0
+        point_id: 4987
+        note: How strongly the room sensor influences the supply temperature for system 5 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 5 (cooling)
+        range: 5 – 35 °C
+        point_id: 5075
+        note: Desired room temperature for climate system 5 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 5 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5083
+        note: How strongly the room sensor influences the supply temperature for system 5 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Climate system 6 activated
+        range: off/on
+        point_id: 4911
+        note: Activates extra climate system 6. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 6
+        range: off/on
+        point_id: 4978
+        note: Whether climate system 6 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 6 (heating)
+        range: 5 – 30 °C
+        point_id: 4982
+        note: Desired room temperature for climate system 6 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 6 (heating)
+        range: 0.0 – 6.0
+        point_id: 4986
+        note: How strongly the room sensor influences the supply temperature for system 6 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 6 (cooling)
+        range: 5 – 35 °C
+        point_id: 5074
+        note: Desired room temperature for climate system 6 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 6 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5082
+        note: How strongly the room sensor influences the supply temperature for system 6 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Climate system 7 activated
+        range: off/on
+        point_id: 4912
+        note: Activates extra climate system 7. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 7
+        range: off/on
+        point_id: 4977
+        note: Whether climate system 7 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 7 (heating)
+        range: 5 – 30 °C
+        point_id: 4981
+        note: Desired room temperature for climate system 7 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 7 (heating)
+        range: 0.0 – 6.0
+        point_id: 4985
+        note: How strongly the room sensor influences the supply temperature for system 7 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 7 (cooling)
+        range: 5 – 35 °C
+        point_id: 5073
+        note: Desired room temperature for climate system 7 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 7 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5081
+        note: How strongly the room sensor influences the supply temperature for system 7 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Climate system 8 activated
+        range: off/on
+        point_id: 4913
+        note: Activates extra climate system 8. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Use room sensor, climate system 8
+        range: off/on
+        point_id: 4976
+        note: Whether climate system 8 is controlled from a room sensor. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 8 (heating)
+        range: 5 – 30 °C
+        point_id: 4980
+        note: Desired room temperature for climate system 8 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 8 (heating)
+        range: 0.0 – 6.0
+        point_id: 4984
+        note: How strongly the room sensor influences the supply temperature for system 8 in heating. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor set point, climate system 8 (cooling)
+        range: 5 – 35 °C
+        point_id: 5072
+        note: Desired room temperature for climate system 8 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
+      - label: Room sensor factor, climate system 8 (cooling)
+        range: 0.0 – 6.0
+        point_id: 5080
+        note: How strongly the room sensor influences the supply temperature for system 8 in cooling. Continues the climate system 2 series above; the firmware exposes the
+          same six settings for every extra climate system from 2 to 8.
     - id: 7.2.6
       title: Step-controlled additional heat (AXC)
       description: 'Settings for step-controlled additional heat — typically an external electric boiler with multiple power
