@@ -122,6 +122,21 @@ of the form "is this point actually classified/mapped correctly?" gets
 answered by reading the real firmware metadata out of these files rather than
 guessing.
 
+**Why these four languages.** The dumps exist at all because someone went
+looking for whether the REST API's `Accept-Language` header translates
+anything, and for which languages — NIBE has never published a capability
+list, so the only way to find out is to ask the controller and see what comes
+back. It does translate, including for languages NIBE does not document. The
+files captured during that investigation became the reference dumps.
+
+The set is deliberately a sample, not the limit of what the controller
+supports: many more languages work. Storing all of them would be bulk for a
+very small delta, since the only thing that differs between dumps is the text
+in the `title` and `description` fields — every register, type, unit and
+value is identical. Four files at roughly 550 KB each is enough to show that
+translation works and how complete NIBE's catalogue is per language. Pass
+`--langs` if you need a language that is not kept here.
+
 If you have a controller on your network:
 
 ```bash
