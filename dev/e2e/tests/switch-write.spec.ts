@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import * as fs from 'fs';
 import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * A real switch write, end to end: HA's switch.turn_on/turn_off service →
@@ -23,20 +23,11 @@ import * as path from 'path';
  * which is the thing a user actually sees.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
 
 // "Floor drying" — an ordinary writable 0/1 switch that reads 0 in the
 // reference dump, so turning it on is a real change of value.
 const POINT_ID = '3846';
-
-function readCredentials(): { username: string; password: string } {
-  return JSON.parse(fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8'));
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
-}
 
 interface HaState {
   entity_id: string;
@@ -82,14 +73,9 @@ test('a switch round-trips a real HA turn_on through the bridge to the controlle
   // the turn_off below queues behind it.
   test.setTimeout(240_000);
 
-  const { username, password } = readCredentials();
   const token = readToken();
 
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   await page.goto('/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');

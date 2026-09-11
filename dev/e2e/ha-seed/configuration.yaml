@@ -2,10 +2,14 @@
 # the real add-on never touches HA's configuration.yaml.
 default_config:
 
-http:
-  server_host: 0.0.0.0
-  # Onboarding + Playwright both talk to HA over plain http://localhost:8123
-  # inside the compose network; no external proxy is in front of it here.
+# Deliberately no `http:` block. It used to set `server_host: 0.0.0.0`, which
+# is already Home Assistant's default, so it bought nothing — and from HA 2026
+# a YAML http configuration raises the `dialog-http-pending-config` migration
+# dialog, a modal that covers the frontend and silently swallows every click.
+# The symptom was the first spec to click anything hanging for its whole
+# timeout on "element is visible, enabled and stable" followed by
+# "<dialog-http-pending-config> intercepts pointer events", which reads as a
+# broken selector rather than a modal nobody asked for.
 
 logger:
   default: warning

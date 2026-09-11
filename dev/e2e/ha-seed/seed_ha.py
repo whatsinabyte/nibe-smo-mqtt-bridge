@@ -191,11 +191,40 @@ def _exchange_code(auth_code: str) -> str:
 
 
 def _password_login() -> str:
-    form = (
-        f"grant_type=password&username={urllib.parse.quote(USERNAME)}"
-        f"&password={urllib.parse.quote(PASSWORD)}&client_id={urllib.parse.quote(CLIENT_ID)}"
+    """Log in as an existing user and return a bearer token.
+
+    Drives HA's real frontend login flow — POST /auth/login_flow to start it,
+    then POST the credentials to the returned flow id, which yields an
+    authorization code to exchange like any other.
+
+    This replaces a `grant_type=password` request straight to /auth/token.
+    That shortcut worked on older releases and now returns HTTP 400: it was
+    never part of HA's documented auth API. Only reached when the ha-config
+    volume is reused, since a fresh volume onboards and gets its code from
+    /api/onboarding/users — which is why a clean run kept passing while a
+    re-run against a live stack could not authenticate at all.
+    """
+    status, flow = _req(
+        "POST",
+        "/auth/login_flow",
+        body={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": f"{HA_URL}/?auth_callback=1",
+        },
     )
-    return _token_request(form)
+    if status != 200 or "flow_id" not in flow:
+        raise RuntimeError(f"POST /auth/login_flow failed: {status} {flow}")
+
+    status, result = _req(
+        "POST",
+        f"/auth/login_flow/{flow['flow_id']}",
+        body={"client_id": CLIENT_ID, "username": USERNAME, "password": PASSWORD},
+    )
+    if status != 200 or result.get("type") != "create_entry":
+        raise RuntimeError(f"login flow did not complete: {status} {result}")
+
+    return _exchange_code(result["result"])
 
 
 def setup_mqtt(token: str) -> None:
@@ -216,7 +245,24 @@ def setup_mqtt(token: str) -> None:
         raise RuntimeError(f"mqtt config flow init failed: {status} {flow}")
 
     flow_id = flow["flow_id"]
-    # First step of the mqtt config flow (broker) — advanced options off.
+    # Print the schema HA actually asked for. The MQTT config flow's shape
+    # changes across HA releases, and when it does the failure is a bare
+    # `400 {'errors': {...: 'required key not provided'}}` with no hint as to
+    # what the new shape is — this turns the next bump into reading one log
+    # line instead of probing the API by hand.
+    print(f"seed_ha: mqtt flow step schema: {json.dumps(flow.get('data_schema'))}")
+
+    # First (and only) step of the mqtt config flow.
+    #
+    # `protocol` and the `other_settings` section are both required, and
+    # `other_settings` requires `set_client_cert`, `set_ca_cert` and
+    # `transport` in turn. Older HA releases took a flat
+    # broker/port/username/password body; sending that to a current release
+    # fails with `{'other_settings': 'required key not provided'}`.
+    #
+    # `username`/`password` are omitted rather than sent as empty strings —
+    # this broker is anonymous (see mosquitto/mosquitto.conf), and an empty
+    # username is not the same thing as no username.
     status, result = _req(
         "POST",
         f"/api/config/config_entries/flow/{flow_id}",
@@ -224,8 +270,12 @@ def setup_mqtt(token: str) -> None:
         body={
             "broker": MQTT_BROKER_HOST,
             "port": MQTT_BROKER_PORT,
-            "username": "",
-            "password": "",
+            "protocol": "5",
+            "other_settings": {
+                "set_client_cert": False,
+                "set_ca_cert": "off",
+                "transport": "tcp",
+            },
         },
     )
     print(f"seed_ha: mqtt config flow step -> {status} {result.get('type')}")

@@ -1,7 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * The removal half of the entity lifecycle. enable-entity.spec.ts covers
@@ -18,20 +17,11 @@ import * as path from 'path';
  * assert an HA implementation detail rather than the bridge's behaviour.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
 const BRIDGE_CONTAINER = 'nibe-e2e-bridge';
 
 // An ordinary, always-present writable switch from the real reference dump.
 const POINT_ID = '3870'; // "Climate system 2"
-
-function readCredentials(): { username: string; password: string } {
-  return JSON.parse(fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8'));
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
-}
 
 interface HaState {
   entity_id: string;
@@ -75,14 +65,9 @@ function persistedWantedPoints(): number[] {
 test('disabling an entity via the card removes it from Home Assistant', async ({ page }) => {
   test.setTimeout(120_000);
 
-  const { username, password } = readCredentials();
   const token = readToken();
 
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   await page.goto('/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');

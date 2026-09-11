@@ -88,6 +88,17 @@ either existing suite's coverage.
 | `tests/enable-entity.spec.ts` | Happy path: enable one disabled entity, confirm it appears in real HA. |
 | `tests/binary-sensor-reclassification.spec.ts` | Enables the first working candidate from a list of genuinely auto-detected binary_sensor points, then uses the mock API's control channel to change its raw value to a non-boolean one, and confirms via HA's own REST API that the old `binary_sensor.nibe_*` entity disappears and a new, available `sensor.nibe_*` entity takes its place — proving `nibe_entity_manager.py`'s dynamic `_reclassify_binary_sensor` is visible correctly in a real HA entity registry, not just at the MQTT-message level. |
 | `tests/translation.spec.ts` | Enables point 3292, whose raw value in this dump maps to the English label `"On"` via `nibe_entity_detection.py`'s hardcoded `VALUE_MAPPINGS`, and confirms via HA's own REST API that the real published state is the Dutch translation `"Aan"` — proving the translation added for issue #39 reaches a real entity, not just the mocked pytest suite. |
+| `tests/disable-entity.spec.ts` | Disables an enabled entity via the card and confirms HA's own REST API 404s it afterwards, and that the point leaves `/data/wanted_points.json` — an explicit disable is an intentional override, so the reactive safety net must not re-enable it behind the user's back. |
+| `tests/switch-write.spec.ts` | Turns a real HA switch on and confirms the write reaches the mock controller and the new value comes back through the next poll — the full `optimistic: false` round trip, including the pending-write guard. |
+| `tests/snapshot-restore.spec.ts` | Saves a snapshot from the card, changes the enabled set, then restores it and confirms the captured selection is what HA ends up with. |
+| `tests/sg-ready-dynamic-discovery.spec.ts` | Writes to the SG Ready API-activation switch and confirms the points it unlocks (3260/10614 — absent from this dump entirely, injected via the mock's control channel) surface correctly classified and translated, with the changelog recording the appearance. |
+| `tests/transient-absence.spec.ts` | Withholds an enabled point from the mock's bulk response for four consecutive polls (`POST /mock-control/hidden/{id}`) and confirms the entity goes `unavailable` but is **not** deleted, stays enabled in the card, stays in `/data/wanted_points.json`, and recovers by itself once the point returns — the regression behind the 4.13.12 incident, where an incomplete point list served during a controller restart destroyed thirteen entities. The complementary "still absent after five minutes, so really disable it" branch is covered by pytest with a patched clock rather than by a five-minute e2e run. |
+| `tests/restart-survival.spec.ts` | Enables a point the configured mode would not have, restarts the bridge, and confirms every entity comes back — same object_ids, the manual addition live again, and still recorded as wanted. Covers ARCHITECTURE.md §4.4's central claim ("the bridge survives restarts without losing user customisations"), whose restore path no other spec enters. Compares object_id rather than entity_id, since a reclassified point legitimately changes domain. |
+| `tests/controller-outage.spec.ts` | Stops the mock API entirely and confirms the "API Reachable" management binary_sensor goes off after `api_failure_threshold` failed polls, that **no entity is deleted** while the controller is merely unreachable, and that recovery is automatic. Pins the otherwise-unwritten requirement that a failed bulk fetch leaves `bulk_data` intact — if it ever cleared it, every point would look absent and `_ABSENT_GRACE_S` would delete the user's whole entity set. Deliberately does *not* assert entities go `unavailable`: by design they hold their last value. |
+| `tests/device-identity.spec.ts` | Restarts the bridge while the controller is unreachable and confirms the serial-derived `device_id` persisted to `/data/device_id` is reused, so the management device keeps its identity instead of falling back to the generic default and orphaning a ghost device in HA (ARCHITECTURE.md §4.1). Asserts on the retained discovery payload's `device.identifiers` — with HA 2024.10 an already-registered entity is updated in place and a discovery config naming a different device is ignored, so entity ids, device association and the device registry all look identical either way; the wrong identity is only visible in what the bridge publishes, which is also what any fresh consumer would act on. |
+| `tests/mode-switch-behavior.spec.ts` | Covers three promises at once: an ordinary same-mode restart must not run `apply_mode` (so manual Entity Manager additions survive), `merge` only ever adds, and `replace` disables what falls outside the new mode. Reads the exact enabled set from the retained `enabled_state` topic, and switches mode by mounting a different options file via `BRIDGE_OPTIONS` — not `NIBE_MODE`, which `run.sh`'s own `--mode` CLI flag outranks. |
+| `tests/mqtt-callback-robustness.spec.ts` | Fires malformed payloads (bad numbers, wrong JSON shapes, invalid UTF-8) at every subscribed management topic, then proves the bridge is **still processing MQTT** by enabling a real entity over the same connection. Covers ARCHITECTURE.md §3's no-exception-escapes-a-callback invariant, whose failure mode leaves the container up and the poll loop logging normally while every command is silently ignored forever — verified by removing `_guard_callback` and watching exactly that happen. |
+| `tests/entity-attributes.spec.ts` | Confirms an enabled entity carries the attributes DOCS.md promises (`point_id`, `modbus_register`, `writable`, `default_value`) with values checked against the firmware dump, including that `default_value` is divisor-applied "display units" rather than the raw register integer. The attributes are a separate retained payload from the discovery config and the state, so an entity can be entirely correct and still reach HA with none — and a template reading a missing attribute renders `None` rather than failing. |
 
 ## How the bridge runs without a Supervisor
 
@@ -152,11 +163,21 @@ the task's ground rules.
 
 ## How HA is brought to a usable, unattended state
 
-Modern Home Assistant (this harness pins `homeassistant/home-assistant:2024.10.1`)
-requires interactive onboarding (create the admin user) and an interactive
-config-flow walk for the MQTT integration (YAML-configured MQTT brokers were
-removed from HA years ago). `ha-seed/seed_ha.py` drives both headlessly
-using HA's own public REST APIs — no `.storage` file hand-editing:
+Home Assistant requires interactive onboarding (create the admin user) and an
+interactive config-flow walk for the MQTT integration (YAML-configured MQTT
+brokers were removed from HA years ago). `ha-seed/seed_ha.py` drives both
+headlessly using HA's own public REST APIs — no `.storage` file hand-editing:
+
+**Keep the pinned version current.** This harness pins
+`homeassistant/home-assistant:2026.9.1`. The pin exists for reproducibility,
+not to freeze a version: it sat on 2024.10.1 for two years, which meant the
+suite was validating against something no user runs. Bumping it cost six
+harness fixes (the seeder's MQTT config flow and auth, the login selectors,
+HA's readiness signal, and stale-image builds — see ARCHITECTURE.md §6a) and
+zero changes to the bridge. Expect a bump to break the seeder and the login
+helper first; `seed_ha.py` now prints the config-flow schema HA asks for, and
+the login sequence lives in one file (`tests/support/ha-login.ts`) rather than
+in all thirteen specs.
 
 1. Polls `/api/onboarding` until HA responds.
 2. `POST /api/onboarding/users` to create the admin user, exchanges the

@@ -80,7 +80,12 @@ docker compose down -v >/dev/null 2>&1 || true
 rm -f seed-out/*.json seed-out/*.txt
 
 echo "==> Bringing up mosquitto, mock-nibe-api, homeassistant"
-docker compose up -d mosquitto mock-nibe-api homeassistant
+# --build for the same reason it is not optional on the bridge below: the
+# mock API's script is COPYed into its image, so without this an edit to
+# mock-api/mock_nibe_api.py is silently ignored and every run keeps testing
+# against whatever image was built first. mosquitto and homeassistant are
+# pulled images with no build context, so the flag is a no-op for them.
+docker compose up -d --build mosquitto mock-nibe-api homeassistant
 
 echo "==> Waiting for HA to answer on http://localhost:18123/"
 for _ in $(seq 1 60); do
@@ -94,7 +99,12 @@ if [ "$code" = "000" ]; then
 fi
 
 echo "==> Seeding HA (onboarding + MQTT integration)"
-docker compose run --rm ha-seed
+# --build for the same reason as the other two services: seed_ha.py is COPYed
+# into its image, and `docker compose run` reuses whatever image already
+# exists, so an edit to the seeder is otherwise silently ignored. Hit for real
+# while adapting the seeder to a newer HA release: the fix was in the file and
+# the container kept running the old code.
+docker compose run --build --rm ha-seed
 
 echo "==> Starting the bridge (rebuilding from the repo's real Dockerfile)"
 # --build is not optional: `docker compose up` alone only builds an image
@@ -131,13 +141,28 @@ fi
 # copied there) on (re)start.
 echo "==> Restarting HA once so it picks up the card JS"
 docker restart nibe-e2e-homeassistant >/dev/null
-# 15s was occasionally too short in practice: whichever spec file happens to
-# run first (Playwright runs specs in a fixed order, alphabetical by
-# filename) can hit HA before its frontend/dashboard config has fully
-# reloaded post-restart, and never finds nibe-entity-manager-card in time —
-# a later spec in the same run passes fine, having gotten a few more
-# seconds of warm-up "for free". 25s reliably clears that race.
-sleep 25
+# Wait for HA to actually answer again on the host port, the same way the
+# initial bring-up does, rather than assuming a fixed sleep is enough. A
+# fixed sleep cannot tell "HA is still starting" from "the host port is not
+# reachable at all", and the second case is real: Colima's port forwarder
+# has been seen to drop every published port mid-run, after the initial
+# bring-up check had already passed. Playwright then failed *every* spec
+# instantly with ERR_CONNECTION_REFUSED — a whole run reported as nine
+# failures with nothing to do with the code under test. Polling here turns
+# that into one clear error naming the actual problem.
+ha_back=0
+for _ in $(seq 1 60); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18123/ || echo 000)
+    if [ "$code" != "000" ]; then
+        ha_back=1
+        break
+    fi
+    sleep 1
+done
+if [ "$ha_back" -ne 1 ]; then
+    echo "HA did not come back within 60s of the restart — check 'docker compose logs homeassistant'" >&2
+    exit 1
+fi
 
 echo "==> Waiting for seed-out/credentials.json to appear on the host"
 # ha-seed writes these inside its bind-mounted /seed-out just before exiting,
@@ -156,6 +181,40 @@ for _ in $(seq 1 30); do
 done
 if [ "$seed_ready" -ne 1 ]; then
     echo "seed-out/credentials.json never appeared on the host — check the ha-seed step" >&2
+    exit 1
+fi
+
+echo "==> Waiting for HA to report state RUNNING"
+# Answering the port is necessary but nowhere near sufficient, and a fixed
+# sleep is not either. HA accepts TCP connections well before it has finished
+# starting, and requests made in that window fail in ways that look like
+# anything but a warm-up problem: `net::ERR_EMPTY_RESPONSE`, `socket hang up`,
+# or a locator that simply never resolves. A fixed 20s covered it on HA
+# 2024.10 and did not on 2026.9 — the first four specs failed with three
+# different errors while the fifth onward passed, which reads as four
+# unrelated bugs rather than one slow startup.
+#
+# /api/config reports `"state": "RUNNING"` only once startup is complete, so
+# gate on that instead of on the clock. The token written by ha-seed survives
+# the restart.
+ha_running=0
+for _ in $(seq 1 90); do
+    # `|| true` is not optional: this script runs under `set -o pipefail`,
+    # and while HA is still starting curl exits 52 ("empty reply from
+    # server") — precisely the condition being waited out. Without it the
+    # failed pipeline trips `set -e` and aborts the whole run on the first
+    # poll, which is what happened the first time this loop was written.
+    state=$({ curl -s -H "Authorization: Bearer $(cat seed-out/token.txt)" \
+        http://localhost:18123/api/config 2>/dev/null || true; } |
+        sed -n 's/.*"state": *"\([A-Z_]*\)".*/\1/p')
+    if [ "$state" = "RUNNING" ]; then
+        ha_running=1
+        break
+    fi
+    sleep 2
+done
+if [ "$ha_running" -ne 1 ]; then
+    echo "HA never reported state RUNNING within 180s — check 'docker compose logs homeassistant'" >&2
     exit 1
 fi
 

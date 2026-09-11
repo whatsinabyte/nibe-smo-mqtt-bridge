@@ -1,6 +1,5 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import * as fs from 'fs';
-import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * Reproduces, against a real Home Assistant instance, the exact real-world
@@ -39,7 +38,6 @@ import * as path from 'path';
  * needs a longer-than-default timeout.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
 const MOCK_API_URL = process.env.MOCK_API_URL || 'https://localhost:18443';
 
@@ -129,15 +127,6 @@ async function injectMockPoint(pointId: string, definition: unknown): Promise<vo
   await ctx.dispose();
 }
 
-function readCredentials(): { username: string; password: string } {
-  const raw = fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8');
-  return JSON.parse(raw);
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
-}
-
 interface HaState {
   entity_id: string;
   state: string;
@@ -193,14 +182,9 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // playwright.config.ts's global 90s default.
   test.setTimeout(180_000);
 
-  const { username, password } = readCredentials();
   const token = readToken();
 
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   await page.goto('/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');

@@ -2,7 +2,7 @@ name: nibe-e2e
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2.0.18
+    image: eclipse-mosquitto:2.0.22
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     ports:
@@ -18,13 +18,14 @@ services:
       - ../../reference-dumps/all_points_en.json:/data/all_points_en.json:ro
     ports:
       # Exposed to the host so Playwright tests (running outside Docker) can
-      # reach the /mock-control/points/{id} test-only endpoint directly —
+      # reach the /mock-control/* test-only endpoints directly (value
+      # changes, and withholding a point to simulate a controller restart) —
       # see mock-api/mock_nibe_api.py's module docstring. Not needed by the
       # bridge itself, which reaches this service over the compose network.
       - "18443:8443"
 
   homeassistant:
-    image: homeassistant/home-assistant:2024.10.1
+    image: homeassistant/home-assistant:2026.9.1
     container_name: nibe-e2e-homeassistant
     volumes:
       - ha-config:/config
@@ -65,7 +66,16 @@ services:
       - mock-nibe-api
       - homeassistant
     volumes:
-      - ./bridge/options.json:/data/options.json:ro
+      # Which options file the bridge reads is overridable so that
+      # tests/mode-switch-behavior.spec.ts can bring it up in a different
+      # entity mode:
+      #   BRIDGE_OPTIONS=./bridge/options-monitoring-merge.json \
+      #     docker compose up -d --force-recreate bridge
+      # It has to be the options file rather than the NIBE_MODE env var: the
+      # add-on's own run.sh reads options.json and passes --mode on the
+      # command line, and CLI flags sit above environment variables in
+      # load_config's priority order, so NIBE_MODE could never take effect.
+      - ${BRIDGE_OPTIONS:-./bridge/options.json}:/data/options.json:ro
       - ha-config:/homeassistant
     # No SUPERVISOR_TOKEN / Supervisor API in this harness — the bridge's
     # Lovelace resource/dashboard auto-provisioning (nibe_lovelace.py,
