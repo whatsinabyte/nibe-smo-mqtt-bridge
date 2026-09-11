@@ -1479,6 +1479,43 @@ menus:
     settings: []
     local_api: false
     submenus:
+    - id: 3.3.1
+      title: Energy log
+      description: 'View settings for the energy diagram -- how far back it reaches and what is overlaid on it. Documented
+        in the SVM S332 installer manual.
+
+
+        Three of the six documented settings have registers. "Months" does not: the manual documents a 1-24 month view
+        range, while the only nearby register of that name spans 0-4095, a twelve-bit mask, and the neighbouring registers
+        in that block belong to hot water circulation scheduling rather than to this log. It is left unmapped rather than
+        assumed.
+
+        '
+      settings:
+      - label: Number of years
+        range: 1 – 10 years
+        point_id: 12386
+        note: How many years the diagram covers. Documented with exactly this 1-10 range.
+      - label: Months
+        range: 1 – 24 months
+        point_id: null
+        note: How many months the diagram covers. No register matches -- see the menu description.
+      - label: Include heating
+        range: off/on
+        point_id: null
+        note: Whether heating energy is included in the diagram. No register exposed.
+      - label: Include hot water
+        range: off/on
+        point_id: null
+        note: Whether hot water energy is included in the diagram. No register exposed.
+      - label: Show outdoor temperature
+        range: off/on
+        point_id: 12392
+        note: Overlays outdoor temperature on the diagram.
+      - label: Show indoor temperature
+        range: off/on
+        point_id: 12393
+        note: Overlays indoor temperature on the diagram.
     - id: 3.3.2
       title: Peak power
       description: 'Highest measured power draw, as a 60 minute and a 15 minute rolling average. Added in firmware 4.6.4,
@@ -4547,6 +4584,34 @@ menus:
         '
       settings: []
       local_api: false
+      submenus:
+      - id: 7.5.13.1
+        title: Modbus TCP/IP ext.
+        description: 'Activates Modbus TCP/IP for external services. Documented as a single on/off in the SVM S332
+          installer manual.
+
+
+          The register named "Modbus TCP/IP Ext." in this firmware carries a "(Solar PV)" qualifier and is mapped in menu
+          7.5.12, where it activates the interface for a PV inverter specifically. Whether it is the same setting as this
+          general one is not established, so it is not moved or duplicated here.
+
+          '
+        settings:
+        - label: Modbus TCP/IP ext.
+          range: off/on
+          point_id: null
+          note: Activates Modbus TCP/IP for external services.
+      - id: 7.5.13.2
+        title: EEBUS
+        description: 'Activates EEBUS communication. Documented as a single on/off in the SVM S332 installer manual, and
+          the firmware changelog records EEBUS gaining "functionality OHPCF" in 4.13.12. No register is exposed for it.
+
+          '
+        settings:
+        - label: EEBUS
+          range: off/on
+          point_id: null
+          note: Activates EEBUS communication.
     - id: 7.5.12
       title: Modbus TCP/IP PV inverter
       description: Configure Modbus TCP/IP connection to Solar PV inverter.
