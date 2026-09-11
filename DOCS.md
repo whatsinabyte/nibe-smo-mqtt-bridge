@@ -31,7 +31,7 @@ The bridge works with any Nibe S-series controller that exposes the local REST A
 | Ground / water heat pumps | S1155, S1156, S1157, S1255, S1256, S1257 | Built-in (direct) | ✅ Direct |
 | Ventilation heat pumps | S735, S735C | Built-in (direct) | ✅ Direct |
 | Indoor units / controllers | VVM S310, S320, S325, S330, S500, SVM S332, SMO S40 | Built-in (direct) | ✅ Direct |
-| Air / water outdoor units | S2125, F2120, F2040, F2006 | Via SMO S40 or VVM S-series | ✅ Via hub |
+| Air / water outdoor units | S2125, S2060, F2120, F2050, F2040, F2006, AMS 10/20 | Via SMO S40 or VVM S-series | ✅ Via hub |
 | Legacy ground/water (F-series) | F1145, F1155, F1245, F1255 | None — ebus only | ❌ Not supported |
 | Legacy ventilation (F-series) | F370, F470, F730, F750 | None — ebus only | ❌ Not supported |
 | Legacy indoor units | VVM 225, VVM 310, VVM 320, VVM 325, VVM 500 | None — ebus only | ❌ Not supported |

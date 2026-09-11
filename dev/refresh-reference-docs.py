@@ -90,9 +90,23 @@ SOURCES: list[tuple[str, str, str]] = [
         "page",
         "https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps/vvm-s330",
     ),
-    # SVM S332, S1157, S1257 and MHB S20 appear in the S-series firmware
-    # changelog but have no product page on nibe.eu under any slug tried, so
-    # their manuals cannot be fetched this way yet.
+    (
+        "SVM S332",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps/split-svm-s332---ams-20",
+    ),
+    (
+        "S2060",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps/s2060",
+    ),
+    # S1157, S1257 and MHB S20 appear in the S-series firmware changelog but
+    # have no product page in any nibe.eu category listing, so their manuals
+    # cannot be fetched. Enumerate the category pages rather than guessing
+    # slugs -- SVM S332 sits at "split-svm-s332---ams-20", which no amount of
+    # guessing would have found:
+    #   curl -sSL 'https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps' \
+    #     | grep -oE 'href="/en-eu/products/heat-pumps/air-water-heat-pumps/[^"]+"
     ("ERS S40", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-s40"),
     ("ERS 20", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-20"),
     ("ERS 30", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-30"),
