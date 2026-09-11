@@ -2659,7 +2659,14 @@ menus:
           demand rather than individual DM.
 
           '
-        settings: []
+        settings:
+        - label: Start sequence
+          range: Degree minutes / Cluster
+          point_id: null
+          note: Documented in the SMO S40 installer manual for this menu, with "Degree minutes" as the factory default. In
+            a multi-installation, Cluster controls the heat pumps as a group according to demand instead. No register was
+            found for it on the reference installation, which runs a single heat pump; a multi-installation may well
+            expose one, so the setting is documented here rather than omitted.
         local_api: false
     - id: 7.1.7
       title: Cooling
@@ -3490,6 +3497,32 @@ menus:
 
         '
       settings:
+      - label: Physical configuration
+        range: Left / Right
+        point_id: null
+        note: Which side the unit is built to. Documented in the ERS S40 and HRV installer manuals for this menu. The
+          reference installation exposes no register for it, but it has no ERS unit connected -- a controller that does
+          may well expose one, so the setting is documented here rather than omitted.
+      - label: Allow re-heater
+        range: off/on
+        point_id: null
+        note: Documented in the ERS S40 and HRV installer manuals for this menu. No register on the reference
+          installation, which has no ERS unit connected.
+      - label: Offset re-heater
+        range: 0.0 – 5.0 °C
+        point_id: null
+        note: Documented in the ERS S40 and HRV installer manuals for this menu. No register on the reference
+          installation, which has no ERS unit connected.
+      - label: Desired supply air temp.
+        range: 16.5 – 25 °C
+        point_id: null
+        note: Documented in the ERS S40 and HRV installer manuals for this menu. No register on the reference
+          installation, which has no ERS unit connected.
+      - label: Product
+        range: ERS10 / ERS20 / ERS30
+        point_id: null
+        note: Which ERS model is connected. Documented in the ERS 20 and ERS 30 installer manuals for this menu. No
+          register on the reference installation, which has no ERS unit connected.
       - label: Lowest extract air temp. (ERS 5)
         range: 0 – 10 °C
         point_id: 23137
@@ -3852,8 +3885,9 @@ menus:
           the point''s own modbusRegisterID metadata, never by treating one number as the other.
 
 
-          That changelog entry also lists BT51 pool 1 and pool 2 at Modbus 5223 and 5224. This firmware exposes neither,
-          so they are not represented here.
+          That changelog entry also lists BT51 pool 1 and pool 2, at Modbus 5223 and 5224. The reference installation has
+          no pool, so neither point appears in its dump and their REST API point ids are unknown -- but the function
+          exists for anyone who does have one, so both are listed below without a point id rather than omitted.
 
 
           Most of these registers report as read-only despite the function being about writing values, and the activation
@@ -3909,6 +3943,17 @@ menus:
           range: °C
           point_id: 26708
           note: The value the controller uses for BT7 when the flag above is set.
+        - label: External reading of value BT51 (pool 1)
+          range: °C
+          point_id: null
+          note: Named by the firmware changelog at Modbus register 5223, alongside the sensors above. No REST API point id
+            is known, because the reference installation has no pool and so never exposes this point. A controller with a
+            pool connected does expose it; the row is kept so the function is documented, and a point id can be filled in
+            by anyone able to read it off such an installation.
+        - label: External reading of value BT51 (pool 2)
+          range: °C
+          point_id: null
+          note: As above, at Modbus register 5224.
         - label: External reading of BT52 activated
           range: off/on
           point_id: 26702
