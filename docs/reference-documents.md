@@ -47,7 +47,19 @@ So an asset-store URL recorded here is a **snapshot**, useful for confirming
 which edition a conclusion was drawn from. It is not a way to stay current.
 
 **To get the current edition, start from the product page**, which always
-links the newest asset-store document:
+links the newest asset-store document. `dev/refresh-reference-docs.py`
+automates exactly that — it reads the product pages, downloads whatever
+installer manuals they link today, and reports what changed:
+
+```bash
+dev/refresh-reference-docs.py --dest /path/to/your/pdf/collection --dry-run
+```
+
+It keeps only installer manuals (`IHB`); product pages also carry user
+manuals, sales brochures, energy labels and around thirty product
+photographs. Nothing is deleted or overwritten — a document whose bytes match
+a file already present is reported unchanged, so superseded editions stay for
+diffing.
 
 | Anchor | URL |
 |---|---|
@@ -72,15 +84,36 @@ copies, on 2026-09-11.
 |---|---|---|---|
 | Installer manual, SMO S40 | IHB EN 2515-3 (631927) | 903689 | 3 227 008 |
 | Installer manual, SMO S40 UK | IHB EN 2515-3 (631929) | 903683 | 3 368 285 |
-| User manual, SMO S40 | UHB EN 2208-1 (631965) | 849020 | 670 150 |
+| Installer manual, S2125 | IHB EN 2525-1 (831880) | 905826 | 11 265 445 |
+| Installer manual, S2125-14 | IHB EN 2525-1 (931059) | 905779 | 7 655 159 |
+| Installer manual, VVM S320 | IHB EN 2327-1 (631794) | — | 4 103 075 |
 
-Both installer manuals were current as of that date — the product page linked
-exactly these IDs.
+The SMO S40 manuals held locally were already byte-identical to the published
+editions. The S2125 and VVM S320 manuals were not: the first refresh replaced
+an undated local S2125 copy with edition 2525-1.
 
-The accessory manuals (ACS 45, AXC 30, ERS 20/30/S10/S40, F135, GV-HR 120,
-HRV, S135, VVM S320) and the S2125 heat pump manuals have not had their
-asset-store IDs recorded yet; they were read from the local collection. Their
-product pages can be found through the document portal above.
+### Accessories have no automatic route
+
+`SOURCES` in the refresh script covers the products that have a page on
+nibe.eu: SMO S40, S2125, VVM S320, and ERS S40/20/30. The remaining accessory
+manuals in the local collection — ACS 45, AXC 30, F135, S135, ERS S10,
+GV-HR 120 — cannot be refreshed automatically:
+
+- nibe.eu has no accessories product category at all; the top-level product
+  list offers only `smart-home-accessories` and equipment categories.
+- A guessed slug does not fail loudly. `…/en-eu/products/ventilation/f135`
+  returns HTTP 200 — it silently falls back to the Ventilation category page
+  and yields no documents. Always confirm a candidate page really carries
+  document links before adding it:
+  `curl -sSL '<page>' | grep -c 'entity/document/'`
+- `partner.nibe.eu`, which *does* list accessories, serves a TLS certificate
+  that does not cover its own hostname, so it cannot be fetched without
+  disabling certificate verification. That is not worth doing for a
+  convenience script.
+
+Individual accessory manuals can be found through search and do live in the
+asset store, but only as edition-pinned URLs — which, being immutable, offer
+no way to notice a newer edition. Those stay manual.
 
 ---
 
@@ -91,10 +124,13 @@ Two limits are worth knowing before spending time searching.
 **NIBE ships undocumented registers.** Firmware 4.13.12 added eleven data
 points. Not one of them is mentioned in the release notes, anywhere in the
 changelog's history, in the SMO S40 installer manual, or in the S2125 manual —
-including nine `BT39` sensors and a cluster cooling setting. The S2125 manual's
-sensor list covers BT3/12/14/15/16/17/28/84 and no BT39 at all. Absence from
-the manuals is therefore not evidence that a register is unimportant, only
-that NIBE did not describe it.
+including nine `BT39` sensors and a cluster cooling setting.
+
+This was re-checked against the *newest published* S2125 installer manual
+(IHB EN 2525-1) after refreshing, not just the older local copy: it documents
+sensors BT3/12/14/15/16/17/28/84 and contains no occurrence of `BT39` or
+"liquid line" at all. Absence from the manuals is therefore not evidence that
+a register is unimportant, only that NIBE did not describe it.
 
 **Accessory manuals use older menu numbering.** They are written for several
 controller generations, so their menu numbers do not line up with the SMO
