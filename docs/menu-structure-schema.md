@@ -117,6 +117,12 @@ Three ways to find the `point_id` for a setting:
 2. **Unplaced settings tab** — visible in the Nibe Menus dashboard when the bridge runs with log level `debug`. Shows all firmware points not yet assigned to any menu, grouped by type.
 3. **`all_data_points_raw.txt`** — included in the repository, contains the raw firmware register list from a reference installation. Search by register name.
 
+**Search the firmware `description` field, not just the title.** NIBE's register titles are not consistent between related settings, so title-only matching misses a great deal. Where a register has a `description`, it usually enumerates the options verbatim (`0 = Small, 1 = Medium, 2 = Large`), which matches an installer manual's documented option list far more reliably than the title does.
+
+**Beware menu numbering across manuals.** The accessory installer manuals (ACS 45, AXC 30, ERS 20/30/S10, F135, HRV) were written for several controller generations and use an older numbering scheme than the SMO S40's. `MENU 5.6 — FORCED CONTROL` in those documents is the SMO S40's `7.5.3`; `MENU 1.9.6 — FAN RETURN TIME` is its `1.2.5`; `MENU 5.2.4 — SYSTEM SETTINGS` is roughly its `7.2.1`. A menu number that appears in an accessory manual and not in `menu_structure.yaml` is usually this, not a genuine gap — match on the menu's *title and documented settings*, never on its number.
+
+**A documented setting with no register is normal.** Several menus the SMO S40 manual describes have no corresponding firmware register at all: `2.1` (More hot water), `2.2` (Hot water demand), `7.1.6.6` (Compressors, start sequence) and `7.2.11` (Vent. heat exchanger, ERS) were each checked against the full register list and none of their settings is exposed. Some are accessory-gated and only materialise when that hardware is connected, the way the SG Ready registers do. Leaving such a menu with no `point_id` is correct, not an oversight.
+
 ---
 
 ## Writing good annotations
