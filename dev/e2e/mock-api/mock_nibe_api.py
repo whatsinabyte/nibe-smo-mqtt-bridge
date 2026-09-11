@@ -15,6 +15,7 @@ replaying real firmware data from reference-dumps/all_points_<lang>.json:
   DELETE /api/v1/devices/0/notifications → 204
 
   POST /mock-control/points/{id}        → test-only control channel (see below)
+  POST /mock-control/hidden/{id}        → test-only: withhold/restore a point
 
 Any HTTP Basic Authorization header is accepted (this is a dev harness, not
 an auth test). Runs over HTTPS with a generated self-signed certificate,
@@ -29,6 +30,14 @@ overwrites a point's value.integerValue/stringValue, bypassing the
 isWritable check the real PATCH .../points endpoint enforces — this
 simulates the device itself changing the value, not an HA-side write.
 Body: {"integerValue": <int>} and/or {"stringValue": <str>}.
+
+The /mock-control/hidden/{id} endpoint (body {"hidden": true|false}) makes a
+point behave exactly as if the firmware stopped serving it: absent from the
+bulk dict, 404 on the single-point read, and rejected by PATCH as "no such
+param". The point definition is kept, so unhiding restores it unchanged. This
+reproduces what a real controller does while it restarts — during a 4.13.12
+firmware update one served 1145 of its 1169 points for about a minute, across
+four polls, before the rest returned.
 """
 
 from __future__ import annotations
@@ -47,6 +56,10 @@ BASE_PATH = f"/api/v1/devices/{DEVICE_ID}"
 
 with open(DUMP_PATH, encoding="utf-8") as f:
     POINTS: dict[str, dict] = json.load(f)
+
+# Point IDs currently withheld from every read/write path; see the module
+# docstring. Normally empty, so the bulk response is served as-is.
+HIDDEN: set[str] = set()
 
 DEVICE_ROOT = {
     "product": {
@@ -103,10 +116,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == BASE_PATH or path == BASE_PATH + "/":
             self._send_json(200, DEVICE_ROOT)
         elif path == f"{BASE_PATH}/points":
-            self._send_json(200, POINTS)
+            if HIDDEN:
+                self._send_json(200, {k: v for k, v in POINTS.items() if k not in HIDDEN})
+            else:
+                self._send_json(200, POINTS)
         elif path.startswith(f"{BASE_PATH}/points/"):
             point_id = path.rsplit("/", 1)[-1]
-            point = POINTS.get(point_id)
+            point = None if point_id in HIDDEN else POINTS.get(point_id)
             if point is None:
                 self._send_json(404, {"error": "not found"})
             else:
@@ -132,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         result = {}
         for item in writes:
             point_id = str(item.get("variableId"))
-            point = POINTS.get(point_id)
+            point = None if point_id in HIDDEN else POINTS.get(point_id)
             if point is None:
                 result[point_id] = "error: no such param"
                 continue
@@ -163,11 +179,11 @@ class Handler(BaseHTTPRequestHandler):
         # which reference-dumps/all_points_en.json has no data for at all
         # since it was captured with SG Ready never enabled.
         path = self.path.split("?", 1)[0]
+        hidden_prefix = "/mock-control/hidden/"
         prefix = "/mock-control/points/"
-        if not path.startswith(prefix):
+        if not path.startswith((prefix, hidden_prefix)):
             self._send_json(404, {"error": "not found"})
             return
-        point_id = path[len(prefix) :]
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -176,6 +192,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "bad json"})
             return
 
+        if path.startswith(hidden_prefix):
+            point_id = path[len(hidden_prefix) :]
+            if point_id not in POINTS:
+                self._send_json(404, {"error": "not found"})
+                return
+            if body.get("hidden", True):
+                HIDDEN.add(point_id)
+            else:
+                HIDDEN.discard(point_id)
+            self._send_json(200, {"status": "ok", "hidden": sorted(HIDDEN)})
+            return
+
+        point_id = path[len(prefix) :]
         point = POINTS.get(point_id)
         if point is None:
             # New point: the request body must be a full point definition

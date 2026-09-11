@@ -1,6 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * Proves, against a real Home Assistant instance, that the bridge's dynamic
@@ -44,7 +45,6 @@ import * as path from 'path';
  * scenario exercisable.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const REFERENCE_DUMP = path.join(__dirname, '..', '..', '..', 'reference-dumps', 'all_points_en.json');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
 const MOCK_API_URL = process.env.MOCK_API_URL || 'https://localhost:18443';
@@ -87,15 +87,6 @@ function binarySensorCandidateIds(): number[] {
   }
   ids.sort((a, b) => a - b);
   return ids;
-}
-
-function readCredentials(): { username: string; password: string } {
-  const raw = fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8');
-  return JSON.parse(raw);
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
 }
 
 async function fetchStates(token: string): Promise<Array<{ entity_id: string; state: string }>> {
@@ -149,15 +140,10 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
   // only long-running spec here not setting its own budget.
   test.setTimeout(240_000);
 
-  const { username, password } = readCredentials();
   const token = readToken();
 
   // 1. Log into the real HA frontend UI.
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
   await page.goto('/nibe-bridge/entity-manager');
@@ -165,6 +151,22 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
   await expect(card).toBeVisible({ timeout: 30_000 });
 
   const searchInput = card.locator('#search-input');
+
+  // Wait until the card has actually received the bridge's retained
+  // enabled-state before deciding which points are disabled.
+  //
+  // The table renders as soon as the point list arrives, and until the
+  // separate enabled-state message lands *every* row shows an "Enable"
+  // button. Acting on that reads already-enabled points as candidates, and
+  // clicking one is unrecoverable rather than merely wrong: the button is
+  // replaced with "Disable" the moment the real state arrives, so the click
+  // can never complete and Playwright retries it until the test budget runs
+  // out — failing with a bare `locator.click: Test timeout exceeded` that
+  // points at the selector instead of the race. Seen against point 242,
+  // which `essential` mode enables, so its row should never have offered an
+  // Enable button at all.
+  await expect(card.locator('.badge-enabled').first()).toBeVisible({ timeout: 60_000 });
+
   const before = await fetchStates(token);
   const beforeIds = new Set(before.map((s) => s.entity_id));
 

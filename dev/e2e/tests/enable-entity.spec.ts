@@ -1,6 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * Real end-to-end happy path: log into the real Home Assistant frontend,
@@ -17,18 +18,8 @@ import * as path from 'path';
  * frontend agrees with the card's assumptions about it.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const REFERENCE_DUMP = path.join(__dirname, '..', '..', '..', 'reference-dumps', 'all_points_en.json');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
-
-function readCredentials(): { username: string; password: string } {
-  const raw = fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8');
-  return JSON.parse(raw);
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
-}
 
 /**
  * Points to try enabling, ordered ascending by ID, filtered to exclude ones
@@ -97,15 +88,10 @@ async function fetchState(
 }
 
 test('enabling a disabled entity via the card creates a real HA entity', async ({ page }) => {
-  const { username, password } = readCredentials();
   const token = readToken();
 
   // 1. Log into the real HA frontend UI.
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
   await page.goto('/nibe-bridge/entity-manager');

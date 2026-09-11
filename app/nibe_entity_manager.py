@@ -114,6 +114,26 @@ _POST_WRITE_SCAN_S = 90  # seconds to keep accelerated bulk polling
 # for the whole of that window before finishing.
 _STALE_WRITE_AGE_S = _POST_WRITE_SCAN_S + 10  # seconds
 
+# How long a point must be *continuously* absent from the bulk response
+# before its entity is disabled. Disabling is destructive — it clears the
+# retained discovery config, so Home Assistant deletes the entity, resetting
+# its history and breaking any dashboard or automation referencing it.
+#
+# A controller reboot or firmware update serves an incomplete point list for
+# a while. Observed on real hardware during a 4.13.12 update: the API came
+# back reporting 1145 of 1169 points, and every cooling-related point —
+# including BT25, an essential sensor — was missing for about a minute across
+# four consecutive polls before returning. Disabling on the first miss
+# deleted all of them.
+#
+# Absence is still reported immediately, by publishing "offline" to the
+# availability topic: "I cannot read this right now" is honest and
+# non-destructive, and Home Assistant shows the entity as unavailable.
+# Only the irreversible step waits for this grace period, which comfortably
+# outlasts a reboot while still retiring a genuinely removed accessory in
+# minutes rather than leaving it forever.
+_ABSENT_GRACE_S = 300  # seconds
+
 # Changelog
 _CHANGELOG_MAX_ENTRIES = 500  # hard deque cap; time-based prune also runs
 _CHANGELOG_MIN_ENTRIES = 50  # always keep at least this many entries
@@ -525,6 +545,10 @@ class EntityManager:
         # resume the correct active set without re-running discovery.
         self.active_dynamic_points: set[int] = set()
         self.baseline_point_ids: set[int] = set()
+        # point_id -> when it was first seen missing from the bulk response,
+        # cleared the moment it comes back. Gates the destructive disable in
+        # _update_entity_state; see _ABSENT_GRACE_S for why that wait exists.
+        self._absent_since: dict[int, float] = {}
         self.initial_discovery_complete: bool = False
 
         # ── Wanted points (catch-all re-enable safety net) ────────────────────
@@ -1117,6 +1141,38 @@ class EntityManager:
             for point_id in failed_points:
                 self.mqtt_enabled_points.discard(point_id)
 
+        # Backfill the wanted-points safety net from what was just restored.
+        #
+        # _wanted_points was previously only ever written at the moment of an
+        # explicit enable (enable_entity / apply_mode / restore_snapshot), so
+        # a point enabled before that feature existed — or one whose record
+        # was lost — came back enabled but unprotected. That silently defeated
+        # _reconcile_wanted_points: the generic "absent from bulk data"
+        # disable deliberately keeps a point wanted so it is re-enabled when
+        # it reappears, but with nothing in the set the reconciliation never
+        # even runs (its caller skips it when _wanted_points is empty).
+        #
+        # Observed on real hardware: a firmware update briefly served an
+        # incomplete point list, thirteen entities were disabled, the points
+        # returned a minute later, and none were re-enabled.
+        #
+        # Anything in the broker's enabled list was enabled deliberately at
+        # some point, by a user or by a mode — that is exactly what this set
+        # is meant to record. A subsequent mode change still un-marks what it
+        # disables (see apply_mode), so a reconcile-on-startup sequence stays
+        # correct: restore backfills, then apply_mode prunes.
+        newly_wanted = self.mqtt_enabled_points - self._wanted_points
+        if newly_wanted:
+            self._wanted_points.update(newly_wanted)
+            self._persist_wanted_points()
+            # pragma: no mutate start
+            log_restore.info(
+                "Marked %d restored point(s) as wanted so they are re-enabled "
+                "automatically if the firmware drops them temporarily",
+                len(newly_wanted),
+            )
+            # pragma: no mutate end
+
         # pragma: no mutate start
         log_restore.info(
             "Restored %d/%d entities (%d configs republished)",
@@ -1591,9 +1647,36 @@ class EntityManager:
                             controlling_point_snapshot,
                         )
                 else:
+                    now = time.time()
+                    with self._em_lock:
+                        first_absent = self._absent_since.setdefault(point_id, now)
+                    newly_absent = first_absent == now
+
+                    # Report the point as unreadable straight away. This is
+                    # non-destructive: HA shows the entity unavailable and
+                    # keeps it, its history and every reference to it.
+                    self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+
+                    if now - first_absent < _ABSENT_GRACE_S:
+                        if newly_absent:
+                            # pragma: no mutate start
+                            log_entities.info(
+                                "Point %d absent from bulk data — marking unavailable; will "
+                                "disable only if still absent after %ds (a controller reboot "
+                                "or firmware update serves an incomplete point list)",
+                                point_id,
+                                _ABSENT_GRACE_S,
+                            )
+                            # pragma: no mutate end
+                        return
+
                     # Same reasoning as the branch above: message text is
                     # log-only, point_id arg is real/tested.
-                    log_entities.info("Point %d absent from bulk data — disabling entity", point_id)
+                    log_entities.info(
+                        "Point %d absent from bulk data for %ds — disabling entity",
+                        point_id,
+                        int(now - first_absent),
+                    )
                     # Mirrors the post-write branch's own discard above: a
                     # point indexed as static (is_dynamic=False) — because it
                     # once appeared outside a scan window before its
@@ -1609,6 +1692,13 @@ class EntityManager:
                     self.baseline_point_ids.discard(point_id)
                     self.disable_entity(point_id, remove_from_wanted=False)
             return
+
+        # Present again (or never missing): forget any absence so a later gap
+        # starts its grace period from scratch rather than inheriting an old
+        # one and disabling the point almost immediately.
+        if self._absent_since:
+            with self._em_lock:
+                self._absent_since.pop(point_id, None)
 
         if not self.bulk_data[point_id]["is_ok"]:
             self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)

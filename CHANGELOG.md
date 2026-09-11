@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Two defects found on real hardware during a NIBE firmware update to 4.13.12.
+Between them they destroyed thirteen entities — including BT25, an essential
+sensor — and then failed to bring any of them back.
+
+### Fixed
+
+- **A point missing from a single bulk response permanently deleted its
+  entity.** While the controller restarted during the firmware update it
+  served an incomplete point list — 1145 of its 1169 points — for about a
+  minute, spanning four polls. Every missing point was treated as removed by
+  the firmware and disabled immediately, which clears the retained discovery
+  config, so Home Assistant deleted the entity along with its history and
+  broke every dashboard, automation and template referencing it. The points
+  returned a minute later, but the entities were gone. A point absent from
+  bulk data is now published as unavailable straight away — honest, and
+  non-destructive: Home Assistant shows it unavailable and keeps everything
+  else — and is only disabled after it has been continuously absent for five
+  minutes. A single missed poll, a controller reboot, or a firmware update
+  no longer costs an entity. The absence clock resets the moment the point
+  reappears, so a second brief gap gets a full grace period of its own
+  rather than inheriting an expired one.
+
+- **The safety net that re-enables a point when it reappears was empty after
+  every restart.** `_wanted_points` records points deliberately enabled by a
+  user or by a mode, and a reconcile pass after each bulk fetch re-enables any
+  wanted point that has come back. But the set was only ever written when an
+  entity was enabled, and the normal restart path restores entities from
+  retained MQTT discovery configs without going through that code — so after
+  any restart the bridge had dozens of live entities and an empty wanted set,
+  and nothing to restore them with. This is why none of the thirteen disabled
+  points were re-enabled when they reappeared. Restoring from MQTT now
+  backfills the wanted set: anything in the broker's enabled list was enabled
+  deliberately at some point, which is exactly what the set is meant to
+  record. A later mode change still un-marks whatever it disables, so a
+  restore-then-apply-mode startup sequence stays correct.
+
+---
+
 ## [1.1.7] — 2026-09-09
 
 Seventeen defects found in a systematic audit: twelve pre-existing, and five

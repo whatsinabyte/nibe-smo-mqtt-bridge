@@ -743,12 +743,31 @@ class TestPendingWriteGuard(unittest.TestCase):
             self.entity_info["availability_topic"], "offline", retain=True
         )
 
-    def test_point_absent_from_bulk_disables(self):
-        """A point absent from bulk_data (outside post-write window)
-        should be disabled rather than crashing."""
+    def test_point_absent_from_bulk_marks_unavailable(self):
+        """A point absent from bulk_data (outside post-write window) must be
+        reported unavailable rather than crashing — and kept, since disabling
+        is destructive and a brief gap is normal after a controller reboot or
+        firmware update."""
         del self.em.bulk_data[self.point_id]
         self.em.post_write_active = False
         self.em._update_entity_state(self.entity_info)
+        self.em.mqtt.publish.assert_called_with(
+            self.entity_info["availability_topic"], "offline", retain=True
+        )
+        self.assertIn(self.point_id, self.em.mqtt_enabled_points)
+
+    def test_point_absent_past_grace_period_is_disabled(self):
+        """Once the absence has lasted _ABSENT_GRACE_S the point really is
+        gone, and the entity is disabled."""
+        import nibe_entity_manager as nem
+
+        del self.em.bulk_data[self.point_id]
+        self.em.post_write_active = False
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            self.em._update_entity_state(self.entity_info)
+        with patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 1):
+            self.em._update_entity_state(self.entity_info)
         self.assertNotIn(self.point_id, self.em.mqtt_enabled_points)
 
 

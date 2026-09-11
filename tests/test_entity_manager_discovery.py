@@ -951,6 +951,36 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em.restore_from_mqtt()
         self.assertNotIn(100, em.mqtt_enabled_points)
 
+    def test_restore_backfills_wanted_points(self):
+        """The reactive safety net that re-enables a point when it reappears
+        only fires for points in _wanted_points, and that set is only written
+        when an entity is enabled — so after a bridge restart it was empty
+        while dozens of entities were live from retained configs. A firmware
+        update that briefly served an incomplete point list then disabled
+        them with nothing left to restore them. Everything in the broker's
+        enabled list was enabled deliberately at some point, which is exactly
+        what this set records, so restore backfills it."""
+        em = self._make_em_with_points([100, 200])
+        em.mqtt_enabled_points.update({100, 200})
+        em._wanted_points.clear()
+        em._pub.publish_entity_discovery.side_effect = lambda point, bulk: self._entity_info(
+            point["variableId"]
+        )
+        with patch.object(em, "_persist_wanted_points") as mock_persist:
+            em.restore_from_mqtt()
+        self.assertEqual(em._wanted_points, {100, 200})
+        mock_persist.assert_called_once()
+
+    def test_restore_does_not_persist_when_wanted_points_already_complete(self):
+        """No spurious /data write on every restart when nothing changed."""
+        em = self._make_em_with_points([100])
+        em.mqtt_enabled_points.add(100)
+        em._wanted_points.add(100)
+        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
+        with patch.object(em, "_persist_wanted_points") as mock_persist:
+            em.restore_from_mqtt()
+        mock_persist.assert_not_called()
+
     def test_publish_entity_discovery_called_with_point_and_bulk_data(self):
         """publish_entity_discovery must be called with the actual point
         dict and the real bulk_data — not None or a mismatched value —

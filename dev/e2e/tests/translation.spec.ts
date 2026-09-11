@@ -1,6 +1,5 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import * as fs from 'fs';
-import * as path from 'path';
+import { loginToHa, readToken } from './support/ha-login';
 
 /**
  * Proves, against a real Home Assistant instance, that
@@ -23,20 +22,10 @@ import * as path from 'path';
  * publish "Aan", not "On" and not "30", for this test to pass.
  */
 
-const SEED_OUT = path.join(__dirname, '..', 'seed-out');
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
 
 const POINT_ID = '3292';
 const EXPECTED_TRANSLATED_STATE = 'Aan';
-
-function readCredentials(): { username: string; password: string } {
-  const raw = fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8');
-  return JSON.parse(raw);
-}
-
-function readToken(): string {
-  return fs.readFileSync(path.join(SEED_OUT, 'token.txt'), 'utf-8').trim();
-}
 
 async function fetchStates(token: string): Promise<Array<{ entity_id: string; state: string }>> {
   const ctx = await pwRequest.newContext();
@@ -85,15 +74,10 @@ async function selectOption(token: string, entityId: string, option: string): Pr
 test('a hardcoded VALUE_MAPPINGS label is translated in a real HA entity state', async ({
   page,
 }) => {
-  const { username, password } = readCredentials();
   const token = readToken();
 
   // 1. Log into the real HA frontend UI.
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
   await page.goto('/nibe-bridge/entity-manager');
@@ -171,14 +155,9 @@ test('a hardcoded VALUE_MAPPINGS label is translated in a real HA entity state',
 test('a select entity round-trips a translated write through a real HA select.select_option call', async ({
   page,
 }) => {
-  const { username, password } = readCredentials();
   const token = readToken();
 
-  await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('button', { name: /log in/i }).click();
-  await expect(page).toHaveURL(/\/lovelace|\/$|\/home/, { timeout: 30_000 });
+  await loginToHa(page);
 
   await page.goto('/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');

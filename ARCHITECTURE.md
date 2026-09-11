@@ -138,7 +138,9 @@ The largest module (~3,250 lines) and the core of the bridge. Owns the full life
 
 **Mode reconciliation (`apply_mode()`):** called only on a fresh install or a detected mode change across a restart (never on an ordinary same-mode restart, so manual Entity Manager additions survive normal restarts). Reconciles the enabled set to the target mode's points, protecting active dynamic points from ever being disabled by a mode change — a dynamic point's presence is firmware-state-driven, not mode-driven, so switching modes never kills a live dynamic entity, and a dynamic point's appearance is never suppressed by the current mode either (only `mqtt_enabled_points` minus `protected` is disabled; new dynamic points are enabled unconditionally regardless of mode). Whether points outside the new mode's set get disabled at all is governed by the `mode_switch_behavior` config option: `replace` (default) disables them; `merge` never disables anything, only adds the new mode's points.
 
-**Wanted points (`_wanted_points`, a reactive safety net):** complements `dynamic_point_map`'s predictive, controller-driven tracking (which only ever registers writable switch/select points as candidate controllers — an unbounded numeric register can't safely be probed exhaustively in learning mode). A point that's dynamically tracked but not itself a switch/select (e.g. a `number`) can only ever be linked to its controller via the narrow post-write-scan-window path; if that window is missed — most commonly because the underlying value was changed directly on the controller rather than through HA — the point permanently falls back to being treated as an ordinary static point, and the generic "absent from bulk data" disable (`_update_entity_state`) has no memory of it ever having been wanted. `_wanted_points: set[int]` (persisted to the retained `BrowserTopic.WANTED_POINTS` MQTT topic plus a `/data/wanted_points.json` file fallback) is a causality-agnostic set of every point explicitly enabled by the user via `enable_entity()`, `apply_mode()`, or `restore_snapshot()` — never by the dynamic-tracking machinery itself, or it would fight that mechanism's own lifecycle. `_reconcile_wanted_points()` runs after every bulk fetch and re-enables any wanted point that has reappeared but isn't currently enabled. A mode switch or snapshot flush explicitly un-marks the points it disables (an intentional override); the generic "absent from bulk data" disable explicitly does not (`remove_from_wanted=False`) — that's the whole point of the mechanism.
+**Wanted points (`_wanted_points`, a reactive safety net):** complements `dynamic_point_map`'s predictive, controller-driven tracking (which only ever registers writable switch/select points as candidate controllers — an unbounded numeric register can't safely be probed exhaustively in learning mode). A point that's dynamically tracked but not itself a switch/select (e.g. a `number`) can only ever be linked to its controller via the narrow post-write-scan-window path; if that window is missed — most commonly because the underlying value was changed directly on the controller rather than through HA — the point permanently falls back to being treated as an ordinary static point, and the generic "absent from bulk data" disable (`_update_entity_state`) has no memory of it ever having been wanted. `_wanted_points: set[int]` (persisted to the retained `BrowserTopic.WANTED_POINTS` MQTT topic plus a `/data/wanted_points.json` file fallback) is a causality-agnostic set of every point explicitly enabled by the user via `enable_entity()`, `apply_mode()`, or `restore_snapshot()` — never by the dynamic-tracking machinery itself, or it would fight that mechanism's own lifecycle. `_reconcile_wanted_points()` runs after every bulk fetch and re-enables any wanted point that has reappeared but isn't currently enabled. `restore_from_mqtt()` also backfills the set from `mqtt_enabled_points`, which matters more than it looks: the set was previously written only when an entity was *enabled*, while the normal restart path rebuilds entities from retained discovery configs without passing through that code — so after every restart the bridge ran with dozens of live entities and an empty wanted set, and the safety net could not fire for any of them. Anything in the broker's enabled list was enabled deliberately at some point, which is precisely what the set records. A mode switch or snapshot flush explicitly un-marks the points it disables (an intentional override); the generic "absent from bulk data" disable explicitly does not (`remove_from_wanted=False`) — that's the whole point of the mechanism.
+
+**Absence is not removal (`_ABSENT_GRACE_S`):** disabling an entity is destructive — it clears the retained discovery config, so Home Assistant deletes the entity and with it the history and every dashboard, automation and template reference. A point simply missing from one bulk response is therefore *not* treated as removed by the firmware. `_update_entity_state` publishes `offline` immediately (honest and non-destructive: unavailable in HA, everything else preserved) and records the first miss in `_absent_since`; only after five continuous minutes of absence does it disable. The reason is observed behaviour, not caution: during a 4.13.12 firmware update the controller served 1145 of its 1169 points for about a minute across four polls, and the previous immediate-disable path deleted thirteen entities — BT25 among them — which then returned a minute later with nothing left to attach to. The record is cleared the moment the point reappears, so a later gap starts its own full grace period instead of inheriting an expired one.
 
 **`baseline_point_ids` and re-learnability:** a point that first appears outside a post-write scan window, before its real controlling switch/select has ever been learned, gets indexed as a plain static point (`is_dynamic: False`) and added to `baseline_point_ids` rather than auto-enabled. The appearance-detection guard in `_fetch_bulk_data()` requires `point_id not in self.baseline_point_ids`, so `_update_entity_state`'s generic disable fallback discards the point from `baseline_point_ids` whenever it disables it (mirroring what the post-write-scan disappearance branch already did) — without this, a point that ever took this path would be permanently stuck unable to be routed through the dynamic-learning path again, even after a correct, HA-driven write to its real controller reopens a legitimate scan window.
 
@@ -397,21 +399,44 @@ out to be sufficient. See [dev/e2e/README.md](dev/e2e/README.md).
 
 ## 6a. Backlog — planned, not yet started
 
-- **`dev/e2e/` harness hardening.** While adding a second scenario to this
-  harness (binary_sensor -> sensor reclassification), three unrelated bugs
-  surfaced in the harness itself, none in the feature being tested: a test
-  that hardcoded a single guessed point ID instead of trying multiple
-  eligible candidates (not every point that passes the Python-side shape
-  check reliably becomes a fresh HA entity through the card, in practice);
-  a test that assumed a `nibe_<id>` naming convention for the resulting
-  entity_id, when HA actually derives it from the discovery config's
-  `name` field; and a transient `RemoteDisconnected`/connection-refused
-  window around HA's onboarding-triggered internal reloads that needed a
-  retry-with-backoff. Given how manual and infrequent this harness's use
-  is (not wired into CI, run on-demand), it's more brittle than its small
-  test count suggests — worth a dedicated pass to make it more resilient
-  by default rather than discovering each sharp edge the next time someone
-  adds a scenario.
+- **`dev/e2e/` harness hardening — largely done, see below for what is
+  left.** This entry originally recorded three bugs that surfaced *in the
+  harness* while adding a single scenario, none in the feature under test,
+  and concluded it was "more brittle than its small test count suggests".
+  A later pass — upgrading the pinned Home Assistant from 2024.10.1 to
+  2026.9.1, having let it go two years stale — confirmed that generously,
+  turning up six more, again all in the harness:
+
+  - Three services were brought up without `--build` (`mock-nibe-api`,
+    `ha-seed`, and originally `bridge`), so an edit to any of their
+    COPYed sources was silently ignored and every run tested a stale
+    image. Each was found the same way: debugging a file that had
+    already been fixed.
+  - HA's MQTT config flow grew a required `other_settings` section, and
+    `grant_type=password` on `/auth/token` stopped working (it was never
+    a documented API). `seed_ha.py` now drives the real login flow and
+    prints the config-flow schema HA hands it, so the next such change
+    is one log line rather than probing the API by hand.
+  - HA's login form lost its accessible field labels, breaking all
+    thirteen specs at once with a locator timeout that named nothing
+    relevant. The login sequence lived duplicated in every spec; it is
+    now `tests/support/ha-login.ts`, addressing fields by form `name`
+    and retrying the whole attempt.
+  - HA accepts TCP connections well before it is ready, and the harness
+    gated on "the port answers" plus a fixed sleep. That was enough for
+    2024.10 and not for 2026.9: the first four specs failed with three
+    different errors while the fifth onward passed, reading as four
+    unrelated bugs rather than one slow startup. `run.sh` now polls
+    `/api/config` for `"state": "RUNNING"`.
+
+  What remains: the harness is still manual and not wired into CI, and
+  Colima re-syncs published port forwards whenever a container starts or
+  stops, so a spec that stops one can break the *next* spec's first
+  navigation. That is worked around in the login helper's retry rather
+  than solved. The lesson worth keeping is that a harness pinned to a
+  two-year-old Home Assistant is validating against something no user
+  runs, and every one of these was the harness misreporting rather than
+  a defect in the bridge — which needed no changes at all for 2026.9.1.
 - **`dev/setup.sh`** (added) automates the one-time dev-environment setup
   this project needs beyond a bare `git clone` — see its own header
   comment for what it covers. Consider extending it if new one-time setup
