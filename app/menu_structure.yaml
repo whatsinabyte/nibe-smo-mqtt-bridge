@@ -2330,8 +2330,11 @@ menus:
           range: off/on
           point_id: 23129
           note: Continues the ERS 1-4 series above. The firmware exposes two identically titled 0/1 registers per unit for
-            ERS 5-8; this is the one whose factory default is 0, matching every ERS 1-4 activation register. The companion
-            register, which defaults to 1, is a different setting NIBE does not document and is deliberately left unmapped.
+            ERS 5-8, in one contiguous block; this is the one whose factory default is 0, matching every ERS 1-4 activation
+            register. The firmware changelog suggests why there are two of them. Version 2.3.3 (2021-03-10) added support
+            for "up to 8 pcs of ERS S40", and 2.7.3 (2021-10-19) for "8pc ERS S10 / 20 / 30 units" -- two product
+            families, each supporting eight units. Which block belongs to which family is stated nowhere, so the companion
+            register is left unmapped rather than guessed at.
         - label: ERS 6 activated
           range: off/on
           point_id: 23130
