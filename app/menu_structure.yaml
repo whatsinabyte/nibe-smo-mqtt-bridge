@@ -2322,6 +2322,21 @@ menus:
       description: 'Advanced circulation pump settings — operating mode, speed control, and flow settings for the charge pump.
 
         '
+      note: 'Brine pump menus are deliberately absent. A ground-source heat pump docked to an SMO S40 adds them -- the
+        firmware changelog references menu 7.1.2.8 for "min. brine-out" and 7.1.2.9 for brine pump display, both
+        explicitly for "SMO S40 with GSHP" -- and the ACS 45 installer manual documents a menu 7.1.2.7 "Pump speed brine"
+        with four settings: speed in passive cooling and in active cooling (1-100%), delta-T cooling (2-10 °C) and speed
+        in wait mode cooling (1-100%).
+
+
+        None of that could be mapped. The SMO S40 installer manual does not use the word "brine" once, being an air/water
+        controller; the ACS 45 manual covers several controllers, so it does not establish that 7.1.2.7 exists on this
+        one; and the four writable brine registers this firmware does expose -- 3965 speed, 4675 shunted brine accessory,
+        4678 shunted brine max. temp. and 5482 brine pump auto mode -- match none of the documented settings. The only
+        register in the whole dump with the 2-10 °C delta-T signature is the ERS bypass temperature, which belongs
+        elsewhere. Anyone running a ground-source docking can close this from their own point list.
+
+        '
       submenus:
       - id: 7.1.2.3
         title: Operating mode, charge pump
