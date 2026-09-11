@@ -2326,6 +2326,30 @@ menus:
           range: off/on
           point_id: 6217
           tip: Activate ERS unit 4.
+        - label: ERS 5 activated
+          range: off/on
+          point_id: 23129
+          note: Continues the ERS 1-4 series above. The firmware exposes two identically titled 0/1 registers per unit for
+            ERS 5-8; this is the one whose factory default is 0, matching every ERS 1-4 activation register. The companion
+            register, which defaults to 1, is a different setting NIBE does not document and is deliberately left unmapped.
+        - label: ERS 6 activated
+          range: off/on
+          point_id: 23130
+          note: Continues the ERS 1-4 series above. The firmware exposes two identically titled 0/1 registers per unit for
+            ERS 5-8; this is the one whose factory default is 0, matching every ERS 1-4 activation register. The companion
+            register, which defaults to 1, is a different setting NIBE does not document and is deliberately left unmapped.
+        - label: ERS 7 activated
+          range: off/on
+          point_id: 23131
+          note: Continues the ERS 1-4 series above. The firmware exposes two identically titled 0/1 registers per unit for
+            ERS 5-8; this is the one whose factory default is 0, matching every ERS 1-4 activation register. The companion
+            register, which defaults to 1, is a different setting NIBE does not document and is deliberately left unmapped.
+        - label: ERS 8 activated
+          range: off/on
+          point_id: 23132
+          note: Continues the ERS 1-4 series above. The firmware exposes two identically titled 0/1 registers per unit for
+            ERS 5-8; this is the one whose factory default is 0, matching every ERS 1-4 activation register. The companion
+            register, which defaults to 1, is a different setting NIBE does not document and is deliberately left unmapped.
       - id: 7.1.4.2
         title: Fan speed, supply air
         description: Supply (fresh air) fan speed levels for ERS S40 unit 1 are configured on the controller display only
@@ -3360,6 +3384,69 @@ menus:
         tip: 'Temperature threshold that triggers the groundwater temperature alarm.
 
           '
+    - id: 7.2.11
+      title: Vent. heat exchanger (ERS)
+      description: 'Settings for the ERS ventilation heat exchanger accessory, which recovers energy from the extract air.
+        Fan speeds and the bypass temperature are set in menus 1.2.1, 7.1.4.1 and 7.1.4.4; this menu holds the per-unit
+        settings documented for ERS in its own installer manuals.
+
+
+        The firmware exposes these registers unevenly: the lowest extract air temperature exists only for ERS 5-8 and the
+        blocking action only for ERS 3-8, with no equivalent register for the lower-numbered units. That asymmetry is
+        NIBE''s own, not an omission here.
+
+        '
+      settings:
+      - label: Lowest extract air temp. (ERS 5)
+        range: 0 – 10 °C
+        point_id: 23137
+        note: Below this extract air temperature the unit stops recovering, protecting the heat exchanger from freezing.
+          The ERS 20/30/S10 installer manuals document this setting in menu 7.2.11 with exactly this 0-10 °C range.
+      - label: Lowest extract air temp. (ERS 6)
+        range: 0 – 10 °C
+        point_id: 23138
+        note: Below this extract air temperature the unit stops recovering, protecting the heat exchanger from freezing.
+          The ERS 20/30/S10 installer manuals document this setting in menu 7.2.11 with exactly this 0-10 °C range.
+      - label: Lowest extract air temp. (ERS 7)
+        range: 0 – 10 °C
+        point_id: 23139
+        note: Below this extract air temperature the unit stops recovering, protecting the heat exchanger from freezing.
+          The ERS 20/30/S10 installer manuals document this setting in menu 7.2.11 with exactly this 0-10 °C range.
+      - label: Lowest extract air temp. (ERS 8)
+        range: 0 – 10 °C
+        point_id: 23140
+        note: Below this extract air temperature the unit stops recovering, protecting the heat exchanger from freezing.
+          The ERS 20/30/S10 installer manuals document this setting in menu 7.2.11 with exactly this 0-10 °C range.
+      - label: Blocking action (ERS 3)
+        range: Level monitor / Blocked / Off
+        point_id: 7022
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
+      - label: Blocking action (ERS 4)
+        range: Level monitor / Blocked / Off
+        point_id: 7023
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
+      - label: Blocking action (ERS 5)
+        range: Level monitor / Blocked / Off
+        point_id: 23141
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
+      - label: Blocking action (ERS 6)
+        range: Level monitor / Blocked / Off
+        point_id: 23142
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
+      - label: Blocking action (ERS 7)
+        range: Level monitor / Blocked / Off
+        point_id: 23143
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
+      - label: Blocking action (ERS 8)
+        range: Level monitor / Blocked / Off
+        point_id: 23144
+        note: What the unit does when its external blocking input is active. The ERS installer manuals document three
+          options for this setting, matching the register's 0-2 range.
     - id: 7.2.13
       title: Exhaust Air Module (S135)
       description: 'Settings for the S135 exhaust air module accessory. The S135 uses the compressor to extract energy from
