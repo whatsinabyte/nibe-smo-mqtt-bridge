@@ -117,6 +117,10 @@ Three ways to find the `point_id` for a setting:
 2. **Unplaced settings tab** — visible in the Nibe Menus dashboard when the bridge runs with log level `debug`. Shows all firmware points not yet assigned to any menu, grouped by type.
 3. **`all_data_points_raw.txt`** — included in the repository, contains the raw firmware register list from a reference installation. Search by register name.
 
+**Never conflate a REST API point id with a Modbus register number.** Every data point carries both, and they are unrelated — point 26703 sits at Modbus register 5217, and point 6588 at Modbus register 0. `point_id` in this file always means the REST API `variableId`; the Modbus number lives in the point's own `metadata.modbusRegisterID` and reaches users as the `modbus_register` entity attribute. The hazard is that both are four- or five-digit integers, so mistaking one for the other yields a wrong mapping that still looks plausible.
+
+This bites hardest when working from NIBE's documentation, because the sources disagree: the **firmware changelog identifies functionality by Modbus register** ("BT1 = 5217", "activated in menu 7.5.9.2"), while the manuals and the Entity Manager card work in point ids. To turn a changelog register into a point, look the number up against each point's `modbusRegisterID` — never search for a point whose id happens to equal it. And when quoting either kind of number in prose, say which it is; a bare number is what invites the confusion later.
+
 **Search the firmware `description` field, not just the title.** NIBE's register titles are not consistent between related settings, so title-only matching misses a great deal. Where a register has a `description`, it usually enumerates the options verbatim (`0 = Small, 1 = Medium, 2 = Large`), which matches an installer manual's documented option list far more reliably than the title does.
 
 (Where to obtain the manuals, and which editions these observations came from, is recorded in [reference-documents.md](reference-documents.md).)

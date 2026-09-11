@@ -3833,6 +3833,117 @@ menus:
         point_id: 14314
         note: Read-only — the available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
           inverter. Any value written here will be overwritten within seconds.
+      submenus:
+      - id: 7.5.9.2
+        title: External temperature readings via Modbus
+        description: 'Lets a third-party system supply temperature values over Modbus TCP/IP in place of a physical sensor.
+          Each sensor has an activation flag and a value register; with the flag set, the controller uses the injected
+          value instead of its own input.
+
+
+          Documented only in the firmware changelog, never in the installer manual. Version 2.21.12 (2023-08-30) added the
+          function and identified each sensor by its Modbus holding register -- BT1 at Modbus 5217, BT25 at 5218, BT71 at
+          5219, BT5 at 5220, BT6 at 5221, BT7 at 5222 and BT52 at 5225 -- stating they are "activated in menu 7.5.9.2".
+          BT50 followed later, with the same activation route.
+
+
+          Those are Modbus register numbers, not REST API point ids, and the two numbering schemes are unrelated. The
+          point_id values below are REST API variableIds; each was matched to the changelog by looking up the register in
+          the point''s own modbusRegisterID metadata, never by treating one number as the other.
+
+
+          That changelog entry also lists BT51 pool 1 and pool 2 at Modbus 5223 and 5224. This firmware exposes neither,
+          so they are not represented here.
+
+
+          Most of these registers report as read-only despite the function being about writing values, and the activation
+          flags are writable for only some sensors. That inconsistency is the firmware''s own.
+
+          '
+        settings:
+        - label: External reading of BT1 activated
+          range: off/on
+          point_id: 26694
+          note: Enables using an externally supplied value for BT1 (outdoor temperature) instead of the physical sensor.
+        - label: External reading of value BT1
+          range: °C
+          point_id: 26703
+          note: The value the controller uses for BT1 when the flag above is set.
+        - label: External reading of BT25 activated
+          range: off/on
+          point_id: 26695
+          note: Enables using an externally supplied value for BT25 (external supply line) instead of the physical sensor.
+        - label: External reading of value BT25
+          range: °C
+          point_id: 26704
+          note: The value the controller uses for BT25 when the flag above is set.
+        - label: External reading of BT71 activated
+          range: off/on
+          point_id: 26696
+          note: Enables using an externally supplied value for BT71 (external return line) instead of the physical sensor.
+        - label: External reading of value BT71
+          range: °C
+          point_id: 26705
+          note: The value the controller uses for BT71 when the flag above is set.
+        - label: External reading of BT5 activated
+          range: off/on
+          point_id: 26697
+          note: Enables using an externally supplied value for BT5 (hot water top) instead of the physical sensor.
+        - label: External reading of value BT5
+          range: °C
+          point_id: 26706
+          note: The value the controller uses for BT5 when the flag above is set.
+        - label: External reading of BT6 activated
+          range: off/on
+          point_id: 26698
+          note: Enables using an externally supplied value for BT6 (hot water charging) instead of the physical sensor.
+        - label: External reading of value BT6
+          range: °C
+          point_id: 26707
+          note: The value the controller uses for BT6 when the flag above is set.
+        - label: External reading of BT7 activated
+          range: off/on
+          point_id: 26699
+          note: Enables using an externally supplied value for BT7 (hot water top, external) instead of the physical sensor.
+        - label: External reading of value BT7
+          range: °C
+          point_id: 26708
+          note: The value the controller uses for BT7 when the flag above is set.
+        - label: External reading of BT52 activated
+          range: off/on
+          point_id: 26702
+          note: Enables using an externally supplied value for BT52 (boiler) instead of the physical sensor.
+        - label: External reading of value BT52
+          range: °C
+          point_id: 26711
+          note: The value the controller uses for BT52 when the flag above is set.
+        - label: External reading of BT50 activated
+          range: off/on
+          point_id: 29970
+          note: Enables using an externally supplied value for BT50 (room sensor) instead of the physical sensor.
+        - label: External reading of value BT50
+          range: °C
+          point_id: 29971
+          note: The value the controller uses for BT50 when the flag above is set.
+        - label: External reading of BT68 activated
+          range: off/on
+          point_id: 33193
+          note: Enables using an externally supplied value for BT68 (flow line, additional heat) instead of the physical sensor.
+        - label: External reading of value BT68
+          range: °C
+          point_id: 33194
+          note: The value the controller uses for BT68 when the flag above is set.
+        - label: External reading of BT69 activated
+          range: off/on
+          point_id: 33195
+          note: Enables using an externally supplied value for BT69 (return line, additional heat) instead of the physical sensor.
+        - label: External reading of value BT69
+          range: °C
+          point_id: 33196
+          note: The firmware titles this "External reading of value BT68", the same as the point two Modbus registers
+            below it. By its position it is BT69's value -- the activation and value registers run in pairs, Modbus
+            6003/6004 for BT68 and 6005/6006 here, and Modbus 6005 is titled BT69. The label follows the pairing; the
+            firmware title appears to be a mistake. (All four numbers here are Modbus registers, not point ids.)
     - id: 7.5.10
       title: Change pump model
       description: 'Select the model of circulation pump connected to the installation. SMO S40 uses the pump model to calculate
