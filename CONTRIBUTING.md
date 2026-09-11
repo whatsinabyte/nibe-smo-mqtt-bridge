@@ -153,6 +153,10 @@ is the quickest way to see what a firmware update changed. It validates every
 response before replacing anything, so a failed request or an error page
 leaves the existing dump untouched rather than silently destroying it.
 
+Where the manuals and firmware release notes live, and how to get the current
+edition of each, is recorded in
+[docs/reference-documents.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/reference-documents.md).
+
 **Recapture after every controller firmware update.** A dump that predates the
 running firmware is worse than no dump: it looks authoritative while quietly
 describing a different machine. Firmware 4.13.12 added thirteen points, and
