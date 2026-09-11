@@ -429,14 +429,30 @@ out to be sufficient. See [dev/e2e/README.md](dev/e2e/README.md).
     unrelated bugs rather than one slow startup. `run.sh` now polls
     `/api/config` for `"state": "RUNNING"`.
 
-  What remains: the harness is still manual and not wired into CI, and
-  Colima re-syncs published port forwards whenever a container starts or
-  stops, so a spec that stops one can break the *next* spec's first
-  navigation. That is worked around in the login helper's retry rather
-  than solved. The lesson worth keeping is that a harness pinned to a
-  two-year-old Home Assistant is validating against something no user
-  runs, and every one of these was the harness misreporting rather than
-  a defect in the bridge — which needed no changes at all for 2026.9.1.
+  **Deliberately not wired into CI.** The harness replays
+  `reference-dumps/all_points_en.json`, which is gitignored developer-local
+  data: it carries no serial number, IP or other identifier, but it does
+  describe a real installation's accessory configuration, setpoints and a
+  snapshot of its sensor readings. Running it in CI would mean committing
+  that to a public repository, uploading it as a large hand-maintained
+  secret, or sanitising it — and sanitising is the worst of the three,
+  because several specs pick their candidate points *by value* (sentinel
+  readings, `isOk` flags, binary_sensor-shaped registers), so neutralised
+  values would quietly make CI exercise a different candidate set than a
+  local run does. The harness therefore stays manual and on-demand. The
+  cost is real and worth stating: it only runs when someone remembers to
+  run it, and the last time anyone did it found seven harness bugs.
+
+  Also accepted rather than solved: Colima re-syncs published port forwards
+  whenever a container starts or stops, so a spec that stops one can break
+  the *next* spec's first navigation. The login helper and the two
+  container-stopping specs retry through it. This is a macOS/Colima
+  artifact and would not affect a native-Docker host.
+
+  The lesson worth keeping is that a harness pinned to a two-year-old Home
+  Assistant is validating against something no user runs, and every one of
+  these was the harness misreporting rather than a defect in the bridge —
+  which needed no changes at all for 2026.9.1.
 - **`dev/setup.sh`** (added) automates the one-time dev-environment setup
   this project needs beyond a bare `git clone` — see its own header
   comment for what it covers. Consider extending it if new one-time setup
