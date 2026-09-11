@@ -39,6 +39,10 @@ data/
 
 # Local reference firmware data dumps — not committed, developer-local only
 /reference-dumps/
+# Dated baselines kept alongside the live dumps, so a firmware update can be
+# diffed against what came before it. Same developer-local, never-committed
+# status as reference-dumps/ itself.
+/reference-dumps.*/
 
 # macOS
 .DS_Store
