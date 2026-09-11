@@ -2340,6 +2340,48 @@ menus:
 
         '
       submenus:
+      - id: 7.1.2.1
+        title: Operating mode, heating medium pump GP1
+        description: 'How the heating medium pump GP1 runs relative to the compressor. Documented in the S1155, S1156 and
+          S1256 installer manuals. GP1 is internal to those units; an SMO S40 drives an external heating medium pump
+          (GP10) instead and exposes no GP1 register, so these rows carry no point id.
+
+          '
+        settings:
+        - label: Operating mode
+          range: Auto / Intermittent
+          point_id: null
+          note: Auto runs the pump according to the current operating mode. Intermittent starts it about 20 seconds before
+            the compressor and stops it 20 seconds after. The manuals note Intermittent is only offered where an external
+            supply temperature sensor (BT25) is installed.
+      - id: 7.1.2.2
+        title: Pump speed, heating medium GP1
+        description: 'Speed settings for the heating medium pump GP1, per operating mode. Documented in the S1155, S1156,
+          S1256 and S735 installer manuals. The equivalent settings for the charge pump GP12, which is what an SMO S40
+          has, are in menu 7.1.2.4.
+
+          '
+        settings:
+        - label: Heating, auto
+          range: off/on
+          point_id: null
+          note: Whether the pump speed is controlled automatically during heating.
+        - label: Manual speed
+          range: 1 – 100 %
+          point_id: null
+          note: Fixed speed used when automatic control is off.
+        - label: Minimum permitted speed
+          range: 1 – 50 %
+          point_id: null
+          note: Lower bound for automatic speed control.
+        - label: Maximum permitted speed
+          range: 80 – 100 %
+          point_id: null
+          note: Upper bound for automatic speed control.
+        - label: Speed in wait mode
+          range: 1 – 100 %
+          point_id: null
+          note: Speed while the pump is waiting rather than actively circulating.
       - id: 7.1.2.3
         title: Operating mode, charge pump
         description: 'Auto: the charge pump runs according to the current operating mode. Intermittent: the charge pump starts
@@ -3769,6 +3811,31 @@ menus:
       note: '"Hot water during cooling" (on/off) is configured on the controller display only.
 
         '
+    - id: 7.2.25
+      title: NIBE PVT source (PVT)
+      description: 'Settings for the PVT accessory, a solar panel that doubles as a brine source. Documented in the S1155
+        installer manual.
+
+
+        Both registers here are titled for "shunted brine" rather than for PVT, which is the same thing seen from the
+        hydraulic side -- the PVT collector feeds the brine circuit through a shunt, and the firmware changelog uses the
+        two interchangeably, referring to the accessory selection "shunt-controlled brine" and to control of "the
+        PVT-source / AAC accessory". The maximum brine temperature is the stronger evidence: the manual documents this
+        menu''s setting as 0-30 °C, and point 4678 is the only register in the entire point list with that range.
+
+        '
+      settings:
+      - label: System settings
+        range: off/on
+        point_id: 4675
+        note: Activates the shunt-controlled brine source. The manual documents an on/off "System settings" alternative
+          for this menu; the firmware titles the register "Shunted brine, accessory".
+      - label: Max brine in
+        range: 0 – 30 °C
+        point_id: 4678
+        note: Maximum permitted incoming brine temperature. Documented with exactly this 0-30 °C range, which no other
+          register in the point list shares. Distinct from the 10-30 °C "Max brine in" of menu 7.1.2.8, which belongs to
+          the ground/water brine alarm settings rather than to this accessory.
   - id: '7.3'
     title: Multi-installation
     description: 'Settings for multi-unit installations where several heat pumps are connected together under one SMO S40
