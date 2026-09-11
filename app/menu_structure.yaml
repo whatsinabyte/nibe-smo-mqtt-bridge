@@ -776,7 +776,7 @@ menus:
       point_id: 3708
       tip: Schedule during off-peak electricity hours to reduce cost
     - label: Stop temperature (configured in menu 7.1.1.1)
-      range: 55 – 70 °C
+      range: 5.5 – 70 °C
       point_id: null
       note: 'The periodic increase stop temperature is set in menu 7.1.1.1 Temperature setting. Must be at least 60 °C for
         Legionella prevention.
@@ -1130,6 +1130,20 @@ menus:
         point_id: 3095
         note: Pressure on the low-pressure side of the refrigerant circuit in bar. A useful diagnostic for refrigerant charge
           and evaporator performance.
+      - label: High pressure (EB101-BP9)
+        range: bar
+        point_id: 6588
+        note: Pressure on the high-pressure side of the refrigerant circuit in bar. The S2125 installer manual's component
+          list names BP9 "High pressure sensor" and BP8 "Low pressure transmitter", so this is the direct counterpart to
+          the low-pressure reading above. Distinct from "High pressure dew (EB101-BP9)" further up, which is the same BP9
+          sensor expressed as a condensation temperature in °C rather than a pressure. Added by firmware 4.13.12, which
+          did not mention it in its own changelog.
+      - label: Low pressure dew (EB101-BP8)
+        range: °C
+        point_id: 992
+        note: The low-side condensation temperature derived from the BP8 pressure transmitter — the counterpart to "High
+          pressure dew (EB101-BP9)" above, and the fourth corner of the BP8/BP9 pressure-and-dew set. It was the only one
+          of the four missing from this menu.
       - label: Evaporator out (EB101-BT84)
         range: °C
         point_id: 997
@@ -1855,7 +1869,7 @@ menus:
       '
     settings:
     - label: Language
-      range: 24 language options
+      range: 26 language options
       point_id: 3745
       note: 'Language selection for controller display. 0=Swedish, 1=English, 2=German, etc. Does not affect this MQTT bridge
         — entity names are always in English.
@@ -3459,8 +3473,14 @@ menus:
         range: 0 – 69
         point_id: 3954
         note: A value of 0 means this AUX input is not assigned a function.
+      - label: Input AUX6 function
+        range: 0 – 69
+        point_id: 4713
+        note: The sixth selectable input. The SMO S40 installer manual documents six selectable inputs on the joint board
+          (AA100-X10:7-12) and lists AUX1-AUX6 in its installation checklist, but only AUX1-AUX5 were mapped here. A value
+          of 0 means this AUX input is not assigned a function.
       - label: AUX relay (AUX11)
-        range: 0 – 32
+        range: 0 – 33
         point_id: 12463
         note: AUX relay output function assignment.
       - label: AUX from Modbus
