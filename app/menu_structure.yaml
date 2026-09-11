@@ -2388,6 +2388,22 @@ menus:
             heaters with a hot water coil.
 
             '
+      - id: 7.1.1.3
+        title: Domestic hot water
+        description: 'Temperature of the outgoing domestic hot water, with a choice between high and low flow -- a shower
+          being the example the manual gives of high flow. Documented in the VVM S330 installer manual with a 30-85 °C
+          range.
+
+
+          This is an indoor module setting. An SMO S40 controls hot water charging temperatures instead, in menus 7.1.1.1
+          and 7.1.1.2, and exposes no register spanning 30-85 °C.
+
+          '
+        settings:
+        - label: Domestic hot water settings
+          range: 30 – 85 °C
+          point_id: null
+          note: Outgoing hot water temperature. Documented in the VVM S330 installer manual for this menu.
     - id: 7.1.2
       title: Circulation pumps
       description: 'Advanced circulation pump settings — operating mode, speed control, and flow settings for the charge pump.

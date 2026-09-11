@@ -85,6 +85,14 @@ SOURCES: list[tuple[str, str, str]] = [
     ),
     ("S735", "page", "https://www.nibe.eu/en-eu/products/heat-pumps/exhaust-air-heat-pumps/s735"),
     ("S735C", "page", "https://www.nibe.eu/en-eu/products/heat-pumps/exhaust-air-heat-pumps/s735c"),
+    (
+        "VVM S330",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps/vvm-s330",
+    ),
+    # SVM S332, S1157, S1257 and MHB S20 appear in the S-series firmware
+    # changelog but have no product page on nibe.eu under any slug tried, so
+    # their manuals cannot be fetched this way yet.
     ("ERS S40", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-s40"),
     ("ERS 20", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-20"),
     ("ERS 30", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-30"),
