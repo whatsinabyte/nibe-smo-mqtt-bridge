@@ -64,6 +64,27 @@ SOURCES: list[tuple[str, str, str]] = [
         "page",
         "https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps/VVM-S320",
     ),
+    # Ground/water and exhaust-air models with a built-in controller. The bridge
+    # supports these directly (see DOCS.md "Compatible Hardware"), and their
+    # manuals document menus the SMO S40's does not -- the brine circuit above
+    # all, which an air/water controller has no reason to describe.
+    (
+        "S1155",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/ground-source-heat-pumps/s1155",
+    ),
+    (
+        "S1156",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/ground-source-heat-pumps/s1156",
+    ),
+    (
+        "S1256",
+        "page",
+        "https://www.nibe.eu/en-eu/products/heat-pumps/ground-source-heat-pumps/s1256",
+    ),
+    ("S735", "page", "https://www.nibe.eu/en-eu/products/heat-pumps/exhaust-air-heat-pumps/s735"),
+    ("S735C", "page", "https://www.nibe.eu/en-eu/products/heat-pumps/exhaust-air-heat-pumps/s735c"),
     ("ERS S40", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-s40"),
     ("ERS 20", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-20"),
     ("ERS 30", "page", "https://www.nibe.eu/en-eu/products/ventilation/ers-30"),
