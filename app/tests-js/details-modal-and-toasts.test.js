@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createCard } from './support/create-card.js';
 import { allMetadataPayload, sampleMetadataEntry } from './support/fixtures.js';
 
@@ -102,5 +102,47 @@ describe('mobile filter toggle', () => {
     el.shadowRoot.getElementById('mobile-clear-filters').click();
     expect(el.typeFilter).toBe('');
     expect(el.shadowRoot.getElementById('mobile-sort-filter').value).toBe('id-asc');
+  });
+});
+
+describe('toast lifecycle timers', () => {
+  // The show/hide/remove steps are driven by setTimeout, so without fake
+  // timers a test only ever sees the toast's initial state — the callbacks
+  // that add the "show" class and later tear the element down never run.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('adds the "show" class shortly after being created', () => {
+    vi.useFakeTimers();
+    const { el } = createCard();
+    el.isLoading = false;
+    el.showToast('Hello', 'success');
+    const toast = el.shadowRoot.querySelector('.toast-success');
+    expect(toast.classList.contains('show')).toBe(false);
+
+    vi.advanceTimersByTime(10);
+    expect(toast.classList.contains('show')).toBe(true);
+  });
+
+  it('hides and then removes itself once the duration has elapsed', () => {
+    vi.useFakeTimers();
+    const { el } = createCard();
+    el.isLoading = false;
+    el.showToast('Bye', 'success', 1000);
+    const container = el.shadowRoot.querySelector('.toast-container');
+    const toast = el.shadowRoot.querySelector('.toast-success');
+
+    vi.advanceTimersByTime(10);
+    expect(toast.classList.contains('show')).toBe(true);
+
+    // Duration elapses: the class comes off, but the element lingers for the
+    // 300ms CSS transition before being detached.
+    vi.advanceTimersByTime(1000);
+    expect(toast.classList.contains('show')).toBe(false);
+    expect(container.contains(toast)).toBe(true);
+
+    vi.advanceTimersByTime(300);
+    expect(container.contains(toast)).toBe(false);
   });
 });
