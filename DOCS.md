@@ -28,14 +28,16 @@ The bridge works with any Nibe S-series controller that exposes the local REST A
 
 | Product group | Models | Connection | Status |
 |---|---|---|---|
-| Ground / water heat pumps | S1155, S1156, S1255, S1256 | Built-in (direct) | ✅ Direct |
-| Ventilation heat pumps | S735 | Built-in (direct) | ✅ Direct |
-| Indoor units / controllers | VVM S310, S320, S325, S500, SMO S40 | Built-in (direct) | ✅ Direct |
+| Ground / water heat pumps | S1155, S1156, S1157, S1255, S1256, S1257 | Built-in (direct) | ✅ Direct |
+| Ventilation heat pumps | S735, S735C | Built-in (direct) | ✅ Direct |
+| Indoor units / controllers | VVM S310, S320, S325, S330, S500, SVM S332, SMO S40 | Built-in (direct) | ✅ Direct |
 | Air / water outdoor units | S2125, F2120, F2040, F2006 | Via SMO S40 or VVM S-series | ✅ Via hub |
 | Legacy ground/water (F-series) | F1145, F1155, F1245, F1255 | None — ebus only | ❌ Not supported |
 | Legacy ventilation (F-series) | F370, F470, F730, F750 | None — ebus only | ❌ Not supported |
 | Legacy indoor units | VVM 225, VVM 310, VVM 320, VVM 325, VVM 500 | None — ebus only | ❌ Not supported |
 | Legacy controllers | SMO 20, SMO 40 | None — ebus only | ❌ Not supported |
+
+> ℹ️ **This table tracks the S-series range, not a per-model hardware test.** Every model listed runs the same S-series firmware — NIBE publishes one [version history](https://www.nibe.eu/webdav/files/myuplink_changelog/nibe-n.pdf) covering all of them — and the local REST API is a property of that firmware rather than of an individual product. NIBE documents the API in a standalone specification that names no products at all, and no product's installer manual mentions it, so there is no per-model list to check against. S1157, S1257, S735C, VVM S330 and SVM S332 are listed because the firmware changelog covers them alongside the rest; if you run one and something does not work, please open an issue.
 
 > ℹ️ **Ground/water and ventilation heat pumps** (S1155, S1255, S1156, S1256, S735) have the controller built directly into the unit — no separate SMO S40 is needed. The SMO S40 is only required for air/water outdoor units (S2125, F2120, F2040) that have no integrated controller.
 
