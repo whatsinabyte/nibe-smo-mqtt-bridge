@@ -92,6 +92,52 @@ The SMO S40 manuals held locally were already byte-identical to the published
 editions. The S2125 and VVM S320 manuals were not: the first refresh replaced
 an undated local S2125 copy with edition 2525-1.
 
+### Announced products without documentation
+
+S1157, S1257 and MHB S20 appear in the S-series firmware changelog — one
+entry reads "First version with support for MHB S20 and S1157/S1257-8/13" —
+but none has a product page in any nibe.eu category listing and none has an
+installer manual published. They are announced, not yet documented. There is
+nothing to fetch and nothing to map for them, so their absence from
+`app/menu_structure.yaml` is not a gap to be closed; recheck when NIBE
+publishes.
+
+MHB S20 is additionally unclassified: nothing available says whether it is a
+controller in its own right or an accessory attached to one, which is why it
+is left out of the compatibility table in DOCS.md while the other two are
+listed.
+
+Not to be confused with **SHB 20**, whose manual *is* published. That is a
+previous-generation product, not S-series: its installer settings live under
+`MENU 5.x` with no `MENU 7.x` at all, it never uses the phrase "S-series",
+and it mentions no REST API. Its menus must not be merged here — its
+`1.9.2 External adjustment` is this structure's `1.30.3`, and `5.2.4
+Accessories` roughly its `7.2.1`, so merging would duplicate semantics under
+conflicting numbers.
+
+### Find product pages by enumerating categories, not by guessing slugs
+
+SVM S332's page is at `…/air-water-heat-pumps/split-svm-s332---ams-20`: a
+split system is listed under both halves of its pair. No slug guess finds
+that. List a category instead, and confirm the page carries documents:
+
+```bash
+curl -sSL 'https://www.nibe.eu/en-eu/products/heat-pumps/air-water-heat-pumps' \
+  | grep -oE 'href="/en-eu/products/heat-pumps/air-water-heat-pumps/[^"]+"'
+```
+
+Doing that across the five relevant categories also turned up S2060 and
+F2050, two air/water outdoor units that were missing from DOCS.md's
+compatibility table.
+
+### One document, two asset-store IDs
+
+Asset-store IDs are not one-per-document either. Document `909505` and the ID
+the S1156 product page links both serve edition IHB EN 2545-2 (part 831990) —
+byte-for-byte identical, same SHA-256. `dev/refresh-reference-docs.py`
+compares hashes against everything already present and reports "unchanged"
+rather than saving a second copy under a new name.
+
 ### Accessories have no automatic route
 
 `SOURCES` in the refresh script covers the products that have a page on
