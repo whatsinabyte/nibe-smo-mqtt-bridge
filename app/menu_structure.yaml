@@ -1668,6 +1668,96 @@ menus:
         point_id: 3292
         note: 'Read-only status showing what SPA is currently doing: Off, Comfort, Saving, or Saving PLUS. Changes automatically
           based on hourly electricity prices received via myUplink.'
+      submenus:
+      - id: 4.2.5.1
+        title: Manual electricity price input
+        description: 'Twenty-four hourly electricity prices, supplied by hand instead of downloaded through myUplink, for
+          use by Smart Price Adaption and Smart Energy Source. Added in firmware 3.5.5, whose release notes state the
+          input "can also be configured via Modbus TCP" -- which is what makes these registers writable here.
+
+
+          An hour that has not been set reads 2147483647, the maximum of its signed 32-bit register, rather than zero or
+          an error. Setting a price of zero is meaningful, so the firmware needs a value that means "no price supplied"
+          and uses the register maximum for it.
+
+
+          There is a sibling menu 4.2.5.2 for manual transfer fees, added at the same time. This firmware exposes no
+          registers for it, so it is not represented here.
+
+          '
+        settings:
+        - label: Energy price 00:00 - 01:00
+          range: price per kWh
+          point_id: 26817
+        - label: Energy price 01:00 - 02:00
+          range: price per kWh
+          point_id: 26818
+        - label: Energy price 02:00 - 03:00
+          range: price per kWh
+          point_id: 26819
+        - label: Energy price 03:00 - 04:00
+          range: price per kWh
+          point_id: 26820
+        - label: Energy price 04:00 - 05:00
+          range: price per kWh
+          point_id: 26821
+        - label: Energy price 05:00 - 06:00
+          range: price per kWh
+          point_id: 26822
+        - label: Energy price 06:00 - 07:00
+          range: price per kWh
+          point_id: 26823
+        - label: Energy price 07:00 - 08:00
+          range: price per kWh
+          point_id: 26824
+        - label: Energy price 08:00 - 09:00
+          range: price per kWh
+          point_id: 26825
+        - label: Energy price 09:00 - 10:00
+          range: price per kWh
+          point_id: 26826
+        - label: Energy price 10:00 - 11:00
+          range: price per kWh
+          point_id: 26827
+        - label: Energy price 11:00 - 12:00
+          range: price per kWh
+          point_id: 26828
+        - label: Energy price 12:00 - 13:00
+          range: price per kWh
+          point_id: 26829
+        - label: Energy price 13:00 - 14:00
+          range: price per kWh
+          point_id: 26830
+        - label: Energy price 14:00 - 15:00
+          range: price per kWh
+          point_id: 26831
+        - label: Energy price 15:00 - 16:00
+          range: price per kWh
+          point_id: 26832
+        - label: Energy price 16:00 - 17:00
+          range: price per kWh
+          point_id: 26833
+        - label: Energy price 17:00 - 18:00
+          range: price per kWh
+          point_id: 26834
+        - label: Energy price 18:00 - 19:00
+          range: price per kWh
+          point_id: 26835
+        - label: Energy price 19:00 - 20:00
+          range: price per kWh
+          point_id: 26836
+        - label: Energy price 20:00 - 21:00
+          range: price per kWh
+          point_id: 26837
+        - label: Energy price 21:00 - 22:00
+          range: price per kWh
+          point_id: 26838
+        - label: Energy price 22:00 - 23:00
+          range: price per kWh
+          point_id: 26839
+        - label: Energy price 23:00 - 00:00
+          range: price per kWh
+          point_id: 26840
   - id: '4.3'
     title: Alarm log
     description: 'Shows a history of alarms and fault events recorded by the controller. Useful for diagnosing intermittent
