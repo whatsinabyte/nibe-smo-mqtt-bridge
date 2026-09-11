@@ -2322,19 +2322,21 @@ menus:
       description: 'Advanced circulation pump settings — operating mode, speed control, and flow settings for the charge pump.
 
         '
-      note: 'Brine pump menus are deliberately absent. A ground-source heat pump docked to an SMO S40 adds them -- the
-        firmware changelog references menu 7.1.2.8 for "min. brine-out" and 7.1.2.9 for brine pump display, both
-        explicitly for "SMO S40 with GSHP" -- and the ACS 45 installer manual documents a menu 7.1.2.7 "Pump speed brine"
-        with four settings: speed in passive cooling and in active cooling (1-100%), delta-T cooling (2-10 °C) and speed
-        in wait mode cooling (1-100%).
+      note: 'Brine settings are in scope even though the reference installation is air/water. The bridge supports the
+        ground/water models whose controller is built in -- S1155, S1156, S1255 and S1256 -- and those have a brine
+        circuit and the menus that go with it. The SMO S40 installer manual never uses the word "brine", but that only
+        reflects the one product it documents.
 
 
-        None of that could be mapped. The SMO S40 installer manual does not use the word "brine" once, being an air/water
-        controller; the ACS 45 manual covers several controllers, so it does not establish that 7.1.2.7 exists on this
-        one; and the four writable brine registers this firmware does expose -- 3965 speed, 4675 shunted brine accessory,
-        4678 shunted brine max. temp. and 5482 brine pump auto mode -- match none of the documented settings. The only
-        register in the whole dump with the 2-10 °C delta-T signature is the ERS bypass temperature, which belongs
-        elsewhere. Anyone running a ground-source docking can close this from their own point list.
+        Menu 7.1.2.7 below is taken from the ACS 45 installer manual, which documents it with exact ranges. The firmware
+        changelog separately references menu 7.1.2.8 for "min. brine-out" and 7.1.2.9 for brine pump display, both
+        explicitly for "SMO S40 with GSHP"; neither is added here, because nothing documents what they contain.
+
+
+        Four writable brine registers are exposed even on this air/water installation -- 3965 speed, 4675 shunted brine
+        accessory, 4678 shunted brine max. temp. and 5482 brine pump auto mode -- and they correspond to none of the
+        settings documented for 7.1.2.7. The only register in the whole dump carrying its 2-10 °C delta-T signature is the
+        ERS bypass temperature, which belongs elsewhere. They are left unplaced rather than forced into this menu.
 
         '
       submenus:
@@ -2441,6 +2443,100 @@ menus:
             the pump runs in automatic mode and this value is ignored.
 
             '
+      - id: 7.1.2.6
+        title: Operating mode brine pump
+        description: 'How the brine pump runs relative to the compressor, on ground/water installations. Documented in the
+          S1155, S1156 and S1256 installer manuals.
+
+          '
+        settings:
+        - label: Operating mode
+          range: Intermittent / Continuous / 10 days cont.
+          point_id: 5482
+          note: 'Intermittent starts the pump about 20 seconds either side of the compressor -- two minutes either side on
+            groundwater systems. Continuous runs it permanently. "10 days cont." runs continuously for ten days and then
+            reverts to intermittent, which the manuals suggest using at start-up to bleed the brine circuit. The three
+            documented alternatives match this register''s 0-2 range; the firmware titles it "Brine pump auto mode".'
+      - id: 7.1.2.7
+        title: Pump speed brine
+        description: 'Brine pump speed settings, present on ground/water installations. Documented in the ACS 45 installer
+          manual with the ranges below; this firmware exposes no matching registers, so the rows carry no point id and
+          render as labels. A ground/water controller does expose them, and the point ids can be filled in from such an
+          installation''s own point list.
+
+          '
+        settings:
+        - label: Speed in passive cooling
+          range: 1 – 100 %
+          point_id: null
+          note: Brine pump speed during passive cooling. Documented in the ACS 45 installer manual for this menu.
+        - label: Speed during active cooling
+          range: 1 – 100 %
+          point_id: null
+          note: Brine pump speed during active cooling. Documented in the ACS 45 installer manual for this menu.
+        - label: Delta-T cooling
+          range: 2 – 10 °C
+          point_id: null
+          note: Target temperature difference across the brine circuit during cooling. Documented in the ACS 45 installer
+            manual for this menu.
+        - label: Speed in wait mode, cooling
+          range: 1 – 100 %
+          point_id: null
+          note: Brine pump speed while waiting in cooling mode. Documented in the ACS 45 installer manual for this menu.
+      - id: 7.1.2.8
+        title: Brine alarm setting
+        description: 'Protection thresholds for the brine circuit, on ground/water installations. Documented with exact
+          ranges in the S1155, S1156 and S1256 installer manuals. This firmware exposes no register matching any of them,
+          which is expected -- it runs an air/water controller, and these belong to the ground/water models the bridge
+          also supports. A controller with a brine circuit does expose them.
+
+          '
+        settings:
+        - label: Automatic reset
+          range: off/on
+          point_id: null
+          note: Whether the heat pump restarts automatically after a brine alarm.
+        - label: Alarm temperature
+          range: -12 – 15 °C
+          point_id: null
+          note: Outgoing brine temperature at which the low-temperature alarm is raised.
+        - label: Max brine in
+          range: 10 – 30 °C
+          point_id: null
+          note: Upper limit for incoming brine temperature.
+        - label: Use LP as freeze protection
+          range: off/on
+          point_id: null
+          note: Whether the low-pressure sensor is used for freeze protection.
+        - label: Freeze protection with LP-Dew
+          range: -10 – 20 °C
+          point_id: null
+          note: Dew-point threshold used when low-pressure freeze protection is enabled.
+    - id: 7.1.3
+      title: Compressor
+      description: 'Advanced compressor settings. Documented in the S1155, S1156, S1256 and S735 installer manuals -- all
+        models the bridge supports whose controller is built into the unit. This firmware exposes no register matching the
+        documented frequency ranges.
+
+        '
+      settings: []
+      submenus:
+      - id: 7.1.3.1
+        title: Block freq
+        description: 'A frequency band in which the compressor is blocked from running, used to avoid resonance. Two bands
+          can be set.
+
+          '
+        settings:
+        - label: Block freq 1 and 2, start
+          range: 20 – 115 Hz
+          point_id: null
+          note: Lower bound of the blocked band. The manuals note the limits differ by heat pump model, and warn that a
+            wide blocked range can make the compressor run jerkily.
+        - label: Block freq 1 and 2, stop
+          range: 22 – 120 Hz
+          point_id: null
+          note: Upper bound of the blocked band, with a maximum width of 50 Hz.
     - id: 7.1.4
       title: Ventilation
       description: 'Advanced fan speed settings for ERS heat recovery ventilation units (ERS S10-400, ERS S40-400, ERS 20-250,
