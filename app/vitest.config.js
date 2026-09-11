@@ -8,6 +8,20 @@ export default defineConfig({
     exclude: ['tests-js/e2e/**', 'node_modules/**'],
     globals: false,
     restoreMocks: true,
+    // Suppress console output from *passing* tests only; a failing test still
+    // prints everything it logged.
+    //
+    // Many suites here deliberately feed malformed payloads to assert the card
+    // degrades instead of throwing, and the card logs via console.error/warn
+    // on those paths — around thirty lines of expected stderr per run, which
+    // buried real output. Under vitest 4 it also became a flaky CI failure:
+    // the worker forwards each console call to the main process over RPC, and
+    // when the run finished with those calls still in flight the teardown
+    // raised "Closing rpc while onUserConsoleLog was pending" as an unhandled
+    // rejection, exiting non-zero even though all tests passed and coverage
+    // met its thresholds. Timing-dependent, so it reproduced in CI but not
+    // locally.
+    silent: 'passed-only',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
