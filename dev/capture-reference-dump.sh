@@ -8,10 +8,21 @@
 # what every "is this point really classified right?" question gets checked
 # against, so they need to match the firmware actually running.
 #
-# There was no script for this before: the dumps were captured by hand and the
-# procedure lived in nobody's notes. They were last refreshed on 2026-09-04 and
+# There was no script for this before: the dumps were captured by hand, with
+# curl, while establishing whether the REST API's Accept-Language header
+# translates anything at all and for which languages — NIBE publishes no
+# capability list, so the only way to find out is to ask the controller. It
+# does translate, including for languages NIBE does not document, and the
+# files from that investigation became the reference dumps. The procedure
+# itself lived in nobody's notes. They were last refreshed on 2026-09-04 and
 # went stale at the very next firmware update (4.13.12), which added thirteen
 # points — exactly the situation where an up-to-date dump matters most.
+#
+# The default language set is a deliberate sample, not the limit of what the
+# controller supports: many more work. Only the `title` and `description` text
+# differs between dumps — every register, type, unit and value is identical —
+# so keeping all of them would be roughly 550 KB apiece of bulk for a very
+# small delta. Use --langs for a language that is not kept here.
 #
 # The dumps are gitignored developer-local data (real serial numbers, real
 # values from a real installation); this script never commits anything.
@@ -47,7 +58,7 @@ while [ $# -gt 0 ]; do
         --langs) LANGS="$2"; shift 2 ;;
         --out) OUT_DIR="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
