@@ -11,6 +11,7 @@ Before contributing code, read [ARCHITECTURE.md](ARCHITECTURE.md) to understand 
 - [Prerequisites](#prerequisites)
 - [Repository layout](#repository-layout)
 - [Development environment](#development-environment)
+- [Reference dumps (optional, requires a real controller)](#reference-dumps-optional-requires-a-real-controller)
 - [Running the test suite](#running-the-test-suite)
 - [JavaScript test suite (Entity Manager card)](#javascript-test-suite-entity-manager-card)
 - [Static analysis](#static-analysis)
@@ -105,6 +106,42 @@ pytest tests/ --cov=app --cov-report=term-missing -q
 ```
 
 All tests should pass. The suite runs in approximately 5 minutes on a modern machine.
+
+---
+
+## Reference dumps (optional, requires a real controller)
+
+`reference-dumps/all_points_<lang>.json` holds a real controller's complete
+point list, one file per language. They are **gitignored developer-local
+data** — they contain a real installation's serial number and live values —
+and are never committed.
+
+Nothing in the normal workflow needs them, but two things do: the `dev/e2e/`
+harness replays `all_points_en.json` as its mock controller, and any question
+of the form "is this point actually classified/mapped correctly?" gets
+answered by reading the real firmware metadata out of these files rather than
+guessing.
+
+If you have a controller on your network:
+
+```bash
+NIBE_PASSWORD=... ./dev/capture-reference-dump.sh --host 192.168.1.50 --user admin
+```
+
+The password may also be supplied interactively (omit `NIBE_PASSWORD` and you
+will be prompted). It is deliberately not a command-line flag, which would put
+it in your shell history and in `ps`.
+
+The script reports how many points each dump contains and, when a previous
+dump exists, exactly which point IDs were **added or removed** since — which
+is the quickest way to see what a firmware update changed. It validates every
+response before replacing anything, so a failed request or an error page
+leaves the existing dump untouched rather than silently destroying it.
+
+**Recapture after every controller firmware update.** A dump that predates the
+running firmware is worse than no dump: it looks authoritative while quietly
+describing a different machine. Firmware 4.13.12 added thirteen points, and
+the dumps were not refreshed for it.
 
 ---
 
