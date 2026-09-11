@@ -1270,6 +1270,30 @@ menus:
           '
         note: Writable. The value you set here is an upper ceiling — the firmware may operate below this limit if the load
           monitor or fuse size restricts power. Any value written here will be overwritten within seconds.
+      - label: High tariff price
+        range: 1 – 60000
+        point_id: 5286
+        note: The firmware calls this source "ext. step add. heat", which names both this menu and menu 4.7.6 External additional heat. It is placed here because "step" is the discriminating word -- 4.7.3 takes the shunt family and this menu the step family, leaving 4.7.6 for a source with no tariff family of its own. Menu placement affects only how the Nibe Menus dashboard groups the entity, not the entity itself.
+      - label: Low tariff price
+        range: 1 – 60000
+        point_id: 5287
+        note: Price per kWh for external step-controlled additional heat during the low tariff period.
+      - label: Tariff period start day
+        range: 1 – 31
+        point_id: 5443
+        note: Start of the date window this source's tariff applies to.
+      - label: Tariff period end day
+        range: 1 – 31
+        point_id: 5444
+        note: End of the date window this source's tariff applies to.
+      - label: Tariff period start month
+        range: 1 – 12
+        point_id: 5445
+        note: Start month of the date window.
+      - label: Tariff period end month
+        range: 1 – 12
+        point_id: 5446
+        note: End month of the date window.
       - label: Fuse size
         range: A
         point_id: 3825
@@ -1898,6 +1922,22 @@ menus:
           the full year (1 Jan – 31 Dec) — narrow this only if your tariff structure genuinely changes seasonally.
 
           '
+      - label: Fixed tariff period start day
+        range: 1 – 31
+        point_id: 5335
+        note: The installer manual states this menu allows "two different date periods per year". This is the second, which the firmware names for the fixed tariff rather than the variable one above.
+      - label: Fixed tariff period end day
+        range: 1 – 31
+        point_id: 5336
+        note: End of the fixed tariff date window.
+      - label: Fixed tariff period start month
+        range: 1 – 12
+        point_id: 5337
+        note: Start month of the fixed tariff date window.
+      - label: Fixed tariff period end month
+        range: 1 – 12
+        point_id: 5338
+        note: End month of the fixed tariff date window.
     - id: 4.7.3
       title: Shunt-controlled additional heat
       description: 'Price-based permission for shunt-controlled additional heat (e.g. district heating or gas boiler via shunt
@@ -1911,6 +1951,30 @@ menus:
         range: off/on
         point_id: 3881
         note: Same register as menu 7.1.5.1 — see there for full context.
+      - label: High tariff price
+        range: 1 – 60000
+        point_id: 5288
+        note: Price per kWh for shunt-controlled additional heat during the high tariff period. Mirrors the electricity prices in menu 4.7.1; the manual notes the setting is made for each individual energy source.
+      - label: Low tariff price
+        range: 1 – 60000
+        point_id: 5289
+        note: Price per kWh for shunt-controlled additional heat during the low tariff period.
+      - label: Tariff period start day
+        range: 1 – 31
+        point_id: 5407
+        note: Start of the date window this source's tariff applies to.
+      - label: Tariff period end day
+        range: 1 – 31
+        point_id: 5408
+        note: End of the date window this source's tariff applies to.
+      - label: Tariff period start month
+        range: 1 – 12
+        point_id: 5409
+        note: Start month of the date window.
+      - label: Tariff period end month
+        range: 1 – 12
+        point_id: 5410
+        note: End month of the date window.
       - label: Wait time shunt
         range: 10 – 300 s
         point_id: 3885
