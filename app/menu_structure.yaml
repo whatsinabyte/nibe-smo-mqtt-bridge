@@ -1291,34 +1291,14 @@ menus:
           '
         note: Writable. The value you set here is an upper ceiling — the firmware may operate below this limit if the load
           monitor or fuse size restricts power. Any value written here will be overwritten within seconds.
-      - label: High tariff price
-        range: 1 – 60000
-        point_id: 5286
-        note: The firmware calls this source "ext. step add. heat", which names both this menu and menu 4.7.6 External additional heat. It is placed here because "step" is the discriminating word -- 4.7.3 takes the shunt family and this menu the step family, leaving 4.7.6 for a source with no tariff family of its own. Menu placement affects only how the Nibe Menus dashboard groups the entity, not the entity itself.
-      - label: Low tariff price
-        range: 1 – 60000
-        point_id: 5287
-        note: Price per kWh for external step-controlled additional heat during the low tariff period.
-      - label: Tariff period start day
-        range: 1 – 31
-        point_id: 5443
-        note: Start of the date window this source's tariff applies to.
-      - label: Tariff period end day
-        range: 1 – 31
-        point_id: 5444
-        note: End of the date window this source's tariff applies to.
-      - label: Tariff period start month
-        range: 1 – 12
-        point_id: 5445
-        note: Start month of the date window.
-      - label: Tariff period end month
-        range: 1 – 12
-        point_id: 5446
-        note: End month of the date window.
       - label: Fuse size
         range: A
         point_id: 3825
         note: 'Main fuse size as configured in menu 7.1.9 (Load monitor). See also: menu 7.1.9 to change this value.'
+      - label: External additional heat, active steps
+        range: steps (read-only)
+        point_id: 6717
+        note: Number of active steps of external addition, exposed as a Modbus TCP/IP and Local REST API parameter at Modbus register 2454.
     - id: 3.1.10
       title: System components
       description: 'Live status of key system components — pumps and their current operating speeds. Corresponds to the myUplink
@@ -1476,7 +1456,15 @@ menus:
       1–10 years or 1–24 months.
 
       '
-    settings: []
+    settings:
+    - label: Total production
+      range: kWh (read-only)
+      point_id: 28392
+      note: Total energy produced, exposed as a Modbus TCP/IP and Local REST API parameter at Modbus register 3821.
+    - label: Total consumption
+      range: kWh (read-only)
+      point_id: 28393
+      note: Total energy consumed, exposed as a Modbus TCP/IP and Local REST API parameter at Modbus register 3823.
     local_api: false
     submenus:
     - id: 3.3.1
@@ -2101,6 +2089,30 @@ menus:
           electricity consumption during high-price periods.
         note: Writable. The value you set here is an upper ceiling — the firmware may operate below this limit if the load
           monitor or fuse size restricts power. Any value written here will be overwritten within seconds.
+      - label: High tariff price
+        range: 1 – 60000
+        point_id: 5286
+        note: The firmware calls this source "ext. step add. heat", which names both this menu and menu 4.7.6 External additional heat. It is placed here because "step" is the discriminating word -- 4.7.3 takes the shunt family and this menu the step family, leaving 4.7.6 for a source with no tariff family of its own. Menu placement affects only how the Nibe Menus dashboard groups the entity, not the entity itself.
+      - label: Low tariff price
+        range: 1 – 60000
+        point_id: 5287
+        note: Price per kWh for external step-controlled additional heat during the low tariff period.
+      - label: Tariff period start day
+        range: 1 – 31
+        point_id: 5443
+        note: Start of the date window this source's tariff applies to.
+      - label: Tariff period end day
+        range: 1 – 31
+        point_id: 5444
+        note: End of the date window this source's tariff applies to.
+      - label: Tariff period start month
+        range: 1 – 12
+        point_id: 5445
+        note: Start month of the date window.
+      - label: Tariff period end month
+        range: 1 – 12
+        point_id: 5446
+        note: End month of the date window.
     - id: 4.7.6
       title: External additional heat
       description: 'Price-based control for external additional heat sources connected via AUX relay output. Configured through
@@ -4172,6 +4184,10 @@ menus:
         note: Maximum permitted incoming brine temperature. Documented with exactly this 0-30 °C range, which no other
           register in the point list shares. Distinct from the 10-30 °C "Max brine in" of menu 7.1.2.8, which belongs to
           the ground/water brine alarm settings rather than to this accessory.
+      - label: Shunt state (QN41)
+        range: Shunt off / open / closed
+        point_id: 3173
+        note: State of the brine shunt valve QN41. The changelog records it being made available as a Modbus input register at 2410, and the firmware's own description enumerates the states, 10 meaning shunt off and 20 shunt open.
   - id: '7.3'
     title: Multi-installation
     description: 'Settings for multi-unit installations where several heat pumps are connected together under one SMO S40
@@ -4439,11 +4455,74 @@ menus:
 
         '
       settings:
-      - label: Available power (Solar PV)
-        range: 0 – 65535
-        point_id: 14314
-        note: Read-only — the available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
-          inverter. Any value written here will be overwritten within seconds.
+      - label: Use external calculated supply
+        range: off/on
+        point_id: 24483
+        note: Hands control of the calculated flow temperature to a third-party system over Modbus. The changelog records the Modbus addresses for this family, 5008 for this flag and 5009 upward for the setpoints.
+      - label: Supply line set point, heating 1
+        range: 5 – 80 °C
+        point_id: 24484
+        note: Externally supplied flow temperature for climate system 1 in heating, used when the flag above is set. Changelog 2.21.12 names it eMbHolding_eS16SupplySetPointHeating at Modbus 5009.
+      - label: Supply line set point, heating 2
+        range: 5 – 80 °C
+        point_id: 24485
+        note: As above, for climate system 2.
+      - label: Supply line set point, heating 3
+        range: 5 – 80 °C
+        point_id: 24486
+        note: As above, for climate system 3.
+      - label: Supply line set point, heating 4
+        range: 5 – 80 °C
+        point_id: 24487
+        note: As above, for climate system 4.
+      - label: Supply line set point, heating 5
+        range: 5 – 80 °C
+        point_id: 24488
+        note: As above, for climate system 5.
+      - label: Supply line set point, heating 6
+        range: 5 – 80 °C
+        point_id: 24489
+        note: As above, for climate system 6.
+      - label: Supply line set point, heating 7
+        range: 5 – 80 °C
+        point_id: 24490
+        note: As above, for climate system 7.
+      - label: Supply line set point, heating 8
+        range: 5 – 80 °C
+        point_id: 24491
+        note: As above, for climate system 8.
+      - label: Supply line set point, cooling 1
+        range: -5 – 30 °C
+        point_id: 24492
+        note: Externally supplied flow temperature for climate system 1 in cooling. Changelog 2.21.12 names it eMbHolding_eS16SupplySetPointCooling at Modbus 5017.
+      - label: Supply line set point, cooling 2
+        range: -5 – 30 °C
+        point_id: 24493
+        note: As above, for climate system 2.
+      - label: Supply line set point, cooling 3
+        range: -5 – 30 °C
+        point_id: 24494
+        note: As above, for climate system 3.
+      - label: Supply line set point, cooling 4
+        range: -5 – 30 °C
+        point_id: 24495
+        note: As above, for climate system 4.
+      - label: Supply line set point, cooling 5
+        range: -5 – 30 °C
+        point_id: 24496
+        note: As above, for climate system 5.
+      - label: Supply line set point, cooling 6
+        range: -5 – 30 °C
+        point_id: 24497
+        note: As above, for climate system 6.
+      - label: Supply line set point, cooling 7
+        range: -5 – 30 °C
+        point_id: 24498
+        note: As above, for climate system 7.
+      - label: Supply line set point, cooling 8
+        range: -5 – 30 °C
+        point_id: 24499
+        note: As above, for climate system 8.
       submenus:
       - id: 7.5.9.2
         title: External temperature readings via Modbus
