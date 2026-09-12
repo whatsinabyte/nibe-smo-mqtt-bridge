@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.9] — 2026-09-12
+
+### Changed
+
+- **The AppArmor profile is now enforced, not just logged.** It previously
+  ran in `complain` mode, which records violations without blocking them.
+  A period of real-hardware operation (including the debug-mode test-runner
+  subprocess, which exercises the widest set of filesystem paths) produced
+  no denials, so the profile is now applied for real.
+
 ## [1.1.8] — 2026-09-11
 
 Two defects found on real hardware during a NIBE firmware update to 4.13.12.
