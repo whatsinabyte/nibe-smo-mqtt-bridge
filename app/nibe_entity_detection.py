@@ -265,18 +265,42 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # register's read-only counterpart — same 4-state SG Ready concept,
         # reported rather than requested. It follows this codebase's usual
         # undocumented multiple-of-ten encoding instead of 10614's plain
-        # 0-3. Only `10` is actually confirmed (real-world log evidence,
-        # cross-checked against 10614's confirmed 1="Standard" — see GitHub
-        # issue #35): the equivalent "no active grid signal" state. The
-        # values below for the other three states are an UNVERIFIED GUESS
-        # only — naively assuming the same index order as 10614 at 20/30/40
-        # spacing, which is exactly the kind of stacked assumption that
-        # turned out wrong for 10614 itself (both the previously-removed
-        # mapping and an earlier bit-encoding guess predicted 10614's
-        # values incorrectly; only real hardware testing confirmed them).
-        # Left commented out — do not enable without confirming these
-        # three values on hardware with an active grid service:
-        # 3260: {10: "Standard", 20: "Encouraged", 30: "Cut off", 40: "Ordered"},
+        # 0-3.
+        #
+        # Two of its four values are now confirmed on hardware (VVM S320,
+        # GitHub issue #40):
+        #
+        #   10614 = Standard (1)   ->  3260 = 10
+        #   10614 = Encouraged (2) ->  3260 = 30
+        #
+        # The first was confirmed twice, once from a resting system and again
+        # after reverting from Encouraged, so 10 is the rest state rather
+        # than a startup default.
+        #
+        # The guess that used to sit here — assuming 10614's index order at
+        # 20/30/40 spacing, giving {10: Standard, 20: Encouraged, 30: Cut
+        # off, 40: Ordered} — is REFUTED by that second measurement. It
+        # predicted 20 for Encouraged and the register read 30. That is the
+        # third assumption about this SG Ready pair to fail a hardware test:
+        # a previously-removed mapping and an earlier bit-encoding guess both
+        # predicted 10614's own values wrongly too, and only measurement ever
+        # settled them.
+        #
+        # Cut off and Ordered remain untested — the reporter declined to
+        # trigger them on a system doing live solar-surplus steering, which
+        # is reasonable. Their observation is that 30 may not encode *which*
+        # active state is in force at all, but simply that one is, in which
+        # case Cut off and Ordered would also read 30 and this register could
+        # not distinguish them. That is explicitly their hypothesis, not a
+        # measurement.
+        #
+        # Still left commented out, and deliberately not enabled as a partial
+        # {10: ..., 30: ...} mapping. If 30 does mean "any active state",
+        # labelling it "Encouraged" would misreport Cut off — a register
+        # showing a confidently wrong label is worse than one showing a raw
+        # number a user can look up. Enable only once all four values are
+        # measured:
+        # 3260: {10: "Standard", 30: "Encouraged", ...},  # 20/40 unknown
         # Operating prioritisation
         56150: {10: "Off", 20: "Hot water", 30: "Heating", 40: "Pool", 60: "Cooling"},
         # Heat pump type codes (best-effort, not officially documented)
