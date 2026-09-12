@@ -1,6 +1,6 @@
 #include <tunables/global>
 
-profile nibe_s_series flags=(attach_disconnected,mediate_deleted,complain) {
+profile nibe_s_series flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
   # Capabilities required by the bridge
