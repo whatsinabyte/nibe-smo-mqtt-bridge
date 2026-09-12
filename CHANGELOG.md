@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.9] — 2026-09-12
+## [1.1.10] — 2026-09-12
 
 ### Changed
 
 - **The AppArmor profile is now enforced, not just logged.** It previously
   ran in `complain` mode, which records violations without blocking them.
-  A period of real-hardware operation (including the debug-mode test-runner
-  subprocess, which exercises the widest set of filesystem paths) produced
-  no denials, so the profile is now applied for real.
+  Switching to enforce mode surfaced a real gap: `/app`, `/tests`, `/data`,
+  and `/homeassistant` each only had a `**` glob rule, which covers files
+  inside a directory but not the directory's own entry. Python's import
+  scanner needs read/list permission on a directory itself to find modules
+  in it, so enforcing without the bare-directory rule broke every import
+  from `/app` at startup. Complain mode never caught this because a missing
+  rule there is only logged, not actually blocked. Both are fixed together
+  and confirmed working on real hardware before merging.
 
 ## [1.1.8] — 2026-09-11
 
