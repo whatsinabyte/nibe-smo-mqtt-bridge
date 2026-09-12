@@ -277,9 +277,14 @@ def resolve_unit(
     ``warned`` set (the default) skips logging entirely, keeping pure
     resolution callers (such as direct tests) free of side effects.
     """
-    was_overridden = point_id in UNIT_OVERRIDES
     unit = UNIT_OVERRIDES.get(point_id, raw_unit)
     unit = clean_unit(unit)
+    # A point can carry an override yet still match what firmware itself
+    # reports right now (firmware fixed the unit after the override was
+    # added, e.g. reporting 'kW' correctly where it once wrongly reported
+    # 'kWh' for a power point) — only an actual discrepancy counts as
+    # "overridden", not mere presence in UNIT_OVERRIDES.
+    was_overridden = point_id in UNIT_OVERRIDES and clean_unit(raw_unit) != unit
     if was_overridden and warned is not None and point_id not in warned:
         # pragma: no mutate start
         log_mqtt.warning(

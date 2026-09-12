@@ -4598,6 +4598,28 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
             mock_warn.assert_not_called()
         self.assertEqual(warned, set())
 
+    def test_override_point_matching_current_firmware_value_does_not_log(self):
+        """A point present in UNIT_OVERRIDES must not log or count as
+        overridden once firmware itself already reports the override's
+        value — e.g. firmware used to wrongly report 'kWh' for a power
+        point and was later fixed to report 'kW' (the override's value)
+        directly. Regression test: `was_overridden` was previously decided
+        by mere presence in UNIT_OVERRIDES, so this warned forever even
+        after firmware agreed with the override."""
+        from nibe_mqtt_publisher import UNIT_OVERRIDES, log_mqtt, resolve_unit
+
+        point_id = 25165
+        self.assertEqual(UNIT_OVERRIDES[point_id], "kW")
+        warned = set()
+        with patch.object(log_mqtt, "warning") as mock_warn:
+            unit, was_overridden = resolve_unit(
+                point_id, "kW", "Energy log - Current power consumption", warned
+            )
+            mock_warn.assert_not_called()
+        self.assertEqual(unit, "kW")
+        self.assertFalse(was_overridden)
+        self.assertEqual(warned, set())
+
     def test_missing_title_falls_back_to_point_label(self):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
