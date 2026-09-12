@@ -23,6 +23,33 @@ export default [
     },
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+
+      // Style rules that lock in what this file already does, rather than
+      // imposing anything new: both pass clean as written. js.configs.
+      // recommended carries no stylistic rules at all, so until now nothing
+      // checked either of these and they held only by hand.
+      //
+      // Double quotes stay allowed inside template literals because that is
+      // where the card's HTML lives, and HTML attributes take double quotes:
+      // `<button class="button-fixed" data-id="${id}">`. avoidEscape keeps a
+      // string containing an apostrophe from having to escape it.
+      quotes: ['error', 'single', { allowTemplateLiterals: true, avoidEscape: true }],
+      semi: ['error', 'always'],
+
+      // `indent` is deliberately NOT enabled. The card is consistently two-
+      // space indented, but it also aligns the branches of multi-line ternary
+      // expressions under each other for readability:
+      //
+      //   ? this._lastKnownEnabledPoints.has(pointId)
+      //   : false,
+      //
+      // ESLint's arithmetic wants those pushed to a computed depth instead,
+      // which reports 56 findings across 16 such expressions and no other
+      // problem anywhere in the file. `--fix` would reformat every one of
+      // them into something harder to read. The .editorconfig entry
+      // (indent_size = 2 for *.js) still describes the file correctly; it is
+      // the continuation lines inside ternaries and multi-line template
+      // literals that a flat rule cannot judge.
     },
   },
 
