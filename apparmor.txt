@@ -56,11 +56,20 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted) {
   /                       r,
 
   # Application code — read and execute only
+  # The bare directory entries (not just the ** globs) are required:
+  # Python's import machinery scans a directory's own contents via
+  # os.scandir() to find candidate modules, which needs read/list
+  # permission on the directory itself. In `complain` mode a missing
+  # directory rule is only logged, not blocked, so this went unnoticed
+  # until enforce mode actually blocked the scan and broke every import
+  # from /app (surfaced as a spurious ModuleNotFoundError).
+  /app/                  r,
   /app/**                r,
   /app/*.py              r,
   /run.sh                rix,
 
   # Tests — read only (nightly test runner)
+  /tests/                r,
   /tests/**              r,
 
   # pytest.ini and config.yaml at addon root
@@ -68,12 +77,14 @@ profile nibe_s_series flags=(attach_disconnected,mediate_deleted) {
   /config.yaml           r,
 
   # Add-on data directory — options.json, flag files, dynamic map
+  /data/                 rw,
   /data/**               rw,
 
   # Mapped config volume — the homeassistant_config map target actually
   # mounts at /homeassistant in this container (confirmed empirically —
   # /config does not exist here despite being the conventional name used
   # elsewhere in HA add-on documentation). Lovelace card, test reports.
+  /homeassistant/        rw,
   /homeassistant/**      rw,
   # /config/secrets.yaml is only ever tried as a fallback candidate path
   # (see generate_nibe_mqtt.py) — harmless to allow read access in case
