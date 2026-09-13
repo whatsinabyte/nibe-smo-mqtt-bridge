@@ -386,8 +386,6 @@ CONFIG_ENTITY_TYPES: list[str] = ["switch", "number", "select", "button", "text"
 # Per-point unit overrides.
 # Key: point_id  Value: replacement unit string sent to HA.
 UNIT_OVERRIDES: dict[int, str] = {
-    25165: "kW",
-    25166: "kW",
     4562: "",  # switch (0=auto, 1=manual) — firmware wrongly reports unit='%'
     50825: "%",  # THS-10 accessory point — firmware reports no unit but value is %
     50827: "%",  # Humidity: ths-10 — firmware unit is "%RH", which HA's auto-detection rejects
@@ -421,10 +419,12 @@ UNIT_OVERRIDES: dict[int, str] = {
 }
 
 # Per-point device_class overrides.
-DEVICE_CLASS_OVERRIDES: dict[int, str] = {
-    25165: "power",
-    25166: "power",
-}
+# Empty for now: its last entries (25165/25166, forced to "power") were
+# removed once firmware started reporting the correct unit ('kW') itself,
+# since map_device_class() already infers "power" unassisted from that
+# unit via _UNIT_TO_DEVICE_CLASS. Kept as a mechanism for the next firmware
+# metadata mistake that needs correcting this way.
+DEVICE_CLASS_OVERRIDES: dict[int, str] = {}
 
 # Unit → HA device_class lookup (after _UNIT_NORMALISE has been applied).
 _UNIT_TO_DEVICE_CLASS: dict[str, str] = {

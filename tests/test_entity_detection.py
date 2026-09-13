@@ -1984,6 +1984,16 @@ class TestUnitOverrides(unittest.TestCase):
         self.assertIn(50825, UNIT_OVERRIDES)
         self.assertEqual(UNIT_OVERRIDES[50825], "%")
 
+    def test_25165_and_25166_no_longer_overridden(self):
+        """Firmware used to wrongly report 'kWh' (an energy unit) for these
+        power points, hence the override. Firmware now reports 'kW' itself,
+        making the override dead weight — removed rather than kept around
+        matching what firmware already provides."""
+        from nibe_entity_detection import UNIT_OVERRIDES
+
+        self.assertNotIn(25165, UNIT_OVERRIDES)
+        self.assertNotIn(25166, UNIT_OVERRIDES)
+
     def test_4562_entity_type_is_switch(self):
         from nibe_entity_detection import ENTITY_TYPE_OVERRIDES
 
