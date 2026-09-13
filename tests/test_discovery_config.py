@@ -12,6 +12,7 @@ These tests exercise its build_*_config() functions directly.
 """
 
 import unittest
+from unittest.mock import patch
 
 from conftest import _nibe_divisor, _nibe_point_id
 from hypothesis import given
@@ -247,10 +248,14 @@ class TestBuildSensorConfigDeviceClassOverride(unittest.TestCase):
         from nibe_discovery_config import build_sensor_config
 
         config = {}
-        # Point 25165 is hardcoded in DEVICE_CLASS_OVERRIDES to 'power',
-        # regardless of what map_device_class would otherwise compute for
-        # this unit/title combination.
-        build_sensor_config(config, "state/t", 25165, "kWh", "Some odd title", {"divisor": 1})
+        # DEVICE_CLASS_OVERRIDES is currently empty (its last real entries
+        # were removed once firmware stopped needing the correction) — patch
+        # in a synthetic one so this test still exercises the override
+        # mechanism itself: the override must win regardless of what
+        # map_device_class would otherwise compute for this unit/title
+        # combination ('kWh' alone would resolve to 'energy', not 'power').
+        with patch.dict("nibe_discovery_config.DEVICE_CLASS_OVERRIDES", {25165: "power"}):
+            build_sensor_config(config, "state/t", 25165, "kWh", "Some odd title", {"divisor": 1})
         self.assertEqual(config["device_class"], "power")
 
 

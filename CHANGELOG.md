@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.9] — 2026-09-13
+
+The AppArmor profile is now actually enforced rather than only logging
+violations — a change that required finding and fixing every gap the
+enforce-only-if-you-look-for-it `complain` mode had let slide. Verified
+over a full day of real hardware usage plus two clean full nightly test
+runs (4367 passed, 0 failed) before shipping.
+
+### Changed
+
+- **The AppArmor profile is now enforced, not just logged.** It previously
+  ran in `complain` mode, which records violations without blocking them.
+  Enforcing it surfaced three real gaps, all fixed here:
+  - `/app`, `/tests`, `/data`, and `/homeassistant` each only had a `**`
+    glob rule, which covers files inside a directory but not the
+    directory's own entry. Python's import scanner needs read/list
+    permission on a directory itself to find modules in it, so enforcing
+    without the bare-directory rule broke every import from `/app` at
+    startup (surfaced as a spurious `ModuleNotFoundError`).
+  - `/translations` had no rule at all, breaking the nightly test runner's
+    translation-parity checks (`test_translation_files_exist` and related)
+    even though the bridge's own runtime never reads that directory.
+  - pytest's own cache writes to `/.pytest_cache` under the add-on's
+    read-only root were silently denied. Redirected pytest's cache
+    directory to `/tmp` instead, since it's disposable scratch data that
+    doesn't belong under the protected root anyway.
+
+### Fixed
+
+- **Two power-consumption points falsely reported their unit as
+  "overridden" on every startup.** Points 25165/25166 ("Energy log -
+  Current power consumption[, components]") carried a hardcoded `"kW"`
+  unit override and a hardcoded `"power"` device_class override, both
+  added because firmware used to wrongly report an energy unit (`kWh`)
+  for these power points. Firmware now reports `kW` correctly on its own,
+  making both overrides dead weight — the unit override still logged
+  "unit overridden" on every poll regardless of whether anything actually
+  differed, and the device_class override was redundant with what
+  `map_device_class()` already infers unassisted from the `kW` unit.
+  Both overrides removed now that firmware itself provides the correct
+  values.
+
+---
+
 ## [1.1.8] — 2026-09-11
 
 Two defects found on real hardware during a NIBE firmware update to 4.13.12.
