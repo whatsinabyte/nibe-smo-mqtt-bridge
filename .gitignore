@@ -44,6 +44,11 @@ data/
 # status as reference-dumps/ itself.
 /reference-dumps.*/
 
+# Local mirror of the installer/user manual PDF collection — previously only
+# on the SMB share, mirrored here for faster local reads. Developer-local,
+# never committed (large binary files).
+/reference-pdfs/
+
 # macOS
 .DS_Store
 .smb*
