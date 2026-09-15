@@ -1604,6 +1604,141 @@ class TestOnEnabledStateChangeFactory(unittest.TestCase):
         )
 
 
+class TestDetectControllerFamily(unittest.TestCase):
+    """The recognised air/water prefixes are exactly DOCS.md's own "Indoor
+    units / controllers" group (SMO S40, VVM S310/320/325/330/500, SVM
+    S332) — confirmed directly against those models' own installer
+    manuals (VVM S320 and VVM S330 both document "Fan de-icing" at menu
+    4.11.3, identically to SMO S40). Everything else, including
+    unrecognised or empty names, defaults to "water_water". This fails in
+    the safer direction: an unrecognised model just picks up harmless
+    extra tabs, rather than a real ground-source installation silently
+    losing GP1/brine controls."""
+
+    def test_smo_s40_is_air_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("SMO S40"), "air_water")
+
+    def test_smo_s40_case_insensitive(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("smo s40"), "air_water")
+
+    def test_smo_s40_with_suffix_still_matches_by_prefix(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("SMO S40-12"), "air_water")
+
+    def test_vvm_s320_is_air_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("VVM S320"), "air_water")
+
+    def test_vvm_s330_is_air_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("VVM S330"), "air_water")
+
+    def test_svm_s332_is_air_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("SVM S332"), "air_water")
+
+    def test_known_ground_source_model_is_water_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("S1155-16"), "water_water")
+
+    def test_s735_defaults_to_water_water(self):
+        """S735 has its own internal GP1 pump like the ground-source
+        models, so defaulting it to water_water is still the functionally
+        correct outcome even though S735 is technically air/water."""
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("S735"), "water_water")
+
+    def test_unrecognised_model_defaults_to_water_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family("Some Future Model"), "water_water")
+
+    def test_none_defaults_to_water_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family(None), "water_water")
+
+    def test_empty_string_defaults_to_water_water(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._detect_controller_family(""), "water_water")
+
+
+class TestFilterMenuStructureByFamily(unittest.TestCase):
+    """Recursively drops menus/submenus whose `family` tag doesn't match
+    the detected controller family, keeping untagged menus for everyone.
+    A bug here either leaks irrelevant ground-source/air-water content
+    into the wrong installation's dashboard, or silently drops shared
+    content that should show for everyone."""
+
+    def test_empty_menu_list(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._filter_menu_structure_by_family([], "air_water"), [])
+
+    def test_untagged_menu_kept_for_any_family(self):
+        import nibe_lovelace as nl
+
+        menus = [{"id": "1", "title": "Shared", "settings": []}]
+        self.assertEqual(nl._filter_menu_structure_by_family(menus, "air_water"), menus)
+        self.assertEqual(nl._filter_menu_structure_by_family(menus, "water_water"), menus)
+
+    def test_matching_family_kept(self):
+        import nibe_lovelace as nl
+
+        menus = [{"id": "7.1.2.1", "family": "water_water", "settings": []}]
+        self.assertEqual(nl._filter_menu_structure_by_family(menus, "water_water"), menus)
+
+    def test_non_matching_family_dropped(self):
+        import nibe_lovelace as nl
+
+        menus = [{"id": "7.1.2.1", "family": "water_water", "settings": []}]
+        self.assertEqual(nl._filter_menu_structure_by_family(menus, "air_water"), [])
+
+    def test_recurses_into_submenus(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7.1.2",
+                "title": "Circulation pumps",
+                "submenus": [
+                    {"id": "7.1.2.1", "family": "water_water", "settings": []},
+                    {"id": "7.1.2.3", "title": "Charge pump", "settings": []},
+                ],
+            }
+        ]
+        result = nl._filter_menu_structure_by_family(menus, "air_water")
+        self.assertEqual(len(result), 1)
+        self.assertEqual([s["id"] for s in result[0]["submenus"]], ["7.1.2.3"])
+
+    def test_does_not_mutate_input(self):
+        """menu_structure is shared/reused across dashboard rebuilds — the
+        filter must return a new structure, never edit the original in place."""
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7.1.2",
+                "submenus": [
+                    {"id": "7.1.2.1", "family": "water_water", "settings": []},
+                ],
+            }
+        ]
+        nl._filter_menu_structure_by_family(menus, "air_water")
+        self.assertEqual(len(menus[0]["submenus"]), 1)
+
+
 class TestCollectMenuPoints(unittest.TestCase):
     """Pure recursive logic, extracted from _setup_menu_dashboard for direct
     testing. A bug here (e.g. forgetting to recurse into submenus) would
@@ -1824,6 +1959,80 @@ class TestBuildMenuPoints(unittest.TestCase):
             MODES["menus"] = saved  # restore for other tests
 
 
+class TestBuildMenuPointsControllerFamily(unittest.TestCase):
+    """build_menu_points' controller_family filtering — this is what keeps
+    "menus" mode entity enablement in sync with the dashboard's own family
+    filtering (_filter_menu_structure_by_family). Without this, a
+    water_water-only point (GP1, brine circuit) would still get enabled on
+    an air/water installation even though its dashboard card never shows,
+    and vice versa — silently reintroducing the exact clutter problem the
+    family split was meant to fix, just one layer down in the entity
+    registry instead of the dashboard."""
+
+    def _write_yaml(self, menus: list) -> str:
+        import tempfile
+
+        import yaml
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+            yaml.dump({"menus": menus}, tmp)
+        return tmp.name
+
+    def test_no_controller_family_keeps_everything(self):
+        """Default (None) must preserve the old behaviour exactly — every
+        existing caller that doesn't pass controller_family must be
+        unaffected by this feature."""
+        import os
+
+        import nibe_lovelace as nl
+
+        path = self._write_yaml(
+            [
+                {"id": "1", "settings": [{"point_id": 1}]},
+                {"id": "2", "family": "water_water", "settings": [{"point_id": 2}]},
+            ]
+        )
+        try:
+            result = nl.build_menu_points(path)
+            self.assertEqual(result, frozenset({1, 2}))
+        finally:
+            os.unlink(path)
+
+    def test_non_matching_family_point_excluded(self):
+        import os
+
+        import nibe_lovelace as nl
+
+        path = self._write_yaml(
+            [
+                {"id": "1", "settings": [{"point_id": 1}]},
+                {"id": "2", "family": "water_water", "settings": [{"point_id": 2}]},
+            ]
+        )
+        try:
+            result = nl.build_menu_points(path, controller_family="air_water")
+            self.assertEqual(result, frozenset({1}))
+        finally:
+            os.unlink(path)
+
+    def test_matching_family_point_included(self):
+        import os
+
+        import nibe_lovelace as nl
+
+        path = self._write_yaml(
+            [
+                {"id": "1", "settings": [{"point_id": 1}]},
+                {"id": "2", "family": "water_water", "settings": [{"point_id": 2}]},
+            ]
+        )
+        try:
+            result = nl.build_menu_points(path, controller_family="water_water")
+            self.assertEqual(result, frozenset({1, 2}))
+        finally:
+            os.unlink(path)
+
+
 class TestMenuPointsYamlSync(unittest.TestCase):
     """Structural sync test: every point_id in menu_structure.yaml must be
     reachable by build_menu_points() — i.e. _collect_menu_points() must find
@@ -2019,6 +2228,53 @@ class TestShouldAttemptDashboardCreate(unittest.TestCase):
 
 
 # ===========================================================================
+# 42a. _format_point_value — shared default/current-value formatting
+# ===========================================================================
+
+
+class TestFormatPointValue(unittest.TestCase):
+    """Shared by _build_point_defaults (factory default) and
+    _build_changed_from_default (current live value) — both must format a
+    raw integer identically or the changed-from-default comparison between
+    them is meaningless."""
+
+    def _point(self, min_val=0, max_val=100, divisor=1, unit=""):
+        return {
+            "metadata": {
+                "minValue": min_val,
+                "maxValue": max_val,
+                "divisor": divisor,
+                "unit": unit,
+            }
+        }
+
+    def test_boolean_range_renders_off_on(self):
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=1)
+        self.assertEqual(nl._format_point_value(100, point, 0), "off")
+        self.assertEqual(nl._format_point_value(100, point, 1), "on")
+
+    def test_value_mapping_used_when_available(self):
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=2)
+        self.assertEqual(nl._format_point_value(3751, point, 1), "Manual")
+
+    def test_numeric_fallback_with_unit(self):
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=400, divisor=10, unit="°C")
+        self.assertEqual(nl._format_point_value(100, point, 200), "20 °C")
+
+    def test_numeric_fallback_without_unit(self):
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=7)
+        self.assertEqual(nl._format_point_value(100, point, 3), "3")
+
+
+# ===========================================================================
 # 43. _build_point_defaults — dashboard default-value annotation logic
 # ===========================================================================
 
@@ -2130,27 +2386,70 @@ class TestBuildPointDefaults(unittest.TestCase):
         self.assertNotIn(100, nl._build_point_defaults(points))
 
     def test_zero_default_on_binary_toggle_is_included(self):
-        """Pinned-down current behavior: a real 0/1 toggle (max_val=1)
-        defaulting to 0 is NOT caught by the ambiguous-zero suppression
-        (which only fires when max_val > 1), so it IS included as '0'.
-        Point 4562 (manual pump speed override) is exactly this shape in
-        the real firmware. Whether '0' is the most readable label for an
-        off-by-default switch is a separate question — this test exists so
-        a future change to the suppression condition is a deliberate
-        decision, not an accidental side effect."""
+        """A real 0/1 toggle (max_val=1) defaulting to 0 is NOT caught by
+        the ambiguous-zero suppression (which only fires when max_val > 1),
+        so it IS included — rendered as 'off' rather than the raw '0', to
+        match the setting's own 'off/on' range rather than contradicting
+        it. Point 4562 (manual pump speed override) is exactly this shape
+        in the real firmware."""
         import nibe_lovelace as nl
 
         points = {4562: self._point(min_val=0, max_val=1, default=0, divisor=1, unit="")}
         result = nl._build_point_defaults(points)
-        self.assertEqual(result[4562], "0")
+        self.assertEqual(result[4562], "off")
 
     def test_nonzero_default_on_narrow_range_is_included(self):
-        """default != 0 is never suppressed, even on a 0-1 range."""
+        """default != 0 is never suppressed, even on a 0-1 range — and a
+        0-1 range renders as 'on', not the raw '1'."""
         import nibe_lovelace as nl
 
         points = {100: self._point(min_val=0, max_val=1, default=1)}
         result = nl._build_point_defaults(points)
-        self.assertEqual(result[100], "1")
+        self.assertEqual(result[100], "on")
+
+    def test_value_mapping_from_manual_table_used_for_select_default(self):
+        """A select point with a VALUE_MAPPINGS entry shows the real label
+        (e.g. 'Manual') instead of the raw integer (e.g. '1') — point 3751
+        ('Operating mode') is exactly this shape in the real firmware."""
+        import nibe_lovelace as nl
+
+        points = {3751: self._point(min_val=0, max_val=2, default=1, unit="")}
+        result = nl._build_point_defaults(points)
+        self.assertEqual(result[3751], "Manual")
+
+    def test_value_mapping_from_firmware_description_used_for_select_default(self):
+        """A select point with no VALUE_MAPPINGS entry but a parseable
+        firmware description (see parse_description_mapping) shows the
+        real label instead of the raw integer."""
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=2, default=1, unit="")
+        point["description"] = "0 = Off, 1 = Active, 2 = Passive"
+        points = {999999: point}
+        result = nl._build_point_defaults(points)
+        self.assertEqual(result[999999], "Active")
+
+    def test_multi_value_default_with_no_mapping_falls_back_to_raw_number(self):
+        """A genuinely numeric setting (e.g. a step count) with no value
+        mapping at all is NOT a select — it must keep showing its raw
+        numeric default rather than being suppressed or guessed at."""
+        import nibe_lovelace as nl
+
+        points = {999999: self._point(min_val=0, max_val=7, default=3, unit="")}
+        result = nl._build_point_defaults(points)
+        self.assertEqual(result[999999], "3")
+
+    def test_default_not_in_value_mapping_falls_back_to_raw_number(self):
+        """Defensive: if the default integer isn't actually a key in the
+        resolved value mapping, fall back to the raw number rather than
+        raising or silently omitting the point."""
+        import nibe_lovelace as nl
+
+        point = self._point(min_val=0, max_val=5, default=4, unit="")
+        point["description"] = "0 = Off, 1 = Active"
+        points = {999999: point}
+        result = nl._build_point_defaults(points)
+        self.assertEqual(result[999999], "4")
 
     def test_nonzero_min_with_zero_default_is_included(self):
         """The ambiguous-zero suppression only applies when min_val == 0 —
@@ -2318,6 +2617,774 @@ class TestBuildPointDefaults(unittest.TestCase):
         }
         result = nl._build_point_defaults(points)
         self.assertEqual(set(result.keys()), {4})
+
+
+# ===========================================================================
+# 42b. _resolve_view_id — longest-matching-prefix lookup for split menus
+# ===========================================================================
+
+
+class TestResolveViewId(unittest.TestCase):
+    """Resolves a menu reference id to whichever known view id is its
+    longest dotted prefix. A regression here means either a split-menu
+    cross-reference resolves to the wrong (too coarse or too fine) view,
+    or a reference into an unsplit menu stops resolving at all."""
+
+    def test_exact_match_returns_itself(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._resolve_view_id("7", {"7"}), "7")
+
+    def test_single_component_valid_set_matches_unsplit_menu_style(self):
+        """Mirrors the pre-split behaviour: only the bare top-level id is a
+        known view, so any deeper reference resolves to it."""
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._resolve_view_id("7.2.4", {"7"}), "7")
+
+    def test_longer_prefix_preferred_over_shorter_when_both_valid(self):
+        """A split menu's own hub id ("7") and one of its children ("7.2")
+        can both be valid view ids at once — the more specific one wins."""
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._resolve_view_id("7.2.4", {"7", "7.2"}), "7.2")
+
+    def test_falls_back_to_hub_when_no_child_matches(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._resolve_view_id("7.6.1", {"7", "7.2"}), "7")
+
+    def test_no_matching_prefix_returns_none(self):
+        import nibe_lovelace as nl
+
+        self.assertIsNone(nl._resolve_view_id("5.2", {"1", "7"}))
+
+    def test_empty_valid_set_returns_none(self):
+        import nibe_lovelace as nl
+
+        self.assertIsNone(nl._resolve_view_id("7.1", set()))
+
+
+# ===========================================================================
+# 43a. _linkify_menu_refs — clickable cross-references between menu views
+# ===========================================================================
+
+
+class TestLinkifyMenuRefs(unittest.TestCase):
+    """Turns "menu X.Y.Z" mentions in annotation text into links to that
+    top-level menu's dashboard view. A regression here means cross-
+    references either silently stop being clickable, or start linking to
+    a dashboard view that doesn't exist (a dead link)."""
+
+    def test_reference_to_existing_top_level_menu_is_linked(self):
+        import nibe_lovelace as nl
+
+        text = "Cross-reference: menu 7.1.9 Load monitor."
+        result = nl._linkify_menu_refs(text, {"7"})
+        self.assertEqual(result, "Cross-reference: [menu 7.1.9](/nibe-menus/menu-7) Load monitor.")
+
+    def test_reference_to_missing_top_level_menu_left_as_plain_text(self):
+        """A menu documented for a different accessory/language that isn't
+        present in this installation's menu_structure.yaml must not become
+        a dead link."""
+        import nibe_lovelace as nl
+
+        text = "See menu 5.2 for network settings."
+        result = nl._linkify_menu_refs(text, {"1", "7"})
+        self.assertEqual(result, text)
+
+    def test_top_level_menu_reference_uses_its_own_id(self):
+        """A bare top-level reference (e.g. 'menu 4') must link to menu-4,
+        not be mistaken for having no submenu component."""
+        import nibe_lovelace as nl
+
+        text = "→ menu 4."
+        result = nl._linkify_menu_refs(text, {"4"})
+        self.assertEqual(result, "→ [menu 4](/nibe-menus/menu-4).")
+
+    def test_multiple_references_in_same_text_all_linked(self):
+        import nibe_lovelace as nl
+
+        text = "See menu 1.30.3 and menu 7.2.4 for the two halves of this setting."
+        result = nl._linkify_menu_refs(text, {"1", "7"})
+        self.assertEqual(
+            result,
+            "See [menu 1.30.3](/nibe-menus/menu-1) and [menu 7.2.4](/nibe-menus/menu-7) "
+            "for the two halves of this setting.",
+        )
+
+    def test_case_insensitive_menu_keyword(self):
+        import nibe_lovelace as nl
+
+        result = nl._linkify_menu_refs("See Menu 7.1.9.", {"7"})
+        self.assertEqual(result, "See [Menu 7.1.9](/nibe-menus/menu-7).")
+
+    def test_empty_text_returns_empty_text(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._linkify_menu_refs("", {"7"}), "")
+
+    def test_text_with_no_menu_reference_unchanged(self):
+        import nibe_lovelace as nl
+
+        text = "This setting has no cross-reference at all."
+        self.assertEqual(nl._linkify_menu_refs(text, {"7"}), text)
+
+    def test_empty_valid_set_leaves_all_references_unlinked(self):
+        import nibe_lovelace as nl
+
+        text = "See menu 7.1.9."
+        self.assertEqual(nl._linkify_menu_refs(text, set()), text)
+
+    def test_self_reference_to_current_top_level_left_as_plain_text(self):
+        """A mention of the menu's own top-level (e.g. 'menu 1.2' inside
+        menu 1.2's own text) would link to the page already open — no
+        navigation occurs, so it must not become a dead-looking link."""
+        import nibe_lovelace as nl
+
+        text = "See menu 1.2 for details."
+        result = nl._linkify_menu_refs(text, {"1", "7"}, current_top_level="1")
+        self.assertEqual(result, text)
+
+    def test_sibling_submenu_reference_on_same_tab_left_as_plain_text(self):
+        """A reference to a different submenu that still lives on the same
+        top-level view (e.g. 'menu 1.30.1' mentioned from within menu
+        1.1.1) is also a same-page link. Confirmed on a real installation
+        that Lovelace markdown cards have no working in-page anchor
+        mechanism — a link here rendered but clicking it did nothing — so
+        this must be left as plain text rather than a dead-looking link."""
+        import nibe_lovelace as nl
+
+        text = "Cross-reference: heating curve slope → menu 1.30.1."
+        result = nl._linkify_menu_refs(text, {"1", "7"}, current_top_level="1")
+        self.assertEqual(result, text)
+
+    def test_reference_to_different_top_level_still_linked_when_current_given(self):
+        import nibe_lovelace as nl
+
+        text = "Cross-reference: menu 7.1.9 Load monitor."
+        result = nl._linkify_menu_refs(text, {"1", "7"}, current_top_level="1")
+        self.assertEqual(result, "Cross-reference: [menu 7.1.9](/nibe-menus/menu-7) Load monitor.")
+
+    def test_current_top_level_none_preserves_old_behaviour(self):
+        """Default (no current_top_level) must still link same-top-level
+        references, for any caller that doesn't pass it."""
+        import nibe_lovelace as nl
+
+        text = "See menu 1.5."
+        result = nl._linkify_menu_refs(text, {"1"})
+        self.assertEqual(result, "See [menu 1.5](/nibe-menus/menu-1).")
+
+    def test_split_menu_reference_resolves_to_specific_child_view(self):
+        """Once a menu is split (see split_submenus), a reference into one
+        of its children must link to that child's own view, not the
+        coarser hub — and the path must use hyphens, matching how that
+        child's own view path is built."""
+        import nibe_lovelace as nl
+
+        text = "Cross-reference: menu 7.2.4."
+        result = nl._linkify_menu_refs(text, {"7", "7.1", "7.2"})
+        self.assertEqual(result, "Cross-reference: [menu 7.2.4](/nibe-menus/menu-7-2).")
+
+    def test_split_menu_cross_child_reference_now_linked_not_suppressed(self):
+        """The whole point of splitting: a reference from menu 7.1's own
+        text into menu 7.2 used to be a same-page (same top-level "7")
+        dead-text reference before the split. After splitting, 7.1 and 7.2
+        are different views, so this must now become a working link."""
+        import nibe_lovelace as nl
+
+        text = "Cross-reference: menu 7.2.4."
+        result = nl._linkify_menu_refs(text, {"7", "7.1", "7.2"}, current_top_level="7.1")
+        self.assertEqual(result, "Cross-reference: [menu 7.2.4](/nibe-menus/menu-7-2).")
+
+    def test_split_menu_self_reference_within_same_child_still_suppressed(self):
+        """A reference from within menu 7.2's own text back into menu 7.2
+        itself is still a same-page reference and must stay plain text."""
+        import nibe_lovelace as nl
+
+        text = "See menu 7.2.9 above."
+        result = nl._linkify_menu_refs(text, {"7", "7.1", "7.2"}, current_top_level="7.2")
+        self.assertEqual(result, text)
+
+    def test_split_menu_reference_to_hub_itself_is_linked(self):
+        """A bare "menu 7" mention (no submenu component) resolves to the
+        hub view, distinct from any of its split-out children."""
+        import nibe_lovelace as nl
+
+        text = "See menu 7 for installer settings."
+        result = nl._linkify_menu_refs(text, {"7", "7.1", "7.2"}, current_top_level="7.1")
+        self.assertEqual(result, "See [menu 7](/nibe-menus/menu-7) for installer settings.")
+
+
+# ===========================================================================
+# 43b. _build_overview_view — landing view listing every top-level menu
+# ===========================================================================
+
+
+class TestBuildOverviewView(unittest.TestCase):
+    """The landing view shown first, listing every top-level menu with a
+    one-line summary and a tap-to-jump link. A regression here means the
+    dashboard opens cold with no index, or links to a menu that doesn't
+    actually have its own view."""
+
+    def _menu(self, id_, title="Test", description=""):
+        return {"id": id_, "title": title, "description": description}
+
+    def test_view_metadata(self):
+        import nibe_lovelace as nl
+
+        view = nl._build_overview_view([self._menu("1", "Indoor climate")])
+        self.assertEqual(view["title"], "Overview")
+        self.assertEqual(view["path"], "overview")
+
+    def test_single_card_of_type_markdown(self):
+        import nibe_lovelace as nl
+
+        view = nl._build_overview_view([self._menu("1")])
+        self.assertEqual(len(view["cards"]), 1)
+        self.assertEqual(view["cards"][0]["type"], "markdown")
+
+    def test_each_menu_gets_a_link_to_its_own_view(self):
+        import nibe_lovelace as nl
+
+        view = nl._build_overview_view([self._menu("1", "Indoor climate")])
+        content = view["cards"][0]["content"]
+        self.assertIn("[Menu 1 – Indoor climate](/nibe-menus/menu-1)", content)
+
+    def test_first_paragraph_of_description_used_as_summary(self):
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            "1", "Indoor climate", description="First paragraph.\n\nSecond paragraph."
+        )
+        view = nl._build_overview_view([menu])
+        content = view["cards"][0]["content"]
+        self.assertIn("First paragraph.", content)
+        self.assertNotIn("Second paragraph.", content)
+
+    def test_missing_description_omits_summary_line_without_crashing(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "Indoor climate"}
+        view = nl._build_overview_view([menu])
+        self.assertIn("[Menu 1 – Indoor climate](/nibe-menus/menu-1)", view["cards"][0]["content"])
+
+    def test_multiple_menus_all_listed_in_order(self):
+        import nibe_lovelace as nl
+
+        menus = [self._menu("1", "First"), self._menu("2", "Second"), self._menu("7", "Third")]
+        content = nl._build_overview_view(menus)["cards"][0]["content"]
+        first_pos = content.index("Menu 1")
+        second_pos = content.index("Menu 2")
+        third_pos = content.index("Menu 7")
+        self.assertLess(first_pos, second_pos)
+        self.assertLess(second_pos, third_pos)
+
+    def test_empty_menu_list_produces_valid_but_empty_view(self):
+        import nibe_lovelace as nl
+
+        view = nl._build_overview_view([])
+        self.assertEqual(view["path"], "overview")
+        self.assertEqual(len(view["cards"]), 1)
+
+
+# ===========================================================================
+# 43d. _group_cards_for_masonry — per-section stacks for multi-column layout
+# ===========================================================================
+
+
+class TestGroupCardsForMasonry(unittest.TestCase):
+    """Regroups _build_menu_view's flat markdown/entities card sequence
+    into per-section stacks, so HA's default masonry view type can spread
+    sections across columns on wide screens instead of the previous single
+    vertical-stack forcing everything into one column always. A regression
+    here either loses the multi-column layout again, or splits a section's
+    description from its own settings into different groups/columns."""
+
+    def _md(self, content="x"):
+        return {"type": "markdown", "content": content}
+
+    def _entities(self, entities=None):
+        return {"type": "entities", "entities": entities or []}
+
+    def test_markdown_followed_by_entities_grouped_together(self):
+        import nibe_lovelace as nl
+
+        md, ent = self._md("section 1"), self._entities([{"entity": "sensor.a"}])
+        result = nl._group_cards_for_masonry([md, ent])
+        self.assertEqual(result, [{"type": "vertical-stack", "cards": [md, ent]}])
+
+    def test_lone_markdown_card_returned_bare_not_wrapped(self):
+        """A section with no settings (e.g. local_api:false) or the
+        trailing footer has only a markdown card — no entities card
+        follows it — must not be pointlessly wrapped in a single-card
+        vertical-stack."""
+        import nibe_lovelace as nl
+
+        md = self._md("footer")
+        result = nl._group_cards_for_masonry([md])
+        self.assertEqual(result, [md])
+
+    def test_multiple_sections_produce_separate_groups(self):
+        import nibe_lovelace as nl
+
+        md1, ent1 = self._md("section 1"), self._entities([{"entity": "sensor.a"}])
+        md2, ent2 = self._md("section 2"), self._entities([{"entity": "sensor.b"}])
+        result = nl._group_cards_for_masonry([md1, ent1, md2, ent2])
+        self.assertEqual(
+            result,
+            [
+                {"type": "vertical-stack", "cards": [md1, ent1]},
+                {"type": "vertical-stack", "cards": [md2, ent2]},
+            ],
+        )
+
+    def test_mix_of_paired_and_lone_sections(self):
+        """Realistic sequence: a section with settings, a section with
+        none (lone markdown, e.g. local_api:false), then the trailing
+        footer (also lone markdown)."""
+        import nibe_lovelace as nl
+
+        md1, ent1 = self._md("with settings"), self._entities()
+        md2 = self._md("local_api false, no entities card")
+        footer = self._md("footer")
+        result = nl._group_cards_for_masonry([md1, ent1, md2, footer])
+        self.assertEqual(
+            result,
+            [{"type": "vertical-stack", "cards": [md1, ent1]}, md2, footer],
+        )
+
+    def test_empty_input_returns_empty_list(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._group_cards_for_masonry([]), [])
+
+    def test_non_markdown_card_first_still_grouped_not_dropped(self):
+        """Defensive: _build_menu_view never actually emits an entities
+        card before any markdown card, but a leading non-markdown card
+        must still start its own group rather than being silently lost
+        (the `or not groups` fallback)."""
+        import nibe_lovelace as nl
+
+        ent = self._entities([{"entity": "sensor.a"}])
+        result = nl._group_cards_for_masonry([ent])
+        self.assertEqual(result, [ent])
+
+    def test_many_small_sections_collapse_to_at_most_column_chunk_count(self):
+        """With more sections than _MASONRY_COLUMN_CHUNKS, they must be
+        packed into that many large sequential stacks rather than one
+        stack per section — otherwise masonry's height-balancing spreads
+        many small stacks across columns out of numeric order."""
+        import nibe_lovelace as nl
+
+        sections = []
+        for i in range(10):
+            sections += [self._md(f"section {i}"), self._entities([{"entity": f"sensor.{i}"}])]
+        result = nl._group_cards_for_masonry(sections)
+        self.assertLessEqual(len(result), nl._MASONRY_COLUMN_CHUNKS)
+
+    def test_chunking_preserves_original_section_order(self):
+        """Sections must never be reordered by the chunking — each chunk
+        is a contiguous run, and chunks themselves stay in original order,
+        so reading down one column then the next still reads menu numbers
+        in ascending order."""
+        import nibe_lovelace as nl
+
+        sections = []
+        for i in range(10):
+            sections += [self._md(f"section {i}"), self._entities([{"entity": f"sensor.{i}"}])]
+        result = nl._group_cards_for_masonry(sections)
+
+        seen_order = []
+        for chunk in result:
+            chunk_cards = chunk["cards"] if chunk.get("type") == "vertical-stack" else [chunk]
+            for card in chunk_cards:
+                if card.get("type") == "markdown":
+                    seen_order.append(card["content"])
+        self.assertEqual(seen_order, [f"section {i}" for i in range(10)])
+
+    def test_lopsided_section_weights_still_chunk_by_size_not_count(self):
+        """A single huge section (many entity rows) followed by several
+        tiny ones must not all get crammed into one chunk purely because
+        counting sections would put the boundary elsewhere — chunk
+        boundaries are based on approximate rendered weight."""
+        import nibe_lovelace as nl
+
+        big = [self._md("big"), self._entities([{"entity": f"sensor.{i}"} for i in range(30)])]
+        small_sections = []
+        for i in range(5):
+            small_sections += [self._md(f"small {i}"), self._entities([{"entity": f"s.{i}"}])]
+        result = nl._group_cards_for_masonry(big + small_sections)
+
+        # The big section's own chunk must not also swallow every small
+        # section — some chunk boundary must fall among the small ones.
+        self.assertGreater(len(result), 1)
+        first_chunk_cards = (
+            result[0]["cards"] if result[0].get("type") == "vertical-stack" else [result[0]]
+        )
+        self.assertIn({"type": "markdown", "content": "big"}, first_chunk_cards)
+        self.assertNotIn({"type": "markdown", "content": "small 4"}, first_chunk_cards)
+
+
+# ===========================================================================
+# 43e. _build_hub_children_card — links from a split menu's hub to its children
+# ===========================================================================
+
+
+class TestBuildHubChildrenCard(unittest.TestCase):
+    """The markdown card a split menu's hub view uses to link to each of
+    its own immediate submenus' separate views. A regression here means a
+    split menu's hub page has no way to reach its own content."""
+
+    def _child(self, id_, title):
+        return {"id": id_, "title": title}
+
+    def test_card_type_is_markdown(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_hub_children_card([self._child("7.1", "Operating settings")])
+        self.assertEqual(card["type"], "markdown")
+
+    def test_each_child_gets_a_link_to_its_own_view(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_hub_children_card([self._child("7.1", "Operating settings")])
+        self.assertIn("[7.1 Operating settings](/nibe-menus/menu-7-1)", card["content"])
+
+    def test_multiple_children_all_listed_in_order(self):
+        import nibe_lovelace as nl
+
+        children = [
+            self._child("7.1", "First"),
+            self._child("7.2", "Second"),
+            self._child("7.3", "Third"),
+        ]
+        content = nl._build_hub_children_card(children)["content"]
+        first_pos = content.index("7.1")
+        second_pos = content.index("7.2")
+        third_pos = content.index("7.3")
+        self.assertLess(first_pos, second_pos)
+        self.assertLess(second_pos, third_pos)
+
+    def test_empty_children_list_produces_valid_card_with_no_links(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_hub_children_card([])
+        self.assertEqual(card["type"], "markdown")
+        self.assertNotIn("](/nibe-menus/", card["content"])
+
+
+# ===========================================================================
+# 43g. _build_jump_out_card — link standing in for a pulled-out submenu
+# ===========================================================================
+
+
+class TestBuildJumpOutCard(unittest.TestCase):
+    """The card rendered in place of a submenu that's been pulled out into
+    its own view because it (not its parent) is tagged split_submenus. A
+    regression here means that submenu's content becomes unreachable from
+    where a reader would naturally look for it."""
+
+    def test_card_type_is_markdown(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_jump_out_card({"id": "3.1", "title": "Operating info"})
+        self.assertEqual(card["type"], "markdown")
+
+    def test_links_to_the_submenus_own_view(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_jump_out_card({"id": "3.1", "title": "Operating info"})
+        self.assertIn("[3.1 Operating info", card["content"])
+        self.assertIn("(/nibe-menus/menu-3-1)", card["content"])
+
+    def test_first_paragraph_of_description_used_as_summary(self):
+        import nibe_lovelace as nl
+
+        menu = {
+            "id": "3.1",
+            "title": "Operating info",
+            "description": "First paragraph.\n\nSecond paragraph.",
+        }
+        content = nl._build_jump_out_card(menu)["content"]
+        self.assertIn("First paragraph.", content)
+        self.assertNotIn("Second paragraph.", content)
+
+    def test_missing_description_omits_summary_without_crashing(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_jump_out_card({"id": "3.1", "title": "Operating info"})
+        self.assertIn("3.1 Operating info", card["content"])
+
+
+# ===========================================================================
+# 43h. _find_split_descendants — locates split_submenus flags below a menu
+# ===========================================================================
+
+
+class TestFindSplitDescendants(unittest.TestCase):
+    """Walks a menu's subtree looking for split_submenus flags on any
+    descendant, without requiring the menu itself to be split. A
+    regression here means a deeply-nested oversized submenu (e.g. menu
+    3.1 inside otherwise-small menu 3) either never gets pulled into its
+    own view, or gets found twice."""
+
+    def test_no_submenus_returns_empty(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._find_split_descendants({"id": "1", "settings": []}), [])
+
+    def test_no_split_descendants_returns_empty(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "3", "submenus": [{"id": "3.1", "submenus": [{"id": "3.1.1"}]}]}
+        self.assertEqual(nl._find_split_descendants(menu), [])
+
+    def test_direct_child_split_is_found(self):
+        import nibe_lovelace as nl
+
+        child = {"id": "3.1", "split_submenus": True, "submenus": []}
+        menu = {"id": "3", "submenus": [child]}
+        self.assertEqual(nl._find_split_descendants(menu), [child])
+
+    def test_grandchild_split_is_found_through_unsplit_child(self):
+        import nibe_lovelace as nl
+
+        grandchild = {"id": "3.1.5", "split_submenus": True}
+        child = {"id": "3.1", "submenus": [grandchild]}
+        menu = {"id": "3", "submenus": [child]}
+        self.assertEqual(nl._find_split_descendants(menu), [grandchild])
+
+    def test_does_not_descend_past_a_found_split_node(self):
+        """A split node's own descendants are its own concern once it's
+        expanded by _build_view_specs -- searching past it here would
+        risk that node's content being counted for two different
+        ancestors."""
+        import nibe_lovelace as nl
+
+        inner = {"id": "3.1.9", "split_submenus": True}
+        outer = {"id": "3.1", "split_submenus": True, "submenus": [inner]}
+        menu = {"id": "3", "submenus": [outer]}
+        self.assertEqual(nl._find_split_descendants(menu), [outer])
+
+    def test_multiple_independent_split_descendants_all_found(self):
+        import nibe_lovelace as nl
+
+        split_a = {"id": "3.1", "split_submenus": True}
+        split_b = {"id": "3.9", "split_submenus": True}
+        menu = {
+            "id": "3",
+            "submenus": [
+                split_a,
+                {"id": "3.5", "submenus": []},
+                split_b,
+            ],
+        }
+        self.assertEqual(nl._find_split_descendants(menu), [split_a, split_b])
+
+
+# ===========================================================================
+# 43f. _build_view_specs — flattens split menus into hub + child view entries
+# ===========================================================================
+
+
+class TestBuildViewSpecs(unittest.TestCase):
+    """Turns menu_structure into the flat list of (menu, children) entries
+    _build_menu_dashboard_config actually builds one view per. A
+    regression here means a split menu either doesn't split (its hub
+    swallows everything again) or loses/duplicates one of its children."""
+
+    def test_unsplit_menu_produces_one_entry_with_none_children(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "Indoor climate", "settings": []}
+        specs = nl._build_view_specs([menu])
+        self.assertEqual(len(specs), 1)
+        self.assertIs(specs[0]["menu"], menu)
+        self.assertIsNone(specs[0]["children"])
+        self.assertFalse(specs[0]["subview"])
+
+    def test_split_menu_produces_hub_entry_plus_one_per_child(self):
+        import nibe_lovelace as nl
+
+        child1 = {"id": "7.1", "title": "Operating settings"}
+        child2 = {"id": "7.2", "title": "Accessory settings"}
+        menu = {
+            "id": "7",
+            "title": "Installer",
+            "split_submenus": True,
+            "submenus": [child1, child2],
+        }
+        specs = nl._build_view_specs([menu])
+        self.assertEqual(len(specs), 3)
+        self.assertIs(specs[0]["menu"], menu)
+        self.assertEqual(specs[0]["children"], [child1, child2])
+        self.assertFalse(specs[0]["subview"])
+        self.assertIs(specs[1]["menu"], child1)
+        self.assertIsNone(specs[1]["children"])
+        self.assertTrue(specs[1]["subview"])
+        self.assertIs(specs[2]["menu"], child2)
+        self.assertIsNone(specs[2]["children"])
+        self.assertTrue(specs[2]["subview"])
+
+    def test_split_menu_with_no_submenus_still_produces_hub_only(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "7", "title": "Installer", "split_submenus": True}
+        specs = nl._build_view_specs([menu])
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["children"], [])
+
+    def test_mixed_split_and_unsplit_menus_preserve_relative_order(self):
+        import nibe_lovelace as nl
+
+        child = {"id": "7.1", "title": "Operating settings"}
+        menus = [
+            {"id": "1", "title": "Indoor climate", "settings": []},
+            {"id": "7", "title": "Installer", "split_submenus": True, "submenus": [child]},
+            {"id": "4", "title": "My system", "settings": []},
+        ]
+        specs = nl._build_view_specs(menus)
+        ids = [spec["menu"]["id"] for spec in specs]
+        self.assertEqual(ids, ["1", "7", "7.1", "4"])
+
+    def test_split_submenus_false_is_treated_as_unsplit(self):
+        import nibe_lovelace as nl
+
+        menu = {
+            "id": "1",
+            "title": "Indoor climate",
+            "split_submenus": False,
+            "submenus": [{"id": "1.1", "title": "Sub"}],
+        }
+        specs = nl._build_view_specs([menu])
+        self.assertEqual(len(specs), 1)
+        self.assertIsNone(specs[0]["children"])
+
+    def test_deeply_nested_split_submenu_gets_its_own_entry(self):
+        """menu 3 itself stays unsplit, but menu 3.1 (buried two levels
+        down as menu 3's own submenu 3.1) is tagged split_submenus -- it
+        must still get pulled out into its own hub-plus-children entries,
+        as a subview, without menu 3's other small submenus (3.2 here)
+        being forced into anything."""
+        import nibe_lovelace as nl
+
+        grandchild = {"id": "3.1.8", "title": "Heat pump 1"}
+        child_split = {
+            "id": "3.1",
+            "title": "Operating info",
+            "split_submenus": True,
+            "submenus": [grandchild],
+        }
+        child_plain = {"id": "3.2", "title": "Temperature log"}
+        menu = {"id": "3", "title": "Info", "submenus": [child_split, child_plain]}
+
+        specs = nl._build_view_specs([menu])
+        ids = [spec["menu"]["id"] for spec in specs]
+        self.assertEqual(ids, ["3", "3.1", "3.1.8"])
+
+        by_id = {spec["menu"]["id"]: spec for spec in specs}
+        self.assertIsNone(by_id["3"]["children"])
+        self.assertFalse(by_id["3"]["subview"])
+        self.assertEqual(by_id["3.1"]["children"], [grandchild])
+        self.assertTrue(by_id["3.1"]["subview"])
+        self.assertIsNone(by_id["3.1.8"]["children"])
+        self.assertTrue(by_id["3.1.8"]["subview"])
+
+
+# ===========================================================================
+# 43c. _build_changed_from_default — flags values changed from factory default
+# ===========================================================================
+
+
+class TestBuildChangedFromDefault(unittest.TestCase):
+    """Compares each point's current live value (from bulk_data) against
+    its documented factory default (from _build_point_defaults) to power
+    the ✏️ changed-from-default badge on the dashboard."""
+
+    def _point(self, min_val=0, max_val=100, divisor=1, unit="", int_value=50, is_ok=True):
+        # Matches entity_manager.bulk_data's real shape — flat "is_ok"/
+        # "raw_value" keys, not the nested {"value": {"isOk":...,
+        # "integerValue":...}} shape the REST API itself returns. Using the
+        # REST API shape here previously matched the buggy implementation
+        # instead of catching it: the tests passed while the ✏️ badge
+        # never appeared on any real installation.
+        return {
+            "metadata": {
+                "minValue": min_val,
+                "maxValue": max_val,
+                "divisor": divisor,
+                "unit": unit,
+            },
+            "is_ok": is_ok,
+            "raw_value": int_value,
+        }
+
+    def test_value_matching_default_not_flagged(self):
+        import nibe_lovelace as nl
+
+        bulk_data = {100: self._point(int_value=50)}
+        point_defaults = {100: "50"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), set())
+
+    def test_value_differing_from_default_flagged(self):
+        import nibe_lovelace as nl
+
+        bulk_data = {100: self._point(int_value=75)}
+        point_defaults = {100: "50"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), {100})
+
+    def test_point_not_in_bulk_data_not_flagged(self):
+        """A default exists but the point has since disappeared from the
+        live bulk fetch — nothing to compare against, must not crash."""
+        import nibe_lovelace as nl
+
+        point_defaults = {100: "50"}
+        self.assertEqual(nl._build_changed_from_default({}, point_defaults), set())
+
+    def test_not_ok_value_not_flagged(self):
+        """A point whose live read failed (isOk=False) has no trustworthy
+        current value to compare — must not be flagged either way."""
+        import nibe_lovelace as nl
+
+        bulk_data = {100: self._point(int_value=999, is_ok=False)}
+        point_defaults = {100: "50"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), set())
+
+    def test_point_not_in_point_defaults_never_considered(self):
+        """Only points with a meaningful, already-computed default are
+        ever compared — a point absent from point_defaults is out of scope."""
+        import nibe_lovelace as nl
+
+        bulk_data = {100: self._point(int_value=999)}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, {}), set())
+
+    def test_boolean_value_compared_via_off_on_labels_not_raw_digits(self):
+        """Both sides go through the same _format_point_value formatting,
+        so a boolean's off/on label is compared correctly rather than
+        the raw 0/1 (which would always differ in representation)."""
+        import nibe_lovelace as nl
+
+        bulk_data = {100: self._point(min_val=0, max_val=1, int_value=0)}
+        point_defaults = {100: "off"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), set())
+
+    def test_value_mapping_label_used_for_comparison(self):
+        import nibe_lovelace as nl
+
+        bulk_data = {3751: self._point(min_val=0, max_val=2, int_value=1)}
+        point_defaults = {3751: "Manual"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), set())
+
+    def test_multiple_points_independent(self):
+        import nibe_lovelace as nl
+
+        bulk_data = {
+            100: self._point(int_value=50),  # matches default
+            200: self._point(int_value=99),  # differs from default
+        }
+        point_defaults = {100: "50", 200: "50"}
+        self.assertEqual(nl._build_changed_from_default(bulk_data, point_defaults), {200})
 
 
 # ===========================================================================
@@ -3498,6 +4565,65 @@ class TestBuildMenuView(unittest.TestCase):
         divider = entities_card["entities"][0]
         self.assertEqual(divider["label"], "Some setting  ·  0 – 100 %  ·  default: 50 %")
 
+    def test_section_divider_shows_badge_when_changed_from_default(self):
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            settings=[
+                {"label": "Some setting", "point_id": 100, "range": "0 – 100 %"},
+            ]
+        )
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({100: "switch.foo"}),
+            point_defaults={100: "50 %"},
+            changed_from_default={100},
+        )
+        entities_card = next(c for c in cards if c["type"] == "entities")
+        divider = entities_card["entities"][0]
+        self.assertEqual(divider["label"], "🟠 ✏️ Some setting  ·  0 – 100 %  ·  default: 50 %")
+
+    def test_section_divider_no_badge_when_not_in_changed_set(self):
+        import nibe_lovelace as nl
+
+        menu = self._menu(settings=[{"label": "Some setting", "point_id": 100}])
+        cards = nl._build_menu_view(
+            menu, self._watcher({100: "switch.foo"}), changed_from_default={999999}
+        )
+        entities_card = next(c for c in cards if c["type"] == "entities")
+        divider = entities_card["entities"][0]
+        self.assertEqual(divider["label"], "Some setting")
+
+    def test_section_divider_no_badge_for_setting_without_point_id(self):
+        """A label-only row (point_id: null) can never be 'changed from
+        default' — must not crash on the `in` check against None."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(settings=[{"label": "Some setting", "point_id": None}])
+        cards = nl._build_menu_view(menu, self._watcher({}), changed_from_default={100})
+        entities_card = next(c for c in cards if c["type"] == "entities")
+        divider = entities_card["entities"][0]
+        self.assertEqual(divider["label"], "Some setting")
+
+    def test_section_divider_no_badge_when_entity_not_enabled(self):
+        """A point can be in changed_from_default (its bulk-fetch value
+        differs from the documented default) yet have no resolved HA
+        entity — e.g. a disabled-by-default entity, or one that has never
+        actually been enabled. There's no control on the dashboard to act
+        on, and the value can't be trusted as reliably live while the
+        firmware isn't actively tracking it, so no badge must show even
+        though the point is in changed_from_default."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(settings=[{"label": "Some setting", "point_id": 100}])
+        cards = nl._build_menu_view(
+            menu, self._watcher({}), changed_from_default={100}, known_dynamic=set()
+        )
+        entities_card = next(c for c in cards if c["type"] == "entities")
+        divider = entities_card["entities"][0]
+        self.assertEqual(divider["label"], "Some setting")
+        self.assertIn({"type": "section", "label": "↳ not enabled"}, entities_card["entities"])
+
     def test_resolved_point_shows_entity_row(self):
         import nibe_lovelace as nl
 
@@ -3665,6 +4791,105 @@ class TestBuildMenuView(unittest.TestCase):
         cards = nl._build_menu_view(menu, self._watcher({1: "x.a", 2: "x.b"}))
         entities_cards = [c for c in cards if c["type"] == "entities"]
         self.assertEqual(len(entities_cards), 2)
+
+    def test_render_submenus_false_skips_recursion(self):
+        """Used to build a split menu's hub view — only the menu's own
+        header (and direct settings, if any) render; submenus are left
+        for their own separate _build_menu_view call instead."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            submenus=[
+                {"id": "1.1", "title": "Child", "settings": [{"label": "Y", "point_id": 200}]},
+            ]
+        )
+        cards = nl._build_menu_view(
+            menu, self._watcher({200: "sensor.child"}), render_submenus=False
+        )
+        contents = [c.get("content", "") for c in cards]
+        self.assertFalse(any("Menu 1.1" in c for c in contents))
+        self.assertEqual([c["type"] for c in cards if c["type"] == "entities"], [])
+
+    def test_render_submenus_true_is_the_default(self):
+        import nibe_lovelace as nl
+
+        menu = self._menu(submenus=[{"id": "1.1", "title": "Child", "settings": []}])
+        cards = nl._build_menu_view(menu, self._watcher({}))
+        contents = [c.get("content", "") for c in cards]
+        self.assertTrue(any("Menu 1.1" in c for c in contents))
+
+    def test_submenu_tagged_split_submenus_gets_jump_card_not_recursion(self):
+        """A submenu pulled out into its own view (see
+        _find_split_descendants) must not also be flattened inline here —
+        its point_id-bearing settings would otherwise render twice, once
+        in each view."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            submenus=[
+                {
+                    "id": "1.1",
+                    "title": "Split child",
+                    "split_submenus": True,
+                    "settings": [{"label": "Y", "point_id": 200}],
+                },
+            ]
+        )
+        cards = nl._build_menu_view(menu, self._watcher({200: "sensor.child"}))
+        contents = [c.get("content", "") for c in cards]
+        self.assertFalse(any("Menu 1.1" in c for c in contents))
+        self.assertTrue(any("[1.1 Split child" in c for c in contents))
+        self.assertEqual([c for c in cards if c["type"] == "entities"], [])
+
+    def test_sibling_of_split_submenu_still_renders_normally(self):
+        """Only the split-tagged submenu itself is pulled out -- an
+        unrelated sibling submenu must still flatten inline as before."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            submenus=[
+                {"id": "1.1", "title": "Split child", "split_submenus": True, "settings": []},
+                {
+                    "id": "1.2",
+                    "title": "Plain child",
+                    "settings": [{"label": "Y", "point_id": 200}],
+                },
+            ]
+        )
+        cards = nl._build_menu_view(menu, self._watcher({200: "sensor.child"}))
+        contents = [c.get("content", "") for c in cards]
+        self.assertTrue(any("Menu 1.2" in c for c in contents))
+        entities_cards = [c for c in cards if c["type"] == "entities"]
+        self.assertEqual(len(entities_cards), 1)
+        self.assertIn({"entity": "sensor.child"}, entities_cards[0]["entities"])
+
+    def test_current_top_level_uses_full_dotted_view_id_not_first_component(self):
+        """Before the split-menu feature, current_top_level truncated to
+        the first dot component (e.g. "7" from "7.1"), which made every
+        submenu of an unsplit menu look like the same view for linkify
+        purposes — correct for that case. A split-out submenu view (e.g.
+        id "7.1") must instead use its own full id, so a reference to a
+        *different* split sibling (e.g. "menu 7.2") is recognised as a
+        genuinely different view and gets linked, not suppressed."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            id="7.1", title="Operating settings", description="See menu 7.2 for accessories."
+        )
+        cards = nl._build_menu_view(menu, self._watcher({}), valid_top_level_menus={"7.1", "7.2"})
+        header = cards[0]["content"]
+        self.assertIn("[menu 7.2](/nibe-menus/menu-7-2)", header)
+
+    def test_current_top_level_self_reference_still_suppressed_within_split_child(self):
+        """A reference to the split child's own id from within its own text
+        must still be left as plain text -- it's the same page."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(id="7.1", title="Operating settings", description="See menu 7.1.9 above.")
+        cards = nl._build_menu_view(menu, self._watcher({}), valid_top_level_menus={"7.1", "7.2"})
+        header = cards[0]["content"]
+        self.assertNotIn("](", header)
+        self.assertIn("menu 7.1.9", header)
 
     def test_default_mutable_args_not_shared_across_calls(self):
         """known_dynamic/point_defaults/dynamic_injection default to None ->
@@ -3926,6 +5151,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         return {"id": id_, "title": title, "settings": []}
 
     def test_single_menu_produces_one_view(self):
+        """Plus the overview view, always inserted first."""
         import nibe_lovelace as nl
 
         menus = [self._menu("1", "Indoor climate")]
@@ -3933,8 +5159,9 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             nl, "_build_menu_view", return_value=[{"type": "markdown", "content": "x"}]
         ):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
-        self.assertEqual(len(config["views"]), 1)
-        self.assertEqual(config["views"][0]["title"], "1 Indoor climate")
+        self.assertEqual(len(config["views"]), 2)
+        self.assertEqual(config["views"][0]["path"], "overview")
+        self.assertEqual(config["views"][1]["title"], "1 Indoor climate")
 
     def test_view_path_replaces_dots_with_hyphens(self):
         import nibe_lovelace as nl
@@ -3944,11 +5171,12 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             nl, "_build_menu_view", return_value=[{"type": "markdown", "content": "x"}]
         ):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
-        self.assertEqual(config["views"][0]["path"], "menu-7-1-6")
+        self.assertEqual(config["views"][1]["path"], "menu-7-1-6")
 
     def test_menu_producing_no_cards_is_skipped(self):
         """_build_menu_view returning [] (e.g. local_api:false with no
-        warning/note/tip and no description) must not produce an empty view tab."""
+        warning/note/tip and no description) must not produce an empty view
+        tab, and the skipped menu must not appear in the overview either."""
         import nibe_lovelace as nl
 
         menus = [self._menu("1"), self._menu("2")]
@@ -3956,8 +5184,11 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             nl, "_build_menu_view", side_effect=[[], [{"type": "markdown", "content": "x"}]]
         ):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
-        self.assertEqual(len(config["views"]), 1)
-        self.assertEqual(config["views"][0]["title"], "2 Test")
+        self.assertEqual(len(config["views"]), 2)
+        self.assertEqual(config["views"][1]["title"], "2 Test")
+        overview_content = config["views"][0]["cards"][0]["content"]
+        self.assertNotIn("Menu 1", overview_content)
+        self.assertIn("Menu 2", overview_content)
 
     def test_all_menus_empty_returns_none(self):
         import nibe_lovelace as nl
@@ -3967,23 +5198,57 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
         self.assertIsNone(config)
 
+    def test_controller_family_filters_tagged_menu(self):
+        """A top-level menu tagged with a non-matching family must not
+        appear as a view at all — the whole tab disappears, not just its
+        content."""
+        import nibe_lovelace as nl
+
+        menus = [
+            {"id": "1", "title": "Shared", "settings": []},
+            {"id": "7.2.25", "title": "PVT source", "settings": [], "family": "water_water"},
+        ]
+        with patch.object(
+            nl, "_build_menu_view", return_value=[{"type": "markdown", "content": "x"}]
+        ):
+            config = nl._build_menu_dashboard_config(
+                menus, MagicMock(), controller_family="air_water"
+            )
+        titles = [v["title"] for v in config["views"] if v["path"] != "overview"]
+        self.assertEqual(titles, ["1 Shared"])
+
+    def test_controller_family_none_skips_filtering(self):
+        """No detected family (e.g. model name unavailable) must show
+        every menu rather than hiding everything as a false non-match."""
+        import nibe_lovelace as nl
+
+        menus = [{"id": "7.2.25", "title": "PVT source", "settings": [], "family": "water_water"}]
+        with patch.object(
+            nl, "_build_menu_view", return_value=[{"type": "markdown", "content": "x"}]
+        ):
+            config = nl._build_menu_dashboard_config(menus, MagicMock(), controller_family=None)
+        titles = [v["title"] for v in config["views"] if v["path"] != "overview"]
+        self.assertEqual(titles, ["7.2.25 PVT source"])
+
     def test_empty_menu_list_returns_none(self):
         import nibe_lovelace as nl
 
         config = nl._build_menu_dashboard_config([], MagicMock())
         self.assertIsNone(config)
 
-    def test_each_view_is_a_single_vertical_stack(self):
+    def test_view_cards_grouped_via_group_cards_for_masonry(self):
+        """A view's cards are _build_menu_view's flat output regrouped by
+        _group_cards_for_masonry (per-section stacks, not one big
+        vertical-stack) — see that function's own tests for the grouping
+        logic itself; this just confirms it's actually used here."""
         import nibe_lovelace as nl
 
         menus = [self._menu("1")]
         cards = [{"type": "markdown", "content": "a"}, {"type": "entities", "entities": []}]
         with patch.object(nl, "_build_menu_view", return_value=cards):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
-        view_cards = config["views"][0]["cards"]
-        self.assertEqual(len(view_cards), 1)
-        self.assertEqual(view_cards[0]["type"], "vertical-stack")
-        self.assertEqual(view_cards[0]["cards"], cards)
+        view_cards = config["views"][1]["cards"]
+        self.assertEqual(view_cards, nl._group_cards_for_masonry(cards))
 
     def test_debug_mode_false_never_calls_unplaced_view(self):
         import nibe_lovelace as nl
@@ -4066,8 +5331,8 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
                 bulk_data={1: {}},
                 menu_yaml_points={1},
             )
-        self.assertEqual(len(config["views"]), 2)
-        self.assertEqual(config["views"][1], unplaced)
+        self.assertEqual(len(config["views"]), 3)
+        self.assertEqual(config["views"][2], unplaced)
 
     def test_unplaced_view_called_with_real_args_in_correct_order(self):
         """_build_unplaced_view must receive (bulk_data, menu_yaml_points,
@@ -4142,7 +5407,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
                 bulk_data={1: {}},
                 menu_yaml_points={1},
             )
-        self.assertEqual(len(config["views"]), 1)
+        self.assertEqual(len(config["views"]), 2)
 
     def test_no_unplaced_view_when_all_menus_already_skipped(self):
         """If every top-level menu produced zero cards, the function
@@ -4166,6 +5431,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         mock_unplaced.assert_not_called()
 
     def test_multiple_menus_preserve_order(self):
+        """Overview view always comes first, then menus in their original order."""
         import nibe_lovelace as nl
 
         menus = [self._menu("1", "First"), self._menu("2", "Second"), self._menu("3", "Third")]
@@ -4174,7 +5440,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         ):
             config = nl._build_menu_dashboard_config(menus, MagicMock())
         titles = [v["title"] for v in config["views"]]
-        self.assertEqual(titles, ["1 First", "2 Second", "3 Third"])
+        self.assertEqual(titles, ["Overview", "1 First", "2 Second", "3 Third"])
 
     def test_default_none_arguments_become_empty_collections(self):
         """known_dynamic/point_defaults/dynamic_injection default to None at
@@ -4186,7 +5452,16 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         menus = [self._menu("1")]
         captured = {}
 
-        def fake_build_menu_view(menu, watcher, known_dynamic, point_defaults, dynamic_injection):
+        def fake_build_menu_view(
+            menu,
+            watcher,
+            known_dynamic,
+            point_defaults,
+            dynamic_injection,
+            valid_top_level_menus,
+            changed_from_default,
+            render_submenus=True,
+        ):
             captured["known_dynamic"] = known_dynamic
             captured["point_defaults"] = point_defaults
             captured["dynamic_injection"] = dynamic_injection
@@ -4198,6 +5473,215 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         self.assertEqual(captured["known_dynamic"], set())
         self.assertEqual(captured["point_defaults"], {})
         self.assertEqual(captured["dynamic_injection"], {})
+
+
+# ===========================================================================
+# 47a. _build_menu_dashboard_config — split_submenus end-to-end
+# ===========================================================================
+
+
+class TestBuildMenuDashboardConfigSplitSubmenus(unittest.TestCase):
+    """Exercises split_submenus through the real (unmocked) _build_menu_view
+    and _linkify_menu_refs, rather than mocking them out — this is the one
+    scenario where their interaction through _build_menu_dashboard_config's
+    valid_top_level_menus/current_top_level plumbing is the actual thing
+    being tested, not incidental to it."""
+
+    def _watcher(self):
+        watcher = MagicMock()
+        watcher.entity_id_for.return_value = None
+        return watcher
+
+    def _flatten_content(self, cards: list) -> str:
+        """_group_cards_for_masonry may wrap several cards into a single
+        vertical-stack, which has no top-level "content" of its own --
+        flatten one level so markdown content is found regardless of how
+        it happened to be grouped."""
+        parts = []
+        for card in cards:
+            if card.get("type") == "vertical-stack":
+                parts.append(self._flatten_content(card.get("cards", [])))
+            else:
+                parts.append(card.get("content", ""))
+        return "\n".join(parts)
+
+    def test_split_menu_produces_hub_and_child_views(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {"id": "7.1", "title": "Operating settings", "settings": []},
+                    {"id": "7.2", "title": "Accessory settings", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        paths = [v["path"] for v in config["views"]]
+        self.assertEqual(paths, ["overview", "menu-7", "menu-7-1", "menu-7-2"])
+
+    def test_only_split_children_are_marked_as_subviews(self):
+        """The hub and any unsplit menu must not carry "subview" at all —
+        only a split menu's own children, which are otherwise unreachable
+        except via the hub's links card."""
+        import nibe_lovelace as nl
+
+        menus = [
+            {"id": "1", "title": "Indoor climate", "settings": []},
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {"id": "7.1", "title": "Operating settings", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        by_path = {v["path"]: v for v in config["views"]}
+        self.assertNotIn("subview", by_path["overview"])
+        self.assertNotIn("subview", by_path["menu-1"])
+        self.assertNotIn("subview", by_path["menu-7"])
+        self.assertTrue(by_path["menu-7-1"]["subview"])
+
+    def test_hub_view_lists_links_to_its_children(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {"id": "7.1", "title": "Operating settings", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        hub_view = next(v for v in config["views"] if v["path"] == "menu-7")
+        contents = self._flatten_content(hub_view["cards"])
+        self.assertIn("[7.1 Operating settings](/nibe-menus/menu-7-1)", contents)
+
+    def test_cross_reference_between_split_children_is_a_working_link(self):
+        """The end-to-end point of this whole feature: a cross-reference
+        written inside one split child's description, pointing at a
+        sibling split child, must render as a real link -- not the
+        same-page dead text it would have been before the split."""
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {
+                        "id": "7.1",
+                        "title": "Operating settings",
+                        "description": "See menu 7.2 for accessory settings.",
+                        "settings": [],
+                    },
+                    {"id": "7.2", "title": "Accessory settings", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        child_view = next(v for v in config["views"] if v["path"] == "menu-7-1")
+        contents = self._flatten_content(child_view["cards"])
+        self.assertIn("[menu 7.2](/nibe-menus/menu-7-2)", contents)
+
+    def test_self_reference_within_a_split_child_stays_plain_text(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {
+                        "id": "7.1",
+                        "title": "Operating settings",
+                        "description": "See menu 7.1 above.",
+                        "settings": [],
+                    },
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        child_view = next(v for v in config["views"] if v["path"] == "menu-7-1")
+        contents = self._flatten_content(child_view["cards"])
+        self.assertNotIn("](", contents)
+
+    def test_unsplit_menu_alongside_split_menu_both_render_correctly(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {"id": "1", "title": "Indoor climate", "settings": []},
+            {
+                "id": "7",
+                "title": "Installer",
+                "description": "Installer settings.",
+                "split_submenus": True,
+                "submenus": [
+                    {"id": "7.1", "title": "Operating settings", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        paths = [v["path"] for v in config["views"]]
+        self.assertEqual(paths, ["overview", "menu-1", "menu-7", "menu-7-1"])
+
+    def test_deeply_nested_split_submenu_gets_its_own_view_and_jump_card(self):
+        """menu 3 (Info) stays a single unsplit top-level view, but its own
+        submenu 3.1 -- tagged split_submenus directly, not menu 3 -- must
+        still be pulled out into its own hub-plus-child views, with a
+        jump-out card left in menu 3's own view where 3.1 would have
+        appeared inline. Mirrors this project's actual menu 3/3.1 split."""
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "3",
+                "title": "Info",
+                "description": "Live operating status.",
+                "submenus": [
+                    {
+                        "id": "3.1",
+                        "title": "Operating info",
+                        "description": "Live values.",
+                        "split_submenus": True,
+                        "submenus": [
+                            {"id": "3.1.8", "title": "Heat pump 1", "settings": []},
+                        ],
+                    },
+                    {"id": "3.2", "title": "Temperature log", "settings": []},
+                ],
+            },
+        ]
+        config = nl._build_menu_dashboard_config(menus, self._watcher())
+        paths = [v["path"] for v in config["views"]]
+        self.assertEqual(paths, ["overview", "menu-3", "menu-3-1", "menu-3-1-8"])
+
+        menu3_view = next(v for v in config["views"] if v["path"] == "menu-3")
+        contents = self._flatten_content(menu3_view["cards"])
+        self.assertIn("[3.1 Operating info", contents)
+        self.assertIn("(/nibe-menus/menu-3-1)", contents)
+        # menu 3.2 is unrelated to the split and must still flatten inline.
+        self.assertIn("Menu 3.2", contents)
+
+        by_path = {v["path"]: v for v in config["views"]}
+        self.assertNotIn("subview", by_path["menu-3"])
+        self.assertTrue(by_path["menu-3-1"]["subview"])
+        self.assertTrue(by_path["menu-3-1-8"]["subview"])
 
 
 # ===========================================================================
