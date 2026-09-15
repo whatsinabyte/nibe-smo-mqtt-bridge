@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] — 2026-09-15
+
+A large mapping and dashboard-navigation pass. 522 new entities are now
+documented in `menu_structure.yaml` — found by systematically cross-checking
+every point in the firmware's own bulk-fetch dump against the official NIBE
+Modbus register document, the full multi-year firmware changelog, and
+community Modbus exports, rather than relying only on installer manuals
+(which, confirmed this pass, never mention some registers NIBE ships at
+all). The Nibe Menus dashboard also grows a real navigation feature to keep
+pace: menus large enough to make one flat tab unusably long can now split
+into a short summary page linking to their own separate sub-section views.
+
+### Added
+
+- **Split menus and dashboard subviews.** A menu tagged `split_submenus` in
+  `menu_structure.yaml` (menus 1, 4, 7, and submenu 3.1) now renders as a
+  small hub view — its own description plus links to its own sections —
+  instead of one long scrolling tab. Each section becomes its own view,
+  reached from the hub and shown with a native back-arrow, without adding
+  to the dashboard's top tab strip (requires HA 2024.8+ for the subview
+  feature; older HA versions fall back to seeing these as ordinary tabs).
+  A useful side effect: a "Cross-reference: menu X.Y" mention written in
+  one section's text, pointing at another section of the same split menu,
+  is now a real clickable link — before the split, both sections lived on
+  the same tab, so the same mention was deliberately left as plain text to
+  avoid a same-page link that does nothing when clicked.
+- **522 new entities**, found via several systematic passes rather than
+  one-off additions: grouping the official Modbus document's register
+  symbols into families and cross-checking each member against the
+  firmware's own dump; a full diff of every point the firmware reports
+  against everything already documented; and an exhaustive scan of the
+  firmware changelog's own register/menu mentions. Covers live compressor
+  and EEV diagnostics, multi-installation cascade status, Smart Energy
+  Source live values, ECS/extra-climate-system sensors, EME 20 (Solar PV)
+  status, and a S135/FLM S45/HTS 40/RMU S40/ECS 40-41 accessory sweep
+  against their installer manuals.
+
+### Fixed
+
+- **A "number" entity reporting a firmware-declared out-of-range value
+  (e.g. an unconfigured zone's "desired room temperature" reporting `0`
+  outside its own 5.0-35.0 °C range) is now published as unavailable
+  instead of the invalid value.** Previously the raw value was passed
+  straight through, which made Home Assistant's own MQTT `number` platform
+  reject it and log a warning on every single poll — one real installation
+  saw over 500 occurrences in a few hours from five affected entities. The
+  fix is scoped to `number` entities only (other entity types don't hit
+  this same HA-side rejection, and a declared range doesn't reliably bound
+  every entity type's real values). A value of exactly `0` is treated as
+  this firmware's own recognised "unconfigured" convention and stays
+  silent; any other out-of-range value logs one warning per point
+  (deduplicated, not repeated every poll) rather than being assumed
+  understood.
+- **Removed prose in `menu_structure.yaml` asserting a register is absent
+  "from this firmware"** on settings with no known `point_id`. This
+  project's reference data comes from exactly one physical installation
+  (an air/water SMO S40) — the claim was only ever verified for that one
+  installation, not for every NIBE controller, and could read as
+  confidently wrong on a water/water (ground-source) controller that
+  exposes the same register fine. See [issue #82](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/82)
+  for the specific water/water gaps this leaves open.
+
+---
+
 ## [1.1.9] — 2026-09-13
 
 The AppArmor profile is now actually enforced rather than only logging
