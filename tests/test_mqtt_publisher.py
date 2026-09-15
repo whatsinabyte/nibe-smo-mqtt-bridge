@@ -4735,7 +4735,12 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         self.assertNotIn("Default:", msg)
         self.assertLess(len(msg), 100)  # trimmed format string itself, not the rendered line
 
-    def test_out_of_range_message_is_trimmed(self):
+    def test_out_of_range_nonzero_message_stays_at_warning(self):
+        """A non-zero out-of-range value doesn't match the recognised "0 =
+        unconfigured" sentinel convention, so it stays at warning — still
+        published unavailable at runtime either way (see
+        _process_and_publish_state in nibe_entity_manager.py), but worth a
+        human's attention since it's an unrecognised condition."""
         from nibe_mqtt_publisher import log_entities
 
         pub = self._publisher()
@@ -4761,6 +4766,40 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         msg = mock_warn.call_args.args[0]
         self.assertIn("outside firmware range", msg)
         self.assertNotIn("HA will display", msg)
+
+    def test_out_of_range_zero_message_is_downgraded_to_info(self):
+        """A current value of exactly 0 outside the declared range matches
+        this firmware's well-established "unconfigured/not set" convention
+        (e.g. an unused zone's desired room temperature) — a known, handled
+        condition, not a fault to investigate, so it's logged at info."""
+        from nibe_mqtt_publisher import log_entities
+
+        pub = self._publisher()
+        config = {}
+        metadata = {"minValue": 50, "maxValue": 350, "divisor": 10}
+        bulk_data = {32363: {"raw_value": 0}}
+        with (
+            patch.object(log_entities, "info") as mock_info,
+            patch.object(log_entities, "warning") as mock_warn,
+        ):
+            import nibe_discovery_config as discovery_config
+            from nibe_mqtt_publisher import t_command, t_state
+
+            discovery_config.build_number_config(
+                config,
+                t_state("number", "number.nibe_32363"),
+                t_command("number", "number.nibe_32363"),
+                32363,
+                "Desired room temperature for zone 23",
+                "°C",
+                metadata,
+                bulk_data,
+                pub._range_warnings_issued,
+            )
+        mock_info.assert_called_once()
+        mock_warn.assert_not_called()
+        msg = mock_info.call_args.args[0]
+        self.assertIn("outside firmware range", msg)
 
     def test_degenerate_range_still_only_warns_once(self):
         """Confirms the trim didn't accidentally break the existing dedup

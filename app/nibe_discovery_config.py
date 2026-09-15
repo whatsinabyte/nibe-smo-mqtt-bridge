@@ -115,10 +115,23 @@ def build_number_config(
                 and point_id not in range_warnings_issued
                 and (current_raw < min_val or current_raw > max_val)
             ):
+                # info, not warning, when the value is 0: this firmware's
+                # well-established "unconfigured/not set" convention, and a
+                # known, handled condition rather than a fault to
+                # investigate — _process_and_publish_state in
+                # nibe_entity_manager.py treats a "number" entity's current
+                # value outside this same declared range as a sentinel and
+                # publishes it offline rather than passing the out-of-bounds
+                # value through. Any other out-of-range value doesn't match
+                # a recognised sentinel, so it stays at warning — still
+                # published unavailable at runtime either way, but worth a
+                # human's attention here.
                 # pragma: no mutate start
-                log_entities.warning(
+                log_fn = log_entities.info if current_raw == 0 else log_entities.warning
+                log_fn(
                     "Point %d (%s): current value %g%s outside firmware range "
-                    "%g–%g%s — writes restricted to firmware range.",
+                    "%g–%g%s — will show as unavailable rather than a "
+                    "misleading value.",
                     point_id,
                     title,
                     current_raw / divisor,

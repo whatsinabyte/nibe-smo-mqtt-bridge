@@ -196,6 +196,94 @@ class TestProcessAndPublishState(unittest.TestCase):
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         self.assertEqual(state_calls, [])
 
+    # -- out-of-declared-range "number" values (a second sentinel form) ----
+
+    def test_number_zero_sentinel_goes_offline_without_warning(self):
+        """An unconfigured zone's 'desired room temperature' reports 0 while
+        the firmware itself declares a 5.0-35.0 °C valid range — passing
+        that straight through made HA's own MQTT number platform log
+        'Invalid value ... range 5.0 - 35.0' every poll. Must go offline
+        instead, the same as any other sentinel — and since 0 is this
+        firmware's well-established "unconfigured" convention, silently
+        (no warning-level log), not as an anomaly to investigate."""
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        with patch("nibe_entity_manager.log_entities.warning") as mock_warn:
+            em._process_and_publish_state(
+                info, 0, "", self._metadata(minValue=50, maxValue=350, divisor=10)
+            )
+        em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
+        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
+        self.assertEqual(state_calls, [])
+        mock_warn.assert_not_called()
+
+    def test_number_above_declared_max_goes_offline_and_warns(self):
+        """A non-zero out-of-range value doesn't match the recognised 0
+        sentinel, so it still goes offline (protecting HA from the same
+        rejection) but also logs a warning, since it's an unrecognised
+        condition worth investigating rather than an understood one."""
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        with patch("nibe_entity_manager.log_entities.warning") as mock_warn:
+            em._process_and_publish_state(
+                info, 999, "", self._metadata(minValue=50, maxValue=350, divisor=10)
+            )
+        em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
+        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
+        self.assertEqual(state_calls, [])
+        mock_warn.assert_called_once()
+
+    def test_number_above_max_warning_does_not_repeat_across_polls(self):
+        """Without a dedup gate this would fire on every poll for as long
+        as the anomaly persists -- the exact log-spam problem this whole
+        fix exists to eliminate, just moved from HA's logger to ours."""
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        metadata = self._metadata(minValue=50, maxValue=350, divisor=10)
+        with patch("nibe_entity_manager.log_entities.warning") as mock_warn:
+            em._process_and_publish_state(info, 999, "", metadata)
+            em._process_and_publish_state(info, 999, "", metadata)
+            em._process_and_publish_state(info, 999, "", metadata)
+        mock_warn.assert_called_once()
+
+    def test_number_within_declared_range_publishes_normally(self):
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        em._process_and_publish_state(
+            info, 210, "", self._metadata(minValue=50, maxValue=350, divisor=10)
+        )
+        em.mqtt.publish.assert_any_call("nibe/state/100", "21", retain=True)
+
+    def test_number_degenerate_range_min_equals_max_not_treated_as_out_of_range(self):
+        """minValue == maxValue (both 0) is this firmware's own convention
+        for 'no fixed bounds declared' on many legitimate sensors — must
+        not be misread as a 0-0 valid range that flags every real value as
+        out of bounds."""
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        em._process_and_publish_state(
+            info, 279, "", self._metadata(minValue=0, maxValue=0, divisor=10)
+        )
+        em.mqtt.publish.assert_any_call("nibe/state/100", "27.9", retain=True)
+
+    def test_missing_min_max_metadata_does_not_crash_number_entity(self):
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        em._process_and_publish_state(info, 100, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/100", "100", retain=True)
+
+    def test_out_of_range_check_not_applied_to_non_number_entity_types(self):
+        """A 'select' or other non-number entity legitimately reporting a
+        raw value outside metadata's minValue/maxValue must still publish
+        its raw fallback rather than going offline -- only 'number' hits
+        HA's own enforced-bounds rejection this fix addresses."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        em._process_and_publish_state(
+            info, 999, "", self._metadata(minValue=50, maxValue=350, divisor=10)
+        )
+        em.mqtt.publish.assert_any_call("nibe/state/100", "99.9", retain=True)
+
     def test_non_sentinel_value_not_treated_as_sentinel(self):
         """A value that happens to be large but isn't the exact sentinel
         constant must be processed normally, not misidentified."""
