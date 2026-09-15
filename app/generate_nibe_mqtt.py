@@ -97,6 +97,7 @@ from nibe_ha_integration import (
 )
 from nibe_lovelace import (
     _build_point_to_menu,
+    _detect_controller_family,
     _load_menu_structure_yaml,
     build_menu_points,
     copy_card_file,
@@ -978,7 +979,9 @@ def _fetch_api_response(api_client: NibeApiClient) -> dict:
     return response
 
 
-def _load_menu_structure(app_dir: str, log_if_mode: bool = True) -> tuple[dict, frozenset]:
+def _load_menu_structure(
+    app_dir: str, log_if_mode: bool = True, controller_family: str | None = None
+) -> tuple[dict, frozenset]:
     """Load menu_structure.yaml and return (point_to_menu_map, menu_points).
 
     Returns ({}, frozenset()) on any error so callers can always unpack
@@ -987,11 +990,18 @@ def _load_menu_structure(app_dir: str, log_if_mode: bool = True) -> tuple[dict, 
 
     log_if_mode: suppress verbose build logs unless mode == 'menus'.
     The structure is always built — it's needed for runtime regardless of mode.
+
+    controller_family: passed through to build_menu_points() so "menus"
+    mode only enables points that apply to the connected hardware family
+    (see _detect_controller_family) — not passed to _build_point_to_menu,
+    whose reverse point_id -> (menu_id, menu_title) lookup is used for
+    dynamic-change notifications and should still recognise every point
+    regardless of which family's menus the dashboard currently shows.
     """
     try:
         menu_path = os.path.join(app_dir, "menu_structure.yaml")
         point_to_menu = _build_point_to_menu(_load_menu_structure_yaml(menu_path))
-        menu_points = build_menu_points(menu_path)
+        menu_points = build_menu_points(menu_path, controller_family=controller_family)
         if log_if_mode:
             log_startup.debug("Built point→menu map: %d entries", len(point_to_menu))
             log_startup.debug("MODES['menus'] populated: %d points", len(menu_points))
@@ -1297,9 +1307,13 @@ def _run_startup_sequence(
     # Build point → menu reverse lookup and populate MODES['menus'] from YAML.
     # Done eagerly before the Lovelace thread starts so point_to_menu_map is
     # available for dynamic-change notifications from the first poll cycle.
+    # controller_family keeps MODES['menus'] in sync with the same
+    # family-filtered menu set the dashboard itself will show — see
+    # build_menu_points's own docstring for why this must not diverge.
     _app_dir = os.path.dirname(__file__)
+    _controller_family = _detect_controller_family(device_info.get("model"))
     entity_manager.point_to_menu_map, MODES["menus"] = _load_menu_structure(
-        _app_dir, log_if_mode=(initial_mode == "menus")
+        _app_dir, log_if_mode=(initial_mode == "menus"), controller_family=_controller_family
     )
 
     log_startup.debug(

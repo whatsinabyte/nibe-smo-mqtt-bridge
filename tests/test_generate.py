@@ -3048,6 +3048,20 @@ class TestLoadMenuStructure(unittest.TestCase):
         self.assertEqual(len(mock_log.warning.call_args.args), 2)
         self.assertIsInstance(mock_log.warning.call_args.args[1], Exception)
 
+    def test_controller_family_passed_through_to_build_menu_points(self):
+        """MODES['menus'] must be filtered by the same controller_family
+        the dashboard uses — otherwise entity enablement and the dashboard
+        silently diverge on which family-specific points are included."""
+        with patch("generate_nibe_mqtt.build_menu_points", return_value=frozenset()) as mock_build:
+            self.fn(_APP_DIR, controller_family="water_water")
+        mock_build.assert_called_once()
+        self.assertEqual(mock_build.call_args.kwargs.get("controller_family"), "water_water")
+
+    def test_default_controller_family_is_none(self):
+        with patch("generate_nibe_mqtt.build_menu_points", return_value=frozenset()) as mock_build:
+            self.fn(_APP_DIR)
+        self.assertIsNone(mock_build.call_args.kwargs.get("controller_family"))
+
     def test_valid_dir_logs_debug_with_exact_counts(self):
         point_to_menu, menu_points = self.fn(_APP_DIR)
         with self.assertLogs("nibe.startup", level="DEBUG") as cm:
@@ -7346,6 +7360,13 @@ class TestRunStartupSequenceFullWiringGaps(unittest.TestCase):
         m = self._run_full()
         self.assertEqual(m["em_instance"].point_to_menu_map, {"p": "m"})
         self.assertEqual(m["modes_menus"], {"menu1"})
+
+    def test_load_menu_structure_called_with_controller_family_derived_from_device_info(self):
+        """The family MODES['menus'] gets filtered by must come from the
+        same device_info the dashboard uses — otherwise entity enablement
+        and the dashboard can end up looking at two different families."""
+        m = self._run_full()
+        self.assertEqual(m["mock_load"].call_args.kwargs.get("controller_family"), "water_water")
 
     # -- device-info debug log -----------------------------------------------
 
