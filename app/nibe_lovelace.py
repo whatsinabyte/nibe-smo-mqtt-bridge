@@ -29,7 +29,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from nibe_entity_detection import clean_string, clean_unit
+from nibe_entity_detection import clean_string, clean_unit, get_value_mapping
 
 if TYPE_CHECKING:
     from nibe_dynamic_map import DynamicPointMap
@@ -132,15 +132,47 @@ _MENU_DASHBOARD_FLAG = "/data/lovelace_menus_provisioned"
 _LOVELACE_FLAG = "/data/lovelace_provisioned"
 
 
+def _format_point_value(point_id: int, point: dict, int_value: int) -> str:
+    """Format a raw integer register value the same way for any point,
+    whether it's a factory default or a current live value — so the two
+    are always directly comparable.
+
+    A select-type point with a known value mapping (get_value_mapping —
+    the manual VALUE_MAPPINGS table, or a firmware-provided enum
+    description) renders its actual label (e.g. "Compressor") instead of
+    the raw integer. A boolean point with no such mapping (minValue 0,
+    maxValue 1) renders as "off"/"on" rather than the raw "0"/"1" —
+    matching the "off/on" range every such setting already uses elsewhere,
+    instead of contradicting it. Anything else renders as a divisor-scaled
+    number with its unit appended.
+    """
+    meta = point.get("metadata", {})
+    min_val = meta.get("minValue", 0)
+    max_val = meta.get("maxValue", 0)
+    value_mapping = get_value_mapping(point_id, point)
+    if value_mapping and int_value in value_mapping:
+        return value_mapping[int_value]
+    if min_val == 0 and max_val == 1:
+        return "on" if int_value else "off"
+    # `or 1` masks any falsy divisor default (None/0/dropped) — only a
+    # truthy-but-wrong default (e.g. 2) is observable.
+    divisor = meta.get("divisor", 1) or 1
+    display = f"{int_value / divisor:g}"
+    unit = clean_unit(meta.get("unit") or meta.get("shortUnit"))
+    return f"{display} {unit}".strip() if unit else display
+
+
 def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
     """Build a point_id → formatted-default string map for menu annotations.
 
     Only includes points where the default is meaningful:
     - Writable MODBUS_HOLDING_REGISTER with a non-degenerate range
-    - intDefaultValue != 0 or minValue != 0  (suppress ambiguous zeros)
+    - intDefaultValue != 0 or minValue != 0  (suppress ambiguous zeros,
+      unless a value mapping makes the zero unambiguous — see below)
 
     The returned string is already formatted with divisor applied and unit
-    appended, ready to embed in a section-divider label.
+    appended, ready to embed in a section-divider label — see
+    _format_point_value for the exact formatting rules.
     """
     defaults: dict[int, str] = {}
     for point_id, point in all_points_by_id.items():
@@ -156,15 +188,324 @@ def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
         int_default = meta.get("intDefaultValue")
         if int_default is None:
             continue
+        value_mapping = get_value_mapping(point_id, point)
+        if value_mapping and int_default in value_mapping:
+            defaults[point_id] = value_mapping[int_default]
+            continue
         if int_default == 0 and min_val == 0 and max_val > 1:
             continue
-        # `or 1` masks any falsy divisor default (None/0/dropped) — only a
-        # truthy-but-wrong default (e.g. 2) is observable.
-        divisor = meta.get("divisor", 1) or 1
-        display = f"{int_default / divisor:g}"
-        unit = clean_unit(meta.get("unit") or meta.get("shortUnit"))
-        defaults[point_id] = f"{display} {unit}".strip() if unit else display
+        defaults[point_id] = _format_point_value(point_id, point, int_default)
     return defaults
+
+
+def _build_changed_from_default(
+    bulk_data: dict[int, dict],
+    point_defaults: dict[int, str],
+) -> set[int]:
+    """Return the point_ids whose current live value differs from their
+    documented factory default.
+
+    Only considers points that already have a computed default (from
+    _build_point_defaults) — a point with no known/meaningful default is
+    never flagged either way. Useful for spotting what an installer has
+    already changed from stock on an unfamiliar installation.
+    """
+    changed: set[int] = set()
+    for point_id, default_display in point_defaults.items():
+        point = bulk_data.get(point_id)
+        if not point:
+            continue
+        # entity_manager.bulk_data stores each point's live value as flat
+        # "is_ok"/"raw_value" keys (see EntityManager._fetch_bulk_data's
+        # in-place update) — not the nested {"value": {"isOk":...,
+        # "integerValue":...}} shape used by the REST API's own point
+        # objects (and by reference-dumps/all_points_*.json). Reading the
+        # nested shape here previously matched nothing on any real point,
+        # which is why the ✏️ changed-from-default badge never appeared —
+        # confirmed on a real installation.
+        if not point.get("is_ok"):
+            continue
+        current_display = _format_point_value(point_id, point, point.get("raw_value", 0))
+        if current_display != default_display:
+            changed.add(point_id)
+    return changed
+
+
+_MENU_REF_RE = re.compile(r"\bmenu\s+(\d+(?:\.\d+)*)", re.IGNORECASE)
+
+
+def _resolve_view_id(ref_id: str, valid_top_level_menus: set[str]) -> str | None:
+    """Resolve a menu reference id (e.g. "7.2.4") to whichever known view id
+    is its longest matching dotted prefix.
+
+    Most menus are a single unsplit view, so a reference like "7.2.4"
+    resolves to "7" — the whole top-level menu 7 is one view. A menu
+    tagged `split_submenus: true` (see _build_menu_dashboard_config) instead
+    gives each of its immediate submenus its own view id (e.g. "7.2"), so
+    the same "7.2.4" reference should resolve to the more specific "7.2"
+    view rather than a "7" hub page. Checking prefixes longest-first makes
+    both cases fall out of the same lookup without needing to know which
+    menus are split. Returns None if no prefix at all is a known view id.
+    """
+    parts = ref_id.split(".")
+    for i in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:i])
+        if candidate in valid_top_level_menus:
+            return candidate
+    return None
+
+
+def _linkify_menu_refs(
+    text: str,
+    valid_top_level_menus: set[str],
+    current_top_level: str | None = None,
+) -> str:
+    """Turn "menu X.Y.Z" mentions in annotation text into clickable links
+    to that menu's own dashboard view/tab.
+
+    Every top-level menu (X) gets its own dashboard view at a stable path
+    (menu-X), so a reference normally links to that top-level view, not a
+    scroll position within it — Lovelace's markdown cards have no working
+    in-page anchor mechanism for that (an `id` attribute on a heading either
+    gets stripped by HA's markdown sanitizer or is unreachable across the
+    card's shadow DOM boundary — confirmed by testing on a real
+    installation: the link rendered but clicking it did nothing). A menu
+    tagged `split_submenus: true` changes the granularity: its immediate
+    submenus are each their own view (path menu-X-Y), so a reference is
+    resolved to the most specific known view id — see _resolve_view_id. A
+    reference whose id doesn't match any known view at all (e.g. a menu
+    documented for a different accessory/language) is left as plain text
+    rather than becoming a dead link.
+
+    A reference that resolves to current_top_level — the view this text is
+    itself being rendered into — is also left as plain text. Such a link
+    would point at the exact page already open: since the URL doesn't
+    change, clicking it triggers no navigation and just looks broken,
+    whether the reference names the current section itself (e.g. a "menu
+    1.2" mention inside menu 1.2's own text) or a sibling submenu on the
+    same view (e.g. "menu 1.5" mentioned from within menu 1.2 — both
+    resolve to the same menu-1 view when menu 1 isn't split).
+    """
+    if not text:
+        return text
+
+    def _replace(match: "re.Match[str]") -> str:
+        full_ref = match.group(0)
+        resolved = _resolve_view_id(match.group(1), valid_top_level_menus)
+        if resolved is None:
+            return full_ref
+        if current_top_level is not None and resolved == current_top_level:
+            return full_ref
+        path = resolved.replace(".", "-")
+        return f"[{full_ref}](/{_MENU_DASHBOARD_SLUG}/menu-{path})"
+
+    return _MENU_REF_RE.sub(_replace, text)
+
+
+def _build_overview_view(menu_structure: list) -> dict:
+    """Build the landing view listing every top-level menu with a one-line
+    summary and a tap-to-jump link to its own dashboard view/tab.
+
+    Placed first so opening the dashboard cold shows an index instead of
+    whichever menu happens to be first in menu_structure.yaml.
+    """
+    lines = [
+        '<h2><font color="#9C1924">Nibe Menus — Overview</font></h2>',
+        "",
+        "Tap a menu below to jump straight to it.",
+        "",
+    ]
+    for menu in menu_structure:
+        menu_id = menu["id"]
+        title = menu["title"]
+        link = f"/{_MENU_DASHBOARD_SLUG}/menu-{str(menu_id).replace('.', '-')}"
+        lines.append(f"### [Menu {menu_id} – {title}]({link})")
+        # Only the first paragraph — a compact one-line summary, not the
+        # full multi-paragraph menu description repeated here verbatim.
+        summary = (menu.get("description") or "").strip().split("\n\n")[0].strip()
+        if summary:
+            lines.append(summary)
+        lines.append("")
+    return {
+        "title": "Overview",
+        "path": "overview",
+        "cards": [{"type": "markdown", "content": "\n".join(lines)}],
+    }
+
+
+def _build_hub_children_card(children: list) -> dict:
+    """Build the markdown card linking a split menu's hub view to each of
+    its immediate submenus' own views — see _build_view_specs."""
+    lines = ["### Jump to a section:", ""]
+    for child in children:
+        child_id = child["id"]
+        title = child["title"]
+        link = f"/{_MENU_DASHBOARD_SLUG}/menu-{str(child_id).replace('.', '-')}"
+        lines.append(f"- [{child_id} {title}]({link})")
+    return {"type": "markdown", "content": "\n".join(lines)}
+
+
+def _build_jump_out_card(menu: dict) -> dict:
+    """Build the markdown card standing in for a submenu that has been
+    pulled out into its own separate view — used in place of recursing
+    into it, when its parent isn't itself split (see the render_submenus
+    loop in _build_menu_view). Styled like _build_overview_view's own
+    per-item entries: title, link, one-line summary."""
+    menu_id = menu["id"]
+    title = menu["title"]
+    link = f"/{_MENU_DASHBOARD_SLUG}/menu-{str(menu_id).replace('.', '-')}"
+    lines = [f"### [{menu_id} {title} →]({link})"]
+    summary = (menu.get("description") or "").strip().split("\n\n")[0].strip()
+    if summary:
+        lines.append(summary)
+    return {"type": "markdown", "content": "\n".join(lines)}
+
+
+def _find_split_descendants(menu: dict) -> list[dict]:
+    """Find every `split_submenus: true` node within menu's subtree,
+    without descending into one once found — that node's own descendants
+    are its own concern once it's expanded (see _build_view_specs).
+
+    This lets a single oversized submenu deep inside an otherwise
+    reasonably-sized menu (e.g. menu 3 "Info", where nearly all of its
+    bulk sits in menu 3.1) be pulled out into its own view without forcing
+    every one of menu 3's other, already-small children into a split too.
+    """
+    found = []
+    for sub in menu.get("submenus", []) or []:
+        if sub.get("split_submenus"):
+            found.append(sub)
+        else:
+            found.extend(_find_split_descendants(sub))
+    return found
+
+
+def _build_view_specs(menu_structure: list) -> list[dict]:
+    """Flatten menu_structure into one entry per dashboard view to build.
+
+    Most menus produce exactly one entry (the menu itself, rendered fully
+    with all its submenus recursively flattened into one view — the
+    existing behaviour). A menu tagged `split_submenus: true` instead
+    produces one "hub" entry for the menu itself — its own header plus a
+    list of links to its children, no recursion into them here (see
+    render_submenus in _build_menu_view) — and one further entry per
+    immediate submenu, each rendered fully as its own separate view. This
+    keeps a large menu (e.g. installer settings — hundreds of settings
+    across a dozen submenus) from being flattened into a single, very long
+    scrolling tab, and lets cross-references between its submenus become
+    real, working links instead of same-page dead text (see
+    _linkify_menu_refs).
+
+    The flag isn't limited to top-level menus: a submenu buried inside an
+    otherwise-unsplit menu can carry it too (see _find_split_descendants),
+    getting pulled out into its own view while the rest of its ancestor's
+    tree still flattens normally — the spot where it would have appeared
+    inline instead gets a short "jump to its own view" card (see
+    _build_jump_out_card in _build_menu_view's own rendering).
+
+    A "children" value of None marks a normal, fully-recursive entry; a
+    list (even empty) marks a hub entry. "subview" marks an entry that
+    should render as a Lovelace subview (see _build_menu_dashboard_config)
+    — true for anything reachable only via a hub's links or a jump-out
+    card, which has no need to also clutter the dashboard's top tab strip.
+    """
+    specs: list[dict] = []
+
+    def _expand(menu: dict, subview: bool) -> None:
+        if menu.get("split_submenus"):
+            children = menu.get("submenus", []) or []
+            specs.append({"menu": menu, "children": children, "subview": subview})
+            for child in children:
+                _expand(child, subview=True)
+        else:
+            specs.append({"menu": menu, "children": None, "subview": subview})
+            for descendant in _find_split_descendants(menu):
+                _expand(descendant, subview=True)
+
+    for menu in menu_structure:
+        _expand(menu, subview=False)
+    return specs
+
+
+_MASONRY_COLUMN_CHUNKS = 3
+
+
+def _group_cards_for_masonry(cards: list) -> list:
+    """Regroup a flat markdown/entities card sequence (as returned by
+    _build_menu_view) into a handful of large sequential vertical-stacks,
+    one per intended column.
+
+    _build_menu_view emits one markdown card per section, immediately
+    followed by that section's entities card when it has one. Wrapping the
+    whole view's cards in a single outer vertical-stack (the original
+    behaviour) forces everything into one column regardless of screen
+    width. But HA's masonry view lays out cards by greedily dropping each
+    one into whichever column is currently shortest — if every section
+    became its own small card (an earlier version of this function did
+    exactly that), sections get interleaved across columns by height
+    rather than by menu number, so scrolling down one column and then the
+    next reads the menu numbers out of order.
+
+    Instead, sections are first grouped individually (a markdown card plus
+    its entities card, paired), then those groups are packed in original
+    order into _MASONRY_COLUMN_CHUNKS contiguous, roughly-equal-weight
+    chunks — each chunk becomes one big vertical-stack. Masonry still
+    balances chunks across columns by height, but because there are only a
+    few large chunks instead of many small ones, each column ends up
+    holding one contiguous run of sections in their original numeric
+    order — like reading down the left page of a book, then the right,
+    rather than jumping line by line between them.
+
+    A chunk (or a section within a chunk that has no entities card — e.g.
+    the trailing footer) that ends up holding only one card is returned
+    bare rather than wrapped in a pointless single-card vertical-stack.
+    """
+    sections: list[list[dict]] = []
+    for card in cards:
+        if card.get("type") == "markdown" or not sections:
+            sections.append([card])
+        else:
+            sections[-1].append(card)
+
+    if len(sections) <= 1:
+        return [
+            section[0] if len(section) == 1 else {"type": "vertical-stack", "cards": section}
+            for section in sections
+        ]
+
+    def _weight(section: list[dict]) -> int:
+        # Approximates rendered height: the markdown card itself, plus one
+        # unit per entity row in its entities card (if any) — so a section
+        # with 40 settings counts for much more than one with 2.
+        w = 1
+        for card in section:
+            if card.get("type") == "entities":
+                w += len(card.get("entities", []))
+        return w
+
+    weights = [_weight(section) for section in sections]
+    chunk_count = min(_MASONRY_COLUMN_CHUNKS, len(sections))
+    target = sum(weights) / chunk_count
+
+    chunks: list[list[list[dict]]] = [[]]
+    running = 0
+    for section, weight in zip(sections, weights, strict=True):
+        chunks[-1].append(section)
+        running += weight
+        if len(chunks) < chunk_count and running >= target * len(chunks):
+            chunks.append([])
+
+    result = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        flat_cards = [card for section in chunk for card in section]
+        result.append(
+            flat_cards[0]
+            if len(flat_cards) == 1
+            else {"type": "vertical-stack", "cards": flat_cards}
+        )
+    return result
 
 
 def _build_dynamic_injection(
@@ -217,6 +558,9 @@ def _build_menu_view(
     known_dynamic: set[int] | None = None,
     point_defaults: dict[int, str] | None = None,
     dynamic_injection: dict[int, list[tuple[str, str, str, str]]] | None = None,
+    valid_top_level_menus: set[str] | None = None,
+    changed_from_default: set[int] | None = None,
+    render_submenus: bool = True,
 ) -> list:
     """Build a list of Lovelace cards for a single top-level menu.
 
@@ -237,11 +581,36 @@ def _build_menu_view(
                      dynamic points controlled by that point.  These are
                      injected below the controlling entity row in the card,
                      labelled with a ↳ indent to show the relationship.
+    valid_top_level_menus : top-level menu ids actually present in this
+                     installation's menu_structure.yaml. Used to turn
+                     "menu X.Y.Z" mentions in annotation text into clickable
+                     links to that menu's view — see _linkify_menu_refs.
+    changed_from_default : point_ids whose current live value differs from
+                     their documented factory default, from
+                     _build_changed_from_default(). Marked with a ✏️ badge
+                     on the section-divider label.
+    render_submenus : When False, render only `menu`'s own header (and its
+                     own direct settings, if any) — skip recursing into its
+                     submenus. Used to build the hub view for a menu tagged
+                     `split_submenus: true`, whose immediate submenus are
+                     instead each rendered as their own separate call to
+                     this function — see _build_menu_dashboard_config.
     """
     known_dynamic = known_dynamic or set()
     point_defaults = point_defaults or {}
     dynamic_injection = dynamic_injection or {}
+    valid_top_level_menus = valid_top_level_menus or set()
+    changed_from_default = changed_from_default or set()
+    # The view this call is rendering into — matches the "menu-<id>" path
+    # built for it in _build_menu_dashboard_config, dots included, so that a
+    # split-out submenu view (e.g. id "7.2") is recognised as its own view
+    # distinct from a same-numbered reference into a sibling split view
+    # (e.g. "7.3") — see _resolve_view_id.
+    current_top_level = str(menu["id"])
     cards = []
+
+    def _linkify(text: str) -> str:
+        return _linkify_menu_refs(text, valid_top_level_menus, current_top_level)
 
     def _alert(alert_type: str, title: str, text: str) -> str:
         """Render an HA native alert box (HA 2022.9+).
@@ -269,7 +638,7 @@ def _build_menu_view(
         ]
 
         if m.get("description"):
-            md_lines.append(m["description"].strip())
+            md_lines.append(_linkify(m["description"].strip()))
             md_lines.append("")
 
         # Every blank-line `md_lines.append("")` below (menu-level and
@@ -280,13 +649,13 @@ def _build_menu_view(
         # empirically.
         # Menu-level callouts using ha-alert for native coloured boxes
         if m.get("warning"):
-            md_lines.append(_alert("warning", "Warning", m["warning"]))
+            md_lines.append(_alert("warning", "Warning", _linkify(m["warning"])))
             md_lines.append("")
         if m.get("note"):
-            md_lines.append(_alert("info", "Note", m["note"]))
+            md_lines.append(_alert("info", "Note", _linkify(m["note"])))
             md_lines.append("")
         if m.get("tip"):
-            md_lines.append(_alert("success", "Tip", m["tip"]))
+            md_lines.append(_alert("success", "Tip", _linkify(m["tip"])))
             md_lines.append("")
 
         # Items not available via local API
@@ -314,13 +683,13 @@ def _build_menu_view(
             s_note = s.get("note", "")
             s_tip = s.get("tip", "")
             if s_warning:
-                md_lines.append(_alert("warning", label, s_warning))
+                md_lines.append(_alert("warning", label, _linkify(s_warning)))
                 md_lines.append("")
             elif s_note:
-                md_lines.append(_alert("info", label, s_note))
+                md_lines.append(_alert("info", label, _linkify(s_note)))
                 md_lines.append("")
             elif s_tip:
-                md_lines.append(_alert("success", label, s_tip))
+                md_lines.append(_alert("success", label, _linkify(s_tip)))
                 md_lines.append("")
 
         # Render section heading + description + callouts as a markdown card
@@ -345,8 +714,26 @@ def _build_menu_view(
             if point_id is not None and point_id in known_dynamic:
                 continue
 
-            # Section divider: label · range · default (where known)
-            section_label = label
+            # Resolved ahead of the section label below so the ✏️ badge can
+            # be gated on it — see the comment there for why.
+            entity_id = registry_watcher.entity_id_for(point_id) if point_id is not None else None
+
+            # Section divider: [🟠 ✏️] label · range · default (where known).
+            # The badge flags a value already changed from its documented
+            # factory default — useful when auditing an unfamiliar
+            # installation to see what's been touched. Only shown when the
+            # point also has a resolved, enabled entity: a not-yet-enabled
+            # entity has no dashboard control to act on, and its bulk-fetch
+            # value is unreliable (the firmware may not be actively
+            # reporting it while disabled) — flagging it as "changed"
+            # produced a wall of false positives on every not-enabled row.
+            # HA's native entities card gives section-divider labels no
+            # custom text color without an extra custom-card dependency
+            # (e.g. card_mod), so the leading colored-dot emoji is what
+            # makes this pop against the surrounding text rather than
+            # relying on the pencil alone.
+            changed_badge = "🟠 ✏️ " if entity_id and point_id in changed_from_default else ""
+            section_label = f"{changed_badge}{label}"
             if rng:
                 section_label += f"  ·  {rng}"
             if point_id is not None and point_id in point_defaults:
@@ -359,7 +746,6 @@ def _build_menu_view(
             )
 
             if point_id is not None:
-                entity_id = registry_watcher.entity_id_for(point_id)
                 if entity_id:
                     entities_rows.append({"entity": entity_id})
                     for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in dynamic_injection.get(
@@ -386,9 +772,17 @@ def _build_menu_view(
                 }
             )
 
-        # Recurse into submenus
-        for sub in m.get("submenus", []):
-            _render_section(sub, depth + 1)
+        # Recurse into submenus — except one flagged split_submenus itself,
+        # which has been pulled out into its own separate view (see
+        # _build_view_specs/_find_split_descendants) even though this
+        # menu's own tree isn't otherwise split. A short "jump to its own
+        # view" card stands in for it here instead.
+        if render_submenus:
+            for sub in m.get("submenus", []):
+                if sub.get("split_submenus"):
+                    cards.append(_build_jump_out_card(sub))
+                else:
+                    _render_section(sub, depth + 1)
 
     _render_section(menu, depth=2)
 
@@ -558,43 +952,77 @@ def _build_menu_dashboard_config(
     debug_mode: bool = False,
     bulk_data: dict[int, dict] | None = None,
     menu_yaml_points: set[int] | None = None,
+    controller_family: str | None = None,
 ) -> dict | None:
     """Build the full Lovelace dashboard config for the menu views.
 
     Each top-level menu becomes a separate view (tab) containing a
     vertical-stack card with interleaved markdown and entities cards.
-    """
-    views = []
 
-    for menu in menu_structure:
+    controller_family : "air_water" or "water_water" (see
+                     _detect_controller_family), or None to skip filtering
+                     entirely (shows every menu regardless of family — used
+                     when the connected model couldn't be determined).
+                     Menus/submenus tagged with a `family` key that doesn't
+                     match are dropped from the dashboard before rendering —
+                     see _filter_menu_structure_by_family. This only affects
+                     what appears in this dashboard; it does not change
+                     which points/entities EntityManager enables.
+    """
+    if controller_family is not None:
+        menu_structure = _filter_menu_structure_by_family(menu_structure, controller_family)
+
+    views = []
+    included_menus = []
+    view_specs = _build_view_specs(menu_structure)
+    valid_top_level_menus = {str(spec["menu"]["id"]) for spec in view_specs}
+    changed_from_default = (
+        _build_changed_from_default(bulk_data, point_defaults or {}) if bulk_data else set()
+    )
+
+    for spec in view_specs:
+        menu = spec["menu"]
+        children = spec["children"]
         cards = _build_menu_view(
             menu,
             registry_watcher,
             known_dynamic or set(),
             point_defaults or {},
             dynamic_injection or {},
+            valid_top_level_menus,
+            changed_from_default,
+            render_submenus=children is None,
         )
+        if children is not None:
+            # Header markdown card is always cards[0] — see _render_section.
+            cards.insert(1, _build_hub_children_card(children))
         if not cards:
             continue
+
+        included_menus.append(menu)
 
         # No icon — HA shows either icon OR title in the tab bar, not both
         # (without the user enabling a per-dashboard UI toggle). Title is
         # more useful on mobile so we omit the icon entirely.
-        views.append(
-            {
-                "title": f"{menu['id']} {menu['title']}",
-                "path": f"menu-{menu['id'].replace('.', '-')}",
-                "cards": [
-                    {
-                        "type": "vertical-stack",
-                        "cards": cards,
-                    }
-                ],
-            }
-        )
+        view: dict[str, Any] = {
+            "title": f"{menu['id']} {menu['title']}",
+            "path": f"menu-{str(menu['id']).replace('.', '-')}",
+            "cards": _group_cards_for_masonry(cards),
+        }
+        if spec["subview"]:
+            # Requires HA 2024.8+ (Lovelace "subview" support). A subview
+            # is left out of the dashboard's top tab strip and instead
+            # shows a native back-arrow in its header, using browser-back
+            # navigation — reached only via the hub's own links card
+            # (_build_hub_children_card) rather than doubling up as its own
+            # tab too.
+            view["subview"] = True
+        views.append(view)
 
     if not views:
         return None
+
+    views.insert(0, _build_overview_view(included_menus))
 
     # Debug-only: append unplaced settings view
     if debug_mode and bulk_data and menu_yaml_points is not None:
@@ -608,6 +1036,67 @@ def _build_menu_dashboard_config(
             views.append(unplaced_view)
 
     return {"views": views}
+
+
+_AIR_WATER_MODEL_PREFIXES = (
+    "SMO S40",
+    "VVM S310",
+    "VVM S320",
+    "VVM S325",
+    "VVM S330",
+    "VVM S500",
+    "SVM S332",
+)
+
+
+def _detect_controller_family(model_name: str | None) -> str:
+    """Classify the connected controller as "air_water" or "water_water"
+    (ground-source, brine-circuit models with a built-in controller), from
+    the product model name the REST API reports (device_info["model"], set
+    from the API's own product.name field — see _build_device_info).
+
+    This is the signal _filter_menu_structure_by_family uses to drop
+    ground-source-only submenus (GP1 pump, brine circuit) from an
+    air/water installation's dashboard, and vice versa.
+
+    The recognised air/water prefixes are exactly DOCS.md's own "Indoor
+    units / controllers" group (SMO S40, VVM S310/320/325/330/500, SVM
+    S332) — confirmed directly against those models' own installer
+    manuals, not a guess: VVM S320 and VVM S330's own menu 4.11 overviews
+    both list "Fan de-icing" (menu 4.11.3), matching SMO S40 exactly,
+    which single-model matching used to hide from them incorrectly.
+    Everything else — ground-source models (S1155/S1156/S1255/S1256/
+    S1157/S1257), S735/S735C, and any unrecognised or empty name —
+    defaults to "water_water". This still fails in the safer direction
+    for names outside this list: an unrecognised model just picks up a
+    handful of harmless extra tabs, rather than a real ground-source
+    installation silently losing GP1/brine controls because its exact
+    model string wasn't recognised.
+    """
+    if model_name and model_name.upper().startswith(_AIR_WATER_MODEL_PREFIXES):
+        return "air_water"
+    return "water_water"
+
+
+def _filter_menu_structure_by_family(menus: list, controller_family: str) -> list:
+    """Recursively drop any menu/submenu whose `family` tag doesn't match
+    controller_family, keeping everything else (including menus with no
+    `family` key at all, which apply to every installation).
+
+    Returns a new list — the input menu_structure is never mutated, since
+    callers may reuse the same in-memory structure across dashboard
+    rebuilds and for other purposes (e.g. _collect_menu_points).
+    """
+    filtered = []
+    for m in menus:
+        menu_family = m.get("family")
+        if menu_family is not None and menu_family != controller_family:
+            continue
+        m = dict(m)
+        if "submenus" in m:
+            m["submenus"] = _filter_menu_structure_by_family(m["submenus"], controller_family)
+        filtered.append(m)
+    return filtered
 
 
 def _collect_menu_points(menus: list) -> set[int]:
@@ -858,6 +1347,7 @@ def _setup_menu_dashboard(
         all_points_snapshot,
         point_defaults,
     )
+    controller_family = _detect_controller_family(entity_manager.device_info.get("model"))
     dashboard_config = _build_menu_dashboard_config(
         menu_structure,
         registry_watcher,
@@ -867,6 +1357,7 @@ def _setup_menu_dashboard(
         debug_mode=debug_mode,
         bulk_data=bulk_data_snapshot,
         menu_yaml_points=all_menu_points,
+        controller_family=controller_family,
     )
     if not dashboard_config or not dashboard_config.get("views"):
         log_startup.warning("Menu dashboard: no views generated — check menu_structure.yaml")
@@ -1798,7 +2289,7 @@ def copy_card_file() -> bool:
     return _copy_card_file()
 
 
-def build_menu_points(yaml_path: str) -> frozenset[int]:
+def build_menu_points(yaml_path: str, controller_family: str | None = None) -> frozenset[int]:
     """Read menu_structure.yaml and return every point_id referenced anywhere
     in the menu hierarchy as a frozenset.
 
@@ -1808,11 +2299,25 @@ def build_menu_points(yaml_path: str) -> frozenset[int]:
     so the enabled set and the dashboard cards are always derived from the
     same source and can never silently diverge.
 
+    controller_family : same meaning as in _build_menu_dashboard_config —
+                     "air_water" or "water_water" (see
+                     _detect_controller_family), or None to skip filtering
+                     entirely. Passing the detected family here is what
+                     keeps "menus" mode from enabling ground-source-only
+                     points (GP1, brine circuit) on an air/water
+                     installation and vice versa — without this, entity
+                     enablement and the dashboard's own family filtering
+                     would silently diverge, defeating the point of the
+                     "single source of truth" comment above.
+
     Returns an empty frozenset if the file cannot be read or parsed,
     so a missing YAML degrades gracefully rather than crashing startup.
     """
     try:
-        points = _collect_menu_points(_load_menu_structure_yaml(yaml_path))
+        menu_structure = _load_menu_structure_yaml(yaml_path)
+        if controller_family is not None:
+            menu_structure = _filter_menu_structure_by_family(menu_structure, controller_family)
+        points = _collect_menu_points(menu_structure)
         log_startup.debug("Built MENU_POINTS from YAML: %d unique point_ids", len(points))
         return frozenset(points)
     except (OSError, ValueError, yaml.YAMLError, AttributeError, TypeError) as e:

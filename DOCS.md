@@ -473,9 +473,11 @@ If you manually delete the Nibe Bridge dashboard, restart the app — it recreat
 
 ### Nibe Menus dashboard
 
-When `mode` is set to `menus`, the bridge creates a second dashboard — **Nibe Menus** — that mirrors the physical menu structure of the Nibe controller. The same hierarchy an installer navigates on the controller touchscreen appears as HA dashboard views: 163 menus, organised exactly as Nibe structures them.
+When `mode` is set to `menus`, the bridge creates a second dashboard — **Nibe Menus** — that mirrors the physical menu structure of the Nibe controller. The same hierarchy an installer navigates on the controller touchscreen appears as HA dashboard views: 186 menus, organised exactly as Nibe structures them.
 
 This makes `menus` mode the natural choice for users who already know the Nibe controller interface and want that same structure in HA — every setting is where you would expect it to be.
+
+A few of the largest menus (currently "Indoor climate," "My system," "Installer settings & accessories," and the "Operating info" submenu under "Info") are too large to read comfortably as one long tab, so they appear differently: opening one shows a short summary plus a list of links to its own sub-sections, each of which is its own separate view reached by tapping through — rather than one continuously scrolling page. These sub-section views don't clutter the dashboard's own tab bar; you navigate to them from the summary page and back again with your browser's own back button.
 
 A few things to know about the Nibe Menus dashboard:
 

@@ -1742,6 +1742,75 @@ class EntityManager:
             self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
             return
 
+        # A second, register-specific sentinel — scoped to "number" entities
+        # only. The firmware's own declared min/max (used to build the HA
+        # "number" entity's enforced bounds — see build_number_config in
+        # nibe_discovery_config.py) is sometimes violated by the firmware's
+        # own current reading — e.g. an unconfigured zone's "desired room
+        # temperature" (valid range 5.0-35.0 °C) reporting 0 to mean "not
+        # configured" rather than a real target. Passing that straight
+        # through as the entity's state made HA's own MQTT number platform
+        # reject it every poll ("Invalid value ... range 5.0 - 35.0"),
+        # logged repeatedly. Treat it the same as the sentinel case above:
+        # unavailable, not a misleading in-range-looking number.
+        #
+        # Deliberately not extended to other entity types: minValue/maxValue
+        # doesn't reliably describe a meaningful bound for all of them (a
+        # "time" register's natural range is seconds-since-midnight, far
+        # outside whatever small operational min/max its metadata happens to
+        # declare), and "select"/"sensor" raw values outside a typical range
+        # are still worth showing as their raw fallback rather than hiding.
+        #
+        # minValue == maxValue is excluded — that's this firmware's own
+        # convention for "no fixed bounds declared" on many legitimate
+        # read-only sensors (confirmed against point 4, Current outdoor
+        # temperature, which reports min=max=0 despite being a real,
+        # working, non-zero sensor) — checking those against a degenerate
+        # 0-0 "range" would falsely mark almost every such sensor offline.
+        if entity_type == "number":
+            min_val = metadata.get("minValue")
+            max_val = metadata.get("maxValue")
+            if (
+                min_val is not None
+                and max_val is not None
+                and min_val != max_val
+                and (raw_value < min_val or raw_value > max_val)
+            ):
+                if raw_value != 0 and point_id not in self._range_warnings_issued:
+                    # 0 is this firmware's well-established "unconfigured/
+                    # not set" convention (seen throughout this project's
+                    # own mapping work) — an out-of-range value that ISN'T
+                    # 0 doesn't match any recognised sentinel, so it's worth
+                    # flagging rather than silently treated as understood.
+                    # Still published unavailable either way: passing it
+                    # through would reproduce the original HA-side rejection
+                    # this whole check exists to prevent.
+                    #
+                    # Gated by _range_warnings_issued (once per point_id,
+                    # for the life of the process) for the same reason
+                    # build_number_config's own warning in
+                    # nibe_discovery_config.py is: this runs on every poll,
+                    # and an unrecognised out-of-range value tends to stay
+                    # out of range, so without this gate the warning would
+                    # repeat indefinitely — the exact kind of log spam this
+                    # whole fix exists to eliminate, just from our own
+                    # logger instead of HA's.
+                    # pragma: no mutate start
+                    log_entities.warning(
+                        "Point %d (%s): current value %s outside firmware range "
+                        "%s–%s and not the recognised 0 sentinel — publishing "
+                        "unavailable, but this may be worth investigating.",
+                        point_id,
+                        entity_info.get("display_title", ""),
+                        raw_value,
+                        min_val,
+                        max_val,
+                    )
+                    # pragma: no mutate end
+                    self._range_warnings_issued.add(point_id)
+                self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                return
+
         if entity_type == "binary_sensor" and raw_value not in (0, 1):
             # Static firmware metadata cannot distinguish a genuine boolean
             # flag from a multi-state enum masquerading as one (see
