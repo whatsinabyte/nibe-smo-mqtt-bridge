@@ -14,6 +14,54 @@ from conftest import (
 )
 
 
+class TestFetchBulkDataDivisorOverride(unittest.TestCase):
+    """_fetch_bulk_data applies apply_divisor_override() to every point's
+    metadata before storing it in bulk_data -- the per-poll copy that
+    state processing (_process_and_publish_state) reads. Firmware resends
+    its own (wrong) divisor on every single bulk response, so this must
+    be reapplied every poll, not just once at discovery (GitHub issue #84:
+    Production PV Power, point 29258, declares divisor=1 but the real
+    scale is 10 W per raw unit)."""
+
+    def _response(self, point_id, divisor, unit="kW", raw_value=17):
+        return {
+            str(point_id): {
+                "title": "Production (PV Power)",
+                "description": "",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "divisor": divisor,
+                    "unit": unit,
+                    "minValue": 0,
+                    "maxValue": 65535,
+                },
+                "value": {"integerValue": raw_value, "stringValue": "", "isOk": True},
+            }
+        }
+
+    def test_overridden_point_stores_corrected_divisor(self):
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = self._response(29258, divisor=1)
+        em._fetch_bulk_data(detect_changes=False)
+        self.assertEqual(em.bulk_data[29258]["metadata"]["divisor"], 100)
+
+    def test_overridden_point_divisor_reapplied_on_every_poll(self):
+        """Firmware keeps resending divisor=1 on every response -- a
+        one-time-only fix (e.g. only in _index_point) would be silently
+        undone the next poll."""
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = self._response(29258, divisor=1)
+        em._fetch_bulk_data(detect_changes=False)
+        em._fetch_bulk_data(detect_changes=False)
+        self.assertEqual(em.bulk_data[29258]["metadata"]["divisor"], 100)
+
+    def test_non_overridden_point_keeps_firmware_divisor(self):
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = self._response(4, divisor=10, unit="°C")
+        em._fetch_bulk_data(detect_changes=False)
+        self.assertEqual(em.bulk_data[4]["metadata"]["divisor"], 10)
+
+
 class TestFetchBulkDataStringCache(unittest.TestCase):
     """_fetch_bulk_data caches the clean_string() result for each point's
     title/description, only recomputing when the raw API string actually

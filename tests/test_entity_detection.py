@@ -2001,6 +2001,56 @@ class TestUnitOverrides(unittest.TestCase):
         self.assertEqual(ENTITY_TYPE_OVERRIDES[4562], "switch")
 
 
+class TestDivisorOverrides(unittest.TestCase):
+    """DIVISOR_OVERRIDES/apply_divisor_override — corrects a firmware
+    self-reported divisor confirmed physically wrong (GitHub issue #84:
+    Production PV Power declares divisor=1/unit=kW but the real scale is
+    10 W per raw unit). A regression here means a corrected point silently
+    reverts to reporting/accepting values 100x too large."""
+
+    def test_29258_override_is_100(self):
+        from nibe_entity_detection import DIVISOR_OVERRIDES
+
+        self.assertIn(29258, DIVISOR_OVERRIDES)
+        self.assertEqual(DIVISOR_OVERRIDES[29258], 100)
+
+    def test_overridden_point_gets_corrected_divisor(self):
+        from nibe_entity_detection import apply_divisor_override
+
+        metadata = {"divisor": 1, "unit": "kW"}
+        result = apply_divisor_override(29258, metadata)
+        self.assertEqual(result["divisor"], 100)
+        self.assertEqual(result["unit"], "kW")  # unrelated keys untouched
+
+    def test_overridden_point_already_correct_returns_same_object(self):
+        """If firmware ever starts reporting the corrected divisor itself,
+        applying the override again must be a no-op, not a second
+        (redundant but harmless) rewrite -- checked via identity to catch
+        an unconditional dict-rebuild regression."""
+        from nibe_entity_detection import apply_divisor_override
+
+        metadata = {"divisor": 100, "unit": "kW"}
+        result = apply_divisor_override(29258, metadata)
+        self.assertIs(result, metadata)
+
+    def test_non_overridden_point_returns_same_object_unchanged(self):
+        from nibe_entity_detection import apply_divisor_override
+
+        metadata = {"divisor": 10, "unit": "°C"}
+        result = apply_divisor_override(4, metadata)
+        self.assertIs(result, metadata)
+
+    def test_original_metadata_dict_never_mutated(self):
+        """apply_divisor_override must return a new dict, not mutate the
+        caller's -- the same raw metadata dict may still be referenced
+        elsewhere (e.g. a point object cached before indexing)."""
+        from nibe_entity_detection import apply_divisor_override
+
+        metadata = {"divisor": 1, "unit": "kW"}
+        apply_divisor_override(29258, metadata)
+        self.assertEqual(metadata["divisor"], 1)
+
+
 # ===========================================================================
 # 37. point_to_menu_map initialises empty
 # ===========================================================================

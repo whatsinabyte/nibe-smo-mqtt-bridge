@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] — 2026-09-17
+
+A single-point firmware metadata bug, reported and diagnosed on real
+hardware within a day (thanks, bpwats) — see
+[issue #84](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/84).
+
+### Fixed
+
+- **"Production (PV Power)" (point 29258) reported values 100x too
+  large.** The firmware itself declares this register with `unit: kW`,
+  `divisor: 1` — i.e. "the raw value is directly in kW" — but the real
+  physical scale is 10 W per raw unit. Writing `17` (intended as 170 W of
+  solar production) displayed as "17 kW" in Home Assistant, while
+  myUplink correctly read ~0.2 kW for the same inverter at the same
+  moment. Confirmed on two independent controllers (the reporter's VVM
+  S320 and this project's own SMO S40 reference dump both declare the
+  identical broken `divisor: 1`), so this is a firmware-wide metadata
+  bug, not specific to one model. Corrected divisor: 100 (raw `17` → the
+  correct `0.17 kW`). New `DIVISOR_OVERRIDES` mechanism, applied wherever
+  firmware metadata enters the bridge (point discovery and every polling
+  cycle — the firmware resends its own wrong value every time), since the
+  existing `UNIT_OVERRIDES` only corrects a displayed label, not scale.
+  Confirmed live on real hardware after the fix: the entity's declared
+  bounds changed from `min=0/max=65535/step=1` to
+  `min=0/max=655.35/step=0.01`.
+
+---
+
 ## [1.2.0] — 2026-09-15
 
 A large mapping and dashboard-navigation pass. 522 new entities are now

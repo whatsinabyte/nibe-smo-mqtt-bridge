@@ -426,6 +426,40 @@ UNIT_OVERRIDES: dict[int, str] = {
 # metadata mistake that needs correcting this way.
 DEVICE_CLASS_OVERRIDES: dict[int, str] = {}
 
+# Per-point divisor overrides — corrects a firmware self-reported divisor
+# confirmed physically wrong, as opposed to UNIT_OVERRIDES above (which
+# only corrects a displayed unit label, not the actual scale of the value).
+DIVISOR_OVERRIDES: dict[int, int] = {
+    # Production (PV Power): firmware declares divisor=1 (i.e. "the raw
+    # value is directly in kW"), but the real physical scale is 10 W per
+    # raw unit (raw x 10 = Watts = raw / 100 kW) — confirmed on a VVM S320
+    # by comparing a written value against myUplink's own display for the
+    # same PV inverter (GitHub issue #84): writing 17 (intended as 170 W)
+    # showed as "17 kW" in HA while myUplink correctly read ~0.2 kW for the
+    # same moment. Also declared divisor=1 on this project's own SMO S40
+    # reference dump, so the bug is in the firmware's self-reported
+    # metadata itself, not specific to one controller model.
+    29258: 100,
+}
+
+
+def apply_divisor_override(point_id: int, metadata: dict) -> dict:
+    """Return metadata with a corrected divisor for a point in
+    DIVISOR_OVERRIDES, or the same dict unchanged otherwise.
+
+    Must be applied wherever a fresh metadata dict enters the system —
+    point discovery (EntityManager._index_point) and every bulk-fetch poll
+    (EntityManager._fetch_bulk_data) — since the firmware resends its own
+    (wrong) divisor on every single response. There is no one place
+    downstream where patching a cached copy would stick; both entry points
+    call this on every metadata dict they receive instead.
+    """
+    override = DIVISOR_OVERRIDES.get(point_id)
+    if override is None or metadata.get("divisor") == override:
+        return metadata
+    return {**metadata, "divisor": override}
+
+
 # Unit → HA device_class lookup (after _UNIT_NORMALISE has been applied).
 _UNIT_TO_DEVICE_CLASS: dict[str, str] = {
     "°C": "temperature",

@@ -74,6 +74,7 @@ from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
 from nibe_entity_detection import (
     MODES,
     apply_divisor,
+    apply_divisor_override,
     clean_string,
     detect_entity_type,
     get_register_type,
@@ -743,7 +744,10 @@ class EntityManager:
     # ------------------------------------------------------------------ #
 
     def _index_point(self, point: dict) -> None:
-        self.all_points_by_id[point["variableId"]] = point
+        point_id = point["variableId"]
+        if "metadata" in point:
+            point["metadata"] = apply_divisor_override(point_id, point["metadata"])
+        self.all_points_by_id[point_id] = point
 
     def _deindex_point(self, point_id: int) -> None:
         self.all_points_by_id.pop(point_id, None)
@@ -2156,7 +2160,7 @@ class EntityManager:
                     # which isn't caught by the (ValueError, KeyError) below
                     # and would abort the whole bulk fetch for every point.
                     value_data = point_data.get("value") or {}
-                    metadata = point_data.get("metadata") or {}
+                    metadata = apply_divisor_override(point_id, point_data.get("metadata") or {})
 
                     # ── String cache (Finding 2) ──────────────────────────────
                     # title and description never change between firmware updates.
