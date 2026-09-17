@@ -69,6 +69,16 @@ declared," not evidence the register is dead or always zero — see
 and a confirmed counter-example (point 4, a real, always-nonzero outdoor
 temperature sensor, that still declares `0`/`0`).
 
+This convention isn't specific to this bridge's own reference hardware —
+an independent project reading the same local REST API,
+[AndiHOK91/HA-Nibe-Local-REST-API](https://github.com/AndiHOK91/HA-Nibe-Local-REST-API),
+hit the identical ambiguity and reached the same conclusion by a
+different route: their `metadata_limits()` helper treats a declared
+`minValue`/`maxValue` of `0`/`0` as untrustworthy rather than a real
+degenerate range. Independent confirmation from a differently-architected
+project (a native HA integration, not an MQTT bridge) reading the same
+firmware is worth more than either project's own observation alone.
+
 ## Undocumented "multiple-of-ten" enum encoding
 
 A recurring, entirely undocumented convention across several unrelated
