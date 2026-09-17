@@ -1,6 +1,6 @@
 # Architecture — Nibe S-Series MQTT Bridge
 
-Developer reference. Not user documentation — see [DOCS.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/nibe_s_series/DOCS.md) for installation and configuration.
+Developer reference. Not user documentation — see [DOCS.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md) for installation and configuration.
 
 ---
 
@@ -22,14 +22,15 @@ The bridge also provisions Lovelace dashboards and a companion card via the HA W
 
 ## 3. Threading model
 
-The bridge runs five concurrent execution contexts:
+The bridge runs six concurrent execution contexts:
 
 | Context | What runs there |
 |---|---|
 | **Main thread** | Poll loop — `_poll_loop()` calls `update_all_states()` every `bulk_interval` seconds |
 | **Paho network thread** | All MQTT callbacks (`on_connect`, `on_message`, `on_disconnect`) |
 | **Write executor** | `ThreadPoolExecutor(max_workers=1)` — serialises all write commands to the controller |
-| **Management executor** | `ThreadPoolExecutor(max_workers=2)` — handles management button presses (test suite, alarm reset, force poll) |
+| **Management executor** | `ThreadPoolExecutor(max_workers=2)` — handles management button presses (alarm reset, force poll) |
+| **Test executor** | `ThreadPoolExecutor(max_workers=1)` — runs the on-demand pytest suite (the "Run Test Suite" management button), kept separate from the management executor so a long test run can't starve alarm-reset/force-poll handling on that pool's two workers |
 | **Registry watcher thread** | Daemon thread — holds a long-lived WebSocket to HA Core for entity registry events |
 | **Lovelace thread** | Daemon thread — dashboard provisioning at startup; exits after completion |
 
@@ -126,7 +127,7 @@ This is deliberately left alone rather than filtered against the declared range.
 
 ### 4.4 `nibe_entity_manager.py` — EntityManager
 
-The largest module (~3,250 lines) and the core of the bridge. Owns the full lifecycle of every data point as a HA entity.
+The largest module (~4,980 lines) and the core of the bridge. Owns the full lifecycle of every data point as a HA entity.
 
 **Point registry:** all discovered points are indexed by `variableId` in a dict. The registry is populated once at startup via `discover_points()` and is read-only thereafter (dynamic points are handled separately).
 
@@ -153,8 +154,8 @@ The largest module (~3,250 lines) and the core of the bridge. Owns the full life
 **`baseline_point_ids` and re-learnability:** a point that first appears outside a post-write scan window, before its real controlling switch/select has ever been learned, gets indexed as a plain static point (`is_dynamic: False`) and added to `baseline_point_ids` rather than auto-enabled. The appearance-detection guard in `_fetch_bulk_data()` requires `point_id not in self.baseline_point_ids`, so `_update_entity_state`'s generic disable fallback discards the point from `baseline_point_ids` whenever it disables it (mirroring what the post-write-scan disappearance branch already did) — without this, a point that ever took this path would be permanently stuck unable to be routed through the dynamic-learning path again, even after a correct, HA-driven write to its real controller reopens a legitimate scan window.
 
 **Two functions that must not be refactored speculatively:**
-- `_fetch_bulk_data()` (~297 lines): the complexity is inherent. It simultaneously manages the string cache, bulk data mutation, new-point classification, baseline tracking, and disappeared-set computation. Extracting sub-functions is feasible but high-risk for a fully-covered function with no current bug.
-- `_publish_dynamic_changes()` (~215 lines): same rationale. Handles the full causal chain from point appearance/disappearance through DynamicPointMap update, HA notification, changelog entry, and dashboard regen scheduling.
+- `_fetch_bulk_data()` (~470 lines): the complexity is inherent. It simultaneously manages the string cache, bulk data mutation, new-point classification, baseline tracking, and disappeared-set computation. Extracting sub-functions is feasible but high-risk for a fully-covered function with no current bug.
+- `_publish_dynamic_changes()` (~355 lines): same rationale. Handles the full causal chain from point appearance/disappearance through DynamicPointMap update, HA notification, changelog entry, and dashboard regen scheduling.
 
 **What this module does not do:** no raw HTTP, no MQTT topic string construction, no HA registry watching, no notification sending.
 
@@ -340,7 +341,7 @@ Alarms use a separate fast poll (`_ALARM_POLL_INTERVAL = 10s`) independent of th
 
 ## 6. Test suite
 
-~4,337 tests (plus 19 Hypothesis subtests) across 26 files, at 100% line coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
+~4,554 tests (plus 19 Hypothesis subtests) across 26 files, at 100% line coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
 
 For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
