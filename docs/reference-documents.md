@@ -98,7 +98,7 @@ copies, on 2026-09-11.
 | Installer manual, SMO S40 UK | IHB EN 2515-3 (631929) | 903683 | 3 368 285 |
 | Installer manual, S2125 | IHB EN 2525-1 (831880) | 905826 | 11 265 445 |
 | Installer manual, S2125-14 | IHB EN 2525-1 (931059) | 905779 | 7 655 159 |
-| Installer manual, VVM S320 | IHB EN 2327-1 (631794) | — | 4 103 075 |
+| Installer manual, VVM S320 | IHB EN 2327-1 (631794) | — | 5 796 228 |
 
 The SMO S40 manuals held locally were already byte-identical to the published
 editions. The S2125 and VVM S320 manuals were not: the first refresh replaced
@@ -153,9 +153,10 @@ rather than saving a second copy under a new name.
 ### Accessories have no automatic route
 
 `SOURCES` in the refresh script covers the products that have a page on
-nibe.eu: SMO S40, S2125, VVM S320, and ERS S40/20/30. The remaining accessory
-manuals in the local collection — ACS 45, AXC 30, F135, S135, ERS S10,
-GV-HR 120 — cannot be refreshed automatically:
+nibe.eu: SMO S40, S2125, VVM S320, VVM S330, SVM S332, ERS S40/20/30, and
+the ground/water controller family (S1155, S1156, S1256, S735, S735C,
+S2060). The remaining accessory manuals in the local collection — ACS 45,
+AXC 30, F135, S135, ERS S10, GV-HR 120 — cannot be refreshed automatically:
 
 - nibe.eu has no accessories product category at all; the top-level product
   list offers only `smart-home-accessories` and equipment categories.

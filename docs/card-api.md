@@ -1,6 +1,6 @@
 # Entity Manager Card — MQTT API Reference
 
-This document describes the MQTT protocol between the Nibe S-Series MQTT Bridge and the Entity Manager card (`nibe-entity-manager-card.js`). It covers every topic the card subscribes to, every topic it publishes to, and the JSON schema for each payload.
+This document describes the MQTT protocol between the Nibe S-Series MQTT Bridge and the Entity Manager card (`nibe-entity-manager-card.js`). It covers every topic the card subscribes to, every topic it publishes to, and the JSON schema for each payload — plus a few other bridge-published topics that aren't part of the card's own protocol but are documented here anyway since they're useful for automations or an alternative dashboard.
 
 All topics in this document are fixed strings — none are per-entity or dynamically constructed. Per-entity HA discovery topics (`homeassistant/*/nibe_*/config`) are standard HA MQTT discovery and are not covered here.
 
@@ -70,7 +70,7 @@ The payload is plain JSON (not compressed).
 - `modbusRegisterID` — Modbus TCP register address; `null` if not a Modbus point
 - `is_dynamic` — `true` for points that only appear when a controlling switch is active
 
-For individual point updates (after a dynamic point appears or disappears), a per-point message is published to `nibe/browser/meta/{point_id}` with the same schema as a single metadata entry (no outer `metadata`/`count` wrapper).
+For individual point updates (after a dynamic point appears or disappears), a per-point message is published to `nibe/browser/meta/{point_id}` with the same schema as a single metadata entry (no outer `metadata`/`count` wrapper), plus one extra field not present in the batched form: `last_updated`, a per-point timestamp.
 
 ---
 
@@ -102,45 +102,25 @@ For individual point updates (after a dynamic point appears or disappears), a pe
 
 ---
 
-### `nibe/browser/dynamic_point_map`
+### `nibe/browser/dynamic`
 
-**Retained.** The serialised `DynamicPointMap` — the causal table of controlling switch/select points and the dynamic points they expose. Published after every map update. The card displays this in the Dynamic Map view.
-
-Payload is gzip-compressed JSON. Decompress before parsing.
+**Not retained.** A real-time change-notification event, published every time a dynamic point appears or disappears (the source for the card's toast/notification UI). This is the topic the card actually subscribes to for live dynamic-point changes — see the note at the end of this section for topics that look related but the card does **not** consume.
 
 ```json
 {
-  "3754": {
-    "point_id": 3754,
-    "title": "Forced control",
-    "entity_type": "switch",
-    "processed_values": [0, 1],
-    "unprocessed_values": [],
-    "outcomes": {
-      "1": {
-        "appeared": [3755, 3756],
-        "disappeared": []
-      },
-      "0": {
-        "appeared": [],
-        "disappeared": [3755, 3756]
-      }
-    }
-  }
+  "added": [3755, 3756],
+  "removed": [],
+  "timestamp": 1721825000.0,
+  "iso_timestamp": "2025-07-24 14:03:20",
+  "triggered_by": {"id": 3754, "title": "Forced control", "value": 1}
 }
 ```
 
----
+**Field notes:**
+- `added` / `removed` — arrays of point IDs that appeared or disappeared in this event
+- `triggered_by` — an object `{id, title, value?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID
 
-### `nibe/browser/active_dynamic_points`
-
-**Retained.** The set of dynamic point IDs that are currently active (present in the firmware's bulk fetch response). Published after every bulk poll that detects a change.
-
-```json
-[3755, 3756]
-```
-
-Plain JSON array of integers.
+This same `change_event` object (including `triggered_by`'s object shape) is what gets appended, unmodified, into `nibe/browser/changelog/history` below.
 
 ---
 
@@ -158,7 +138,7 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 
 ### `nibe/browser/changelog/history`
 
-**Retained.** The full changelog of dynamic point appearances and disappearances. Gzip-compressed JSON. The card decompresses and displays this in the Changelog panel.
+**Retained.** The full changelog of dynamic point appearances and disappearances. Gzip-compressed JSON, prefixed with the ASCII sentinel `"gzip1:"` followed by base64-encoded gzip bytes (see [Compression](#compression) below). The card decompresses and displays this in the Changelog panel.
 
 ```json
 {
@@ -171,7 +151,7 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
       "id": "change_1721825000000",
       "unread": true,
       "source": "firmware",
-      "triggered_by": 3754
+      "triggered_by": {"id": 3754, "title": "Forced control", "value": 1}
     }
   ],
   "total_entries": 1,
@@ -184,7 +164,7 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 **Field notes:**
 - `added` / `removed` — arrays of point IDs that appeared or disappeared in this event
 - `source` — always `"firmware"` (reserved for future use)
-- `triggered_by` — point ID of the controlling switch/select that caused the change, or `null` if unknown
+- `triggered_by` — an object `{id, title, value?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID (same shape as `nibe/browser/dynamic`'s `triggered_by` above, since this entry is built from that same event)
 - `_seq` — monotonically increasing sequence number; the card uses this to skip stale retained messages after a map flush
 
 ---
@@ -219,6 +199,54 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 ```
 
 Maximum 10 snapshots. The array is ordered by creation time (most recently saved last).
+
+---
+
+## Other bridge-published topics (not consumed by the card)
+
+The topics below are real, published bridge topics, but the reference Entity Manager card does not subscribe to or display any of them — they're documented here for anyone building an alternative card, dashboard, or automation, not because the card's own protocol depends on them.
+
+---
+
+### `nibe/browser/dynamic_point_map`
+
+**Retained.** The serialised `DynamicPointMap` — the causal table of controlling switch/select points and the dynamic points they expose. Published after every map update. Re-subscribed to by the bridge itself on restart to restore this state; not read by the card.
+
+Payload is gzip-compressed JSON, prefixed with the ASCII sentinel `"gzip1:"` followed by base64-encoded gzip bytes (see [Compression](#compression) below) — decode base64 first, then gunzip.
+
+```json
+{
+  "3754": {
+    "point_id": 3754,
+    "title": "Forced control",
+    "entity_type": "switch",
+    "processed_values": [0, 1],
+    "unprocessed_values": [],
+    "outcomes": {
+      "1": {
+        "appeared": [3755, 3756],
+        "disappeared": []
+      },
+      "0": {
+        "appeared": [],
+        "disappeared": [3755, 3756]
+      }
+    }
+  }
+}
+```
+
+---
+
+### `nibe/browser/active_dynamic_points`
+
+**Retained.** The set of dynamic point IDs that are currently active (present in the firmware's bulk fetch response). Published after every bulk poll that detects a change. Also re-subscribed to by the bridge itself on restart; not read by the card.
+
+```json
+[3755, 3756]
+```
+
+Plain JSON array of integers.
 
 ---
 
@@ -360,7 +388,8 @@ These are standard HA button command topics. The card does not publish to them d
 | `homeassistant/button/nibe_reset_alarms/press` | Clears all active controller alarms |
 | `homeassistant/button/nibe_mark_changes_read/press` | Marks all changelog entries as read |
 | `homeassistant/button/nibe_flush_dynamic_map/press` | Clears the dynamic point map (debug only) |
-| `homeassistant/button/nibe_run_tests/press` | Runs the full pytest suite (debug only) |
+| `homeassistant/button/nibe_run_tests/press` | Runs the full pytest suite (debug only); result published to `nibe/browser/test_suite/state` + `/attrs` |
+| `homeassistant/button/nibe_test_connection/press` | Runs a ping+curl connectivity check against the controller (debug only); result published to `nibe/browser/connectivity_check/state` + `/attrs` |
 
 ---
 
@@ -371,13 +400,19 @@ Two topics use gzip compression to reduce MQTT broker load:
 | Topic | Compressed |
 |---|---|
 | `nibe/browser/all_metadata` | No — plain JSON |
-| `nibe/browser/changelog/history` | Yes — gzip |
-| `nibe/browser/dynamic_point_map` | Yes — gzip |
+| `nibe/browser/changelog/history` | Yes — gzip, `"gzip1:"`-prefixed |
+| `nibe/browser/dynamic_point_map` | Yes — gzip, `"gzip1:"`-prefixed |
+
+The payload is not raw gzip bytes on the wire — it's an ASCII string, the sentinel `"gzip1:"` followed by base64-encoded gzip bytes. Strip the sentinel and base64-decode before gunzipping.
 
 To decompress in JavaScript:
 ```javascript
+const SENTINEL = 'gzip1:';
+const b64 = payload.slice(SENTINEL.length);
+const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
 const ds = new DecompressionStream('gzip');
-const blob = new Blob([payload]);
+const blob = new Blob([bytes]);
 const stream = blob.stream().pipeThrough(ds);
 const text = await new Response(stream).text();
 const data = JSON.parse(text);
