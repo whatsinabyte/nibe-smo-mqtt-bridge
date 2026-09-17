@@ -64,7 +64,7 @@ Each entry in `settings` represents one firmware data point.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `label` | ✅ | string | Human-readable name for this setting, as it appears in the controller's display menu. Used as the section divider label in the dashboard. |
-| `point_id` | ✅ | integer or null | The firmware `variableId` for this data point. Must exist in the firmware's bulk fetch response. Invalid point IDs silently produce a "not enabled" placeholder in the dashboard. `null` is valid for a small number of controller-display-only settings that have no corresponding firmware register (currently 8) — these render as a label/range/annotations row with no entity attached. |
+| `point_id` | ✅ | integer or null | The firmware `variableId` for this data point. Must exist in the firmware's bulk fetch response. Invalid point IDs silently produce a "not enabled" placeholder in the dashboard. `null` is valid for a small number of controller-display-only settings that have no corresponding firmware register (currently 58) — these render as a label/range/annotations row with no entity attached. |
 | `range` | ✅ | string | The valid value range, unit, and type — e.g. `5 – 30 °C`, `0 – 100 %`, `off/on`, `°C (read-only)`. Displayed in the section divider alongside the label. Free-form string — there is no machine parsing of this field. |
 | `tip` | — | string | Green callout. Actionable guidance specific to this setting. |
 | `note` | — | string | Blue callout. Context, caveats, cross-references specific to this setting. |
@@ -116,8 +116,8 @@ The dashboard rebuilds automatically on the next add-on restart. Use the **Regen
 Three ways to find the `point_id` for a setting:
 
 1. **Entity Manager card** — search by name. The card shows the `point_id` (variableId) in the entity metadata panel.
-2. **Unplaced settings tab** — visible in the Nibe Menus dashboard when the bridge runs with log level `debug`. Shows all firmware points not yet assigned to any menu, grouped by type.
-3. **`all_data_points_raw.txt`** — included in the repository, contains the raw firmware register list from a reference installation. Search by register name.
+2. **Unplaced settings tab** — visible in the Nibe Menus dashboard when the bridge runs with `debug_mode` enabled (a separate setting from `log_level` — see DOCS.md's [Configuration](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/DOCS.md#configuration) section). Shows all firmware points not yet assigned to any menu, grouped by type.
+3. **A reference firmware dump** — `reference-dumps/all_points_<lang>.json` holds a real controller's complete point list for developers with a reference installation; it's gitignored, developer-local data, not shipped in the repository. See [docs/reference-documents.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/reference-documents.md) for where it comes from and how to capture your own.
 
 **The same `point_id` in several menus is normal, not an error.** Forty-odd registers appear in more than one menu here, and almost all are deliberate, because the controller itself shows them in more than one place. Three patterns account for nearly all of them: an *operating-info* menu repeats a sensor that a *settings* menu also exposes (degree minutes as a reading in 3.1.2 and as a setting in 7.1.10.3); a *user* menu and an *installer* menu offer the same control (exhaust air fan speeds in 1.2.1 and 7.1.4.1); or a value legitimately appears across sibling info menus, which is why outdoor temperature sits in 3.1.2, 3.1.3 and 3.1.5 alike. Some rows say so in a note — "Same register as menu 7.1.5.1 — see there for full context" — and a note of that kind is worth adding whenever a new duplicate is introduced.
 

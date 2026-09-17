@@ -34,30 +34,28 @@ For running tests only — no Nibe controller or HA installation required.
 ## Repository layout
 
 ```
-nibe_s_series/          ← add-on content (installed into HA)
-  app/                  ← all Python source modules
-  tests/                ← test suite (20 files + conftest.py)
-  translations/         ← en.yaml, nl.yaml, da.yaml, de.yaml, no.yaml, pl.yaml, sv.yaml
-  app/menu_structure.yaml ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
-  config.yaml           ← add-on manifest
-  Dockerfile
-  run.sh
-  build.yaml
-  apparmor.txt
-  README.md
-  DOCS.md
-  SECURITY.md
-  CHANGELOG.md
-  LICENSE.md
-  icon.png / logo.png
-docs/                   ← SVG diagrams and screenshots (GitHub display)
+app/                    ← all Python source modules + menu_structure.yaml
+  menu_structure.yaml   ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
+tests/                  ← test suite (26 test files + conftest.py + js_card_harness.py)
+translations/           ← cs, da, de, en, es, fi, fr, it, nl, no, pl, sv.yaml
+config.yaml             ← add-on manifest
+Dockerfile
+run.sh
+apparmor.txt
+README.md
+DOCS.md
+SECURITY.md
+CHANGELOG.md
+LICENSE.md
+icon.png / logo.png
+docs/                   ← SVG diagrams, screenshots, and protocol/schema reference docs
 repository.json         ← HA add-on store manifest
 ARCHITECTURE.md         ← developer reference
 CONTRIBUTING.md         ← this file
 .gitignore
 ```
 
-All production Python source lives in `nibe_s_series/app/`. The test suite lives in `nibe_s_series/tests/`. `pytest.ini` sets `pythonpath = app` so tests import modules directly by name without an `app.` prefix.
+All production Python source lives in `app/`. The test suite lives in `tests/`. `pytest.ini` sets `pythonpath = app` so tests import modules directly by name without an `app.` prefix.
 
 ---
 
@@ -81,7 +79,7 @@ understand or do these steps individually.
 
 ```bash
 git clone https://github.com/whatsinabyte/nibe-smo-mqtt-bridge.git
-cd nibe-smo-mqtt-bridge/nibe_s_series
+cd nibe-smo-mqtt-bridge
 ```
 
 **2. Create a virtual environment**
@@ -94,10 +92,10 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 **3. Install dependencies**
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r app/requirements.txt -r requirements-test.txt -r requirements-dev.txt
 ```
 
-`requirements-dev.txt` installs runtime dependencies, the full test stack, and all static analysis tools. It is a superset of `requirements.txt` and `requirements-test.txt`.
+`app/requirements.txt` installs runtime dependencies, `requirements-test.txt` the full test stack (including `pytest-xdist`, `pytest-randomly`, and `freezegun`), and `requirements-dev.txt` the static analysis tools. `requirements-dev.txt` alone is **not** a superset of the other two — installing it by itself leaves `pytest-xdist` and friends missing, which breaks the parallel-run and seed-replay commands later in this document. `dev/setup.sh` installs all three together; do the same manually.
 
 **4. Verify the setup**
 
@@ -213,7 +211,8 @@ Each source module has a corresponding test file:
 |---|---|
 | `nibe_api.py` | `test_api.py` |
 | `nibe_caching.py` | `test_caching.py` |
-| `nibe_discovery_config.py` | `test_mqtt_publisher.py` |
+| `nibe_connectivity_check.py` | `test_connectivity_check.py` |
+| `nibe_discovery_config.py` | `test_discovery_config.py`, `test_mqtt_publisher.py` |
 | `nibe_dynamic_map.py` | `test_dynamic_map.py` |
 | `nibe_entity_detection.py` | `test_entity_detection.py` |
 | `nibe_entity_manager.py` | `test_entity_manager.py`, `test_entity_manager_snapshots.py`, `test_entity_manager_changelog.py`, `test_entity_manager_dynamic.py`, `test_entity_manager_polling.py`, `test_entity_manager_commands.py`, `test_entity_manager_lifecycle.py`, `test_entity_manager_state.py`, `test_entity_manager_discovery.py` |
@@ -392,7 +391,7 @@ npm test
 Watch mode while iterating: `npm run test:watch`. Coverage report:
 `npm run test:coverage` — scoped to `nibe-entity-manager-card.js` itself
 (test support files excluded) and enforced via thresholds in
-`app/vitest.config.js` (90% statements/lines, 80% functions, 75% branches);
+`app/vitest.config.js` (98% lines, 96% statements/functions, 83% branches);
 the command exits non-zero if coverage drops below them.
 
 **3. Run the Playwright smoke suite** — a handful of tests for what jsdom
@@ -531,25 +530,17 @@ For changes to `nibe-entity-manager-card.js`, consult [`docs/card-api.md`](https
 
 Mutation testing is used periodically to identify gaps in the test suite, not as a continuous process. The infrastructure is in place if you want to run it.
 
-**Phases and their status:**
-
-| Phase | Target | Status |
-|---|---|---|
-| 1 | `nibe_mqtt_publisher.py`, `nibe_discovery_config.py` | Ceiling reached |
-| 2 | `nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py` | Ceiling reached |
-| 3 | `nibe_entity_manager.py` | Ceiling reached — full file, 4,439 mutants, run on a local Mac copy (not the ODROID) rather than the CI target |
-| 4 | `nibe_ha_integration.py`, `nibe_lovelace.py`, `nibe_caching.py`, `nibe_test_runner.py`, `nibe_utils.py`, `generate_nibe_mqtt.py` | Ceiling reached |
-
-All four phases have now been run at least once and their survivors worked down to the structural ceiling (log format strings, genuine semantic equivalents). Re-running a phase after significant changes to its target modules is reasonable to catch newly-introduced gaps, but nothing is currently parked.
-
-**To run any phase** (from the `nibe_s_series/` directory):
+**One module at a time, not phases.** Earlier versions of this workflow bundled several unrelated source modules into one shared `mutants/` sandbox per numbered "phase" (1-4). That was replaced (2026-08-22) after a bad run crashed mid-way and corrupted survivor verdicts for every module sharing that run, not just the one that mattered. Each module now gets its own invocation and its own saved results file, reviewed independently. All modules below have been run at least once and their survivors worked down to the structural ceiling (log format strings, genuine semantic equivalents); nothing is currently parked.
 
 ```bash
-cd ..   # repo root
-./run-mutmut.sh 1   # 1, 2, 3, or 4
+./run-mutmut.sh --list          # print the module list and exit
+./run-mutmut.sh <module>        # run just one module, e.g. nibe_entity_manager
+./run-mutmut.sh                 # run every module below, sequentially
 ```
 
-Phase 3 in particular is a multi-hour run — mutmut's own default worker count (one per CPU core) can exhaust memory on machines with limited RAM when each worker runs the full `test_entity_manager*` suite in parallel. Set `MUTMUT_MAX_CHILDREN` to cap concurrency if you hit this, e.g. `MUTMUT_MAX_CHILDREN=2 ./run-mutmut.sh 3`.
+Current module list (`./run-mutmut.sh --list`): `nibe_mqtt_publisher`, `nibe_discovery_config`, `nibe_entity_detection`, `nibe_dynamic_map`, `nibe_api`, `nibe_entity_manager`, `nibe_ha_integration`, `nibe_lovelace`, `nibe_caching`, `nibe_test_runner`, `nibe_utils`, `generate_nibe_mqtt`, `nibe_connectivity_check`.
+
+`nibe_entity_manager` in particular is a multi-hour run given the module's size — mutmut's own default worker count (one per CPU core) can exhaust memory on machines with limited RAM when each worker runs the full `test_entity_manager*` suite in parallel. Set `MUTMUT_MAX_CHILDREN` to cap concurrency if you hit this, e.g. `MUTMUT_MAX_CHILDREN=2 ./run-mutmut.sh nibe_entity_manager`.
 
 **mutmut 3.x limitations to be aware of:**
 - `only_mutate` uses `fnmatch` against file paths only — function-level scoping (`::function_name*`) generates 0 mutants silently
