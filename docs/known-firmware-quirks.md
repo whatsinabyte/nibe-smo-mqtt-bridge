@@ -79,6 +79,27 @@ degenerate range. Independent confirmation from a differently-architected
 project (a native HA integration, not an MQTT bridge) reading the same
 firmware is worth more than either project's own observation alone.
 
+## A successful HTTP status doesn't mean the write was applied
+
+A `PATCH /points` write can return HTTP 200 while the controller silently
+refused it — the real verdict is a per-point result embedded in the JSON
+response body (`"modified"` on success; `"error: read only value"` or
+`"error: no such param"` on rejection), never the HTTP status code alone.
+`nibe_api.py`'s `write_point()` has always checked this body, but it was
+never written up here until now. Independently corroborated by two other
+projects hitting the identical behavior: srcfl/ftw's `nibe_local` driver
+carries the same check with the comment "the pump answers HTTP 200 even
+when it refuses a write," and AndiHOK91/HA-Nibe-Local-REST-API's README
+notes that writes to `time`-type points are deliberately blocked because
+both the REST API and Modbus "don't reliably accept" them despite
+appearing to succeed. Three independently-built projects landing on the
+same root cause is strong confirmation this is a real firmware behavior,
+not a misreading by any one of them. A likely, related cause worth
+checking first for anyone hitting this: the Local REST API itself has a
+read/write vs. read-only mode, set on the controller (installer menu
+7.5.15) — in read-only mode, every write is silently accepted and
+discarded the same way.
+
 ## Undocumented "multiple-of-ten" enum encoding
 
 A recurring, entirely undocumented convention across several unrelated
