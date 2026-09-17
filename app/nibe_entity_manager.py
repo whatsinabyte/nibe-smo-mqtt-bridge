@@ -1734,7 +1734,14 @@ class EntityManager:
         self.mqtt.publish(entity_info["availability_topic"], "online", retain=True)
 
         # Sentinel value handling
-        sentinel_values = {"s16": -32768, "u16": 65535, "s32": -2147483648, "u32": 4294967295}
+        sentinel_values = {
+            "s8": -128,
+            "u8": 255,
+            "s16": -32768,
+            "u16": 65535,
+            "s32": -2147483648,
+            "u32": 4294967295,
+        }
         # variable_size's default ('') is never a key in sentinel_values, and
         # neither is any mutated default (None, 'XXXX', missing) — so the
         # `in sentinel_values` check below is unaffected either way.

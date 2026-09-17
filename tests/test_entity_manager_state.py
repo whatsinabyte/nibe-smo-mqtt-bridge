@@ -196,6 +196,27 @@ class TestProcessAndPublishState(unittest.TestCase):
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         self.assertEqual(state_calls, [])
 
+    def test_sentinel_u8_sensor_publishes_offline_not_garbage_value(self):
+        """The u8 sentinel (255) was previously missing entirely — 652 of
+        this bridge's own reference-dump points are u8/s8, 266 of them
+        read-only sensors, so a disconnected one would have silently
+        published 255 as a real value instead of going unavailable."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        em._process_and_publish_state(info, 255, "", self._metadata(variable_size="u8"))
+        em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
+        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
+        self.assertEqual(state_calls, [])
+
+    def test_sentinel_s8_sensor_publishes_offline_not_garbage_value(self):
+        """The s8 sentinel (-128) was previously missing entirely."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        em._process_and_publish_state(info, -128, "", self._metadata(variable_size="s8"))
+        em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
+        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
+        self.assertEqual(state_calls, [])
+
     # -- out-of-declared-range "number" values (a second sentinel form) ----
 
     def test_number_zero_sentinel_goes_offline_without_warning(self):

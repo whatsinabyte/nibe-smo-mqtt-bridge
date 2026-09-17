@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.2] — 2026-09-17
+
+Found while cross-checking this project's own sentinel handling against
+[AndiHOK91/HA-Nibe-Local-REST-API](https://github.com/AndiHOK91/HA-Nibe-Local-REST-API),
+a separate project reading the same local REST API.
+
+### Fixed
+
+- **Disconnected `u8`/`s8` sensors could publish a misleading raw value
+  instead of going unavailable.** The sentinel-value check that already
+  caught a disconnected sensor's raw value pegging at its storage type's
+  limit (`-32768` for `s16`, `65535` for `u16`, and the `s32`/`u32`
+  equivalents) never covered `u8` (`255`) or `s8` (`-128`) — the two
+  narrowest integer types the firmware uses, and the most common: 652 of
+  this bridge's own reference-dump points are `u8`/`s8`, 266 of them
+  read-only sensors. A disconnected one of those could have silently
+  published `255` (or `-128`) as if it were a real reading. Both are now
+  recognized the same as the existing four.
+
 ## [1.2.1] — 2026-09-17
 
 A single-point firmware metadata bug, reported and diagnosed on real
