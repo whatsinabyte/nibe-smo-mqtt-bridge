@@ -103,6 +103,118 @@ class TestMqttCommandPayloadFuzzing(unittest.TestCase):
             self.assertIn("time", entry)
 
 
+class TestRedundantWriteSkip(unittest.TestCase):
+    """A command whose value already matches the last-polled bulk value must
+    be skipped before it ever reaches the write executor — no PATCH to the
+    controller, no pending_writes entry. Found while cross-checking this
+    bridge's write path against a sibling project's own redundant-write
+    guard; the motivating case is a "keep it set" automation (or a
+    retained/re-delivered MQTT command — a QoS>=1 broker may legitimately
+    deliver a message more than once) re-asserting an unchanged value."""
+
+    def _em_with_entity(self, pid=100, entity_type="switch", **metadata_overrides):
+        em = _make_em()
+        metadata = {
+            "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            "isWritable": True,
+            "divisor": 1,
+            "decimal": 0,
+            "minValue": 0,
+            "maxValue": 100,
+            "variableType": "integer",
+            "variableSize": "s16",
+            "unit": "",
+            "shortUnit": "",
+            "intDefaultValue": 0,
+            "stringDefaultValue": "",
+            "change": 1,
+        }
+        metadata.update(metadata_overrides)
+        entity_info = {
+            "point_id": pid,
+            "entity_type": entity_type,
+            "entity_id": f"{entity_type}.nibe_{pid}",
+            "command_topic": f"homeassistant/{entity_type}/nibe_{pid}/set",
+            "availability_topic": f"homeassistant/{entity_type}/nibe_{pid}/avail",
+            "attributes_topic": None,
+            "metadata": metadata,
+            "is_writable": True,
+            "is_dynamic": False,
+            "is_degenerate_range": False,
+        }
+        em.active_entities_by_id[pid] = entity_info
+        em.mqtt_enabled_points.add(pid)
+        return em, entity_info
+
+    def _message(self, payload):
+        msg = MagicMock()
+        msg.payload = payload.encode("utf-8") if isinstance(payload, str) else payload
+        msg.topic = "homeassistant/switch/nibe_100/set"
+        return msg
+
+    def test_switch_already_on_skips_write(self):
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data[100] = {"raw_value": 1, "string_value": "", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_not_called()
+        self.assertNotIn(100, em.pending_writes)
+
+    def test_switch_currently_off_dispatches_write(self):
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_called_once()
+        self.assertIn(100, em.pending_writes)
+
+    def test_unknown_point_not_yet_polled_dispatches_write(self):
+        """No bulk_data entry yet (e.g. first write before the first poll
+        completes) — nothing to compare against, so the write must proceed."""
+        em, info = self._em_with_entity(entity_type="switch")
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_called_once()
+
+    def test_button_always_dispatches_even_when_raw_value_matches(self):
+        """A button is a stateless action (e.g. a pulse command) — every
+        press must reach the controller regardless of the last-known value,
+        unlike a persisted switch/select/number/text setting."""
+        em, info = self._em_with_entity(entity_type="button")
+        em.bulk_data[100] = {"raw_value": 1, "string_value": "", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("PRESS"))
+        mock_submit.assert_called_once()
+
+    def test_number_matching_value_skips_write(self):
+        em, info = self._em_with_entity(entity_type="number", divisor=10, minValue=0, maxValue=1000)
+        em.bulk_data[100] = {"raw_value": 210, "string_value": "", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("21"))
+        mock_submit.assert_not_called()
+
+    def test_number_different_value_dispatches_write(self):
+        em, info = self._em_with_entity(entity_type="number", divisor=10, minValue=0, maxValue=1000)
+        em.bulk_data[100] = {"raw_value": 210, "string_value": "", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("22"))
+        mock_submit.assert_called_once()
+
+    def test_text_matching_string_value_skips_write(self):
+        em, info = self._em_with_entity(entity_type="text")
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "hello", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("hello"))
+        mock_submit.assert_not_called()
+
+    def test_text_different_string_value_dispatches_write(self):
+        em, info = self._em_with_entity(entity_type="text")
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "hello", "is_ok": True}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("world"))
+        mock_submit.assert_called_once()
+
+
 class TestParseCommandPayload(unittest.TestCase):
     def setUp(self):
         self.em = _make_em()

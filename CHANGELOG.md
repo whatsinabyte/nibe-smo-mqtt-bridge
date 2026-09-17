@@ -26,6 +26,19 @@ a separate project reading the same local REST API.
   published `255` (or `-128`) as if it were a real reading. Both are now
   recognized the same as the existing four.
 
+### Added
+
+- **Redundant writes are now skipped before they reach the controller.** If
+  the most recent poll already shows a writable point at the exact value a
+  command is asking for, that command no longer issues a PATCH at all — it's
+  necessarily a duplicate, either a "keep it set" automation re-asserting an
+  unchanged value on every trigger, or a retained/re-delivered MQTT command
+  (a QoS 1+ broker may legitimately deliver a message more than once). A
+  stateless action (a `button` entity) is unaffected — every press still
+  reaches the controller regardless of the last-known value. Also inspired
+  by cross-checking against AndiHOK91/HA-Nibe-Local-REST-API, which already
+  had an equivalent guard of its own.
+
 ## [1.2.1] — 2026-09-17
 
 A single-point firmware metadata bug, reported and diagnosed on real

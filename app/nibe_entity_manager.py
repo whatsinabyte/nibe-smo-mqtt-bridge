@@ -3288,6 +3288,42 @@ class EntityManager:
             if value is None:
                 return
 
+            entity_type = entity_info["entity_type"]
+            if entity_type != "button" and point_id in self.bulk_data:
+                # A "button" is a stateless action (e.g. a pulse/increment
+                # command) — every press must reach the controller even if
+                # the last-known value looks unchanged. Every other type is
+                # a persisted setting: if the most recent poll already shows
+                # this exact value, the write can only be a duplicate — a
+                # retained/re-delivered MQTT command (a QoS>=1 broker is
+                # explicitly allowed to deliver a message more than once),
+                # or a "keep it set" automation that re-asserts a value on
+                # every trigger regardless of current state. Skipping avoids
+                # a needless PATCH to the physical controller.
+                #
+                # For a controlling switch/select, this also skips that
+                # write's post-write dynamic-point scan window (see case A2
+                # below) — acceptable, since nothing this write could have
+                # changed if the value was already set; the regular poll
+                # loop or a genuinely different write still catches dynamic
+                # point changes from any other cause.
+                current = self.bulk_data[point_id]
+                current_value = (
+                    current.get("string_value", "")
+                    if entity_type == "text"
+                    else current.get("raw_value")
+                )
+                if current_value == value:
+                    # pragma: no mutate start
+                    log_commands.info(
+                        "[%s] Skipping write for point %d — value %s is already set",
+                        cmd_id,
+                        point_id,
+                        value,
+                    )
+                    # pragma: no mutate end
+                    return
+
             with self._pending_writes_lock:
                 self.pending_writes[point_id] = {
                     "point_id": point_id,
