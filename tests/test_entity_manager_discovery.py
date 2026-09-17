@@ -17,6 +17,34 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 
+class TestIndexPointDivisorOverride(unittest.TestCase):
+    """_index_point applies apply_divisor_override() to every point's
+    metadata before storing it in all_points_by_id -- the discovery-time
+    copy that build_number_config reads for a "number" entity's declared
+    min/max/step. A regression here means the corrected divisor (GitHub
+    issue #84) reaches state processing but not the discovery config, so
+    the entity's widget bounds stay wrong even though its live value
+    reads correctly."""
+
+    def test_overridden_point_gets_corrected_divisor_when_indexed(self):
+        em = _make_em()
+        point = {"variableId": 29258, "metadata": {"divisor": 1, "unit": "kW"}}
+        em._index_point(point)
+        self.assertEqual(em.all_points_by_id[29258]["metadata"]["divisor"], 100)
+
+    def test_non_overridden_point_unaffected(self):
+        em = _make_em()
+        point = {"variableId": 4, "metadata": {"divisor": 10, "unit": "°C"}}
+        em._index_point(point)
+        self.assertEqual(em.all_points_by_id[4]["metadata"]["divisor"], 10)
+
+    def test_point_with_no_metadata_key_does_not_crash(self):
+        em = _make_em()
+        point = {"variableId": 100}
+        em._index_point(point)
+        self.assertEqual(em.all_points_by_id[100], point)
+
+
 class TestDecideStartupActionProperties(unittest.TestCase):
     """Hypothesis properties for decide_startup_action."""
 
