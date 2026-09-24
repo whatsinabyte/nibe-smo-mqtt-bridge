@@ -78,6 +78,19 @@ export async function loginToHa(page: Page): Promise<void> {
       await page.waitForURL((url) => !url.pathname.startsWith('/auth/'), {
         timeout: 30_000,
       });
+
+      // Leaving /auth/ only proves the SPA's client-side router moved on --
+      // it doesn't prove the session actually persisted server-side yet.
+      // Observed in the wild: a spec's very next page.goto() (to its own
+      // dashboard) landed back on the login screen, because the auth token
+      // exchange hadn't committed before that navigation fired. Re-navigate
+      // once here and require it still holds before trusting the session --
+      // a bounce-back throws (via waitForURL's own timeout) and is retried
+      // by this same loop like any other login failure.
+      await page.goto('/');
+      await page.waitForURL((url) => !url.pathname.startsWith('/auth/'), {
+        timeout: 10_000,
+      });
       return;
     } catch (error) {
       // Deliberately catching navigation and locator failures too, not just a

@@ -110,14 +110,26 @@ class _StubNibeDevice:
                         queued = outer.responses.pop(0) if outer.responses else _QueuedResponse()
                     if queued.delay:
                         time.sleep(queued.delay)
+                    # _active_count is decremented inside _respond(), right after
+                    # the response bytes are written, rather than here after it
+                    # returns. The client's urlopen() unblocks (and releases
+                    # NibeApiClient._lock, letting the next thread start a new
+                    # connection) the moment those bytes hit the socket -- every
+                    # extra instruction on this side before the decrement widens
+                    # a real window in which the next thread's own increment can
+                    # land first and register a false "overlap" that never
+                    # actually happened against the client's lock.
                     self._respond(queued)
-                finally:
+                except BaseException:
                     with outer._state_lock:
                         outer._active_count -= 1
+                    raise
 
             def _respond(self, queued: _QueuedResponse) -> None:
                 if queued.close_without_response:
                     self.connection.close()
+                    with outer._state_lock:
+                        outer._active_count -= 1
                     return
                 if queued.close_after_status_line:
                     # Write only the raw status line, bypassing
@@ -127,6 +139,8 @@ class _StubNibeDevice:
                     self.wfile.write(b"HTTP/1.1 200 OK\r\n")
                     self.wfile.flush()
                     self.connection.close()
+                    with outer._state_lock:
+                        outer._active_count -= 1
                     return
                 if queued.status == 204:
                     # RFC 7230: a 204 response must not include a body.
@@ -134,6 +148,8 @@ class _StubNibeDevice:
                     # tests must not assume every success has a JSON body.
                     self.send_response(204)
                     self.end_headers()
+                    with outer._state_lock:
+                        outer._active_count -= 1
                     return
                 payload = (
                     json.dumps(queued.body).encode()
@@ -147,6 +163,8 @@ class _StubNibeDevice:
                     self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(payload)
+                with outer._state_lock:
+                    outer._active_count -= 1
 
             def do_GET(self) -> None:
                 self._handle()

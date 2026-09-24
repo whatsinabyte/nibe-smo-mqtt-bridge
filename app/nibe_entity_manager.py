@@ -3313,6 +3313,21 @@ class EntityManager:
                     if entity_type == "text"
                     else current.get("raw_value")
                 )
+                # bulk_data only reflects the last *confirmed* poll, which
+                # can lag well behind an already-successful write still
+                # awaiting confirmation (pending_writes isn't cleared until
+                # _update_entity_state sees it — e.g. up to the 90s
+                # post-write scan window above). Comparing a new write
+                # against that stale value can mistake a genuine change —
+                # e.g. turning a switch back off right after turning it on,
+                # before the confirming poll lands — for a no-op duplicate
+                # and silently drop it. While a write to this point is
+                # still pending, that write's own value is the true
+                # "current" one for this comparison, not bulk_data's.
+                with self._pending_writes_lock:
+                    pending_entry = self.pending_writes.get(point_id)
+                if pending_entry is not None:
+                    current_value = pending_entry["value"]
                 if current_value == value:
                     # pragma: no mutate start
                     log_commands.info(

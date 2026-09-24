@@ -214,6 +214,34 @@ class TestRedundantWriteSkip(unittest.TestCase):
             em._handle_command(info, self._message("world"))
         mock_submit.assert_called_once()
 
+    def test_reversing_value_while_earlier_write_still_pending_dispatches_write(self):
+        """bulk_data only reflects the last *confirmed* poll -- a write that
+        already succeeded but hasn't been confirmed yet (pending_writes not
+        yet cleared by _update_entity_state, which can lag up to the 90s
+        post-write scan window) leaves bulk_data showing the PRE-write value.
+        A second write reversing the first (e.g. turn_on then turn_off
+        moments later) must not be mistaken for a no-op duplicate just
+        because it happens to match that stale pre-write value -- the real
+        "current" value while a write is in flight is what was just sent,
+        not what the last confirmed poll saw."""
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True}
+        em.pending_writes[100] = {"point_id": 100, "value": 1, "payload": "ON", "timestamp": 0.0}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("OFF"))
+        mock_submit.assert_called_once()
+
+    def test_matching_a_still_pending_write_skips_as_duplicate(self):
+        """The inverse of the case above: a second command that matches the
+        still-unconfirmed pending write's own value (not bulk_data's stale
+        one) really is a duplicate and must still be skipped."""
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True}
+        em.pending_writes[100] = {"point_id": 100, "value": 1, "payload": "ON", "timestamp": 0.0}
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_not_called()
+
 
 class TestParseCommandPayload(unittest.TestCase):
     def setUp(self):
