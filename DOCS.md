@@ -701,7 +701,70 @@ When you disable a static entity via Settings → Devices → entity cog → Dis
 
 ### Requirements
 
-This app requires the Home Assistant app environment (HA OS or HA Supervised). It is not designed for standalone Docker or HA Core/Container installations.
+The primary, fully-supported way to run this bridge is inside the Home Assistant app environment (HA OS or HA Supervised) — install it as an app and configure it through the HA UI as described in Quick Start above.
+
+It also runs standalone, outside Supervisor entirely, as a plain Docker container — see below. This is the path for HA Container installations, where apps aren't available at all. Nothing about the bridge's core function (polling, MQTT publishing, entity dynamics) depends on Supervisor; only a handful of convenience features do, and they degrade gracefully when Supervisor isn't there — see [The SUPERVISOR_TOKEN](#the-supervisor_token) below for exactly what you lose.
+
+### Standalone Docker (no HA Supervisor)
+
+There is no published standalone image yet — build it yourself from source:
+
+```bash
+git clone https://github.com/whatsinabyte/nibe-smo-mqtt-bridge.git
+cd nibe-smo-mqtt-bridge
+docker build -t nibe-smo-mqtt-bridge .
+```
+
+Then create an `options.json` — this is the same file the HA app UI writes for you in a normal install, so every key documented under [Configuration](#configuration) works here too. At minimum, override `nibe_host` and `mqtt_host` — their defaults (`192.168.1.100` and `core-mosquitto`) only make sense inside Supervisor:
+
+```json
+{
+  "device_name": "Nibe MQTT",
+  "nibe_host": "192.168.1.50",
+  "nibe_username": "",
+  "nibe_password": "",
+  "mqtt_host": "192.168.1.10",
+  "mqtt_port": 1883,
+  "mqtt_username": "",
+  "mqtt_password": "",
+  "language": "en",
+  "log_level": "info",
+  "mode": "essential"
+}
+```
+
+`language` is called out explicitly here: its `auto` default normally asks Supervisor for HA's own configured language, which is unavailable standalone — leave it unset/`auto` and it falls back to English, or set a BCP-47 code (`nl`, `de`, `sv`, ...) directly.
+
+Run it with `docker-compose`, mounting your HA Container instance's own config directory (the same host path you already mount to `/config` on the `homeassistant` container itself) to `/homeassistant` here:
+
+```yaml
+services:
+  nibe-bridge:
+    image: nibe-smo-mqtt-bridge
+    container_name: nibe-smo-mqtt-bridge
+    restart: unless-stopped
+    volumes:
+      - ./options.json:/data/options.json:ro
+      - /PATH_TO_YOUR_HA_CONFIG:/homeassistant
+```
+
+That last mount matters more than it looks: the bridge always copies the Entity Manager card's JS file to `/homeassistant/www/` at startup — that's a plain filesystem write, not gated on `SUPERVISOR_TOKEN` at all. With this volume mounted it lands directly in your real HA config's `www/` folder, served at `/local/nibe-entity-manager-card.js`, with no manual copy step. Skip the mount and the bridge still starts fine — it just writes the file nowhere useful, since there's nothing else to write it to standalone.
+
+No ports need publishing — the bridge only ever makes outbound connections (to the Nibe controller and the MQTT broker); it doesn't serve anything itself.
+
+**What doesn't work standalone:** only the parts gated on `SUPERVISOR_TOKEN` — the Lovelace dashboard isn't auto-provisioned, HA's notification bell doesn't get bridge alerts, and enable/disable state doesn't sync with HA's entity registry in real time. The card file itself is already in place (see above); you only need to tell HA about it, which depends on your Lovelace mode:
+
+- **Storage mode** (the default, unless you've set `lovelace:` in `configuration.yaml`): Settings → Dashboards → ⠇ → Resources → add `/local/nibe-entity-manager-card.js` as a JavaScript Module, then add a Manual card with `type: custom:nibe-entity-manager-card` to any dashboard.
+- **YAML mode**: add the resource to `configuration.yaml` directly —
+  ```yaml
+  lovelace:
+    resources:
+      - url: /local/nibe-entity-manager-card.js
+        type: module
+  ```
+  then reference `type: custom:nibe-entity-manager-card` from one of your YAML-defined views.
+
+See [The SUPERVISOR_TOKEN](#the-supervisor_token) below for the full list of what's affected. (This split — card file copied for real via the shared volume, Lovelace registration seeded outside the bridge — is exactly how `dev/e2e/` proves the bridge works without a Supervisor at all; see `dev/e2e/README.md` if you want the fully-automated real-stack version of this.)
 
 ### Restart behaviour
 

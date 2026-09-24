@@ -826,7 +826,13 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         of the same formula — not just "looks like a time string"."""
         em = _make_em()
         info = self._entity_info(entity_type="time")
-        em._process_and_publish_state(info, raw_value, "", self._metadata())
+        # variableSize must be realistic for a seconds-since-midnight
+        # register (up to 86399, never fits u8/s16/u16) -- the class
+        # default of "u8" has a sentinel of 255, which collides with this
+        # test's own -100_000..100_000 raw_value range and made the test
+        # flaky (raw_value == 255 hit the sentinel branch, which publishes
+        # 'offline' and skips the state publish this test asserts on).
+        em._process_and_publish_state(info, raw_value, "", self._metadata(variableSize="s32"))
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         self.assertTrue(state_calls, "time entity_type produced no state publish")
         state = state_calls[-1].args[1]

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.3] — 2026-09-24
+
+### Fixed
+
+- **A write reversing an in-flight one, moments later, could be silently
+  dropped.** The "skip a redundant write" guard added in 1.2.2 compared an
+  incoming command's value against `bulk_data`, which only reflects the
+  last *confirmed* poll — not a write that already succeeded but hasn't
+  been confirmed yet (which the bridge doesn't clear until a later poll
+  matches it, up to the 90s post-write dynamic-point scan window in the
+  worst case). Turning a switch on, then back off again before that
+  confirmation landed, meant the "off" command matched the still-stale
+  pre-write value in `bulk_data` and looked like a no-op duplicate of it —
+  so it was dropped instead of reaching the controller, leaving the
+  switch stuck on. The guard now compares against a still-pending write's
+  own value when one exists, instead of the possibly-stale confirmed one.
+
+### Added
+
+- **Documented and verified a standalone Docker deployment path**, for HA
+  Container installations where apps aren't available at all — see
+  [DOCS.md](DOCS.md#standalone-docker-no-ha-supervisor). No production code
+  changed: the bridge already degraded gracefully everywhere without
+  `SUPERVISOR_TOKEN`, this just documents and confirms it. Includes how the
+  Entity Manager card reaches HA without Supervisor (a plain shared-volume
+  file copy, not gated on the token at all) and how to register it as a
+  Lovelace resource in either storage or YAML mode.
+
+### Internal
+
+- Fixed two flaky tests: `test_concurrent_requests_are_actually_serialized_on_the_wire`
+  had a narrow, load-dependent race in its own concurrency-measuring
+  instrumentation (not the client's real request lock), and
+  `test_time_hhmmss_decoding_invariants` used default test metadata whose
+  sentinel value collided with its own generated input range. Also fixed a
+  session-persistence race in the `dev/e2e/` harness's shared login helper,
+  found while reproducing the write-dedup bug above against the real
+  end-to-end stack.
+
 ## [1.2.2] — 2026-09-17
 
 Found while cross-checking this project's own sentinel handling against
