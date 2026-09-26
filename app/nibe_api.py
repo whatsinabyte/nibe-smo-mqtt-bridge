@@ -520,7 +520,7 @@ class NibeApiClient:
                 # cannot raise here since errors='replace' never raises.
                 # pragma: no mutate start
                 log_commands.debug(
-                    "Could not read HTTP %d error body for point %d: %s",
+                    "HTTP %d error response unavailable for point %d write: %s",
                     e.code,
                     point_id,
                     body_err,
@@ -535,8 +535,14 @@ class NibeApiClient:
                     "Write rejected for point %d: auth invalid (HTTP 401)", point_id
                 )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
+                # The API spec only documents "wrong deviceId" for this status,
+                # but the firmware has no separate error code for a read-only
+                # REST API credential (Menu 7.5.15) attempting a write -- that
+                # returns this same 403. Logging the real body rather than
+                # assuming the documented meaning avoids misdiagnosing one as
+                # the other.
                 log_commands.error(
-                    "Write rejected for point %d: wrong deviceId (HTTP 403)", point_id
+                    "Write rejected for point %d (HTTP 403): %s", point_id, body
                 )  # pragma: no mutate
             else:
                 log_commands.error(
@@ -586,8 +592,20 @@ class NibeApiClient:
                     "Notifications reset: auth invalid (HTTP 401)"
                 )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", errors="replace")  # pragma: no mutate
+                except (OSError, http.client.HTTPException, ValueError) as body_err:
+                    log_commands.debug(
+                        "HTTP 403 error response unavailable for notifications reset: %s",
+                        body_err,
+                    )  # pragma: no mutate
+                # See write_point()'s own 403 handler for why the real body is
+                # logged rather than assuming the documented "wrong deviceId"
+                # meaning -- a read-only REST API credential hits this same
+                # status with no distinct error code of its own.
                 log_commands.error(
-                    "Notifications reset: wrong deviceId (HTTP 403)"
+                    "Notifications reset rejected (HTTP 403): %s", body
                 )  # pragma: no mutate
             else:
                 log_commands.error(
@@ -645,7 +663,7 @@ class NibeApiClient:
                 # cannot raise here since errors='replace' never raises.
                 # pragma: no mutate start
                 log_commands.debug(
-                    "Could not read HTTP %d error body for device mode %s: %s",
+                    "HTTP %d error response unavailable for device mode %s write: %s",
                     e.code,
                     mode_type,
                     body_err,
@@ -660,8 +678,12 @@ class NibeApiClient:
                     "Device mode %s: auth invalid (HTTP 401)", mode_type
                 )  # pragma: no mutate
             elif e.code == 403:  # pragma: no mutate
+                # See write_point()'s own 403 handler for why the real body is
+                # logged rather than assuming the documented "wrong deviceId"
+                # meaning -- a read-only REST API credential hits this same
+                # status with no distinct error code of its own.
                 log_commands.error(
-                    "Device mode %s: wrong deviceId (HTTP 403)", mode_type
+                    "Device mode %s rejected (HTTP 403): %s", mode_type, body
                 )  # pragma: no mutate
             else:
                 log_commands.error(
