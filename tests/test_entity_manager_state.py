@@ -145,9 +145,8 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="binary_sensor")
         em._process_and_publish_state(info, -32768, "", self._metadata(variable_size="s16"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        # Must return early — no state_topic publish for the sentinel itself.
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear any stale retained state, not publish a new value.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_s16_sensor_publishes_offline_not_zero(self):
         """A sentinel value on any entity type (including regular sensor)
@@ -160,11 +159,11 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, -32768, "", self._metadata(variable_size="s16"))
         # Must publish offline on the availability topic
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        # Must NOT publish a state value
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c[0][0] == "nibe/state/100"]
-        self.assertEqual(
-            len(state_calls), 0, "No state must be published when sentinel value is detected"
-        )
+        # Must clear the retained state topic, not publish a real value —
+        # otherwise a stale reading from before this sensor was recognized
+        # as a sentinel would keep re-triggering HA's own MQTT validation
+        # on every future reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_u16_sensor_publishes_offline_not_garbage_value(self):
         """The u16 sentinel (65535) was previously completely untested —
@@ -175,8 +174,10 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="sensor")
         em._process_and_publish_state(info, 65535, "", self._metadata(variable_size="u16"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_s32_sensor_publishes_offline_not_garbage_value(self):
         """The s32 sentinel (-2147483648) was previously completely untested."""
@@ -184,8 +185,10 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="sensor")
         em._process_and_publish_state(info, -2147483648, "", self._metadata(variable_size="s32"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_u32_sensor_publishes_offline_not_garbage_value(self):
         """The u32 sentinel (4294967295) was previously completely untested."""
@@ -193,8 +196,10 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="sensor")
         em._process_and_publish_state(info, 4294967295, "", self._metadata(variable_size="u32"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_u8_sensor_publishes_offline_not_garbage_value(self):
         """The u8 sentinel (255) was previously missing entirely — 652 of
@@ -205,8 +210,10 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="sensor")
         em._process_and_publish_state(info, 255, "", self._metadata(variable_size="u8"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     def test_sentinel_s8_sensor_publishes_offline_not_garbage_value(self):
         """The s8 sentinel (-128) was previously missing entirely."""
@@ -214,8 +221,10 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(entity_type="sensor")
         em._process_and_publish_state(info, -128, "", self._metadata(variable_size="s8"))
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
 
     # -- out-of-declared-range "number" values (a second sentinel form) ----
 
@@ -234,8 +243,10 @@ class TestProcessAndPublishState(unittest.TestCase):
                 info, 0, "", self._metadata(minValue=50, maxValue=350, divisor=10)
             )
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
         mock_warn.assert_not_called()
 
     def test_number_above_declared_max_goes_offline_and_warns(self):
@@ -250,8 +261,10 @@ class TestProcessAndPublishState(unittest.TestCase):
                 info, 999, "", self._metadata(minValue=50, maxValue=350, divisor=10)
             )
         em.mqtt.publish.assert_any_call("nibe/avail/100", "offline", retain=True)
-        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
-        self.assertEqual(state_calls, [])
+        # Must clear the retained state topic, not leave a stale value that
+        # would keep re-triggering HA's own MQTT validation on every future
+        # reconnect/restart.
+        em.mqtt.publish.assert_any_call("nibe/state/100", "", retain=True)
         mock_warn.assert_called_once()
 
     def test_number_above_max_warning_does_not_repeat_across_polls(self):
@@ -792,7 +805,14 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         if state_calls:
             state = state_calls[-1].args[1]
-            self.assertIn(state, ("ON", "OFF"), f"binary_sensor state {state!r} is not ON or OFF")
+            # An empty payload is the sentinel-triggered retained-state
+            # clear (raw_value == 255, this class's u8 sentinel), not a
+            # real binary_sensor value -- it's exempt from the ON/OFF
+            # requirement by design.
+            if state != "":
+                self.assertIn(
+                    state, ("ON", "OFF"), f"binary_sensor state {state!r} is not ON or OFF"
+                )
 
     @given(
         entity_type=st.sampled_from(_ENTITY_TYPES),
