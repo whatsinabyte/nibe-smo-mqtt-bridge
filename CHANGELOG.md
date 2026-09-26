@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.5] — 2026-09-26
+
+### Fixed
+
+- **A "number" entity showing an unconfigured zone's temperature (or any
+  sensor with a firmware sentinel value) kept logging HA's own "Invalid
+  value ... (range X - Y)" error on every Home Assistant restart,
+  indefinitely — even long after the underlying 1.2.0 fix stopped
+  publishing that bad value.** The sentinel-detection code only ever
+  marked the entity's *availability* as offline; it never cleared the
+  stale value still sitting retained on the MQTT broker's *state* topic
+  from before the point was recognized as a sentinel. HA's own MQTT
+  platform re-validates whatever's retained on the state topic against
+  the entity's declared bounds on every reconnect/resubscribe (an HA
+  restart, a broker restart, an unrelated integration update that
+  triggers one), independently of the availability topic — so the old
+  bad value kept resurfacing forever. Both sentinel-detection paths now
+  clear the retained state topic (an empty payload, MQTT's own
+  convention for deleting a retained message) at the same time they mark
+  the entity offline.
+
 ## [1.2.4] — 2026-09-24
 
 Prompted by [issue #95](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/95)

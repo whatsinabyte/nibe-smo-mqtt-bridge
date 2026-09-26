@@ -1751,6 +1751,18 @@ class EntityManager:
             # Publish offline so HA shows the entity as unavailable rather
             # than a misleading zero value regardless of entity type.
             self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+            # Clear any retained state value too, not just availability.
+            # Otherwise a value published before this sentinel was ever
+            # recognized (an older bridge version, or this point simply
+            # flipping from OK to sentinel) sits retained on the broker
+            # forever -- HA's MQTT platform re-validates it against the
+            # entity's declared bounds on every reconnect/resubscribe (an
+            # HA restart, broker restart, etc.) independently of the
+            # availability topic, producing a permanent "Invalid value"
+            # log entry on every future restart even though the bridge
+            # itself stopped publishing anything bad long ago.
+            if entity_info.get("state_topic"):
+                self.mqtt.publish(entity_info["state_topic"], "", retain=True)
             return
 
         # A second, register-specific sentinel — scoped to "number" entities
@@ -1820,6 +1832,14 @@ class EntityManager:
                     # pragma: no mutate end
                     self._range_warnings_issued.add(point_id)
                 self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                # See the storage-limit sentinel branch above for why the
+                # retained state value is cleared too, not just
+                # availability -- otherwise a stale "0" published before an
+                # HA restart keeps re-triggering "Invalid value ... (range
+                # X - Y)" on every future restart, indefinitely, even
+                # though the bridge stopped publishing it long ago.
+                if entity_info.get("state_topic"):
+                    self.mqtt.publish(entity_info["state_topic"], "", retain=True)
                 return
 
         if entity_type == "binary_sensor" and raw_value not in (0, 1):
