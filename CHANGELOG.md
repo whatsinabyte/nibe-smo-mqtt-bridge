@@ -28,6 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convention for deleting a retained message) at the same time they mark
   the entity offline.
 
+## [1.2.4] — 2026-09-24
+
+Prompted by [issue #95](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/95)
+(writes rejected with HTTP 403 on an S2125-12 + SMO S40 setup, reads unaffected).
+
+### Fixed
+
+- **A write-rejected HTTP 403 always logged "wrong deviceId," even when
+  that wasn't the real cause.** The API's own spec documents that status
+  for the write endpoints with no distinct error code for a read-only REST
+  API credential (Menu 7.5.15) attempting to write — the firmware returns
+  the identical 403 for both cases. The log now prints the API's actual
+  `error` response text instead of assuming a cause, across all three
+  write paths (`write_point`, `write_device_mode`, `reset_notifications`).
+
+### Added
+
+- **DOCS.md's Quick Start now warns explicitly that "read-only" must be
+  switched off** for the REST API credentials configured in Menu 7.5.15 —
+  a read-only user lets the bridge poll normally but silently rejects
+  every write, which otherwise looks like a device or network problem
+  rather than a permissions one.
+
 ## [1.2.3] — 2026-09-24
 
 ### Fixed

@@ -6,7 +6,7 @@ Connects your Nibe S-series heat pump controller to Home Assistant via MQTT. Tem
 
 ## Quick Start
 
-1. **Enable the local REST API** on your controller — go to **Menu 7.5.15** on the controller itself. Set a username and password. If this menu is not visible, contact your installer.
+1. **Enable the local REST API** on your controller — go to **Menu 7.5.15** on the controller itself. Set a username and password, and make sure **"read-only" is switched off** for this user — a read-only credential lets the bridge poll data normally but silently rejects every write (enabling a switch, changing a setpoint, etc.), which otherwise looks like a device/network problem rather than a permissions one. If this menu is not visible, contact your installer.
 2. **Note the controller's IP address** — assign a static IP via your router to prevent it changing after a reboot.
 3. **Install the Mosquitto broker** app from the HA App Store and configure the **MQTT integration** under Settings → Devices & Services → Add Integration → MQTT.
 4. **Install this app** from the App Store.
