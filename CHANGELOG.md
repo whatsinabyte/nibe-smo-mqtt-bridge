@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.6] — 2026-10-02
+
+Prompted by [issue #101](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/101)
+("Current status" sensor still shipping English values with a non-English
+`language` configured).
+
+### Fixed
+
+- **Point 2022's "Current status" sensor (a community-decoded bitfield from
+  SMO S40 register 31121) always published English text — `Idle`,
+  `Cooling (Preheating)`, etc. — regardless of the configured `language`,
+  unlike every other status-shaped point on the same controller.** Unlike
+  those, this point's label isn't read from NIBE's API or looked up via
+  the standard `VALUE_MAPPINGS` + translation-table path — it's built
+  entirely by this bridge, decoding raw mode/compressor bits into a
+  composite sentence. That composition never passed its words through
+  `self._value_translations`, the same lookup every other sensor/select
+  value already uses. Each component (mode label, compressor state) is
+  now translated individually before being composed, so it produces a
+  correctly localized sentence for any bit combination rather than
+  needing every possible phrase hardcoded. Investigated whether other
+  exceptions to the translation path exist; this was the only one.
+  Added the five newly-needed words (`Idle`, `Hot water boost`, `Running`,
+  `Starting`, `Preheating`) to all 11 non-English `translations/*.yaml`
+  files.
+
 ## [1.2.5] — 2026-09-26
 
 ### Fixed

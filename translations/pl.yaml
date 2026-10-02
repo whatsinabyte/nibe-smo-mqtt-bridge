@@ -199,6 +199,8 @@ value_mappings:
   Encouraged: Zachęcane
   Heating: Ogrzewanie
   Hot water: Ciepła woda
+  Hot water boost: Podbicie ciepłej wody
+  Idle: W spoczynku
   Inactive: Nieaktywny
   Intermittent: Przerywany
   Manual: Ręczny
@@ -212,10 +214,13 @@ value_mappings:
   Own setting: Własne ustawienie
   Passive: Pasywny
   Pool: Basen
+  Preheating: Podgrzewanie wstępne
   Price per kWh: Cena za kWh
   Radiator: Grzejnik
   Radiator & Underfloor heating: Grzejnik i ogrzewanie podłogowe
+  Running: Pracuje
   Saving: Oszczędzanie
   Saving PLUS: Oszczędzanie PLUS
   Standard: Standardowy
+  Starting: Uruchamianie
   Underfloor heating: Ogrzewanie podłogowe

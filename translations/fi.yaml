@@ -206,6 +206,8 @@ value_mappings:
   Encouraged: Kannustettu
   Heating: Lämmitys
   Hot water: Lämmin vesi
+  Hot water boost: Lämpimän veden tehostus
+  Idle: Lepotilassa
   Inactive: Ei aktiivinen
   Intermittent: Ajoittainen
   Manual: Manuaalinen
@@ -219,10 +221,13 @@ value_mappings:
   Own setting: Oma asetus
   Passive: Passiivinen
   Pool: Allas
+  Preheating: Esilämmitys
   Price per kWh: Hinta / kWh
   Radiator: Lämpöpatteri
   Radiator & Underfloor heating: Lämpöpatteri ja lattialämmitys
+  Running: Käynnissä
   Saving: Säästö
   Saving PLUS: Säästö PLUS
   Standard: Vakio
+  Starting: Käynnistyy
   Underfloor heating: Lattialämmitys

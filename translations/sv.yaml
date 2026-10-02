@@ -193,6 +193,8 @@ value_mappings:
   Encouraged: Uppmuntrad
   Heating: Uppvärmning
   Hot water: Varmvatten
+  Hot water boost: Varmvatten-boost
+  Idle: Vilande
   Inactive: Inaktiv
   Intermittent: Intermittent
   Manual: Manuell
@@ -206,10 +208,13 @@ value_mappings:
   Own setting: Egen inställning
   Passive: Passiv
   Pool: Pool
+  Preheating: Förvärmning
   Price per kWh: Pris per kWh
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator och golvvärme
+  Running: Igång
   Saving: Besparing
   Saving PLUS: Besparing PLUS
   Standard: Standard
+  Starting: Startar
   Underfloor heating: Golvvärme

@@ -195,6 +195,8 @@ value_mappings:
   Encouraged: Aangemoedigd
   Heating: Verwarmen
   Hot water: Warm water
+  Hot water boost: Warm water boost
+  Idle: In rust
   Inactive: Inactief
   Intermittent: Onderbroken
   Manual: Handmatig
@@ -208,10 +210,13 @@ value_mappings:
   Own setting: Eigen instelling
   Passive: Passief
   Pool: Zwembad
+  Preheating: Voorverwarmen
   Price per kWh: Prijs per kWh
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator en vloerverwarming
+  Running: Draait
   Saving: Besparen
   Saving PLUS: Besparen PLUS
   Standard: Standaard
+  Starting: Opstarten
   Underfloor heating: Vloerverwarming
