@@ -210,6 +210,8 @@ value_mappings:
   Encouraged: Gefördert
   Heating: Heizung
   Hot water: Warmwasser
+  Hot water boost: Warmwasser-Boost
+  Idle: Ruhend
   Inactive: Inaktiv
   Intermittent: Intermittierend
   Manual: Manuell
@@ -223,10 +225,13 @@ value_mappings:
   Own setting: Eigene Einstellung
   Passive: Passiv
   Pool: Pool
+  Preheating: Vorwärmen
   Price per kWh: Preis pro kWh
   Radiator: Heizkörper
   Radiator & Underfloor heating: Heizkörper & Fußbodenheizung
+  Running: Läuft
   Saving: Sparen
   Saving PLUS: Sparen PLUS
   Standard: Standard
+  Starting: Startet
   Underfloor heating: Fußbodenheizung

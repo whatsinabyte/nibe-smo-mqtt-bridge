@@ -583,6 +583,52 @@ class TestProcessAndPublishState(unittest.TestCase):
             "nibe/state/2022", "Hot water + Heating (Running)", retain=True
         )
 
+    def test_point_2022_translates_each_component_when_configured(self):
+        """This point used to assign raw English literals straight to
+        state_value, bypassing self._value_translations entirely — unlike
+        every other sensor/select state in this method, which falls back
+        to translated text via that same dict. Each piece (mode label and
+        compressor state) must be translated independently and composed
+        afterwards, since the translation table is keyed by single English
+        words, not by the full "X + Y (Z)" sentence this point composes."""
+        em = _make_em()
+        em._value_translations = {
+            "Heating": "Verwarmen",
+            "Hot water": "Warm water",
+            "Running": "Draait",
+            "Preheating": "Voorverwarmen",
+            "Idle": "Inactief",
+        }
+        info = self._entity_info(point_id=2022, entity_type="sensor")
+
+        v = (1 << 13) | (1 << 12) | (1 << 2) | (1 << 4)  # Hot water + Heating, running
+        em._process_and_publish_state(info, v, "", self._metadata())
+        em.mqtt.publish.assert_any_call(
+            "nibe/state/2022", "Warm water + Verwarmen (Draait)", retain=True
+        )
+
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(info, 1 << 12, "", self._metadata())  # Heating, preheating
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Verwarmen (Voorverwarmen)", retain=True)
+
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(info, 0, "", self._metadata())  # no mode bits set
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Inactief", retain=True)
+
+    def test_point_2022_falls_back_to_english_for_untranslated_component(self):
+        """A language whose translation table is missing one of this
+        point's words (e.g. a newly-added language file not yet covering
+        'Running') must still produce a usable, if partially English,
+        state -- not crash or silently drop the whole value. Matches
+        _value_translations.get(label, label)'s fallback used everywhere
+        else in this method."""
+        em = _make_em()
+        em._value_translations = {"Heating": "Verwarmen"}  # "Running" deliberately absent
+        info = self._entity_info(point_id=2022, entity_type="sensor")
+        v = (1 << 12) | (1 << 2) | (1 << 4)  # Heating, running
+        em._process_and_publish_state(info, v, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Verwarmen (Running)", retain=True)
+
     # -- select / sensor value-mapping ----------------------------------------
 
     def test_select_mapped_value_shows_label(self):

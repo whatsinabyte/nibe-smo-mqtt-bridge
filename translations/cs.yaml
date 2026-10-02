@@ -194,6 +194,8 @@ value_mappings:
   Encouraged: Podporováno
   Heating: Topení
   Hot water: Teplá voda
+  Hot water boost: Posílení teplé vody
+  Idle: V klidu
   Inactive: Neaktivní
   Intermittent: Přerušovaný
   Manual: Ruční
@@ -207,10 +209,13 @@ value_mappings:
   Own setting: Vlastní nastavení
   Passive: Pasivní
   Pool: Bazén
+  Preheating: Předehřev
   Price per kWh: Cena za kWh
   Radiator: Radiátor
   Radiator & Underfloor heating: Radiátor a podlahové topení
+  Running: Běží
   Saving: Úspora
   Saving PLUS: Úspora PLUS
   Standard: Standardní
+  Starting: Spouští se
   Underfloor heating: Podlahové topení

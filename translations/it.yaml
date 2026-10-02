@@ -204,6 +204,8 @@ value_mappings:
   Encouraged: Incoraggiato
   Heating: Riscaldamento
   Hot water: Acqua calda
+  Hot water boost: Boost acqua calda
+  Idle: A riposo
   Inactive: Inattivo
   Intermittent: Intermittente
   Manual: Manuale
@@ -217,10 +219,13 @@ value_mappings:
   Own setting: Impostazione personalizzata
   Passive: Passivo
   Pool: Piscina
+  Preheating: Preriscaldamento
   Price per kWh: Prezzo per kWh
   Radiator: Radiatore
   Radiator & Underfloor heating: Radiatore e riscaldamento a pavimento
+  Running: In funzione
   Saving: Risparmio
   Saving PLUS: Risparmio PLUS
   Standard: Standard
+  Starting: Avvio
   Underfloor heating: Riscaldamento a pavimento

@@ -1911,15 +1911,31 @@ class EntityManager:
                     12: "Heating",
                 }
                 # Compressor state: bit4=starting, bit2+4=running, neither=preheating/pump only
-                modes = [label for bit, label in _MODE_BITS.items() if v & (1 << bit)]
+                #
+                # Each label is translated individually (falling back to its
+                # own English word, same as every other VALUE_MAPPINGS-driven
+                # state elsewhere in this method) before composing the final
+                # string -- this point used to assign raw English literals
+                # straight to state_value, bypassing self._value_translations
+                # entirely, unlike every other sensor/select value in this
+                # function. Translating the composed sentence as one unit
+                # isn't an option instead: the translation table is keyed by
+                # single English words/phrases, not by the "X + Y (Z)"
+                # sentences this composes, so composing first would leave it
+                # permanently untranslatable regardless of language.
+                modes = [
+                    self._value_translations.get(label, label)
+                    for bit, label in _MODE_BITS.items()
+                    if v & (1 << bit)
+                ]
                 v_bit2 = bool(v & (1 << 2))
                 v_bit4 = bool(v & (1 << 4))
                 if v_bit2 and v_bit4:
-                    comp_state = "Running"
+                    comp_state = self._value_translations.get("Running", "Running")
                 elif v_bit4:
-                    comp_state = "Starting"
+                    comp_state = self._value_translations.get("Starting", "Starting")
                 elif modes:  # mode active but no compressor bits
-                    comp_state = "Preheating"
+                    comp_state = self._value_translations.get("Preheating", "Preheating")
                 else:
                     # This assignment is only ever read by `if comp_state`
                     # below, which is itself only reached `if modes:` — and
@@ -1931,7 +1947,7 @@ class EntityManager:
                     mode_str = " + ".join(modes)
                     state_value = f"{mode_str} ({comp_state})" if comp_state else mode_str
                 else:
-                    state_value = "Idle"
+                    state_value = self._value_translations.get("Idle", "Idle")
             except (ValueError, TypeError):
                 state_value = str(raw_value)
         elif entity_type == "select":
