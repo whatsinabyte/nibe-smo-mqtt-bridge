@@ -87,7 +87,7 @@ def build_number_config(
             # range so we pass the value through and let the controller decide.
             if point_id not in range_warnings_issued:
                 # pragma: no mutate start
-                log_entities.warning(
+                log_entities.debug(
                     "Point %d (%s): degenerate range %g–%g (min==max) "
                     "— write-side range checks bypassed.",
                     point_id,

@@ -1,16 +1,23 @@
 name: nibe-e2e
 
+# Several copies of this stack can run side by side (stacks.sh, README.md):
+# COMPOSE_PROJECT_NAME / E2E_PREFIX name each copy, and the *_PORT and
+# SEED_OUT variables give it its own host ports and seed directory. The
+# defaults are the original single stack. Images are named explicitly so
+# every copy shares one build.
+
 services:
   mosquitto:
     image: eclipse-mosquitto:2.0.22
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     ports:
-      - "18830:1883"
+      - "${MQTT_PORT:-18830}:1883"
 
   mock-nibe-api:
     build: ./mock-api
-    container_name: nibe-e2e-mock-api
+    image: nibe-e2e-mock-nibe-api
+    container_name: ${E2E_PREFIX:-nibe-e2e}-mock-api
     environment:
       MOCK_NIBE_DUMP: /data/all_points_en.json
       MOCK_NIBE_PORT: "8443"
@@ -22,18 +29,22 @@ services:
       # changes, and withholding a point to simulate a controller restart) —
       # see mock-api/mock_nibe_api.py's module docstring. Not needed by the
       # bridge itself, which reaches this service over the compose network.
-      - "18443:8443"
+      - "${MOCK_PORT:-18443}:8443"
 
   homeassistant:
     image: homeassistant/home-assistant:2026.9.1
-    container_name: nibe-e2e-homeassistant
+    container_name: ${E2E_PREFIX:-nibe-e2e}-homeassistant
     volumes:
       - ha-config:/config
-      - ./ha-seed/configuration.yaml:/config/configuration.yaml:ro
+      # Overridable like BRIDGE_OPTIONS below, so a spec can recreate this
+      # same container (same ha-config volume) with a variant — e.g.
+      # bridge-dashboard-recovery.spec.ts, which needs the Nibe Bridge
+      # dashboard in storage mode rather than defined in YAML.
+      - ${HA_CONFIGURATION:-./ha-seed/configuration.yaml}:/config/configuration.yaml:ro
       - ./ha-seed/ui-lovelace.yaml:/config/ui-lovelace.yaml:ro
       - ./ha-seed/nibe-bridge.yaml:/config/nibe-bridge.yaml:ro
     ports:
-      - "18123:8123"
+      - "${HA_PORT:-18123}:8123"
     depends_on:
       - mosquitto
 
@@ -44,7 +55,8 @@ services:
   # ordering — see README.md for the exact invocation.
   ha-seed:
     build: ./ha-seed
-    container_name: nibe-e2e-ha-seed
+    image: nibe-e2e-ha-seed
+    container_name: ${E2E_PREFIX:-nibe-e2e}-ha-seed
     environment:
       HA_URL: http://homeassistant:8123
       HA_SEED_USERNAME: admin
@@ -52,7 +64,7 @@ services:
       MQTT_BROKER_HOST: mosquitto
       MQTT_BROKER_PORT: "1883"
     volumes:
-      - ./seed-out:/seed-out
+      - ${SEED_OUT:-./seed-out}:/seed-out
     depends_on:
       - homeassistant
 
@@ -60,7 +72,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
-    container_name: nibe-e2e-bridge
+    image: nibe-e2e-bridge:${BRIDGE_TAG:-latest}
+    container_name: ${E2E_PREFIX:-nibe-e2e}-bridge
     depends_on:
       - mosquitto
       - mock-nibe-api
@@ -77,14 +90,43 @@ services:
       # load_config's priority order, so NIBE_MODE could never take effect.
       - ${BRIDGE_OPTIONS:-./bridge/options.json}:/data/options.json:ro
       - ha-config:/homeassistant
-    # No SUPERVISOR_TOKEN / Supervisor API in this harness — the bridge's
-    # Lovelace resource/dashboard auto-provisioning (nibe_lovelace.py,
-    # ws://supervisor/core/websocket) is Supervisor-only and no-ops cleanly
-    # without it (logs a warning, does not crash). See dev/e2e/README.md
-    # for how the card resource + dashboard are seeded instead (YAML-mode
-    # lovelace in ha-seed/configuration.yaml). The bridge still copies the
-    # card JS file itself to /homeassistant/www — that needs no Supervisor
-    # token, just the shared ha-config volume mounted above.
+      # The bridge's code, mounted over the image's copy: a code change needs
+      # a container recreate, not an image rebuild (only Dockerfile or
+      # requirements changes do). BRIDGE_APP_DIR points it at another tree —
+      # a snapshot, or one with a fix reverted for a negative control.
+      - ${BRIDGE_APP_DIR:-../../app}:/app:ro
+    environment:
+      # Empty by default, so the bridge behaves as it always has here: the
+      # Supervisor-only parts (registry watcher, Lovelace provisioning, HA
+      # notifications) no-op cleanly, and the card resource + dashboard come
+      # from YAML-mode lovelace in ha-seed/configuration.yaml instead. A spec
+      # that needs those parts recreates the bridge with
+      #   BRIDGE_SUPERVISOR_TOKEN=e2e-fake-supervisor-token
+      # which routes them through the fake Supervisor service below to this
+      # harness's real Home Assistant — see
+      # tests/supervisor-menus-dashboard.spec.ts.
+      SUPERVISOR_TOKEN: ${BRIDGE_SUPERVISOR_TOKEN:-}
+
+  # Stands in for the HA Supervisor at the hostname the bridge hardcodes
+  # (ws://supervisor/core/websocket, http://supervisor/core/api/...): checks
+  # the bridge's SUPERVISOR_TOKEN, talks to the real Core with its own
+  # long-lived token, and relays. Only used when a spec opts the bridge in
+  # (see the bridge's environment above). See fake-supervisor/fake_supervisor.py.
+  supervisor:
+    build: ./fake-supervisor
+    image: nibe-e2e-supervisor
+    container_name: ${E2E_PREFIX:-nibe-e2e}-supervisor
+    environment:
+      HA_URL: http://homeassistant:8123
+      FAKE_SUPERVISOR_TOKEN: e2e-fake-supervisor-token
+      SEED_TOKEN_FILE: /seed-out/token.txt
+      # Realistic Supervisor round-trip for full entity-registry fetches —
+      # see REGISTRY_LIST_DELAY_S in fake_supervisor.py.
+      REGISTRY_LIST_DELAY_S: "2"
+    volumes:
+      - ${SEED_OUT:-./seed-out}:/seed-out:ro
+    depends_on:
+      - homeassistant
 
 volumes:
   ha-config:

@@ -38,11 +38,13 @@ configuration:
     description: >-
       Gebruikersnaam voor authenticatie bij de MQTT-broker. Laat leeg als uw
       broker geen authenticatie vereist.
+      Met de standaardwaarde "core-mosquitto" levert de Supervisor het account van de Mosquitto-add-on; dat heeft voorrang op dit veld.
   mqtt_password:
     name: MQTT-wachtwoord
     description: >-
       Wachtwoord voor authenticatie bij de MQTT-broker. Laat leeg als uw
       broker geen authenticatie vereist.
+      Met de standaardwaarde "core-mosquitto" levert de Supervisor het account van de Mosquitto-add-on; dat heeft voorrang op dit veld.
   device_name:
     name: Apparaatnaam
     description: >-

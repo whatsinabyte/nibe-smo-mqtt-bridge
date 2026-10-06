@@ -41,11 +41,13 @@ configuration:
     description: >-
       Nombre de usuario para la autenticación del broker MQTT. Déjelo en
       blanco si su broker no requiere autenticación.
+      Con el valor predeterminado "core-mosquitto", el Supervisor proporciona la cuenta del complemento Mosquitto, que tiene prioridad sobre este campo.
   mqtt_password:
     name: Contraseña MQTT
     description: >-
       Contraseña para la autenticación del broker MQTT. Déjela en blanco
       si su broker no requiere autenticación.
+      Con el valor predeterminado "core-mosquitto", el Supervisor proporciona la cuenta del complemento Mosquitto, que tiene prioridad sobre este campo.
   device_name:
     name: Nombre del dispositivo
     description: >-

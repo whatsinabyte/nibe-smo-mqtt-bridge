@@ -559,7 +559,7 @@ class TestBuildPointDefaultsProperties(unittest.TestCase):
         result = _build_point_defaults(all_points_by_id)
         for pid in result:
             meta = all_points_by_id[pid]["metadata"]
-            self.assertTrue(meta["isWritable"])
+            self.assertEqual(meta["modbusRegisterType"], "MODBUS_HOLDING_REGISTER")
 
     @given(
         st.dictionaries(

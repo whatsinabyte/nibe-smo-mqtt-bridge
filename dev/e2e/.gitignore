@@ -3,3 +3,5 @@ seed-out/*.json
 seed-out/*.txt
 test-results/
 playwright-report/
+seed-out-*/
+test-durations.json

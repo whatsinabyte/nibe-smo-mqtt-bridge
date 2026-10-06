@@ -9,7 +9,6 @@ import {
   changelogEntry,
 } from './support/fixtures.js';
 
-const flush = () => new Promise((r) => setTimeout(r, 100));
 
 describe('showEntityDetails() — additional field-rendering branches', () => {
   it('renders the writable warning banner and unit-overridden row when applicable', () => {
@@ -114,7 +113,7 @@ describe('_renderChangelogContent() — source variants', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry(entryOverrides)], seq: 1 })
     );
-    await flush();
+    await harness.settle();
     el.showChangelog();
   }
 

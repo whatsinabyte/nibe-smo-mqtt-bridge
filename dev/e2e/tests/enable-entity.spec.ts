@@ -1,7 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
 
 /**
  * Real end-to-end happy path: log into the real Home Assistant frontend,
@@ -94,7 +94,7 @@ test('enabling a disabled entity via the card creates a real HA entity', async (
   await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
 
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });

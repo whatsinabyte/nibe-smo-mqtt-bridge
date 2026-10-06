@@ -1,5 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { haWs } from './support/stack';
 
 /**
  * Reproduces, against a real Home Assistant instance, the exact real-world
@@ -124,6 +125,21 @@ async function injectMockPoint(pointId: string, definition: unknown): Promise<vo
     data: definition,
   });
   expect(resp.ok()).toBeTruthy();
+  // Already there from a previous run on this stack, the mock keeps the
+  // point's old value (a full definition is only applied to a new point), so
+  // set the value explicitly too.
+  const value = (definition as any).value?.integerValue;
+  if (value !== undefined) {
+    const reset = await ctx.post(`${MOCK_API_URL}/mock-control/points/${pointId}`, {
+      data: { integerValue: value },
+    });
+    expect(reset.ok()).toBeTruthy();
+  }
+  // Withdrawn by a previous run's cleanup (afterEach below) — served again.
+  const unhide = await ctx.post(`${MOCK_API_URL}/mock-control/hidden/${pointId}`, {
+    data: { hidden: false },
+  });
+  expect(unhide.ok()).toBeTruthy();
   await ctx.dispose();
 }
 
@@ -173,6 +189,20 @@ async function callService(
   await ctx.dispose();
 }
 
+// Left as sg-ready-lifecycle.spec.ts leaves it, for whatever runs next on
+// this stack: 10613 off and the injected SG Ready points withdrawn. Left
+// behind, they vanished whenever a later spec restarted the mock (which
+// reloads only the static dump) — controller-outage.spec.ts saw entities
+// disappear that it had never touched.
+test.afterEach(async () => {
+  const ctx = await pwRequest.newContext({ ignoreHTTPSErrors: true });
+  await ctx.post(`${MOCK_API_URL}/mock-control/points/10613`, { data: { integerValue: 0 } });
+  for (const pointId of Object.keys(SG_READY_DYNAMIC_POINTS)) {
+    await ctx.post(`${MOCK_API_URL}/mock-control/hidden/${pointId}`, { data: { hidden: true } });
+  }
+  await ctx.dispose();
+});
+
 test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctly classified and translated', async ({
   page,
 }) => {
@@ -186,13 +216,11 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
 
   const searchInput = card.locator('#search-input');
-  const beforeActivation = await fetchStates(token);
-  const beforeActivationIds = new Set(beforeActivation.map((s) => s.entity_id));
 
   // 1. Enable point 10613 ("Activate SG Ready via API") through the real
   // card, same round trip every other spec in this harness uses.
@@ -207,21 +235,24 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   }
   await searchInput.fill('');
 
+  // Found by its unique_id, not as "a new switch": a spec that ran earlier
+  // on this stack (sg-ready-lifecycle) may have left 10613 enabled already.
   let activationEntityId: string | null = null;
   await expect
     .poll(
       async () => {
-        const after = await fetchStates(token);
-        const candidate = after.find(
-          (s) => !beforeActivationIds.has(s.entity_id) && s.entity_id.startsWith('switch.')
-        );
-        if (candidate && candidate.state !== 'unavailable') {
-          activationEntityId = candidate.entity_id;
+        const [reg] = await haWs(token, [{ type: 'config/entity_registry/list' }]);
+        const id = (reg.result ?? []).find(
+          (e: any) => e.unique_id === `nibe_${ACTIVATION_POINT_ID}`
+        )?.entity_id;
+        const state = id && (await fetchStates(token)).find((s) => s.entity_id === id);
+        if (id?.startsWith('switch.') && state && state.state !== 'unavailable') {
+          activationEntityId = id;
           return true;
         }
         return false;
       },
-      { timeout: 30_000, message: 'no new available switch.* entity appeared for point 10613' }
+      { timeout: 30_000, message: 'no available switch.* entity for point 10613' }
     )
     .toBeTruthy();
   expect(activationEntityId).not.toBeNull();

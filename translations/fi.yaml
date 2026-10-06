@@ -40,11 +40,13 @@ configuration:
     description: >-
       Käyttäjätunnus MQTT-välittäjän todennukseen. Jätä tyhjäksi, jos
       välittäjäsi ei vaadi todennusta.
+      Oletusarvolla "core-mosquitto" Supervisor antaa Mosquitto-lisäosan tilin, joka on etusijalla tähän kenttään nähden.
   mqtt_password:
     name: MQTT-salasana
     description: >-
       Salasana MQTT-välittäjän todennukseen. Jätä tyhjäksi, jos
       välittäjäsi ei vaadi todennusta.
+      Oletusarvolla "core-mosquitto" Supervisor antaa Mosquitto-lisäosan tilin, joka on etusijalla tähän kenttään nähden.
   device_name:
     name: Laitteen nimi
     description: >-

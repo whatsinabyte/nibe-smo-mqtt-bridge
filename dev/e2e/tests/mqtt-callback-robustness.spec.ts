@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
 
 /**
  * ARCHITECTURE.md §3's hardest invariant: **no exception may escape an MQTT
@@ -82,7 +82,7 @@ test('malformed payloads on every management topic cannot stop the bridge proces
   // have nothing to do with the invariant (the first disabled row in this
   // dump is point 5, one of the not-connected accessory registers the other
   // specs filter out; its entity is created correctly and is unavailable).
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   const disabledRow = card.locator('tr[data-id]:has(button[data-action="enable"])').first();

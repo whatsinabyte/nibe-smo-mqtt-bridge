@@ -32,6 +32,14 @@ class TestIndexPointDivisorOverride(unittest.TestCase):
         em._index_point(point)
         self.assertEqual(em.all_points_by_id[29258]["metadata"]["divisor"], 100)
 
+    def test_range_override_applied_when_indexed(self):
+        """3702 declares a 5.5 °C minimum for a 55 °C setting; the indexed
+        copy feeds both the number entity's min and write_point's check."""
+        em = _make_em()
+        point = {"variableId": 3702, "metadata": {"divisor": 10, "minValue": 55, "maxValue": 700}}
+        em._index_point(point)
+        self.assertEqual(em.all_points_by_id[3702]["metadata"]["minValue"], 550)
+
     def test_non_overridden_point_unaffected(self):
         em = _make_em()
         point = {"variableId": 4, "metadata": {"divisor": 10, "unit": "°C"}}
@@ -186,11 +194,15 @@ class TestDiscoverPoints(unittest.TestCase):
     populates the DynamicPointMap, and publishes metadata + point list.
     _fetch_bulk_data is mocked — it is tested independently."""
 
-    def _make_em_with_bulk(self, point_ids=(100, 200, 300)):
-        """Return an em where _fetch_bulk_data populates all_points_by_id."""
+    def _make_em_with_bulk(self, point_ids=(100, 200, 300), dynamic_ids=()):
+        """Return an em where _fetch_bulk_data populates bulk_data and
+        all_points_by_id, like the real one. dynamic_ids are in the bulk
+        response but, being known dynamic, are not indexed as static."""
         em = _make_em()
 
         def fake_fetch(**_kw):
+            for pid in (*point_ids, *dynamic_ids):
+                em.bulk_data[pid] = {"raw_value": 0, "is_ok": True, "metadata": {}}
             for pid in point_ids:
                 em.all_points_by_id[pid] = {
                     "variableId": pid,
@@ -269,16 +281,46 @@ class TestDiscoverPoints(unittest.TestCase):
             em.discover_points()
             mock_pop.assert_called_once()
 
-    def test_mark_absent_as_firmware_removed_called_with_baseline(self):
-        """discover_points must call mark_absent_as_firmware_removed with the
-        freshly-established baseline_point_ids, so switches/selects removed
-        by a firmware update get flagged."""
-        em = self._make_em_with_bulk(point_ids=(100, 200, 300))
+    def test_mark_absent_as_firmware_removed_called_with_bulk_point_ids(self):
+        """discover_points must call mark_absent_as_firmware_removed with every
+        point in the bulk response — dynamic ones included, which the static
+        baseline leaves out — so switches/selects removed by a firmware
+        update get flagged and nothing else does."""
+        em = self._make_em_with_bulk(point_ids=(100, 200, 300), dynamic_ids=(400,))
         with patch.object(
             em.dynamic_point_map, "mark_absent_as_firmware_removed", return_value=set()
         ) as mock_mark:
             em.discover_points()
-            mock_mark.assert_called_once_with({100, 200, 300})
+            mock_mark.assert_called_once_with({100, 200, 300, 400})
+
+    def test_dynamic_select_present_in_bulk_is_not_marked_firmware_removed(self):
+        """A select that is itself a known dynamic point is in the bulk
+        response but not in the static baseline. Judging presence by the
+        baseline marked it firmware_removed on every startup, so the points
+        it shows stopped being expected and the startup reconcile deleted
+        their live entities as stale."""
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = self._make_em_with_bulk(point_ids=(100,), dynamic_ids=(400, 500))
+        em.dynamic_point_map._table[100] = DynamicPointEntry(
+            point_id=100,
+            title="Switch",
+            entity_type="switch",
+            is_controlling=True,
+            dynamic_points_by_value={0: [400]},
+        )
+        em.dynamic_point_map._table[400] = DynamicPointEntry(
+            point_id=400,
+            title="Dynamic select",
+            entity_type="select",
+            is_controlling=True,
+            dynamic_points_by_value={0: [500]},
+        )
+        em.discover_points()
+        self.assertFalse(em.dynamic_point_map[400].firmware_removed)
+        self.assertEqual(
+            em.dynamic_point_map.expected_active_dynamic_points({100: 0, 400: 0}), {400, 500}
+        )
 
     def test_point_missing_from_bulk_is_marked_firmware_removed(self):
         """End-to-end: a switch tracked in the map but absent from the new
@@ -365,13 +407,14 @@ class TestDiscoverPoints(unittest.TestCase):
             self.assertEqual(entity_types[100], "switch")
             self.assertEqual(entity_types[200], "")
 
-    def test_restore_from_bulk_called_with_baseline_point_ids(self):
-        """restore_from_bulk must receive the freshly established
-        baseline_point_ids set, not None or some other value."""
-        em = self._make_em_with_bulk(point_ids=(100, 200, 300))
+    def test_restore_from_bulk_called_with_bulk_point_ids(self):
+        """restore_from_bulk must receive every point in the bulk response,
+        dynamic ones included — with only the static baseline, a dynamic
+        switch/select once marked firmware_removed could never be restored."""
+        em = self._make_em_with_bulk(point_ids=(100, 200, 300), dynamic_ids=(400,))
         with patch.object(em.dynamic_point_map, "restore_from_bulk") as mock_restore:
             em.discover_points()
-            mock_restore.assert_called_once_with({100, 200, 300})
+            mock_restore.assert_called_once_with({100, 200, 300, 400})
 
     def test_publish_all_metadata_called_with_all_points(self):
         """publish_all_metadata must receive the actual point list, not None
@@ -424,6 +467,29 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         em = self._make_em_ready()
         em.discover_points.return_value = False
         self.assertFalse(em.complete_deferred_discovery("essential"))
+
+    def test_runs_the_after_deferred_discovery_callbacks_on_success(self):
+        """The registry watcher reconciles entities disabled in HA here: if
+        the controller was unreachable at startup, nothing was enabled yet
+        when it first checked."""
+        em = self._make_em_ready()
+        callback = MagicMock()
+        em._after_deferred_discovery.append(callback)
+        em.complete_deferred_discovery("essential")
+        callback.assert_called_once_with()
+
+    def test_does_not_run_them_when_discovery_fails(self):
+        em = self._make_em_ready()
+        em.discover_points.return_value = False
+        callback = MagicMock()
+        em._after_deferred_discovery.append(callback)
+        em.complete_deferred_discovery("essential")
+        callback.assert_not_called()
+
+    def test_a_failing_callback_does_not_fail_discovery(self):
+        em = self._make_em_ready()
+        em._after_deferred_discovery.append(MagicMock(side_effect=RuntimeError("boom")))
+        self.assertTrue(em.complete_deferred_discovery("essential"))
 
     def test_rebuilt_device_info_keeps_real_device_id(self):
         """device_info's 'identifiers' field must be rebuilt with the
@@ -486,7 +552,7 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         apply_mode/restore_from_mqtt calls happen via apply_startup_action,
         driven by `action` directly) but must still name the real mode."""
         em = self._make_em_ready(mqtt_enabled_count=0)
-        with self.assertLogs("nibe.restore", level="WARNING") as cm:
+        with self.assertLogs("nibe.restore", level="INFO") as cm:
             em.complete_deferred_discovery("essential")
         self.assertEqual(len(cm.output), 1)
         self.assertIn(
@@ -935,6 +1001,21 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em.restore_from_mqtt()
         self.assertEqual(em._stats_type_counts.get("sensor"), 1)
         self.assertEqual(em._stats_category_counts.get("diagnostic"), 1)
+
+    def test_restore_does_not_double_count_points_already_counted_before_scan(self):
+        """A dynamic point re-activated by _reconcile_dynamic_points (inside
+        discover_points, before the scan) was already counted once by
+        _enable_entity_locked — restore must rebuild the counts, not add to
+        them, or every restart with an active dynamic point inflates them."""
+        em = self._make_em_with_points([100])
+        em.all_points_by_id[100]["is_writable"] = True
+        em._increment_stats(em.all_points_by_id[100])  # counted pre-scan
+        em.mqtt_enabled_points.add(100)
+        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
+        em.restore_from_mqtt()
+        self.assertEqual(em._stats_type_counts.get("sensor"), 1)
+        self.assertEqual(em._stats_category_counts.get("diagnostic"), 1)
+        self.assertEqual(em._stats_writable_count, 1)
 
     def test_restore_increments_writable_count_for_writable_points(self):
         em = self._make_em_with_points([100])

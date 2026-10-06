@@ -91,7 +91,7 @@ def abort_test_suite(reason: str = "add-on shutting down") -> None:
     # reason value substitution and message text are log-only (reused for
     # real right after) — not pragma'd, arg count/format string are
     # real/tested (crash on None via %s formatting a None message).
-    log_commands.warning("Aborting in-flight test suite run: %s", reason)
+    log_commands.info("Aborting in-flight test suite run: %s", reason)
     _abort_reason = reason
     # Process (and thus its group) already exited between the poll() check
     # above and this call — nothing left to kill.
@@ -101,7 +101,10 @@ def abort_test_suite(reason: str = "add-on shutting down") -> None:
 
 def _extract_failure_lines(text: str) -> list[str]:
     """Pull the "short test summary info" block — one line per failure:
-    "FAILED tests/test_x.py::Class::test - ErrorType: message"
+    "FAILED tests/test_x.py::Class::test - ErrorType: message", and likewise
+    "ERROR ..." for a test that broke in setup (a failing fixture), which
+    pytest reports separately; skipping those left a failure notification
+    that named no test at all.
     Falls back to E-prefixed assertion lines from the FAILURES section.
     """
     result: list[str] = []
@@ -115,6 +118,8 @@ def _extract_failure_lines(text: str) -> list[str]:
         if in_short:
             if ln.startswith("FAILED "):
                 result.append(ln[len("FAILED ") :].strip())
+            elif ln.startswith("ERROR "):
+                result.append(ln[len("ERROR ") :].strip())
             elif ln.startswith("="):
                 break
     if result:
@@ -283,6 +288,12 @@ def run_test_suite(
                     "--timeout=600",  # per-test cap; nightly stateful tests exceed pytest.ini default of 300s
                     "-n",
                     "auto",  # xdist: one worker per CPU core (~4 on ODROID-M1)
+                    # Required, not optional: test classes that share one
+                    # /tmp path (test_entity_manager_snapshots.py) race when
+                    # xdist's default distribution splits them across
+                    # workers — a false "tests failed" on most runs.
+                    # Same as the documented command (CONTRIBUTING.md).
+                    "--dist=loadscope",
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

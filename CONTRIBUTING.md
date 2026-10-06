@@ -508,6 +508,8 @@ Not installed via pip/npm — MacPorts: `sudo port install shellcheck` (or your 
 
 **`optimistic: false`** — all writable MQTT discovery configs (switch, select, number) must include `"optimistic": False`. Missing this causes the HA UI to flip back to the old value during the write confirmation window.
 
+**Log levels mean something** — WARNING and ERROR are for conditions someone should look at or act on. Expected or documented behaviour logs at DEBUG, or INFO for a useful milestone. That covers an override from the tables in `nibe_entity_detection.py` being applied, a firmware convention such as `min == max` meaning "no bounds", or a conditional point that's absent on this installation. Before adding a warning, ask whether the user would act on it.
+
 ---
 
 ## Submitting changes

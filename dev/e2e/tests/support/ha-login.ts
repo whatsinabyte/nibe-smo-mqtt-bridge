@@ -1,3 +1,5 @@
+// First: points this process at its stack (see stacks.ts).
+import './stacks';
 import { type Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -18,7 +20,7 @@ import * as path from 'path';
  * label text or placement.
  */
 
-const SEED_OUT = path.join(__dirname, '..', '..', 'seed-out');
+const SEED_OUT = path.join(__dirname, '..', '..', process.env.SEED_OUT || 'seed-out');
 
 export function readCredentials(): { username: string; password: string } {
   const raw = fs.readFileSync(path.join(SEED_OUT, 'credentials.json'), 'utf-8');
@@ -110,4 +112,36 @@ export async function loginToHa(page: Page): Promise<void> {
   }
 
   throw new Error(`could not log into Home Assistant after 3 attempts: ${lastFailure}`);
+}
+
+/** Open a Home Assistant page after loginToHa(), logging in again if HA
+ * bounces it to the login screen. Colima re-syncs its port forwards whenever
+ * any container starts or stops — on any of the parallel stacks — and a
+ * page load caught in that drops the session: observed as a spec waiting for
+ * the card on /auth/authorize. */
+export async function gotoLoggedIn(page: Page, url: string): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await page.goto(url);
+      // Either the frontend connects (the root element gets its hass object)
+      // or it gives up on the session and sends us to the login page.
+      await page.waitForFunction(
+        () =>
+          location.pathname.startsWith('/auth/') ||
+          Boolean((document.querySelector('home-assistant') as any)?.hass),
+        undefined,
+        { timeout: 30_000 }
+      );
+    } catch {
+      // Navigation dropped mid-load: retried below.
+    }
+    if (!new URL(page.url()).pathname.startsWith('/auth/') && !page.isClosed()) {
+      const connected = await page
+        .evaluate(() => Boolean((document.querySelector('home-assistant') as any)?.hass))
+        .catch(() => false);
+      if (connected) return;
+    }
+    await loginToHa(page);
+  }
+  throw new Error(`could not open ${url} as a logged-in user`);
 }

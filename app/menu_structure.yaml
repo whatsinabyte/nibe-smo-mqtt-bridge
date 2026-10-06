@@ -1097,7 +1097,7 @@ menus:
       range: Status
       point_id: 1942
       note: Live status of the temporary hot water increase.
-    - label: More hot water, minutes remaining (read-only)
+    - label: More hot water, minutes remaining
       range: minutes
       point_id: 4030
     - label: Temp. lux forces start of hot water demand (read-only)
@@ -1493,7 +1493,7 @@ menus:
         note: Number of compressors currently blocked from starting. A non-zero value means the firmware is preventing one
           or more compressors from running due to an alarm condition or blocking input.
       - label: Block new compressor
-        range: off/on (read-only)
+        range: off/on
         point_id: 55749
         note: Whether starting an additional compressor (in a multi-compressor installation) is currently blocked.
       - label: Condenser supply line (EB101-BT12)
@@ -1625,7 +1625,7 @@ menus:
           temperature is above 4°C; active defrosting (reversing valve shifts, fan stops) is used in colder conditions.
           Both are normal — brief pauses in heating output are expected.
       - label: Defrost requested (EB101)
-        range: off/on (read-only)
+        range: off/on
         point_id: 8060
         note: Whether a defrost cycle is currently active or has been requested.
       - label: Last defrost heat pump 1
@@ -2429,7 +2429,7 @@ menus:
         point_id: 14048
         note: Pool temperature offset applied when Solar PV excess power is available.
       - label: Current PV power production
-        range: 0 – 65535 kW (read-only)
+        range: kW
         point_id: 29258
         note: Reported to the SMO S40 by the Solar PV inverter — not a user setting, despite being technically writable
           via the API.
@@ -2454,7 +2454,7 @@ menus:
       - label: Timer (EME, read-only)
         range: minutes
         point_id: 1024
-      - label: Delay timer EME (read-only)
+      - label: Delay timer EME
         range: Status
         point_id: 5222
       - label: Prioritise domestic electricity
@@ -3154,7 +3154,7 @@ menus:
       '
     settings:
     - label: Language
-      range: 26 language options
+      range: 25 language options
       point_id: 3745
       note: 'Language selection for controller display. 0=English, 1=Svenska, 2=Deutsch, etc. Does not affect this MQTT bridge
         — entity names are always in English.
@@ -3374,10 +3374,10 @@ menus:
 
       '
     settings:
-    - label: Holiday function status (read-only)
+    - label: Holiday function status
       range: Active/inactive
       point_id: 1948
-      note: 'Read-only status indicator — configure holiday periods directly on the controller display
+      note: 'Configure holiday periods directly on the controller display
 
         '
   - id: '6.2'
@@ -4677,7 +4677,7 @@ menus:
             loss per hour is roughly 1 DM per minute.
 
             '
-        - label: Degree minutes, current value (read-only)
+        - label: Degree minutes, current value
           range: -3000 – 3000 DM
           point_id: 781
           note: 'Live degree minute counter. Becomes more negative as heating demand builds. Compressor starts when this
@@ -4686,7 +4686,7 @@ menus:
             is transient, so use for diagnostics and manual override only.
 
             '
-        - label: Cooling degree minutes (read-only)
+        - label: Cooling degree minutes
           range: -3000 – 3000 DM
           point_id: 2691
           note: 'Live cooling degree minute counter. Becomes more positive as cooling demand builds. Writing a value here
@@ -6052,7 +6052,7 @@ menus:
         range: Function assignment
         point_id: 22070
         note: AUX output function controlled via Modbus register. 0=not used (default).
-      - label: Auxiliary operation on alarm (read-only)
+      - label: Auxiliary operation on alarm
         range: Status
         point_id: 3937
         note: Whether auxiliary operation continues while an alarm is active.
@@ -6477,7 +6477,7 @@ menus:
       - label: Available power
         range: 0 – 65535 W
         point_id: 14314
-        note: Read-only — the available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
+        note: The available PV power currently being reported to the SMO S40 via Modbus TCP from the Solar PV
           inverter. Any value written here will be overwritten within seconds.
     - id: 7.5.15
       title: Local REST API
@@ -6510,7 +6510,7 @@ menus:
       '
     settings:
     - label: Start guide has been run
-      range: off/on (read-only)
+      range: off/on
       point_id: 9028
       note: Whether the initial commissioning start guide has been completed.
   - id: '7.8'

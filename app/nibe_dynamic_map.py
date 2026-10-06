@@ -27,9 +27,11 @@ deserialise themselves and handle storage elsewhere. The only external
 imports are from the standard library and nibe_utils.
 """
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from collections.abc import ItemsView, ValuesView
 from dataclasses import dataclass, field
 
@@ -319,18 +321,25 @@ class DynamicPointMap:
                 "DynamicPointMap: point %d marked firmware_removed", point_id
             )  # pragma: no mutate
 
-    def restore_from_bulk(self, bulk_point_ids: set[int]) -> None:
+    def restore_from_bulk(self, bulk_point_ids: set[int]) -> set[int]:
         """Clear firmware_removed for points that have reappeared in a bulk fetch.
 
-        Handles the (unlikely) case where a point disappears and reappears
-        across firmware updates.
+        Covers a point that disappears and reappears across firmware updates,
+        and — far more commonly — a switch/select that is itself dynamic:
+        absent at startup only because whatever shows it was off, so marked
+        firmware_removed then, and back as soon as it is switched on.
+
+        Returns the set of point_ids restored.
         """
+        restored = set()
         for point_id, entry in self._table.items():
             if entry.firmware_removed and point_id in bulk_point_ids:
                 entry.firmware_removed = False
+                restored.add(point_id)
                 log.debug(
                     "DynamicPointMap: point %d restored (reappeared in bulk)", point_id
                 )  # pragma: no mutate
+        return restored
 
     def mark_absent_as_firmware_removed(self, bulk_point_ids: set[int]) -> set[int]:
         """Mark every known point absent from bulk_point_ids as firmware_removed.
@@ -452,7 +461,7 @@ class DynamicPointMap:
         Debug use only.  Called by the flush management button, which is
         only registered when the debug_mode option is enabled.
         """
-        log.warning(
+        log.info(
             "DynamicPointMap: FLUSH requested — resetting all entries to unprocessed"
         )  # pragma: no mutate
         for entry in self._table.values():
@@ -468,7 +477,7 @@ class DynamicPointMap:
             entry.dynamic_points_by_value = {}
         # Add any new entries that appeared since the table was built
         self.populate_from_bulk(all_points_by_id, entity_types)
-        log.warning(
+        log.info(
             "DynamicPointMap: flush complete — %d entries reset", len(self._table)
         )  # pragma: no mutate
 
@@ -527,14 +536,29 @@ class DynamicPointMap:
         """
         if path is None:
             path = _FILE_FALLBACK
+        # Unique temp name per write, same as nibe_entity_manager's
+        # _atomic_write_text (see its docstring): a fixed path + ".tmp" lets
+        # two concurrent writers truncate each other's half-written file and
+        # rename the mixture into place. Most callers hold EntityManager's
+        # _em_lock, but not all (discover_points persists unlocked), and the
+        # ARCHITECTURE.md durability guarantee covers this file too.
+        tmp = None
         try:
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:  # pragma: no mutate
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(path) or ".",
+                prefix=f".{os.path.basename(path)}.",
+                suffix=".tmp",
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:  # pragma: no mutate
                 f.write(self.serialise())
+            os.chmod(tmp, 0o644)  # mkstemp's 0600 -> what a plain open() gave
             os.replace(tmp, path)
             log.debug("DynamicPointMap: saved to %s", path)  # pragma: no mutate
             return True
         except OSError as e:
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
             log.warning("DynamicPointMap: could not write to %s: %s", path, e)  # pragma: no mutate
             return False
 

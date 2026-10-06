@@ -128,8 +128,13 @@ def _run_curl(
         # "unreachable" against a controller whose old TLS stack the real
         # polling connection (via NibeApiClient) already tolerates.
         cmd += ["-k", "--tlsv1.0", "--ciphers", TLS_COMPAT_CIPHERS]
+    # The Authorization header goes to curl on stdin ("-H @-"), not argv:
+    # argv is readable by any process in the container via /proc/<pid>/cmdline
+    # for as long as curl runs, and this is the bridge's real credential.
+    stdin_headers = None
     if auth_header:
-        cmd += ["-H", f"Authorization: {auth_header}"]
+        cmd += ["-H", "@-"]
+        stdin_headers = f"Authorization: {auth_header}\n"
     cmd.append(url)
 
     tls_verified = bool(ca_cert_path)
@@ -137,6 +142,7 @@ def _run_curl(
         result = (
             subprocess.run(  # cmd is a fixed literal list, not shell/untrusted input  # nosec B603
                 cmd,
+                input=stdin_headers,
                 capture_output=True,
                 text=True,
                 timeout=timeout + 5,

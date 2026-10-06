@@ -13,7 +13,7 @@ Connects your Nibe S-series heat pump controller to Home Assistant via MQTT. Tem
 5. **Configure the required fields** under the app Configuration tab:
    - `nibe_host` — IP address of your controller
    - `nibe_username` and `nibe_password` — the credentials you set in step 1
-   - If you are using the official **Mosquitto broker** app, the bridge auto-discovers its hostname, port, and credentials — you do not need to fill in the MQTT fields. If you use a different MQTT broker, enter `mqtt_host`, `mqtt_port`, `mqtt_username`, and `mqtt_password` manually.
+   - If you are using the official **Mosquitto broker** app, the bridge auto-discovers its hostname, port, and credentials through the Supervisor — you do not need to fill in the MQTT fields, and with `mqtt_host: core-mosquitto` the Supervisor's Mosquitto service account takes precedence over any `mqtt_username`/`mqtt_password` you do fill in (those are only a fallback if the Supervisor can't provide the service). If you use a different MQTT broker, enter `mqtt_host`, `mqtt_port`, `mqtt_username`, and `mqtt_password` manually.
    - Leave everything else at the default to start
 6. **Start the app.** The bridge fetches all available data points, creates two devices in HA (**your controller** and **Management**), and provisions the **Nibe Bridge** dashboard automatically.
 7. **Open the Nibe Bridge dashboard** in the HA sidebar. Use the Entity Manager card to browse all available data points and enable the ones you want.
@@ -97,10 +97,10 @@ These are the only fields you need to get started.
 | `nibe_password` | Local API password | — |
 | `mqtt_host` | MQTT broker hostname | `core-mosquitto` |
 | `mqtt_port` | Broker port — use `1883` for plaintext (default) or `8883` for TLS | `1883` |
-| `mqtt_username` | MQTT username (leave blank if no authentication) | — |
-| `mqtt_password` | MQTT password (leave blank if no authentication) | — |
+| `mqtt_username` | MQTT username (leave blank if no authentication). With `core-mosquitto` the Supervisor's service account takes precedence | — |
+| `mqtt_password` | MQTT password (leave blank if no authentication). With `core-mosquitto` the Supervisor's service account takes precedence | — |
 | `device_name` | How the controller appears in HA | `Nibe SMO S40` |
-| `language` | Query language for the Nibe REST API. Dropdown listing every language the SMO S40's own "Language" select entity supports; only nl, de, and sv are confirmed working against a live controller, the rest are untested but expected to fail safely. `auto` detects Home Assistant's own configured language; any other value overrides auto-detection. An unrecognised code silently falls back to English, never an error. Does not translate the "Nibe Menus" Lovelace dashboard, which is static English content. Restart required. | `auto` |
+| `language` | Query language for the Nibe REST API. Dropdown listing every language the SMO S40's own "Language" select entity supports; only nl, de, and sv are confirmed working against a live controller, the rest are untested but expected to fail safely. `auto` detects Home Assistant's own configured language (a regional variant such as `en-GB` counts as its language, and Norwegian `nb`/`nn` as `no`); any other value overrides auto-detection. An unrecognised code silently falls back to English, never an error. Does not translate the "Nibe Menus" Lovelace dashboard, which is static English content. Restart required. | `auto` |
 | `poll_interval` | Fetch interval in seconds. Recommended: `15`, `30`, `60`, `120`, or `300`. Other values are snapped to the nearest. | `30` |
 | `mode` | Which entities the bridge exposes at startup. See [Entity Modes](#entity-modes). | `essential` |
 | `mode_switch_behavior` | What happens to already-enabled entities when you switch to a different `mode`. `replace` reconciles the enabled set to exactly the new mode's points — anything enabled that isn't part of it, including entities you enabled manually via the Entity Manager card, gets disabled. `merge` only ever adds the new mode's points on top of what's already enabled; nothing is ever disabled by a mode change. Applies to every mode switch. No effect on a fresh install or restarting with the same mode. | `replace` |
@@ -161,7 +161,7 @@ mqtt_password: "my_mqtt_password"
 
 The bridge checks `/config/secrets.yaml` and `/homeassistant/secrets.yaml` automatically. This is the lowest-priority source — it only fills in credential fields left blank in the app configuration UI. Any value entered in the UI (options.json) always overrides `secrets.yaml` for that same field.
 
-> ℹ️ Passwords containing special characters including `#` are supported when the value is quoted in `secrets.yaml`.
+> ℹ️ Passwords containing special characters including `#` are supported when the value is quoted in `secrets.yaml`. As in any YAML file, a `#` after a space starts a comment: `mqtt_password: s3cret  # broker login` is read as `s3cret`.
 
 ### Changing credentials
 
@@ -259,7 +259,7 @@ The bridge creates the following HA entity types from the controller's data poin
 | `number` | Heating curve offset and slope, hot water setpoint, DM start/stop thresholds | Yes |
 | `switch` | Operating mode overrides, auxiliary heat enable, holiday mode | Yes |
 | `select` | Smart Mode (Normal/Away), heating system type, language | Yes |
-| `button` | Alarm reset, compressor block | Yes (trigger-only) |
+| `button` | Alarm reset, fan de-icing start | Yes (trigger-only) |
 
 On a fully equipped S-series installation the bridge typically creates 900–1,200 entities. The `essential` mode enables around 30 of the most useful ones at startup; the rest are available via the Entity Manager card.
 
@@ -595,6 +595,12 @@ Emergency mode (Aid Mode) runs on electric auxiliary heat only — the compresso
 
 The bridge surfaces this as a persistent HA notification and via the Aid Mode switch entity. Create an automation to alert you immediately when Aid Mode activates.
 
+### External sensor readings (menu 7.5.9.2)
+
+The "External reading of value BT1 / BT25 / BT71 / BT5 / BT6 / BT7 / BT52 / BT50 / BT68" registers let another system supply a temperature in place of a physical sensor. They were added in firmware 2.21.12 (BT50 in 4.2.4). Each sensor has its own activation flag in menu 7.5.9.2. With the flag set, the controller uses the supplied value instead of its own sensor input, and the bridge exposes these registers as writable numbers.
+
+A value written here is what the controller acts on, so only write one while its flag is set, and keep it current, for example from an automation. According to the firmware changelog (2.22.6), the controller raises a sensor alarm when no temperature data arrives for a while.
+
 ---
 
 ## Intentionally Unexposed Registers
@@ -603,15 +609,11 @@ Several registers that appear in the Nibe firmware are deliberately not exposed 
 
 ### The REST API / Modbus TCP split
 
-Nibe divides register access into two tiers. The local REST API (which this bridge uses) exposes settings safe for remote, asynchronous access. Modbus TCP gives direct register-level access with no safety envelope. Some registers appear with `isWritable: false` in the REST API even though they are physically writable over Modbus — Nibe marks them read-only intentionally. The bridge respects this boundary.
+Nibe divides register access into two tiers. The local REST API (which this bridge uses) exposes settings safe for remote, asynchronous access. Modbus TCP gives direct register-level access with no safety envelope. The registers below are meant for that Modbus side, and the bridge never writes them: it shows each one as a read-only sensor, from an explicit list in the code. It doesn't go by the firmware's own `isWritable` flag, which is unreliable (it marks the alarm reset button read-only, for one) and which marks several of these registers writable anyway.
 
 ### Register 55884 — Set point value power (Modbus 5997)
 
 Accepts a direct compressor power request in kW, bypassing the normal degree-minute algorithm. There is no firmware-side timeout — a value written here persists indefinitely, including across power cycles, until explicitly cleared. If the bridge crashes while a non-zero value is active, the compressor runs at that commanded level with no automatic recovery. Safe only within a system that implements its own watchdog process.
-
-### Modbus TCP sensor injection — registers 5217–6006
-
-Allow injection of synthetic sensor values — outdoor temperature, room temperature, and others — directly into the firmware's sensor inputs. The firmware treats injected values identically to physical sensors and does not distinguish between them. Injected values persist across power cycles with no timeout. A stale injected outdoor temperature of −10°C would cause the controller to run at high heating demand regardless of actual conditions.
 
 ### Spot price registers 26817–26840
 
@@ -669,7 +671,7 @@ The MQTT integration must be configured in HA (Settings → Devices & Services �
 **Cannot connect to MQTT broker**
 - The Mosquitto app must be installed and running before this app starts
 - `core-mosquitto` only works with the official Mosquitto app — use an IP address or hostname for other brokers
-- If authentication is enabled on the broker, fill in `mqtt_username` and `mqtt_password`
+- For a broker other than the Mosquitto app with authentication enabled, fill in `mqtt_username` and `mqtt_password` (with `core-mosquitto` the Supervisor provides the account, which takes precedence over these fields)
 
 **Entities unavailable after restart**
 Normal for the first 30 seconds while the bridge fetches current values. If still unavailable after a minute, check the app log for errors.
@@ -686,8 +688,10 @@ A persistent notification has appeared in the HA notification bell with full ala
 **Entity Manager card not appearing**
 Try reloading browser resources: **Settings → Dashboard → ⠇ → Reload resources**. If the dashboard itself is missing, restart the app — it recreates missing dashboards automatically.
 
-**A number entity shows an empty state or cannot be written**
-The firmware occasionally stores register values outside the range it also reports. The bridge detects this, logs a warning containing `outside firmware range`, and adjusts the discovery config so HA can display the value correctly. No action required.
+**A number or select entity shows as unavailable**
+The firmware occasionally reports a value outside the range it declares for that setting, or one that's none of a select's options. Rather than show a misleading value, the bridge marks the entity unavailable until a valid value comes back.
+- **A value of 0:** this firmware's "not configured" convention, logged at INFO level. Nothing to do.
+- **Any other value:** logs a warning containing `outside firmware range`, or for a select `is not one of its select options`. Worth a look on the controller.
 
 **A dynamic point keeps reappearing after I disable it in HA**
 By design — dynamic points are firmware-controlled. The bridge re-enables any dynamic entity disabled via HA. To permanently stop seeing a dynamic entity, change the value of the register that controls it. The Changelog identifies which register write triggered each dynamic point to appear.

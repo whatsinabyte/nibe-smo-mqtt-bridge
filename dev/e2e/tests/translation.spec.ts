@@ -1,5 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { pointEntityId, setMockValue } from './support/stack';
 
 /**
  * Proves, against a real Home Assistant instance, that
@@ -80,13 +81,11 @@ test('a hardcoded VALUE_MAPPINGS label is translated in a real HA entity state',
   await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
 
   const searchInput = card.locator('#search-input');
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
 
   // 3. Enable point 3292 through the real card (same round trip as
   // enable-entity.spec.ts: hass.callService -> real broker -> real bridge).
@@ -109,8 +108,9 @@ test('a hardcoded VALUE_MAPPINGS label is translated in a real HA entity state',
     .poll(
       async () => {
         const after = await fetchStates(token);
+        const pointEntity = await pointEntityId(token, POINT_ID);
         const candidate = after.find(
-          (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('sensor.')
+          (s) => s.entity_id === pointEntity && s.entity_id.startsWith('sensor.')
         );
         if (candidate && candidate.state === EXPECTED_TRANSLATED_STATE) {
           translatedEntityId = candidate.entity_id;
@@ -159,15 +159,15 @@ test('a select entity round-trips a translated write through a real HA select.se
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
 
   const searchInput = card.locator('#search-input');
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
 
   const POINT_ID = '3751';
+  // The dump's value (Auto), whatever an earlier spec on this stack wrote.
+  await setMockValue(POINT_ID, 0);
   await searchInput.fill(POINT_ID);
   const row = card.locator(`tr[data-id="${POINT_ID}"]`);
   await expect(row).toBeVisible({ timeout: 10_000 });
@@ -185,8 +185,9 @@ test('a select entity round-trips a translated write through a real HA select.se
     .poll(
       async () => {
         const after = await fetchStates(token);
+        const pointEntity = await pointEntityId(token, POINT_ID);
         const candidate = after.find(
-          (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('select.')
+          (s) => s.entity_id === pointEntity && s.entity_id.startsWith('select.')
         );
         if (candidate && candidate.state !== 'unavailable') {
           entityId = candidate.entity_id;

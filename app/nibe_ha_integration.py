@@ -56,6 +56,10 @@ from nibe_utils import fmt_ts as _fmt_ts
 if TYPE_CHECKING:
     from nibe_entity_manager import EntityManager
 
+# Re-read aid/smart mode from the API at least this often, even with nothing
+# marking the cache dirty — see EntityManager.device_modes_fetched_at.
+_DEVICE_MODES_MAX_AGE_S = 300
+
 log_mqtt = logging.getLogger("nibe.mqtt")
 log_commands = logging.getLogger("nibe.commands")
 log_startup = logging.getLogger("nibe.startup")
@@ -150,6 +154,19 @@ _ha_language: str | None = None  # cached after first successful fetch
 _ha_language_retry_after: float = 0.0  # time.time(); a failed fetch is retryable after this
 
 
+def _api_language(ha_language: str) -> str:
+    """The query language for an HA language setting.
+
+    HA names languages as BCP-47 tags with region or script parts ("en-GB",
+    "pt-BR", "zh-Hans") and Norwegian by its written standards ("nb" Bokmål,
+    "nn" Nynorsk); the bridge's language list (config.yaml) and
+    translations/*.yaml use bare codes and "no". A Norwegian HA got no
+    translations file, so value labels stayed English.
+    """
+    primary = ha_language.strip().lower().replace("_", "-").split("-")[0]
+    return "no" if primary in ("nb", "nn") else primary
+
+
 def _get_ha_language() -> str:
     """Return Home Assistant's configured language, for auto-detecting the
     Nibe REST API query language when the ``language`` option is left blank.
@@ -195,7 +212,7 @@ def _get_ha_language() -> str:
             req, timeout=5
         ) as resp:  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
             cfg = json.loads(resp.read().decode())
-        _ha_language = cfg.get("language") or ""
+        _ha_language = _api_language(cfg.get("language") or "")
         log_mqtt.debug("HA language resolved: %r", _ha_language)
         return _ha_language
     except (
@@ -221,7 +238,7 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
     """
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
-        log_mqtt.warning("HA notification (no supervisor token): [%s] %s", notification_id, title)
+        log_mqtt.info("HA notification (no supervisor token): [%s] %s", notification_id, title)
         return
 
     payload = json.dumps(
@@ -249,7 +266,7 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
         urllib.request.urlopen(
             req, timeout=10
         )  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
-        log_mqtt.warning("HA notification sent: [%s] %s", notification_id, title)
+        log_mqtt.info("HA notification sent: [%s] %s", notification_id, title)
     except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
         log_mqtt.error("Failed to send HA notification: %s", e)
 
@@ -312,12 +329,35 @@ class HAEntityRegistryWatcher:
     """
 
     _INITIAL_BACKOFF = 2
+
+    # Ordering for full-registry fetches. Several can be in flight at once
+    # (the debounced refresh, the menu regen's synchronous one, its retry's,
+    # and a reconnect's), each over its own connection, and each replaces the
+    # nibe_ entries wholesale when applied — so one finishing after a newer
+    # one would roll the map back, deleting entities created in between and
+    # restoring removed ones. Each fetch takes a sequence number when its
+    # request is sent; a response older than one already applied is dropped.
+    # Class-level defaults so watcher doubles built via __new__() work too.
+    _map_seq_issued: int = 0
+    _map_seq_applied: int = 0
     _MAX_BACKOFF = 300  # cap at 5 minutes between reconnect attempts
 
     def __init__(self, entity_manager: "EntityManager", publisher: MqttDiscoveryPublisher) -> None:
         self._em = entity_manager
         self._pub = publisher
+        # Bridge entities HA's registry lists as disabled by the user, from
+        # the last successful registry fetch — see _reconcile_user_disabled.
+        self._user_disabled_entities: set[str] = set()
+        # Entities this watcher re-enabled itself (_clear_disabled_by); the
+        # registry event that follows is its own echo, not a user action.
+        self._self_reenabled: set[str] = set()
+        # Set when a rename arrives for an entity not mapped yet; the next
+        # registry refresh then regenerates the menu dashboard.
+        self._regen_after_refresh = False
         self._stop_event = threading.Event()
+        deferred_hooks = getattr(entity_manager, "_after_deferred_discovery", None)
+        if isinstance(deferred_hooks, list):
+            deferred_hooks.append(self._reconcile_user_disabled)
         self._thread: threading.Thread | None = None
         self._ws_lock = threading.Lock()
         self._current_ws = None
@@ -360,6 +400,45 @@ class HAEntityRegistryWatcher:
         with self._registry_map_lock:
             return self._unique_id_map.get(f"nibe_{point_id}")
 
+    def _clear_disabled_by(self, entity_id: str) -> None:
+        """Re-enable an entity in HA's entity registry (disabled_by: null),
+        over its own short-lived Supervisor connection, the same way
+        refresh_registry fetches the registry."""
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        if not token:
+            return
+        # Recorded before sending: HA fires the registry event for this update
+        # to the watcher's own connection, which can handle it before the
+        # response below is read — called off the watcher thread (the
+        # reconcile after deferred discovery), it did, and the echo was taken
+        # for the user re-enabling the entity.
+        self._self_reenabled.add(entity_id)
+        try:
+            import websocket as _ws_lib
+
+            ws = _ws_lib.create_connection("ws://supervisor/core/websocket", timeout=10)
+            try:
+                self._ws_authenticate(ws, token)
+                ws.send(
+                    json.dumps(
+                        {
+                            "id": 1,
+                            "type": "config/entity_registry/update",
+                            "entity_id": entity_id,
+                            "disabled_by": None,
+                        }
+                    )
+                )
+                resp = json.loads(ws.recv())
+            finally:
+                ws.close()
+            if not resp.get("success"):
+                self._self_reenabled.discard(entity_id)
+                log_registry.warning("Could not re-enable %s in HA: %s", entity_id, resp)
+        except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+            self._self_reenabled.discard(entity_id)
+            log_registry.warning("Could not re-enable %s in HA: %s", entity_id, e)
+
     def refresh_registry(self) -> None:
         """Re-fetch the full entity registry and refresh the local cache.
 
@@ -392,25 +471,79 @@ class HAEntityRegistryWatcher:
             # socket (unlike the auth-failure paths above, which close it
             # themselves before raising).
             try:
+                seq = self._next_map_seq()
                 ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
                 raw = ws.recv()
                 resp = json.loads(raw)
             finally:
                 ws.close()
             if resp.get("success"):
-                count = 0
+                fresh = {}
+                for entry in resp.get("result", []):
+                    uid = entry.get("unique_id")
+                    eid = entry.get("entity_id")
+                    if uid and eid and uid.startswith("nibe_"):
+                        fresh[uid] = eid
+                # Replace the nibe_ entries wholesale rather than merging into
+                # them: the response is the complete registry, so a nibe_
+                # entry missing from it is an entity HA no longer has. Merging
+                # only ever added or overwrote, which left a removed entity's
+                # stale entity_id resolvable until the next watcher reconnect.
+                # Non-nibe entries (only ever written by _fetch_entity_registry)
+                # are left alone.
                 with self._registry_map_lock:
-                    for entry in resp.get("result", []):
-                        uid = entry.get("unique_id")
-                        eid = entry.get("entity_id")
-                        if uid and eid and uid.startswith("nibe_"):
-                            self._unique_id_map[uid] = eid
-                            count += 1
-                log_registry.debug("Registry refresh: updated %d nibe entries", count)
+                    if not self._newer_than_applied(seq):
+                        return
+                    for uid in [k for k in self._unique_id_map if k.startswith("nibe_")]:
+                        if uid not in fresh:
+                            del self._unique_id_map[uid]
+                    self._unique_id_map.update(fresh)
+                log_registry.debug("Registry refresh: updated %d nibe entries", len(fresh))
+                if self._regen_after_refresh:
+                    # A rename that arrived before the entity was mapped
+                    # (_apply_entity_id_rename): the map now has its new id.
+                    self._regen_after_refresh = False
+                    regen = self._em._on_enabled_state_change
+                    if regen is not None:
+                        regen()
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             log_registry.warning("Registry refresh failed: %s", e)
 
     _REFRESH_DEBOUNCE_S = 5.0
+
+    def _apply_entity_id_rename(self, old_eid: str, new_eid: str) -> None:
+        """Follow a user renaming an entity_id in Home Assistant.
+
+        HA's registry update event never carries unique_id (for any
+        integration — confirmed in HA's own entity_registry), only the new
+        entity_id and old_entity_id, so this remaps by value straight away,
+        like the remove branch's reverse scan, instead of resolving the point
+        to the old id until the debounced refresh lands. A rename also never
+        changes the enabled set, which is what regenerates the menu
+        dashboard, so the saved dashboard kept referencing the old entity_id
+        — an "entity not available" row — until something unrelated rebuilt
+        it. Renaming one of the bridge's entities therefore schedules that
+        regen itself (debounced; a no-op outside menus mode).
+        """
+        with self._registry_map_lock:
+            renamed = [uid for uid, eid in self._unique_id_map.items() if eid == old_eid]
+            for uid in renamed:
+                self._unique_id_map[uid] = new_eid
+        if not renamed:
+            # Not mapped yet — e.g. renamed right after HA created it, before
+            # the debounced refresh that maps new entities. The scheduled
+            # refresh will map it under its new id; regenerate then.
+            self._regen_after_refresh = True
+            return
+        if not any(uid.startswith("nibe_") for uid in renamed):
+            return
+        log_registry.info("Entity renamed: %s -> %s", old_eid, new_eid)
+        regen = self._em._on_enabled_state_change
+        if regen is not None:
+            try:
+                regen()
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+                log_registry.warning("Dashboard regen after rename failed: %s", e)
 
     def _schedule_refresh_registry(self) -> None:
         """Coalesce refresh_registry() calls that arrive in a burst into a
@@ -464,6 +597,24 @@ class HAEntityRegistryWatcher:
             self._thread.join(timeout=5)
         log_registry.debug("Entity registry watcher stopped")
 
+    def _next_map_seq(self) -> int:
+        with self._registry_map_lock:
+            self._map_seq_issued += 1
+            return self._map_seq_issued
+
+    def _newer_than_applied(self, seq: int) -> bool:
+        """Caller must hold _registry_map_lock. Marks seq applied if it is
+        the newest fetch seen so far; returns False for a stale response."""
+        if seq < self._map_seq_applied:
+            log_registry.debug(
+                "Registry fetch #%d finished after newer fetch #%d — discarding it",
+                seq,
+                self._map_seq_applied,
+            )
+            return False
+        self._map_seq_applied = seq
+        return True
+
     def _next_id(self) -> int:
         self._msg_id += 1
         return self._msg_id
@@ -516,9 +667,13 @@ class HAEntityRegistryWatcher:
             ws.close()
             raise RuntimeError(f"Event subscription failed: {sub_result}")
 
+        seq = self._next_map_seq()
         fresh_map = self._fetch_entity_registry(ws)
         with self._registry_map_lock:
-            self._unique_id_map = fresh_map
+            if self._newer_than_applied(seq):
+                self._unique_id_map = fresh_map
+        if fresh_map:
+            self._reconcile_user_disabled()
 
         # Set a per-recv timeout equal to the ping interval so the event
         # loop wakes up regularly to send keepalive pings. Without pings,
@@ -652,7 +807,7 @@ class HAEntityRegistryWatcher:
                         consec_failures,
                     )
                     return
-                log_registry.warning(
+                log_registry.info(
                     "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)",
                     e,
                     backoff,
@@ -719,6 +874,7 @@ class HAEntityRegistryWatcher:
             log_registry.warning("Could not fetch entity registry: %s", resp)
             return {}
         mapping = {}
+        user_disabled: set[str] = set()
         result = resp.get("result", [])
         for entry in result:
             uid = (
@@ -729,6 +885,9 @@ class HAEntityRegistryWatcher:
             eid = entry.get("entity_id")
             if uid and eid:
                 mapping[uid] = eid
+                if uid.startswith("nibe_") and entry.get("disabled_by") == "user":
+                    user_disabled.add(eid)
+        self._user_disabled_entities = user_disabled
         nibe_count = sum(1 for k in mapping if k.startswith("nibe_"))
         log_registry.debug(
             "Entity registry cached: %d total entries, %d nibe entries",
@@ -765,10 +924,13 @@ class HAEntityRegistryWatcher:
         if action == "update":
             eid = data.get("entity_id")
             uid = data.get("unique_id") or data.get("config", {}).get("unique_id")
+            old_eid = data.get("old_entity_id")
             if uid and eid:
                 with self._registry_map_lock:
                     self._unique_id_map[uid] = eid
             elif eid:
+                if old_eid and old_eid != eid:
+                    self._apply_entity_id_rename(old_eid, eid)
                 self._schedule_refresh_registry()
 
             # Detect HA-side enable/disable via the disabled_by field change.
@@ -793,18 +955,50 @@ class HAEntityRegistryWatcher:
                     self._unique_id_map.pop(uid, None)
             elif eid:
                 # Same fallback as the create/update branches above: if HA's
-                # remove event doesn't carry unique_id (plausible — the
-                # registry entry being deleted isn't necessarily echoed back
-                # in full), a reverse pop by uid can't happen, and the stale
-                # entry would otherwise never clear until the next full
-                # refresh_registry()/reconnect. A debounced refresh rebuilds
-                # the map from scratch, which naturally drops the removed
-                # entity too.
+                # remove event doesn't carry unique_id (confirmed the normal
+                # case for MQTT-platform entities, not just "plausible" --
+                # every real-world remove event observed so far lacks it).
+                # The eventual debounced refresh_registry() replaces the nibe_
+                # entries with the registry's current contents, dropping the
+                # removed entity too, but it's a full websocket round-trip + registry re-fetch
+                # that can take several seconds -- long enough for something
+                # reading entity_id_for() in the meantime (e.g. the menu
+                # dashboard regen, also triggered by this same disable) to
+                # resolve this point to its now-stale entity_id and bake
+                # that into a saved Lovelace config, permanently, well
+                # before the slower refresh ever lands. Confirmed happening
+                # in the wild: the dashboard's resolution pass captured the
+                # stale value 1.5s before a refresh_registry() triggered by
+                # the same event actually completed.
+                #
+                # We already have the entity_id this event is about, just
+                # not the unique_id key to pop it by directly -- a reverse
+                # scan (by value, not key) can invalidate it immediately
+                # and synchronously, closing that window instead of hoping
+                # the async refresh wins the race. The scheduled refresh
+                # below still runs as a safety net — notably for a refresh
+                # whose registry fetch was already in flight when this event
+                # arrived: its response predates the removal and re-adds the
+                # entry this scan just deleted, and only a later refresh
+                # drops it again.
+                with self._registry_map_lock:
+                    stale_uids = [k for k, v in self._unique_id_map.items() if v == eid]
+                    for stale_uid in stale_uids:
+                        del self._unique_id_map[stale_uid]
                 self._schedule_refresh_registry()
             return
 
     def _on_entity_enabled(self, ha_entity_id: str) -> None:
         """Handle a HA-side entity re-enable."""
+        if ha_entity_id in self._self_reenabled:
+            # The registry event caused by our own _clear_disabled_by: the
+            # entity is already live in the bridge, and treating it as the
+            # user re-enabling it replaced the "dynamic entity disabled in HA"
+            # notification (same id) with a false "re-enabled via the HA
+            # entity settings" one.
+            self._self_reenabled.discard(ha_entity_id)
+            log_registry.debug("Registry re-enable of %s was our own — ignoring", ha_entity_id)
+            return
         with self._registry_map_lock:
             unique_id_map_snapshot = dict(self._unique_id_map)
         point_id = self._em.resolve_point_from_entity_id(
@@ -835,6 +1029,43 @@ class HAEntityRegistryWatcher:
         )
         notify_ha(self._em.mqtt, title=title, message=message, notification_id=notif_id)
 
+    def _reconcile_user_disabled(self) -> None:
+        """Mirror disables made in HA while no event could reach the bridge.
+
+        Disabling one of the bridge's entities in HA's entity settings is
+        mirrored from the registry event (_on_entity_disabled). Made while the
+        add-on was stopped — or while this watcher was disconnected — there is
+        no event to see: the bridge republished the entity at startup, HA kept
+        it disabled, and the card listed it as enabled. Run after every
+        successful connect, against the registry as it stands.
+
+        Static entities are removed (they then leave the registry); dynamic
+        ones are re-enabled in HA (_on_entity_disabled), after which the
+        registry no longer lists them as disabled either — so neither repeats.
+        Also run once deferred discovery has restored the entities: if the
+        controller was unreachable at startup, nothing was enabled yet when
+        this first ran after connecting.
+        """
+        for eid in sorted(self._user_disabled_entities):
+            with self._registry_map_lock:
+                unique_id_map_snapshot = dict(self._unique_id_map)
+            point_id = self._em.resolve_point_from_entity_id(
+                eid, unique_id_map=unique_id_map_snapshot
+            )
+            if point_id is None or point_id not in self._em.mqtt_enabled_points:
+                continue
+            log_registry.info(
+                "Entity %s (point %s) is disabled in HA but enabled in the bridge — "
+                "mirroring the disable",
+                eid,
+                point_id,
+            )
+            # Handled: until the next registry fetch replaces the set, a
+            # second run (connect, then deferred discovery) must not re-enable
+            # and notify a dynamic entity again.
+            self._user_disabled_entities.discard(eid)
+            self._on_entity_disabled(eid)
+
     def _on_entity_disabled(self, ha_entity_id: str) -> None:
         """Handle a HA-side entity disable."""
         with self._registry_map_lock:
@@ -864,9 +1095,13 @@ class HAEntityRegistryWatcher:
             point_dict = self._em.all_points_by_id.get(point_id)
             if point_dict:
                 self._pub.publish_entity_discovery(point_dict, self._em.bulk_data)
-            log_registry.info(
-                "Republished discovery config for point %s to reverse HA-side disable", point_id
-            )
+            # Republishing the discovery config alone never undid the disable:
+            # disabled_by is registry state that a discovery publish doesn't
+            # touch (confirmed against HA 2026.9 — still "user" 30s later), so
+            # the entity stayed disabled in HA while the bridge treated it as
+            # live, though DOCS.md promises the bridge re-enables it.
+            self._clear_disabled_by(ha_entity_id)
+            log_registry.info("Re-enabled dynamic point %s after a HA-side disable", point_id)
 
         else:
             self._em.disable_entity(point_id)
@@ -933,6 +1168,7 @@ class ManagementCommandHandler:
         self._sub(MgmtTopic.ALARM_RESET_PRESS, self._handle_reset_alarms)
         self._sub(MgmtTopic.FORCE_POLL_PRESS, self._handle_force_poll)
         self._sub(MgmtTopic.REGEN_DASH_PRESS, self._handle_regen_dashboard)
+        self._sub(MgmtTopic.HA_STATUS, self._handle_ha_status)
         self._sub(MgmtTopic.ENABLE_SET, self._handle_enable)
         self._sub(MgmtTopic.DISABLE_SET, self._handle_disable)
         self._sub(MgmtTopic.CHANGELOG_READ_PRESS, self._handle_changelog_reset)
@@ -1060,9 +1296,23 @@ class ManagementCommandHandler:
             log_startup.info("Force poll triggered from HA")
             self._em.update_all_states(force=True)
             update_stats_and_health(self._em, self._pub)
+            # A forced poll should re-read the modes too, not serve the cache.
+            with self._em._em_lock:
+                self._em.device_modes_dirty = True
             _publish_device_modes(self._em, self._pub)
 
         self._submit(_do)
+
+    def _handle_ha_status(self, _client: Any, _userdata: Any, message: Any) -> None:
+        """Home Assistant's MQTT birth message: republish discovery and the
+        rest of the bridge's retained state when HA comes online. HA's own
+        documented convention for discovery publishers — if the broker lost
+        its retained messages, a restarted HA otherwise finds none of the
+        bridge's entities."""
+        if message.payload.decode().strip() != "online":
+            return
+        log_startup.info("Home Assistant came online — republishing retained state")
+        self._submit(self._em.republish_retained_state)
 
     def _handle_regen_dashboard(self, _client: Any, _userdata: Any, _message: Any) -> None:
         log_startup.info("Regenerate Dashboard triggered from HA")
@@ -1072,7 +1322,7 @@ class ManagementCommandHandler:
             if cb is not None:
                 cb()
             else:
-                log_startup.warning("Regenerate Dashboard: no callback registered")
+                log_startup.info("Regenerate Dashboard: no callback registered")
 
         self._submit(_do)
 
@@ -1183,6 +1433,14 @@ class ManagementCommandHandler:
                 )
                 return
             log_commands.info("snapshot_cmd %s '%s': %s", action, name, msg)
+            # Tell the card how it went. Results were only logged, so a
+            # refused save (the snapshot limit) or restore (unknown name,
+            # blocked mode) looked to the user exactly like a success.
+            self._mqtt.publish(
+                BrowserTopic.SNAPSHOTS_RESULT,
+                json.dumps({"action": action, "name": name, "ok": ok, "message": msg}),
+                retain=False,
+            )
 
         self._submit(_do)
 
@@ -1303,8 +1561,20 @@ def update_alarm_state(
         entity_manager._last_alarm_count = alarm_count
 
     mqtt_client = entity_manager.mqtt
+    # Which alarms are active, not just how many: a second alarm appearing
+    # while one is already shown, or one replacing another, must re-send the
+    # notification. HA replaces a notification with the same id, so this
+    # updates it in place instead of stacking a new one. It used to be sent
+    # once on 0 -> N and never touched again while any alarm stayed active,
+    # so a new alarm only ever showed on the sensor.
+    alarm_ids = tuple(sorted(f"{a.get('alarmId')}|{a.get('header', '')}" for a in clean_alarms))
+    first_poll = entity_manager._alarm_first_poll_pending
+    entity_manager._alarm_first_poll_pending = False
 
-    if alarm_count > 0 and not entity_manager._alarm_notification_active:
+    if alarm_count > 0 and (
+        not entity_manager._alarm_notification_active
+        or alarm_ids != entity_manager._alarm_notified_ids
+    ):
         lines = []
         for a in clean_alarms:
             # `a` here iterates clean_alarms (built above with 'header' and
@@ -1342,10 +1612,16 @@ def update_alarm_state(
             notification_id="nibe_active_alarms",
         )
         entity_manager._alarm_notification_active = True
+        entity_manager._alarm_notified_ids = alarm_ids
 
-    elif alarm_count == 0 and entity_manager._alarm_notification_active:
+    elif alarm_count == 0 and (entity_manager._alarm_notification_active or first_poll):
+        # On the first successful poll after a start, dismiss even with no
+        # notification of our own: one left from before the restart is
+        # unknown to this process, and the alarms may have cleared while the
+        # bridge was down — it used to stay in HA until dismissed by hand.
         dismiss_ha(mqtt_client, "nibe_active_alarms")
         entity_manager._alarm_notification_active = False
+        entity_manager._alarm_notified_ids = None
 
 
 def update_stats_and_health(
@@ -1437,7 +1713,14 @@ def _publish_device_modes(
     # below — _em_lock (RLock) keeps both sides consistent against the
     # command-handler threads that set device_modes_dirty on a write.
     with entity_manager._em_lock:
-        if not entity_manager.device_modes_dirty and entity_manager.device_modes_cache:
+        cache_expired = (
+            time.time() - entity_manager.device_modes_fetched_at >= _DEVICE_MODES_MAX_AGE_S
+        )
+        if (
+            not entity_manager.device_modes_dirty
+            and not cache_expired
+            and entity_manager.device_modes_cache
+        ):
             cached_aid = entity_manager.device_modes_cache.get("aidMode", "off")
             cached_smart = entity_manager.device_modes_cache.get("smartMode", "normal")
             # Only ever consumed via `if not fresh:` below, so None and
@@ -1479,6 +1762,7 @@ def _publish_device_modes(
                 "smartMode": smart_mode,
             }
             entity_manager.device_modes_dirty = False
+            entity_manager.device_modes_fetched_at = time.time()
         # else: a write raced this fetch and already set dirty=True for us
         # (with a bumped write_seq) — leave dirty/cache alone so the next
         # poll re-fetches, rather than overwriting the writer's dirty flag

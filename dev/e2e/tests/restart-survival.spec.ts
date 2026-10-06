@@ -2,7 +2,7 @@ import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
 
 /**
  * Proves the central claim of the whole design — ARCHITECTURE.md §4.4's
@@ -145,7 +145,7 @@ test('a bridge restart restores every enabled entity, including manual additions
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   const searchInput = card.locator('#search-input');
@@ -162,8 +162,15 @@ test('a bridge restart restores every enabled entity, including manual additions
     const candidateId = String(candidate);
     await searchInput.fill(candidateId);
     const row = card.locator(`tr[data-id="${candidateId}"]`);
-    if ((await row.count()) === 0) continue;
-    await expect(row).toBeVisible({ timeout: 10_000 });
+    // The table re-renders on a debounce after the search box changes, so the
+    // row may not exist yet. A single immediate row.count() used to skip real
+    // candidates that simply hadn't been drawn — failing the spec whenever the
+    // first candidate happened to be enabled already by an earlier spec.
+    try {
+      await expect(row).toBeVisible({ timeout: 5_000 });
+    } catch {
+      continue; // genuinely not in the card
+    }
 
     const enableButton = row.locator('button[data-action="enable"]');
     if ((await enableButton.count()) === 0) continue; // already enabled by the mode

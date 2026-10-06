@@ -29,7 +29,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from nibe_entity_detection import clean_string, clean_unit, get_value_mapping
+from nibe_entity_detection import clean_string, clean_unit, get_value_mapping, is_writable_point
 
 if TYPE_CHECKING:
     from nibe_dynamic_map import DynamicPointMap
@@ -177,7 +177,7 @@ def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
     defaults: dict[int, str] = {}
     for point_id, point in all_points_by_id.items():
         meta = point.get("metadata", {})
-        if not meta.get("isWritable"):
+        if not is_writable_point(meta, point_id):
             continue
         if meta.get("modbusRegisterType") != "MODBUS_HOLDING_REGISTER":
             continue
@@ -229,6 +229,22 @@ def _build_changed_from_default(
         if current_display != default_display:
             changed.add(point_id)
     return changed
+
+
+def _build_controller_values(
+    bulk_data: dict[int, dict],
+    dynamic_injection: dict[int, list[tuple[str, str, str, str]]],
+) -> dict[int, str]:
+    """Return controlling point_id → its current value, formatted like any
+    other value on the dashboard, for every controller with dynamic points to
+    inject and a trustworthy live reading (same flat bulk_data shape as
+    _build_changed_from_default)."""
+    values: dict[int, str] = {}
+    for point_id in dynamic_injection:
+        point = bulk_data.get(point_id)
+        if point and point.get("is_ok"):
+            values[point_id] = _format_point_value(point_id, point, point.get("raw_value", 0))
+    return values
 
 
 _MENU_REF_RE = re.compile(r"\bmenu\s+(\d+(?:\.\d+)*)", re.IGNORECASE)
@@ -515,8 +531,41 @@ def _build_dynamic_injection(
     all_points_by_id: dict,
     point_defaults: dict[int, str] | None = None,
 ) -> dict[int, list[tuple[str, str, str, str]]]:
-    """Build controlling_point_id → [(entity_id, title, range_str, default_str), ...] map."""
-    injection: dict[int, list[tuple[str, str, str, str]]] = {}
+    """Build controlling_point_id → [(entity_id, title, range_str, default_str), ...] map.
+
+    A controller's list also carries the active points of any of its dynamic
+    points that are themselves controllers, each placed right after its own
+    controller with one more "↳" on its title. _build_menu_view only injects
+    below a rendered row and never renders a dynamic point as a row of its
+    own, so without this a point shown by a dynamic switch/select appeared
+    nowhere on the dashboard.
+    """
+    direct = _build_direct_dynamic_injection(
+        dynamic_point_map, active_dynamic_points, registry_watcher, all_points_by_id, point_defaults
+    )
+
+    def _flatten(controller: int, depth: int, seen: set[int]) -> list[tuple[str, str, str, str]]:
+        items = []
+        for dyn_pid, (eid, title, rng, dflt) in direct.get(controller, []):
+            items.append((eid, "↳ " * depth + title, rng, dflt))
+            # seen guards against a learned cycle (A shows B, B shows A).
+            if dyn_pid in direct and dyn_pid not in seen:
+                items.extend(_flatten(dyn_pid, depth + 1, seen | {dyn_pid}))
+        return items
+
+    return {controller: _flatten(controller, 0, {controller}) for controller in direct}
+
+
+def _build_direct_dynamic_injection(
+    dynamic_point_map: "DynamicPointMap",
+    active_dynamic_points: set[int],
+    registry_watcher: "HAEntityRegistryWatcher",
+    all_points_by_id: dict,
+    point_defaults: dict[int, str] | None,
+) -> dict[int, list[tuple[int, tuple[str, str, str, str]]]]:
+    """Per controller, its own active dynamic points as (point_id, row) pairs
+    — one level only; _build_dynamic_injection nests them."""
+    injection: dict[int, list[tuple[int, tuple[str, str, str, str]]]] = {}
     for entry in dynamic_point_map.values():
         if entry.firmware_removed:
             continue
@@ -544,9 +593,12 @@ def _build_dynamic_injection(
                 mn = (meta.get("minValue", 0) or 0) / div
                 mx = (meta.get("maxValue", 0) or 0) / div
                 unit = clean_unit(meta.get("unit"))
-                rng = f"{mn:g} – {mx:g}{' ' + unit if unit else ''}"
+                # min == max is this firmware's "no bounds declared"
+                # convention (about half of all points) — "0 – 0 %" would be
+                # a false range, so none is shown.
+                rng = "" if mn == mx else f"{mn:g} – {mx:g}{' ' + unit if unit else ''}"
                 dflt = (point_defaults or {}).get(dyn_pid, "")
-                items.append((eid, title, rng, dflt))
+                items.append((dyn_pid, (eid, title, rng, dflt)))
         if items:
             injection[entry.point_id] = items
     return injection
@@ -561,6 +613,7 @@ def _build_menu_view(
     valid_top_level_menus: set[str] | None = None,
     changed_from_default: set[int] | None = None,
     render_submenus: bool = True,
+    controller_values: dict[int, str] | None = None,
 ) -> list:
     """Build a list of Lovelace cards for a single top-level menu.
 
@@ -595,12 +648,17 @@ def _build_menu_view(
                      `split_submenus: true`, whose immediate submenus are
                      instead each rendered as their own separate call to
                      this function — see _build_menu_dashboard_config.
+    controller_values : controlling point_id → its current value, formatted,
+                     for controllers with dynamic points to inject. Shown on
+                     the row of a controller that has no HA entity — see the
+                     injection below.
     """
     known_dynamic = known_dynamic or set()
     point_defaults = point_defaults or {}
     dynamic_injection = dynamic_injection or {}
     valid_top_level_menus = valid_top_level_menus or set()
     changed_from_default = changed_from_default or set()
+    controller_values = controller_values or {}
     # The view this call is rendering into — matches the "menu-<id>" path
     # built for it in _build_menu_dashboard_config, dots included, so that a
     # split-out submenu view (e.g. id "7.2") is recognised as its own view
@@ -746,23 +804,44 @@ def _build_menu_view(
             )
 
             if point_id is not None:
+                injected = dynamic_injection.get(point_id, [])
                 if entity_id:
                     entities_rows.append({"entity": entity_id})
-                    for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in dynamic_injection.get(
-                        point_id, []
-                    ):
-                        divider = f"↳ {dyn_title}  ·  {dyn_rng}"
-                        if dyn_dflt:
-                            divider += f"  ·  default: {dyn_dflt}"
-                        entities_rows.append({"type": "section", "label": divider})
-                        entities_rows.append({"entity": dyn_entity_id})
-                elif point_id not in known_dynamic:
+                elif injected and point_id in controller_values:
+                    # A controller the user disabled in HA still has its
+                    # real setting on the device — the bulk fetch reads it
+                    # every poll — so say what it is: it is why the rows
+                    # below exist, and it can only be changed at the
+                    # controller now.
+                    entities_rows.append(
+                        {
+                            "type": "section",
+                            "label": (
+                                "↳ not enabled in HA  ·  current value: "
+                                f"{controller_values[point_id]}"
+                            ),
+                        }
+                    )
+                else:
                     entities_rows.append(
                         {
                             "type": "section",
                             "label": "↳ not enabled",
                         }
                     )
+                # Injected whether or not the controller has an HA entity:
+                # its dynamic points are live, enabled entities of their own
+                # with current values (the firmware shows them by the
+                # controller's value on the device, not by whether it is
+                # enabled in HA), and this is the only place on the dashboard
+                # they appear. Hiding them made working entities vanish from
+                # the dashboard as soon as the user disabled the controller.
+                for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in injected:
+                    divider = f"↳ {dyn_title}  ·  {dyn_rng}" if dyn_rng else f"↳ {dyn_title}"
+                    if dyn_dflt:
+                        divider += f"  ·  default: {dyn_dflt}"
+                    entities_rows.append({"type": "section", "label": divider})
+                    entities_rows.append({"entity": dyn_entity_id})
 
         if entities_rows:
             cards.append(
@@ -857,8 +936,13 @@ def _build_unplaced_view(
         # any `or`, so a wrong non-0 default there is real/tested.
         mn = meta.get("minValue", 0) or 0
         mx = meta.get("maxValue", 0) or 0
-        if mn == mx:
-            continue  # degenerate range
+        # min == max is this firmware's "no bounds declared" convention, not
+        # a dead register. A read-only point like that (status/enum fields)
+        # has nothing to adjust and stays out of this audit; a writable one
+        # is exactly what it exists to surface, and used to be skipped too.
+        writable_holding = is_writable_point(meta, point_id) and reg == "MODBUS_HOLDING_REGISTER"
+        if mn == mx and not writable_holding:
+            continue
         # display_title's None/dropped default is unobservable: clean_string()
         # below falls back to f'Point {point_id}' regardless. Verified
         # empirically.
@@ -870,10 +954,13 @@ def _build_unplaced_view(
         # `or` fallback value ARE both real/tested, since 1 (default) and
         # a wrong-but-truthy fallback are never masked. Verified empirically.
         div = meta.get("divisor", 1) or 1
-        rng = f"{mn / div:g} – {mx / div:g}{' ' + unit if unit else ''}"
+        if mn == mx:
+            rng = f"no declared range{' (' + unit + ')' if unit else ''}"
+        else:
+            rng = f"{mn / div:g} – {mx / div:g}{' ' + unit if unit else ''}"
         entry = (point_id, title, rng)
 
-        if meta.get("isWritable") and reg == "MODBUS_HOLDING_REGISTER":
+        if is_writable_point(meta, point_id) and reg == "MODBUS_HOLDING_REGISTER":
             # Check if it's part of a repetitive series
             is_grouped = any(re.search(pat, title, re.IGNORECASE) for pat in _GROUP_PATTERNS)
             if is_grouped:
@@ -979,6 +1066,7 @@ def _build_menu_dashboard_config(
     changed_from_default = (
         _build_changed_from_default(bulk_data, point_defaults or {}) if bulk_data else set()
     )
+    controller_values = _build_controller_values(bulk_data or {}, dynamic_injection or {})
 
     for spec in view_specs:
         menu = spec["menu"]
@@ -992,6 +1080,7 @@ def _build_menu_dashboard_config(
             valid_top_level_menus,
             changed_from_default,
             render_submenus=children is None,
+            controller_values=controller_values,
         )
         if children is not None:
             # Header markdown card is always cards[0] — see _render_section.
@@ -1313,14 +1402,40 @@ def _setup_menu_dashboard(
     # already enabled by EntityManager.apply_mode() before this function
     # runs (see generate_nibe_mqtt.py's startup sequence) — this function
     # only builds the dashboard, it no longer enables anything itself.
+    #
+    # Checked against mqtt_enabled_points, not all_points_by_id: only an
+    # enabled point has an HA entity whose entity_id can ever resolve, and
+    # all_points_by_id also holds points that are indexed but not enabled
+    # (e.g. a menu point the user disabled from the card). It used to hold
+    # firmware-removed points too, which the absence-grace disable
+    # (EntityManager._update_entity_state) disabled but never deindexed —
+    # checking it here made the registry-stability wait below permanently
+    # expect such points to resolve, plateauing a few points short of 100%
+    # forever instead of reaching a genuinely complete count.
     available_menu_points = {
-        pid for pid in all_menu_points if pid in entity_manager.all_points_by_id
+        pid for pid in all_menu_points if pid in entity_manager.mqtt_enabled_points
     }
 
     # Wait for the registry watcher to resolve entity IDs for both available
     # menu points and active dynamic points before building the dashboard.
     active_dynamic = entity_manager.active_dynamic_points
     _wait_for_registry_stable(registry_watcher, available_menu_points, active_dynamic)
+
+    # The wait above accepts a stable count at 70% completeness, so it can
+    # exit with a just-enabled point still unresolved. HA's registry create
+    # event never carries unique_id, so that point's entity_id only arrives
+    # via the watcher's debounced refresh — 5s after the event plus a
+    # WebSocket round-trip — while this regen reads entity_ids ~5.5s after
+    # the enable (2s regen debounce + ~3.5s stability wait). Usually the
+    # regen won, saving the row as "not enabled", and the retry below only
+    # ever re-checks dynamic points. HA has long since created the entity by
+    # now, so one synchronous refresh resolves it deterministically rather
+    # than leaving it to whichever debounce fires first.
+    if any(
+        registry_watcher.entity_id_for(p) is None
+        for p in available_menu_points | set(active_dynamic)
+    ):
+        registry_watcher.refresh_registry()
 
     # Build dashboard config
     # all_points_by_id is mutated under _em_lock by _index_point/_deindex_point
@@ -1707,14 +1822,18 @@ def _setup_lovelace_dashboard(
 
     Called from _setup_lovelace with an already-authenticated WebSocket.
 
-    Idempotent — skips the create call entirely if flag_file exists, which
-    prevents HA from logging a spurious error on every restart. The flag is
-    written after successful creation or when HA reports the slug is already
-    in use (meaning the dashboard exists from a previous run).
+    Idempotent — lists HA's dashboards first and only creates this one when
+    it is missing, so there is no spurious "already exists" error on every
+    restart, and a dashboard the user deleted comes back on the next one.
+    flag_file is still written after creation (or when the dashboard turns
+    out to exist already); the uninstall teardown removes it.
     """
-    if os.path.exists(flag_file):
-        log_startup.debug("Nibe Bridge dashboard already provisioned — skipping")
-        return
+    # Deliberately no early return on flag_file: the flag outlives the
+    # dashboard (only an uninstall teardown removes it), so skipping on it
+    # meant a dashboard the user deleted was never recreated — though this is
+    # the documented way to get it back, and in "none" mode its Entity
+    # Manager card is the only place to enable entities. The list call below
+    # already avoids the spurious error the flag was added to prevent.
 
     # ws->None mutations on every _ws_call() below in this function are
     # unobservable: this function's own test suite (TestSetupLovelaceDashboard)
@@ -1741,6 +1860,21 @@ def _setup_lovelace_dashboard(
                 "lovelace/dashboards/list call failed — will retry creating "
                 "the Nibe Bridge dashboard on next restart."
             )
+            return
+        # Existing does not mean configured: if a previous startup's create
+        # succeeded but its config save failed (dropped socket, _ws_call
+        # deadline), the dashboard was left with no card, and returning here
+        # meant it never got one. HA reports exactly that state as
+        # config_not_found (confirmed against HA 2026.9.1); anything else —
+        # including a config the user has customised, or a failed call — is
+        # left alone.
+        current = _ws_call(ws, next_id(), {"type": "lovelace/config", "url_path": _DASHBOARD_SLUG})
+        if (current.get("error") or {}).get("code") == "config_not_found":
+            log_startup.info(
+                "Nibe Bridge dashboard exists (/%s) but has no saved config — writing it",
+                _DASHBOARD_SLUG,
+            )
+            _save_bridge_dashboard_config(ws, next_id, device_name, flag_file)
             return
         log_startup.info(
             "Nibe Bridge dashboard already exists (/%s) — writing flag to skip future attempts",
@@ -1801,7 +1935,16 @@ def _setup_lovelace_dashboard(
         dashboard_id,
         _DASHBOARD_SLUG,
     )
+    _save_bridge_dashboard_config(ws, next_id, device_name, flag_file)
 
+
+def _save_bridge_dashboard_config(
+    ws: Any, next_id: Callable[[], int], device_name: str, flag_file: str
+) -> None:
+    """Write the Nibe Bridge dashboard's card config, and the provisioned
+    flag on success. Used right after creating the dashboard, and when an
+    existing one turns out to have no saved config — see
+    _setup_lovelace_dashboard."""
     view_title = device_name
     dashboard_config = {
         "views": [
@@ -1931,6 +2074,16 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
     except OSError as e:
         log_startup.warning("Could not remove card file %s: %s", card_dst, e)
 
+    # The debug "Run Test Suite" report sits next to it, served at /local/
+    # (unauthenticated) — it used to be left behind by an uninstall.
+    report_dst = "/homeassistant/www/nibe_test_report.html"
+    try:
+        if os.path.exists(report_dst):
+            os.remove(report_dst)
+            log_startup.info("Removed test report: %s", report_dst)
+    except OSError as e:
+        log_startup.warning("Could not remove test report %s: %s", report_dst, e)
+
     if not supervisor_token:
         log_startup.warning(
             "No SUPERVISOR_TOKEN — cannot remove Lovelace dashboard or resource "
@@ -2012,6 +2165,13 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
             ws.close()
         except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
             pass
+
+    # The Nibe Menus dashboard too — DOCS.md's uninstall section lists it
+    # among what this cleanup removes, and without it a menus-mode uninstall
+    # left a dashboard of entities that no longer exist (the retained
+    # discovery configs are cleared at the same shutdown). Uses its own
+    # connection; a no-op when the dashboard isn't there.
+    _remove_menu_dashboard()
 
     # Remove the provisioned flag so the dashboard is recreated if the
     # add-on is reinstalled after a clean removal.

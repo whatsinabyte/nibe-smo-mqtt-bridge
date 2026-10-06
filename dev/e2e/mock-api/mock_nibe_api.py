@@ -11,8 +11,11 @@ replaying real firmware data from reference-dumps/all_points_<lang>.json:
   GET  /api/v1/devices/0/points         → bulk points dict {id: point}
   GET  /api/v1/devices/0/points/{id}    → single point, 404 if absent
   PATCH /api/v1/devices/0/points        → accepts writes, updates in-memory state
-  GET  /api/v1/devices/0/notifications  → {"alarms": []}
-  DELETE /api/v1/devices/0/notifications → 204
+  GET  /api/v1/devices/0/notifications  → {"alarms": [...]} (empty unless set below)
+  DELETE /api/v1/devices/0/notifications → 204, and clears them
+  POST /mock-control/alarms             → test-only: set the active alarm list
+  GET  /mock-control/last-request       → test-only: Authorization and
+                                          Accept-Language of the last bulk fetch
 
   POST /mock-control/points/{id}        → test-only control channel (see below)
   POST /mock-control/hidden/{id}        → test-only: withhold/restore a point
@@ -27,8 +30,8 @@ firmware value change across polls (e.g. to exercise dynamic binary_sensor
 reclassification: a point starts out reporting a boolean 0/1 value, and a
 later poll needs to see it report something else). It unconditionally
 overwrites a point's value.integerValue/stringValue, bypassing the
-isWritable check the real PATCH .../points endpoint enforces — this
-simulates the device itself changing the value, not an HA-side write.
+read-only check this mock's PATCH .../points applies — this simulates the
+device itself changing the value, not an HA-side write.
 Body: {"integerValue": <int>} and/or {"stringValue": <str>}.
 
 The /mock-control/hidden/{id} endpoint (body {"hidden": true|false}) makes a
@@ -60,6 +63,14 @@ with open(DUMP_PATH, encoding="utf-8") as f:
 # Point IDs currently withheld from every read/write path; see the module
 # docstring. Normally empty, so the bulk response is served as-is.
 HIDDEN: set[str] = set()
+# Active alarms served by GET /notifications; set via /mock-control/alarms,
+# cleared by DELETE /notifications (the bridge's Reset Alarms).
+ALARMS: list = []
+
+# Authorization and Accept-Language of the last bulk GET .../points, served by
+# GET /mock-control/last-request: this mock accepts any credentials and any
+# language, so without it a spec can't see what the bridge actually sent.
+LAST_REQUEST: dict = {}
 
 DEVICE_ROOT = {
     "product": {
@@ -115,7 +126,16 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == BASE_PATH or path == BASE_PATH + "/":
             self._send_json(200, DEVICE_ROOT)
+        elif path == "/mock-control/last-request":
+            self._send_json(200, LAST_REQUEST)
         elif path == f"{BASE_PATH}/points":
+            LAST_REQUEST.clear()
+            LAST_REQUEST.update(
+                {
+                    "authorization": self.headers.get("Authorization"),
+                    "accept_language": self.headers.get("Accept-Language"),
+                }
+            )
             if HIDDEN:
                 self._send_json(200, {k: v for k, v in POINTS.items() if k not in HIDDEN})
             else:
@@ -128,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, point)
         elif path == f"{BASE_PATH}/notifications":
-            self._send_json(200, {"alarms": []})
+            self._send_json(200, {"alarms": ALARMS})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -152,6 +172,11 @@ class Handler(BaseHTTPRequestHandler):
             if point is None:
                 result[point_id] = "error: no such param"
                 continue
+            # Answers "read only value" for points flagged isWritable false.
+            # How the real firmware answers a write to the 17 holding
+            # registers flagged that way is unconfirmed (see
+            # docs/known-firmware-quirks.md); the bridge no longer relies on
+            # the flag and leaves the verdict to the controller.
             if not point.get("metadata", {}).get("isWritable", False):
                 result[point_id] = "error: read only value"
                 continue
@@ -164,6 +189,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == f"{BASE_PATH}/notifications":
+            ALARMS.clear()
             self.send_response(204)
             self.end_headers()
         else:
@@ -179,6 +205,19 @@ class Handler(BaseHTTPRequestHandler):
         # which reference-dumps/all_points_en.json has no data for at all
         # since it was captured with SG Ready never enabled.
         path = self.path.split("?", 1)[0]
+        if path == "/mock-control/alarms":
+            # Body {"alarms": [...]}: replaces the active alarm list GET
+            # /notifications serves, in the controller's own alarm shape
+            # (alarmId, header, description, severity, time, equipName).
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"})
+                return
+            ALARMS[:] = list(body.get("alarms", []))
+            self._send_json(200, {"status": "ok", "alarms": ALARMS})
+            return
         hidden_prefix = "/mock-control/hidden/"
         prefix = "/mock-control/points/"
         if not path.startswith((prefix, hidden_prefix)):

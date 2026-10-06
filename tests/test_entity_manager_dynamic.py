@@ -149,6 +149,20 @@ class TestDynamicPoints(unittest.TestCase):
             BrowserTopic.META_TEMPLATE.format(id=6983), "", retain=True
         )
 
+    def test_disappeared_enabled_point_decrements_stats(self):
+        """Disappearance must undo the stats the point's enable added. The
+        disable used to run after _deindex_point, so _decrement_stats got {}
+        and every appear/disappear cycle left the counts one higher."""
+        self._seed(6983)
+        self.em.all_points_by_id[6983]["is_writable"] = True
+        self.em._increment_stats(self.em.all_points_by_id[6983])
+        self.em.mqtt_enabled_points.add(6983)
+        self.em.active_dynamic_points.add(6983)
+        self.em._publish_dynamic_changes([], {6983})
+        self.assertEqual(self.em._stats_type_counts.get("number"), 0)
+        self.assertEqual(self.em._stats_category_counts.get("diagnostic"), 0)
+        self.assertEqual(self.em._stats_writable_count, 0)
+
     def test_disappeared_not_refired_next_poll(self):
         """After disappearance, point no longer in active set so no re-fire."""
         self._seed(6983)
@@ -1230,7 +1244,7 @@ class TestPublishDynamicChangesProcessedDictAndIndexing(unittest.TestCase):
         point_data = {
             "title": "Meta Title",
             "description": "",
-            "metadata": {"isWritable": True},
+            "metadata": {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"},
         }
         em._publish_dynamic_changes([(pid, point_data)], set())
         em._pub.publish_point_metadata.assert_called_once()
@@ -1756,6 +1770,18 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
         self.assertIn("1 new setting(s)", kwargs["message"])
         self.assertIn("Nibe Menus", kwargs["title"])
 
+    def test_menus_mode_known_without_the_mode_file_still_points_at_nibe_menus(self):
+        """The wording read /data/applied_mode alone; where that file is
+        missing (the mode came from the broker), a menus-mode user was sent to
+        the Bridge dashboard instead."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em._applied_mode_known = "menus"
+        point_data = {"title": "T", "description": "", "metadata": {}}
+        with patch.object(em, "_read_applied_mode_from_file", return_value=None):
+            em._publish_dynamic_changes([(8032, point_data)], set())
+        self.assertIn("Nibe Menus", em._notify.call_args.kwargs["title"])
+
     def test_removed_notification_contains_real_title_and_count(self):
         em = _make_em()
         em.initial_discovery_complete = True
@@ -2277,17 +2303,24 @@ class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
         subscribe_topics = [c.args[0] for c in em.mqtt.subscribe.call_args_list]
         self.assertEqual(
             subscribe_topics,
-            [BrowserTopic.DYNAMIC_MAP, BrowserTopic.ACTIVE_DYNAMIC, BrowserTopic.WANTED_POINTS],
+            [
+                BrowserTopic.DYNAMIC_MAP,
+                BrowserTopic.ACTIVE_DYNAMIC,
+                BrowserTopic.WANTED_POINTS,
+                BrowserTopic.RECLASSIFIED_POINTS,
+            ],
         )
 
         cb_calls = em.mqtt.message_callback_add.call_args_list
-        self.assertEqual(len(cb_calls), 3)
+        self.assertEqual(len(cb_calls), 4)
         self.assertEqual(cb_calls[0].args[0], BrowserTopic.DYNAMIC_MAP)
         self.assertEqual(cb_calls[0].args[1], em._on_dynamic_map_message)
         self.assertEqual(cb_calls[1].args[0], BrowserTopic.ACTIVE_DYNAMIC)
         self.assertEqual(cb_calls[1].args[1], em._on_active_dynamic_message)
         self.assertEqual(cb_calls[2].args[0], BrowserTopic.WANTED_POINTS)
         self.assertEqual(cb_calls[2].args[1], em._on_wanted_points_message)
+        self.assertEqual(cb_calls[3].args[0], BrowserTopic.RECLASSIFIED_POINTS)
+        self.assertEqual(cb_calls[3].args[1], em._on_reclassified_points_message)
 
     """_reconcile_dynamic_points returns early when initial discovery not complete."""
 
@@ -2495,14 +2528,14 @@ class TestReconcileDynamicPointsCases(unittest.TestCase):
         self.assertIs(indexed["is_dynamic"], True)
 
     def test_activated_dict_is_writable_true_propagates(self):
-        """metadata['isWritable']=True must reach indexed['is_writable']
+        """A holding register (writable, see is_writable_point) must reach indexed['is_writable']
         unchanged — a mistyped lookup key would silently fall back to the
         False default and mark a writable point read-only."""
         em = _make_em()
         em.initial_discovery_complete = True
         point_id = 1004
         entry = self._bulk_entry(point_id)
-        entry["metadata"] = {"isWritable": True}
+        entry["metadata"] = {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"}
         em.bulk_data[point_id] = entry
         em.dynamic_point_map.expected_active_dynamic_points = MagicMock(return_value={point_id})
         em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
@@ -2746,6 +2779,88 @@ class TestReconcileDynamicPointsStaleEnabledCase(unittest.TestCase):
 
         mock_disable.assert_called_once_with(stale_id)
         self.assertNotIn(stale_id, em.active_dynamic_points)
+
+
+class TestReconcileClearsDiscoveryAtStartup(unittest.TestCase):
+    """At real startup _reconcile_dynamic_points runs inside discover_points(),
+    before scan_mqtt_discovery() fills mqtt_enabled_points — so the set is
+    empty there. The two cases above pre-populate it, which never happens in
+    production. A dynamic point that went away while the bridge was down must
+    still have its retained discovery config cleared, or HA keeps a ghost
+    entity that nothing ever removes."""
+
+    def _cleared_config_topics(self, em):
+        return {
+            c.args[0]
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0].startswith("homeassistant/")
+            and c.args[0].endswith("/config")
+            and c.args[1] == ""
+        }
+
+    def test_absent_point_config_cleared_with_empty_enabled_set(self):
+        from nibe_entity_manager import _DISCOVERY_DOMAINS
+        from nibe_mqtt_publisher import t_config
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point_id = 2002
+        em.active_dynamic_points.add(point_id)
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(return_value={point_id})
+
+        em._reconcile_dynamic_points()
+
+        expected = {t_config(d, f"nibe_{point_id}") for d in _DISCOVERY_DOMAINS}
+        self.assertEqual(self._cleared_config_topics(em), expected)
+        self.assertNotIn(point_id, em.active_dynamic_points)
+
+    def test_stale_point_config_cleared_with_empty_enabled_set(self):
+        from nibe_mqtt_publisher import t_config
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        stale_id = 2003
+        em.active_dynamic_points.add(stale_id)
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(return_value=set())
+
+        em._reconcile_dynamic_points()
+
+        self.assertIn(t_config("sensor", f"nibe_{stale_id}"), self._cleared_config_topics(em))
+        self.assertIn(t_config("switch", f"nibe_{stale_id}"), self._cleared_config_topics(em))
+        self.assertNotIn(stale_id, em.active_dynamic_points)
+
+    def test_enabled_point_still_goes_through_disable(self):
+        """When the point is known to be enabled, the normal disable path
+        (which knows its real domain) is used instead of the domain sweep."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        stale_id = 2004
+        em.active_dynamic_points.add(stale_id)
+        em.mqtt_enabled_points.add(stale_id)
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(return_value=set())
+
+        with patch.object(em, "_disable_entity_locked") as mock_disable:
+            em._reconcile_dynamic_points()
+
+        mock_disable.assert_called_once_with(stale_id)
+        self.assertEqual(self._cleared_config_topics(em), set())
+
+    def test_disable_runs_before_deindex(self):
+        """_disable_entity_locked reads the point's metadata for its stats
+        decrement — deindexing first handed it {} and leaked the counts."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        stale_id = 2005
+        em.active_dynamic_points.add(stale_id)
+        em.mqtt_enabled_points.add(stale_id)
+        em.dynamic_point_map.expected_active_dynamic_points = MagicMock(return_value=set())
+        order = []
+        with (
+            patch.object(em, "_disable_entity_locked", side_effect=lambda p: order.append("d")),
+            patch.object(em, "_deindex_point", side_effect=lambda p: order.append("x")),
+        ):
+            em._reconcile_dynamic_points()
+        self.assertEqual(order, ["d", "x"])
 
 
 class TestDynamicMapGzipBranch(unittest.TestCase):
@@ -3132,6 +3247,47 @@ class TestBinarySensorDynamicReclassification(unittest.TestCase):
         em._pub.publish_entity_discovery.assert_not_called()
         self.assertNotIn(self.POINT_ID, em._binary_sensor_reclassified)
 
+    def test_reclassification_republishes_card_metadata_once(self):
+        """The card's all_metadata batch is published only at discovery, so
+        a reclassified point kept showing as binary_sensor in the card until
+        the next restart. Its per-point metadata must be republished — once,
+        not on a later call for a point already reclassified."""
+        em = _make_em()
+        entity_info = self._entity_info()
+        point_data = entity_info["point_data"]
+        em._pub.publish_entity_discovery.return_value = None  # failed republish → retried
+        em._process_and_publish_state(entity_info, 30, "30", {})
+        em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30)
+
+        em._pub.publish_point_metadata.assert_called_once_with(point_data)
+        self.assertEqual(point_data["entity_type"], "sensor")
+        # The retained all_metadata batch too, once at the end of the poll:
+        # Home Assistant may deliver it to a freshly loaded card after
+        # meta/{id}, and a stale copy then won.
+        em._pub.publish_all_metadata.assert_not_called()
+        em._flush_point_catalog()
+        em._pub.publish_all_metadata.assert_called_once()
+
+    def test_reclassification_updates_a_reindexed_point_too(self):
+        """A poll without change detection re-indexes every point into a
+        fresh dict, so all_points_by_id may no longer hold the dict the
+        entity was enabled with. The catalog is built from all_points_by_id
+        and kept telling the card binary_sensor — seen in the e2e harness."""
+        em = _make_em()
+        entity_info = self._entity_info()
+        reindexed = dict(entity_info["point_data"])
+        em.all_points_by_id[self.POINT_ID] = reindexed
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+
+        em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30)
+        em._flush_point_catalog()
+
+        self.assertEqual(reindexed["entity_type"], "sensor")
+        catalog = em._pub.publish_all_metadata.call_args.args[0]
+        self.assertEqual(
+            [p["entity_type"] for p in catalog if p["variableId"] == self.POINT_ID], ["sensor"]
+        )
+
     def test_non_boolean_value_warns_and_reclassifies(self):
         """A disguised-enum reading (e.g. 30) must log a WARNING naming the
         point id and observed value, and reclassify to sensor.
@@ -3161,6 +3317,94 @@ class TestBinarySensorDynamicReclassification(unittest.TestCase):
         # (raw "30"), not the binary_sensor "ON"/"OFF" formatting.
         em.mqtt.publish.assert_any_call(entity_info["state_topic"], "30", retain=True)
 
+    def test_reclassification_moves_stats_count_to_sensor(self):
+        """An enabled point's stats count must follow it from binary_sensor
+        to sensor — otherwise it stays counted as binary_sensor and its
+        later disable decrements sensor instead."""
+        em = _make_em()
+        entity_info = self._entity_info()
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+        em.mqtt_enabled_points.add(self.POINT_ID)
+        em._increment_stats(entity_info["point_data"])
+
+        em._process_and_publish_state(entity_info, 30, "30", {})
+
+        self.assertEqual(em._stats_type_counts.get("binary_sensor"), 0)
+        self.assertEqual(em._stats_type_counts.get("sensor"), 1)
+
+    def test_reclassification_is_persisted(self):
+        """Persisted to the file fallback and the retained topic, so it
+        survives a restart instead of being re-derived from static metadata."""
+        from nibe_entity_manager import BrowserTopic
+
+        em = _make_em()
+        entity_info = self._entity_info()
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+        with patch("nibe_entity_manager._atomic_write_text") as mock_write:
+            em._process_and_publish_state(entity_info, 30, "30", {})
+        mock_write.assert_called_once()
+        self.assertEqual(json.loads(mock_write.call_args.args[1]), [self.POINT_ID])
+        em.mqtt.publish.assert_any_call(
+            BrowserTopic.RECLASSIFIED_POINTS, json.dumps([self.POINT_ID]), retain=True
+        )
+
+    def test_persisted_reclassification_wins_over_fresh_detection(self):
+        """After a restart (or a dynamic point reappearing) the static
+        metadata detects binary_sensor again. Publishing it as one used to
+        delete the sensor entity in HA, only for the next poll to reclassify
+        it and recreate it — twice per restart."""
+        em = _make_em()
+        em._binary_sensor_reclassified = {self.POINT_ID}
+        point = {
+            "variableId": self.POINT_ID,
+            "metadata": {
+                "variableType": "integer",
+                "variableSize": "u8",
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "isWritable": False,
+                "minValue": 0,
+                "maxValue": 0,
+            },
+            "title": "Operating mode",
+            "description": "",
+        }
+        with patch(
+            "nibe_entity_manager.detect_entity_type", return_value=("binary_sensor", "diagnostic")
+        ):
+            self.assertEqual(em._get_cached_entity_type(point), ("sensor", "diagnostic"))
+
+    @staticmethod
+    def _em_with_retained_loading():
+        """_make_em() stubs out _setup_dynamic_map_loading; these tests need
+        the real retained-topic handlers it registers."""
+        from nibe_entity_manager import EntityManager
+
+        with patch("nibe_entity_manager.EntityManager._setup_history_loading"):
+            em = EntityManager(
+                api_client=MagicMock(),
+                publisher=MagicMock(),
+                notify_fn=MagicMock(),
+                dismiss_fn=MagicMock(),
+                mqtt_client=MagicMock(),
+            )
+        return em
+
+    def test_reclassified_set_restored_from_retained_topic_before_discovery(self):
+        em = self._em_with_retained_loading()
+        em.initial_discovery_complete = False
+        msg = MagicMock()
+        msg.payload = json.dumps([self.POINT_ID, 42]).encode()
+        em._on_reclassified_points_message(None, None, msg)
+        self.assertEqual(em._binary_sensor_reclassified, {self.POINT_ID, 42})
+
+    def test_reclassified_set_ignores_retained_redelivery_after_discovery(self):
+        em = self._em_with_retained_loading()
+        em.initial_discovery_complete = True
+        msg = MagicMock()
+        msg.payload = json.dumps([7]).encode()
+        em._on_reclassified_points_message(None, None, msg)
+        self.assertEqual(em._binary_sensor_reclassified, set())
+
     def test_non_boolean_value_does_not_rewarn_or_republish_every_poll(self):
         """Once reclassified, a subsequent poll reporting the same (still
         non-boolean) value must not re-log the WARNING or call
@@ -3186,3 +3430,93 @@ class TestBinarySensorDynamicReclassification(unittest.TestCase):
 
         self.assertFalse(any(r.levelname == "WARNING" for r in cm.records))
         em._pub.publish_entity_discovery.assert_not_called()
+
+
+class TestSharedDynamicPointsAcrossSelectValues(unittest.TestCase):
+    """A dynamic point shown under more than one of a select's values stays
+    present when switching between those values, so it never "newly
+    appears". record_outcome replaces a value's list, and both recording
+    paths used to pass only the new arrivals — so the shared point was
+    dropped from the second value's list, and the next restart's reconcile
+    treated the still-live point as stale and removed it."""
+
+    SELECT = 6000
+    SHARED = 500
+    EXTRA = 501
+
+    def _em_with_select_learned_for_value_1(self):
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.dynamic_point_map._table[self.SELECT] = DynamicPointEntry(
+            point_id=self.SELECT,
+            title="Mode",
+            entity_type="select",
+            processed_values={1},
+            unprocessed_values={0, 2},
+            is_controlling=True,
+            dynamic_points_by_value={1: [self.SHARED]},
+        )
+        em.active_dynamic_points.add(self.SHARED)
+        for pid, raw in ((self.SELECT, 2), (self.SHARED, 0)):
+            em.bulk_data[pid] = {
+                "raw_value": raw,
+                "string_value": "",
+                "is_ok": True,
+                "metadata": {},
+                "title": f"Point {pid}",
+                "description": "",
+            }
+        return em
+
+    def test_post_write_scan_keeps_shared_point_in_new_values_list(self):
+        em = self._em_with_select_learned_for_value_1()
+        em.bulk_data[self.EXTRA] = dict(em.bulk_data[self.SHARED])
+        point_data = {"title": "Extra", "description": "", "metadata": {}}
+        with (
+            patch.object(em, "_enable_entity_locked", return_value=True),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "_update_changelog_history"),
+        ):
+            em._publish_dynamic_changes([(self.EXTRA, point_data)], set(), self.SELECT)
+        entry = em.dynamic_point_map.get(self.SELECT)
+        self.assertEqual(sorted(entry.dynamic_points_by_value[2]), [self.SHARED, self.EXTRA])
+        self.assertEqual(
+            em.dynamic_point_map.expected_active_dynamic_points({self.SELECT: 2}),
+            {self.SHARED, self.EXTRA},
+        )
+
+    def test_learning_detection_keeps_shared_point_in_new_values_list(self):
+        em = self._em_with_select_learned_for_value_1()
+
+        def extra_point_appears(_timeout):
+            em.bulk_data[self.EXTRA] = dict(em.bulk_data[self.SHARED])
+            return False
+
+        with (
+            patch.object(em._shutdown_event, "wait", side_effect=extra_point_appears),
+            patch.object(em, "_persist_dynamic_map"),
+        ):
+            em._run_learning_detection(self.SELECT, 2, "test")
+        entry = em.dynamic_point_map.get(self.SELECT)
+        self.assertEqual(sorted(entry.dynamic_points_by_value[2]), [self.SHARED, self.EXTRA])
+
+    def test_no_sharing_records_only_the_new_points(self):
+        """Without sharing nothing changes: a value whose points don't
+        overlap the previous value's records just its own."""
+        em = self._em_with_select_learned_for_value_1()
+        em.active_dynamic_points.discard(self.SHARED)
+        del em.bulk_data[self.SHARED]
+        em.bulk_data[self.EXTRA] = dict(em.bulk_data[self.SELECT])
+        point_data = {"title": "Extra", "description": "", "metadata": {}}
+        with (
+            patch.object(em, "_enable_entity_locked", return_value=True),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "_update_changelog_history"),
+        ):
+            em._publish_dynamic_changes([(self.EXTRA, point_data)], set(), self.SELECT)
+        entry = em.dynamic_point_map.get(self.SELECT)
+        self.assertEqual(entry.dynamic_points_by_value[2], [self.EXTRA])

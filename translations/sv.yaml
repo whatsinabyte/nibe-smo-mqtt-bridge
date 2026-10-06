@@ -38,11 +38,13 @@ configuration:
     description: >-
       Användarnamn för autentisering mot MQTT-brokern. Lämna tomt om din
       broker inte kräver autentisering.
+      Med standardvärdet "core-mosquitto" tillhandahåller Supervisor Mosquitto-tilläggets konto, som har företräde framför det här fältet.
   mqtt_password:
     name: MQTT-lösenord
     description: >-
       Lösenord för autentisering mot MQTT-brokern. Lämna tomt om din
       broker inte kräver autentisering.
+      Med standardvärdet "core-mosquitto" tillhandahåller Supervisor Mosquitto-tilläggets konto, som har företräde framför det här fältet.
   device_name:
     name: Enhetsnamn
     description: >-

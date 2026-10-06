@@ -7,1092 +7,446 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.2.6] — 2026-10-02
+## [1.3.0] — 2026-10-06
 
-Prompted by [issue #101](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/101)
-("Current status" sensor still shipping English values with a non-English
-`language` configured).
+A broad bug-hunting release. Most of it is fixes, but some entities change
+type, so read **Changed** before upgrading.
+
+### Changed
+
+- **Some entities get a new entity id.** A changed entity type means Home
+  Assistant creates a new entity: repoint automations and dashboards that
+  use the old id, and expect its history to restart.
+  - Option settings become dropdowns (`select`): blocking actions ERS 3–8
+    (7022, 7023, 23141–23144), operating mode (5482), charging method
+    (4692) and internal additional heat stepping mode (4085).
+  - 4969/4970 (block freq 1/2, EB101) and 8060 (defrost requested, EB101)
+    become switches.
+  - The spot price registers (26817–26840), 55749 (block new compressor)
+    and 55884 (set point value power) become read-only sensors. DOCS.md
+    lists them as not meant to be written; that used to rest on a firmware
+    flag that didn't cover all of them.
+  - 2701 (ACS status) is a sensor from the start, instead of a
+    binary_sensor that changed into one at the first real value.
+- **Writability follows the register type**, not the firmware's
+  `isWritable` flag, which is wrong for 17 holding registers. "Reset alarm"
+  (3478) and operating mode (4064), among others, could never be written.
+- **Log levels mean something:** WARNING and ERROR are only used for
+  something to look at; expected behaviour (an applied override, a
+  firmware convention) logs at DEBUG or INFO.
 
 ### Fixed
 
-- **Point 2022's "Current status" sensor (a community-decoded bitfield from
-  SMO S40 register 31121) always published English text — `Idle`,
-  `Cooling (Preheating)`, etc. — regardless of the configured `language`,
-  unlike every other status-shaped point on the same controller.** Unlike
-  those, this point's label isn't read from NIBE's API or looked up via
-  the standard `VALUE_MAPPINGS` + translation-table path — it's built
-  entirely by this bridge, decoding raw mode/compressor bits into a
-  composite sentence. That composition never passed its words through
-  `self._value_translations`, the same lookup every other sensor/select
-  value already uses. Each component (mode label, compressor state) is
-  now translated individually before being composed, so it produces a
-  correctly localized sentence for any bit combination rather than
-  needing every possible phrase hardcoded. Investigated whether other
-  exceptions to the translation path exist; this was the only one.
-  Added the five newly-needed words (`Idle`, `Hot water boost`, `Running`,
-  `Starting`, `Preheating`) to all 11 non-English `translations/*.yaml`
-  files.
+- **Values and units**
+  - Inverter version (14987) shows `61` instead of `0.0.61`.
+  - "All sub units operating prio" (56150) shows Idle / Heating / Cooling
+    instead of a bare number.
+  - The minimum of the periodic hot water stop temperature (3702) is
+    55 °C; the firmware declares 5.5 °C.
+  - Units added for registers the firmware reports without one (bar, °C,
+    %, h, min, s, W, DM).
+  - Switches and buttons that declare a 0–0 range (Activate forced
+    control, Away mode, Reset alarm, …) can be switched on again.
+  - A select reporting a value that is none of its options shows
+    unavailable instead of keeping a stale option.
+- **Entities that disappeared or came back wrong**
+  - A sensor briefly missing from a poll right after a write is no longer
+    deleted; it gets the same 5-minute grace as anywhere else.
+  - An enabled point missing at startup is kept for 5 minutes instead of
+    staying unavailable forever.
+  - A wanted point that returns after an absence is re-enabled again.
+  - Dynamic points of a dynamic select are no longer removed at startup,
+    and a point shown by several of a select's options is kept.
+  - Gone dynamic points no longer leave ghost entities after a restart.
+  - A reclassified binary sensor stays a sensor across restarts.
+  - Entities keep their attributes after a type change.
+  - After a broker loses its retained messages, the bridge republishes
+    everything instead of losing all entities.
+- **Home Assistant integration**
+  - A dynamic entity disabled in HA, also while the add-on was stopped or
+    the controller was down, is really re-enabled; no false "re-enabled"
+    notification.
+  - An entity disabled in HA while the add-on was stopped is shown as
+    disabled in the card.
+  - The active alarms notification updates when the set of alarms
+    changes; alarm and "API unreachable" notifications left from before a
+    restart are cleared.
+  - Aid/smart mode changed on the controller reaches HA within 5 minutes.
+- **Dashboards and the Entity Manager card**
+  - The Nibe Bridge dashboard is recreated when deleted, and gets its card
+    if the first save failed.
+  - Nibe Menus: dynamic points of dynamic points are shown, and so are
+    points below a controller that isn't enabled in HA; renamed entities
+    no longer leave "not available" rows; empty "0 – 0" ranges are hidden.
+  - Uninstalling removes the Nibe Menus dashboard and the test report too.
+  - Card: search no longer bypasses the filters (so "Select All" can't
+    pick hidden entities); column sorting, the mobile filter toggle and
+    Enable/Disable no longer fire twice; the card survives Lovelace
+    re-applying its config; the point list and changelog stay current
+    after a bridge restart.
+- **Snapshots and modes**
+  - Saving or restoring a snapshot reports its outcome in the card, so a
+    refusal (the 10-snapshot limit) no longer looks like success.
+  - Snapshots record the right mode after a reinstall, and the restore
+    guard in menus/all mode works again.
+  - A flush restore or replace-mode switch is no longer undone by points
+    it excluded.
+- **Configuration and connection**
+  - Nibe credentials entered in the add-on UI take precedence over
+    `secrets.yaml`, as documented.
+  - A `# comment` after a value in `secrets.yaml` is no longer read as
+    part of it.
+  - `language: auto` handles regional variants (`en-GB`) and Norwegian
+    (`nb`/`nn`).
+  - Writes and management actions wait for the poll instead of sending
+    requests to the controller at the same time.
+  - The connectivity check no longer puts the controller credentials on
+    the process list.
+  - The built-in test suite no longer fails falsely, and a failure
+    notification names a test that broke in setup.
+
+### Added
+
+- DOCS.md: external sensor readings (menu 7.5.9.2), Mosquitto credential
+  precedence, and why a number or select can show unavailable.
+- [docs/known-firmware-quirks.md](docs/known-firmware-quirks.md): new
+  entries, including `isWritable`, version encodings, ranges and units.
+
+### Internal
+
+- The end-to-end suite runs on parallel stacks (about 14 instead of 26+
+  minutes) with many new scenarios; property tests now always sample
+  every specially treated point.
+
+## [1.2.6] — 2026-10-02
+
+### Fixed
+
+- "Current status" (2022) now follows the configured `language` instead of
+  always showing English
+  ([#101](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/101)).
 
 ## [1.2.5] — 2026-09-26
 
 ### Fixed
 
-- **A "number" entity showing an unconfigured zone's temperature (or any
-  sensor with a firmware sentinel value) kept logging HA's own "Invalid
-  value ... (range X - Y)" error on every Home Assistant restart,
-  indefinitely — even long after the underlying 1.2.0 fix stopped
-  publishing that bad value.** The sentinel-detection code only ever
-  marked the entity's *availability* as offline; it never cleared the
-  stale value still sitting retained on the MQTT broker's *state* topic
-  from before the point was recognized as a sentinel. HA's own MQTT
-  platform re-validates whatever's retained on the state topic against
-  the entity's declared bounds on every reconnect/resubscribe (an HA
-  restart, a broker restart, an unrelated integration update that
-  triggers one), independently of the availability topic — so the old
-  bad value kept resurfacing forever. Both sentinel-detection paths now
-  clear the retained state topic (an empty payload, MQTT's own
-  convention for deleting a retained message) at the same time they mark
-  the entity offline.
+- An unconfigured zone temperature no longer makes Home Assistant log
+  "Invalid value" after every restart: the stale value kept on the MQTT
+  broker is now cleared when the entity is marked unavailable.
 
 ## [1.2.4] — 2026-09-24
 
-Prompted by [issue #95](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/95)
-(writes rejected with HTTP 403 on an S2125-12 + SMO S40 setup, reads unaffected).
-
 ### Fixed
 
-- **A write-rejected HTTP 403 always logged "wrong deviceId," even when
-  that wasn't the real cause.** The API's own spec documents that status
-  for the write endpoints with no distinct error code for a read-only REST
-  API credential (Menu 7.5.15) attempting to write — the firmware returns
-  the identical 403 for both cases. The log now prints the API's actual
-  `error` response text instead of assuming a cause, across all three
-  write paths (`write_point`, `write_device_mode`, `reset_notifications`).
+- A rejected write (HTTP 403) now logs the controller's own error text
+  instead of always blaming a wrong device id
+  ([#95](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/95)).
 
 ### Added
 
-- **DOCS.md's Quick Start now warns explicitly that "read-only" must be
-  switched off** for the REST API credentials configured in Menu 7.5.15 —
-  a read-only user lets the bridge poll normally but silently rejects
-  every write, which otherwise looks like a device or network problem
-  rather than a permissions one.
+- DOCS.md warns that the REST API user (menu 7.5.15) must not be
+  read-only, or every write is silently rejected.
 
 ## [1.2.3] — 2026-09-24
 
 ### Fixed
 
-- **A write reversing an in-flight one, moments later, could be silently
-  dropped.** The "skip a redundant write" guard added in 1.2.2 compared an
-  incoming command's value against `bulk_data`, which only reflects the
-  last *confirmed* poll — not a write that already succeeded but hasn't
-  been confirmed yet (which the bridge doesn't clear until a later poll
-  matches it, up to the 90s post-write dynamic-point scan window in the
-  worst case). Turning a switch on, then back off again before that
-  confirmation landed, meant the "off" command matched the still-stale
-  pre-write value in `bulk_data` and looked like a no-op duplicate of it —
-  so it was dropped instead of reaching the controller, leaving the
-  switch stuck on. The guard now compares against a still-pending write's
-  own value when one exists, instead of the possibly-stale confirmed one.
+- Switching something on and quickly back off could drop the second
+  command, leaving it on.
 
 ### Added
 
-- **Documented and verified a standalone Docker deployment path**, for HA
-  Container installations where apps aren't available at all — see
-  [DOCS.md](DOCS.md#standalone-docker-no-ha-supervisor). No production code
-  changed: the bridge already degraded gracefully everywhere without
-  `SUPERVISOR_TOKEN`, this just documents and confirms it. Includes how the
-  Entity Manager card reaches HA without Supervisor (a plain shared-volume
-  file copy, not gated on the token at all) and how to register it as a
-  Lovelace resource in either storage or YAML mode.
+- Documented running the bridge as a standalone Docker container for HA
+  Container installations.
 
 ### Internal
 
-- Fixed two flaky tests: `test_concurrent_requests_are_actually_serialized_on_the_wire`
-  had a narrow, load-dependent race in its own concurrency-measuring
-  instrumentation (not the client's real request lock), and
-  `test_time_hhmmss_decoding_invariants` used default test metadata whose
-  sentinel value collided with its own generated input range. Also fixed a
-  session-persistence race in the `dev/e2e/` harness's shared login helper,
-  found while reproducing the write-dedup bug above against the real
-  end-to-end stack.
+- Fixed two flaky tests and a login race in the e2e harness.
 
 ## [1.2.2] — 2026-09-17
 
-Found while cross-checking this project's own sentinel handling against
-[AndiHOK91/HA-Nibe-Local-REST-API](https://github.com/AndiHOK91/HA-Nibe-Local-REST-API),
-a separate project reading the same local REST API.
-
 ### Fixed
 
-- **Disconnected `u8`/`s8` sensors could publish a misleading raw value
-  instead of going unavailable.** The sentinel-value check that already
-  caught a disconnected sensor's raw value pegging at its storage type's
-  limit (`-32768` for `s16`, `65535` for `u16`, and the `s32`/`u32`
-  equivalents) never covered `u8` (`255`) or `s8` (`-128`) — the two
-  narrowest integer types the firmware uses, and the most common: 652 of
-  this bridge's own reference-dump points are `u8`/`s8`, 266 of them
-  read-only sensors. A disconnected one of those could have silently
-  published `255` (or `-128`) as if it were a real reading. Both are now
-  recognized the same as the existing four.
+- A disconnected `u8`/`s8` sensor shows unavailable instead of `255` or
+  `-128`.
 
 ### Added
 
-- **Redundant writes are now skipped before they reach the controller.** If
-  the most recent poll already shows a writable point at the exact value a
-  command is asking for, that command no longer issues a PATCH at all — it's
-  necessarily a duplicate, either a "keep it set" automation re-asserting an
-  unchanged value on every trigger, or a retained/re-delivered MQTT command
-  (a QoS 1+ broker may legitimately deliver a message more than once). A
-  stateless action (a `button` entity) is unaffected — every press still
-  reaches the controller regardless of the last-known value. Also inspired
-  by cross-checking against AndiHOK91/HA-Nibe-Local-REST-API, which already
-  had an equivalent guard of its own.
+- A write is skipped when the controller already has that value (an
+  automation re-asserting it, or a re-delivered MQTT command). Buttons
+  always go through.
 
 ## [1.2.1] — 2026-09-17
 
-A single-point firmware metadata bug, reported and diagnosed on real
-hardware within a day (thanks, bpwats) — see
-[issue #84](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/84).
-
 ### Fixed
 
-- **"Production (PV Power)" (point 29258) reported values 100x too
-  large.** The firmware itself declares this register with `unit: kW`,
-  `divisor: 1` — i.e. "the raw value is directly in kW" — but the real
-  physical scale is 10 W per raw unit. Writing `17` (intended as 170 W of
-  solar production) displayed as "17 kW" in Home Assistant, while
-  myUplink correctly read ~0.2 kW for the same inverter at the same
-  moment. Confirmed on two independent controllers (the reporter's VVM
-  S320 and this project's own SMO S40 reference dump both declare the
-  identical broken `divisor: 1`), so this is a firmware-wide metadata
-  bug, not specific to one model. Corrected divisor: 100 (raw `17` → the
-  correct `0.17 kW`). New `DIVISOR_OVERRIDES` mechanism, applied wherever
-  firmware metadata enters the bridge (point discovery and every polling
-  cycle — the firmware resends its own wrong value every time), since the
-  existing `UNIT_OVERRIDES` only corrects a displayed label, not scale.
-  Confirmed live on real hardware after the fix: the entity's declared
-  bounds changed from `min=0/max=65535/step=1` to
-  `min=0/max=655.35/step=0.01`.
+- "Production (PV Power)" (29258) showed values 100 times too large; the
+  firmware declares the wrong divisor
+  ([#84](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/84)).
 
 ---
 
 ## [1.2.0] — 2026-09-15
 
-A large mapping and dashboard-navigation pass. 522 new entities are now
-documented in `menu_structure.yaml` — found by systematically cross-checking
-every point in the firmware's own bulk-fetch dump against the official NIBE
-Modbus register document, the full multi-year firmware changelog, and
-community Modbus exports, rather than relying only on installer manuals
-(which, confirmed this pass, never mention some registers NIBE ships at
-all). The Nibe Menus dashboard also grows a real navigation feature to keep
-pace: menus large enough to make one flat tab unusably long can now split
-into a short summary page linking to their own separate sub-section views.
-
 ### Added
 
-- **Split menus and dashboard subviews.** A menu tagged `split_submenus` in
-  `menu_structure.yaml` (menus 1, 4, 7, and submenu 3.1) now renders as a
-  small hub view — its own description plus links to its own sections —
-  instead of one long scrolling tab. Each section becomes its own view,
-  reached from the hub and shown with a native back-arrow, without adding
-  to the dashboard's top tab strip (requires HA 2024.8+ for the subview
-  feature; older HA versions fall back to seeing these as ordinary tabs).
-  A useful side effect: a "Cross-reference: menu X.Y" mention written in
-  one section's text, pointing at another section of the same split menu,
-  is now a real clickable link — before the split, both sections lived on
-  the same tab, so the same mention was deliberately left as plain text to
-  avoid a same-page link that does nothing when clicked.
-- **522 new entities**, found via several systematic passes rather than
-  one-off additions: grouping the official Modbus document's register
-  symbols into families and cross-checking each member against the
-  firmware's own dump; a full diff of every point the firmware reports
-  against everything already documented; and an exhaustive scan of the
-  firmware changelog's own register/menu mentions. Covers live compressor
-  and EEV diagnostics, multi-installation cascade status, Smart Energy
-  Source live values, ECS/extra-climate-system sensors, EME 20 (Solar PV)
-  status, and a S135/FLM S45/HTS 40/RMU S40/ECS 40-41 accessory sweep
-  against their installer manuals.
+- 522 more settings and sensors placed in the Nibe Menus dashboard,
+  cross-checked against the firmware, NIBE's Modbus register document and
+  the firmware changelog.
+- Large menus (1, 4, 7 and 3.1) split into a summary page with links to
+  their sections (HA 2024.8+).
 
 ### Fixed
 
-- **A "number" entity reporting a firmware-declared out-of-range value
-  (e.g. an unconfigured zone's "desired room temperature" reporting `0`
-  outside its own 5.0-35.0 °C range) is now published as unavailable
-  instead of the invalid value.** Previously the raw value was passed
-  straight through, which made Home Assistant's own MQTT `number` platform
-  reject it and log a warning on every single poll — one real installation
-  saw over 500 occurrences in a few hours from five affected entities. The
-  fix is scoped to `number` entities only (other entity types don't hit
-  this same HA-side rejection, and a declared range doesn't reliably bound
-  every entity type's real values). A value of exactly `0` is treated as
-  this firmware's own recognised "unconfigured" convention and stays
-  silent; any other out-of-range value logs one warning per point
-  (deduplicated, not repeated every poll) rather than being assumed
-  understood.
-- **Removed prose in `menu_structure.yaml` asserting a register is absent
-  "from this firmware"** on settings with no known `point_id`. This
-  project's reference data comes from exactly one physical installation
-  (an air/water SMO S40) — the claim was only ever verified for that one
-  installation, not for every NIBE controller, and could read as
-  confidently wrong on a water/water (ground-source) controller that
-  exposes the same register fine. See [issue #82](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/82)
-  for the specific water/water gaps this leaves open.
+- A number showing an out-of-range value (such as an unconfigured zone's
+  `0` °C) is unavailable instead, so HA no longer logs a warning every
+  poll.
+- Removed menu notes claiming a register doesn't exist "in this
+  firmware", which was only known for one installation
+  ([#82](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/82)).
 
 ---
 
 ## [1.1.9] — 2026-09-13
 
-The AppArmor profile is now actually enforced rather than only logging
-violations — a change that required finding and fixing every gap the
-enforce-only-if-you-look-for-it `complain` mode had let slide. Verified
-over a full day of real hardware usage plus two clean full nightly test
-runs (4367 passed, 0 failed) before shipping.
-
 ### Changed
 
-- **The AppArmor profile is now enforced, not just logged.** It previously
-  ran in `complain` mode, which records violations without blocking them.
-  Enforcing it surfaced three real gaps, all fixed here:
-  - `/app`, `/tests`, `/data`, and `/homeassistant` each only had a `**`
-    glob rule, which covers files inside a directory but not the
-    directory's own entry. Python's import scanner needs read/list
-    permission on a directory itself to find modules in it, so enforcing
-    without the bare-directory rule broke every import from `/app` at
-    startup (surfaced as a spurious `ModuleNotFoundError`).
-  - `/translations` had no rule at all, breaking the nightly test runner's
-    translation-parity checks (`test_translation_files_exist` and related)
-    even though the bridge's own runtime never reads that directory.
-  - pytest's own cache writes to `/.pytest_cache` under the add-on's
-    read-only root were silently denied. Redirected pytest's cache
-    directory to `/tmp` instead, since it's disposable scratch data that
-    doesn't belong under the protected root anyway.
+- The AppArmor profile is enforced instead of only logging; the gaps that
+  surfaced (directory entries, `/translations`, the pytest cache) are
+  fixed.
 
 ### Fixed
 
-- **Two power-consumption points falsely reported their unit as
-  "overridden" on every startup.** Points 25165/25166 ("Energy log -
-  Current power consumption[, components]") carried a hardcoded `"kW"`
-  unit override and a hardcoded `"power"` device_class override, both
-  added because firmware used to wrongly report an energy unit (`kWh`)
-  for these power points. Firmware now reports `kW` correctly on its own,
-  making both overrides dead weight — the unit override still logged
-  "unit overridden" on every poll regardless of whether anything actually
-  differed, and the device_class override was redundant with what
-  `map_device_class()` already infers unassisted from the `kW` unit.
-  Both overrides removed now that firmware itself provides the correct
-  values.
+- Points 25165/25166 no longer log "unit overridden" on every start; the
+  firmware reports their unit correctly now.
 
 ---
 
 ## [1.1.8] — 2026-09-11
 
-Two defects found on real hardware during a NIBE firmware update to 4.13.12.
-Between them they destroyed thirteen entities — including BT25, an essential
-sensor — and then failed to bring any of them back.
-
 ### Fixed
 
-- **A point missing from a single bulk response permanently deleted its
-  entity.** While the controller restarted during the firmware update it
-  served an incomplete point list — 1145 of its 1169 points — for about a
-  minute, spanning four polls. Every missing point was treated as removed by
-  the firmware and disabled immediately, which clears the retained discovery
-  config, so Home Assistant deleted the entity along with its history and
-  broke every dashboard, automation and template referencing it. The points
-  returned a minute later, but the entities were gone. A point absent from
-  bulk data is now published as unavailable straight away — honest, and
-  non-destructive: Home Assistant shows it unavailable and keeps everything
-  else — and is only disabled after it has been continuously absent for five
-  minutes. A single missed poll, a controller reboot, or a firmware update
-  no longer costs an entity. The absence clock resets the moment the point
-  reappears, so a second brief gap gets a full grace period of its own
-  rather than inheriting an expired one.
-
-- **The safety net that re-enables a point when it reappears was empty after
-  every restart.** `_wanted_points` records points deliberately enabled by a
-  user or by a mode, and a reconcile pass after each bulk fetch re-enables any
-  wanted point that has come back. But the set was only ever written when an
-  entity was enabled, and the normal restart path restores entities from
-  retained MQTT discovery configs without going through that code — so after
-  any restart the bridge had dozens of live entities and an empty wanted set,
-  and nothing to restore them with. This is why none of the thirteen disabled
-  points were re-enabled when they reappeared. Restoring from MQTT now
-  backfills the wanted set: anything in the broker's enabled list was enabled
-  deliberately at some point, which is exactly what the set is meant to
-  record. A later mode change still un-marks whatever it disables, so a
-  restore-then-apply-mode startup sequence stays correct.
+- A point missing from a poll, as during a firmware update, deleted its
+  entity. It now shows unavailable and is only removed after 5 minutes of
+  absence.
+- Points that return are re-enabled again after a restart; the list of
+  wanted points used to be empty after every restart.
 
 ### Upgrading
 
-- **If a firmware update or controller restart already deleted some of your
-  entities**, this release stops it happening again but cannot bring back
-  what was lost — the retained discovery configs were cleared, so Home
-  Assistant removed the entities and their history. Restore a snapshot if
-  you have one (the Entity Manager card's Snapshots section), or re-enable
-  the affected points from the card. The add-on log names every point it
-  disabled, so searching it for `absent from bulk data` will list them.
-- No configuration changes are needed, and no action is required if nothing
-  went missing.
+- Entities already lost this way can't be restored by the update: restore
+  a snapshot or re-enable them in the card. Search the log for
+  `absent from bulk data` to find them.
 
 ---
 
 ## [1.1.7] — 2026-09-09
 
-Seventeen defects found in a systematic audit: twelve pre-existing, and five
-introduced by the log-clarity work started for this release and fixed before
-it shipped. Two were found only by testing on real hardware. No behaviour was
-changed intentionally beyond the fixes below.
-
 ### Fixed
 
-- **A queued write could be evicted mid-flight, making a Home Assistant
-  toggle flip back on its own.** Writes are serialised through a
-  single-worker executor, and a write that opens a dynamic-point detection
-  window holds that worker for up to 90 seconds. Pending writes were aged
-  from when the *command arrived*, so flipping several switches in quick
-  succession left the third one queued past the 100-second staleness
-  threshold while perfectly healthy. It was then evicted with a misleading
-  "the write executor may be stuck" warning, which dropped the pending-write
-  guard and republished the pre-write value: the entity visibly reverted,
-  then flipped again ~70 seconds later when the write actually ran. Writes
-  are now aged from when the executor *picked them up*; one still waiting in
-  the queue is never stale, however long it waits.
-- **The add-on could be SIGKILLed during shutdown instead of stopping
-  cleanly.** The shutdown drain budget is shared across all three executors,
-  and an in-flight learning detection could not be interrupted, so it
-  consumed the entire budget without finishing and left the management and
-  test executors no time to drain at all. Executor threads are non-daemon,
-  so the wait also blocked interpreter exit. Long in-flight waits are now
-  signalled to stop before the drain begins. An interrupted detection
-  deliberately records *no* outcome — persisting "no dynamic points
-  appeared" from a truncated scan would teach the learned map a false
-  negative that survived the restart.
-- **The same shutdown stall via the API client.** One logical request against
-  an unresponsive controller runs two 30-second socket timeouts plus a
-  backoff (~62s) while holding the client's serialising lock, so a second
-  caller waited that long again before starting. After shutdown begins no new
-  request is started and a pending retry is abandoned.
-- **A single unexpected error could leave the bridge permanently deaf to
-  Home Assistant while still appearing healthy.** The MQTT client runs with
-  paho's default `suppress_exceptions=False`, so anything escaping a callback
-  kills the network thread — which is also paho's reconnect loop, making the
-  failure terminal in both directions and recoverable only by a manual
-  restart. `on_connect`/`on_disconnect` were unguarded (the connect path
-  re-subscribes and republishes availability for every entity), as were four
-  of the five management command handlers, which decoded their MQTT payload
-  on that thread: a malformed payload, or a command arriving after shutdown,
-  was enough. Management handlers are now guarded centrally where they are
-  registered, so one added later cannot forget, and the guard is preserved in
-  the record replayed on reconnect.
-- **State files in `/data` could be silently emptied.** `applied_mode`,
-  `wanted_points.json`, `snapshots.json` and `device_id` were written by
-  truncating the destination, so a process killed mid-write left a truncated
-  file — and each is read back with its parse failure swallowed as "no data",
-  silently discarding whatever it held (your enabled-entity set, your saved
-  snapshots, or the device identity whose loss recreates every entity under a
-  new Home Assistant device). They are now written to a uniquely-named temp
-  file and renamed, which is atomic. The unique name matters: these writers
-  hold no common lock and run on four different threads, so a shared temp
-  path let concurrent writers truncate each other and promote the mixture —
-  reproduced as corruption in roughly half of concurrent runs.
-- **Ghost/duplicate entities could be left behind in Home Assistant.** The
-  record of which discovery topics a point still has retained on the broker is
-  seeded once at startup and never rebuilt, but it was consumed *before* the
-  publish that depends on it. A publish failure — plausible during a broker
-  hiccup while startup discovery runs — took the record with it, so those
-  stale topics were never cleared and nothing left in the process knew to
-  clear them. It is now dropped only once the publish succeeds.
-- **Entity attributes could go permanently missing.** The attributes payload
-  is republished purely on hash inequality, and the hash was recorded whether
-  or not the publish succeeded — so a failed publish was remembered as done
-  and never retried.
-- **A snapshot whose name contains a double quote broke the restore UI.**
-  Names are free-form (only stripped and checked non-empty), so
-  `Winter "cold snap"` is legal. Three restore handlers interpolated the raw
-  name into a CSS attribute selector, which a quote makes unparseable;
-  `querySelector` threw and aborted the rest of the click handler. The restore
-  itself still ran, but the confirmation never appeared, the options panel
-  never closed, and Cancel did nothing. (The rendered markup was always
-  escaped — this was never a markup-injection issue.)
-- **Running the built-in "Run Test Suite" debug button corrupted live add-on
-  state.** That button runs the real test suite *inside the add-on
-  container*, where `/data` is your installation's own state directory, and
-  tests that persist without an explicit path wrote straight into it. A
-  property test exercising named modes wrote its throwaway sentinel
-  `__test_named_mode__` into `/data/applied_mode` — found on real hardware,
-  via a snapshot that recorded its mode as `__test_named_mode__`. The
-  damage is not cosmetic: startup reads that file and treats an
-  unrecognised value as a deliberate mode change, reconciling the enabled
-  set and disabling every entity enabled by hand. It only bites once the
-  broker has lost its retained copy — precisely the situation the file
-  fallback exists for. `applied_mode`, `wanted_points.json`,
-  `snapshots.json` and the learned dynamic-point map are now redirected to
-  a temporary directory for every test, the protection that already existed
-  for `device_id` alone. **If you have pressed "Run Test Suite" on a live
-  installation, see the note under Upgrading below.**
-- **A test-suite run could be left running with nothing able to stop it.**
-  The subprocess handle was cleared unconditionally on error, but the
-  surrounding block also covers reading the process's output — so an error
-  there dropped the only reference to a detached process group. The
-  shutdown abort then silently did nothing, leaving a four-hour full-core
-  run with no way to stop it. It is now killed and reaped before the handle
-  is released.
+- Switching several things quickly no longer makes a toggle flip back on
+  its own.
+- The add-on stops cleanly instead of being killed during shutdown.
+- An unexpected error can no longer leave the bridge deaf to Home
+  Assistant while looking healthy.
+- State files in `/data` can no longer be left empty by a crash mid-write.
+- Ghost entities and missing attributes after a broker hiccup are gone.
+- A snapshot name with a double quote no longer breaks the restore dialog.
+- "Run Test Suite" no longer writes test data into the add-on's own
+  state.
+- A test run can always be stopped.
 
 ### Changed
 
-- **Post-write scan logging is clearer and consistent between switches.**
-  The window-ended line now names the point it belonged to and is visible at
-  the default log level, every line that opens a scan states how long
-  detection may take, and a write that has to queue behind others now says
-  how many are ahead of it. It reports the queue depth rather than an
-  estimated wait, because whether each queued write opens a detection window
-  at all is not knowable until it runs.
-- **`docker logs` / the Supervisor log viewer now show output as it
-  happens.** Python was block-buffering its output because it is not writing
-  to a terminal, so log lines could lag behind real time by an unpredictable
-  amount.
-
-- **An unrecognised applied-mode record is no longer treated as a mode
-  change.** A value that cannot be resolved to a point set carries no usable
-  information, but startup previously read any value differing from the
-  configured mode as a deliberate change and reconciled the enabled set —
-  disabling everything outside the new mode, including entities enabled by
-  hand. It now reads as "no record", which routes through the existing
-  migration path: entities are restored unchanged and the configured mode is
-  re-recorded, so a corrupt or stale record repairs itself on the next
-  restart instead of persisting. This applies whatever the cause — the test
-  sentinel above, a half-written file, or a mode removed in a later release.
+- Clearer post-write scan logging, and log lines appear in real time.
+- An unrecognised applied-mode record is ignored instead of treated as a
+  mode change that disables hand-enabled entities.
 
 ### Upgrading
 
-- **If you have ever pressed "Run Test Suite" on a live installation**, your
-  `/data/applied_mode` may contain a test sentinel rather than your real
-  mode. Nothing further is needed: this release ignores an unrecognised
-  record and re-records your configured mode on the next restart, so the file
-  repairs itself. Snapshots saved while the file was poisoned keep the wrong
-  mode label in their stored entry — that is cosmetic, and only affects the
-  label shown next to the snapshot, not which points it restores.
-
-### Internal
-
-- Test coverage grew from 4,341 to 4,390 Python tests plus 314 frontend
-  tests, including regression tests for every fix above. Four end-to-end
-  scenarios were added against a real Home Assistant, broker and bridge —
-  disabling an entity, a switch write round-trip, snapshot save/restore, and
-  changelog rendering — plus `/data` persistence assertions, and a fix for an
-  existing end-to-end test that sat exactly on its timeout and passed or
-  failed on luck.
+- If you ever pressed "Run Test Suite" on a live installation, nothing is
+  needed: the stored mode repairs itself on the next restart.
 
 ---
 
 ## [1.1.6] — 2026-09-07
 
 ### Added
-- **Point 10614 ("Req. op. mode (SG Ready)") now gets a proper `select`
-  dropdown** instead of a raw 0-3 number field — `0 -> "Cut off"`,
-  `1 -> "Standard"`, `2 -> "Encouraged"`, `3 -> "Ordered"`. The numeric
-  order is confirmed tested on real hardware (Home Assistant Community
-  forum, firmware 4.12.8/S1256); the labels use NIBE's own official SG
-  Ready terminology. This is also the correct home for the state-label set
-  that was mistakenly attached to point 3292 and removed in 1.1.5 — same
-  4-state SG Ready concept, filed under the wrong point, with the domain
-  rotated by one position. See GitHub issue #35.
 
-  **⚠️ Upgrading past this fix will rename this entity.** MQTT discovery
-  can't change a point's platform in place — Home Assistant sees the
-  `number.nibe_10614` entity disappear and a new `select.nibe_10614`
-  appear in its place. Same one-time, unavoidable consequence as the
-  `binary_sensor` -> `sensor` renames above: repoint any automation,
-  script, or dashboard card that referenced the old `entity_id`, and
-  expect its history/statistics to restart from zero.
-- **Point 3260 ("Operating mode SG Ready")** is confirmed, via real-world
-  log evidence, to follow the same undocumented multiple-of-ten encoding
-  as 1758/1032/1034/3292 — `10` is confirmed (both by the ten-multiple
-  family's consistent convention and by cross-checking against 10614's
-  now-confirmed `1 = "Standard"`) to mean the equivalent "no active grid
-  signal" state. The other three raw values remain unconfirmed — needs
-  testing against a real, active grid service to observe the raw values
-  for Encouraged/Ordered/Cut off. No mapping added yet; published as a
-  plain sensor with the raw integer.
-- **Hardcoded `VALUE_MAPPINGS` labels (Off/On/Active/Passive/etc.) are now
-  translated** for the 12 languages this add-on already ships
-  `translations/*.yaml` for (`cs`/`da`/`de`/`es`/`fi`/`fr`/`it`/`nl`/`no`/
-  `pl`/`sv`) — Nibe's actual main markets, not the fuller list of language
-  codes `config.yaml`'s schema accepts (13 of those have no translation
-  file of any kind, config UI included — a pre-existing gap, unrelated to
-  this). Fixes #39: firmware-supplied enum text was already correctly
-  localized (the Nibe controller itself translates it, server-side, based
-  on the configured `language`), but this bridge's own hardcoded fallback
-  labels — used only for points the firmware gives no description text
-  for — had no connection to that mechanism at all and were always
-  English regardless of the language setting.
-
-  Covers `select` entities too, not just read-only `sensor`s: the
-  published `options` list, the reported state, and the write-back
-  label-to-value lookup (falling back to the English label, then to a raw
-  integer payload, if neither the translated nor English label matches —
-  same graceful-degradation philosophy already used for a language change
-  across a restart) all now agree on the same translated strings.
-
-  Translations are bulk-generated, not sourced from native speakers —
-  please open a PR to fix any wrong wording, especially the handful of
-  technical HVAC terms. The Dutch (`nl`) set is the one exception: it uses
-  the exact wording confirmed against real firmware output in #39 itself
-  (`Off`/`On`/`Active`/`Passive` → `Uit`/`Aan`/`Actief`/`Passief`).
+- "Req. op. mode (SG Ready)" (10614) is a dropdown: Cut off / Standard /
+  Encouraged / Ordered
+  ([#35](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/35)).
+  Its entity id changes from `number.` to `select.`.
+- Built-in value labels (Off/On/Active/Passive, …) are translated for the
+  12 supported languages
+  ([#39](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/39)).
 
 ## [1.1.5] — 2026-09-05
 
 ### Fixed
-- **Points 242/243/244/245 ("Oper. mode shunt climate system 5-8"), 998
-  ("Fan status EB101-EP14"), and 3292 ("Operating mode Smart Price
-  Adaption", register 1918) were misclassified as permanently-`on`
-  `binary_sensor`s** — same root cause as the point 1021 fix in 1.1.4: each
-  register reports a multiple-of-ten operating-mode/status value rather
-  than a boolean, and the firmware provides no description text for any of
-  these five points, so the binary auto-detection check had nothing to
-  reject them on. Now excluded from binary auto-detection and exposed as
-  plain `sensor`s. Point 3292 additionally gets a confirmed text mapping,
-  `10 -> "Off"` / `30 -> "On"` — verified empirically across two
-  independent installations (GitHub issue #35: `10` observed with SPA
-  confirmed off; a second installation: `30` observed with SPA confirmed
-  active). The other four points have no confirmed value domain and are
-  published as raw integers only.
-- **Points 632-638 and 2804 ("Frost protection heat exchanger, heat pumps
-  1-8") were misclassified as permanently-`on` `binary_sensor`s** — all
-  eight report a raw value of `2`. Now excluded from binary auto-detection
-  and exposed as a plain `sensor` with a text mapping, `0 -> "Off"` /
-  `1 -> "Active"` / `2 -> "Passive"`. This mapping is inferred by analogy
-  with this manufacturer's outdoor-unit "Defrost" registers, which share
-  the identical 0/1/2 domain and are officially documented with these exact
-  labels — it is not independently confirmed against the frost-protection
-  registers themselves. Please open an issue if your installation shows
-  this label set doesn't match what the controller's own display reports.
-- **Point 24961 ("Relay status") was misclassified as a permanently-`on`
-  `binary_sensor`** — this point is a bitmask of several relays' individual
-  on/off states packed into one integer (this manufacturer's
-  step-controlled additional heat can combine relays in on/off patterns for
-  "binary stepping"), not a single boolean flag, and its raw value can
-  legitimately be any combination of bits. Now excluded from binary
-  auto-detection and exposed as a plain `sensor` with the raw integer
-  value. Splitting it into individual relay states is left to an HA-side
-  template sensor — the bridge has no way to know how many relays exist or
-  what each bit means on a given installation.
-- **Removed an incorrect `VALUE_MAPPINGS` entry for point 3292** in the
-  `holding`-register table (`{0: "Normal", 1: "Low price", 2:
-  "Overcapacity", 3: "Blocking"}`). Point 3292 is an `INPUT` register, not
-  `HOLDING`, and this label set actually describes SG Ready's operating
-  mode (menu 4.2.3), not Smart Price Adaption — an apparent copy/paste
-  mix-up. The correct point ID for SG Ready's operating-mode status has not
-  been identified in this codebase; if you rely on that mapping, please
-  open an issue with your installation's raw value for the SG Ready status
-  point.
 
-  **⚠️ Upgrading past this fix will rename the affected entities.** MQTT
-  discovery does not support changing a point's platform (`binary_sensor`
-  -> `sensor`) in place — Home Assistant sees this as the old entity
-  disappearing and a new one appearing (typically
-  `binary_sensor.nibe_<id>` -> `sensor.nibe_<id>`). Any automation,
-  script, or dashboard card referencing one of these 15 points (242, 243,
-  244, 245, 632, 633, 634, 635, 636, 637, 638, 998, 2804, 3292, 24961) by
-  its old `entity_id` will need to be repointed at the new one, and that
-  entity's history/statistics will restart from zero. This is a one-time,
-  unavoidable consequence of the reclassification, not an ongoing behavior
-  change.
+- 15 points that were shown as always-on binary sensors are sensors now:
+  242–245, 632–638, 998, 2804, 3292 and 24961
+  ([#35](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/35)).
+  Their entity ids change from `binary_sensor.` to `sensor.`.
+- Removed a wrong value mapping on point 3292.
 
 ### Added
-- **Dynamic binary_sensor reclassification** — static firmware metadata alone
-  cannot reliably distinguish a genuine boolean flag from a multi-state enum
-  masquerading as one (see the `_BINARY_SENSOR_EXCLUSIONS` static list in
-  `nibe_entity_detection.py`, which is fixed after the fact, per bug report,
-  for cases we've already seen). As a forward-looking safety net for
-  firmware/hardware we haven't seen yet, the bridge now watches every
-  point currently classified as `binary_sensor`: the first time one is
-  observed reporting a raw value other than 0/1, it logs a prominent
-  `WARNING` naming the point ID and the observed value (asking the user to
-  consider filing a GitHub issue), reclassifies the point to `sensor` going
-  forward (both the in-memory detection cache and the MQTT discovery
-  config, which is republished under the new domain), and does not repeat
-  the warning on subsequent polls of the same, now-correctly-classified
-  point. This intentionally renames the HA entity
-  (`binary_sensor.nibe_<id>` -> `sensor.nibe_<id>`) and resets its history —
-  a one-time, unavoidable cost, same as the static exclusions above — the
-  point is that this is loud and visible rather than a silent correction.
+
+- A binary sensor that reports a value other than 0/1 is turned into a
+  sensor automatically, with a warning in the log.
 
 ## [1.1.4] — 2026-09-04
 
 ### Fixed
-- **Point 1021 ("Operating mode PV panels", register 579) was misclassified
-  as a permanently-`on` `binary_sensor`** — the register reports a 2-value
-  domain (`10`/`40`) rather than a boolean, and the binary auto-detection
-  check only excluded points with 3+ mapped states, so this 2-state point
-  slipped through. Now excluded from binary auto-detection and exposed as a
-  plain `sensor`, `10 -> "Off"` / `40 -> "On"`.
-- **Entity Manager card search on ID/Modbus register used a bare substring
-  match** — searching `"1021"` also matched `11021`, `21021`, etc., since
-  digits anywhere in the identifier counted as a hit. Matching is now
-  exact-or-prefix, so a search narrows progressively as more digits are
-  typed without false-positive noise. Exact/prefix ID, Modbus register, and
-  unit matches now also rank ahead of fuzzy title matches in the results
-  list instead of being sorted behind them.
+
+- "Operating mode PV panels" (1021) was shown as an always-on binary
+  sensor.
+- Card search on an id or register matches exactly or by prefix, so
+  `1021` no longer finds `11021`.
 
 ## [1.1.3] — 2026-09-02
 
 ### Fixed
-- **Entity Manager card could crash on a malformed retained `snapshots`
-  message** — `handleSnapshotsMessage` had no shape validation
-  (`JSON.parse(payload) || []` accepts any valid JSON), and its "is the
-  snapshots modal open" check defaults true for a modal that has never yet
-  been hidden, so a non-array payload (a stray retained message, a future
-  schema change) could throw synchronously inside the MQTT message handler.
-  Now validates the parsed payload is actually an array before using it.
-- **A malformed `changelog/history` payload could produce an unhandled
-  promise rejection in the card** — the gzip-decompression helper's write
-  side wasn't awaited or error-guarded, so a corrupted retained message
-  triggered console noise alongside the already-correctly-handled read-side
-  error.
-- **"Run Test Suite" debug button failed 4 tests when actually run on
-  real ODROID/Home Assistant hardware**, despite passing in normal
-  development: the add-on's container image was missing the `openssl` CLI
-  that two TLS-verification tests shell out to, and two filesystem
-  permission-denied tests assumed a non-root process — the add-on's
-  container runs as root, and Linux lets root bypass directory permission
-  bits entirely, so those two now correctly skip in that environment
-  instead of asserting something that isn't true there.
+
+- The card no longer crashes on a malformed snapshots or changelog
+  message.
+- "Run Test Suite" no longer fails four tests on real hardware.
 
 ### Changed
-- Removed the Entity Manager card's `device_info`-driven "controller
-  model" text — `docs/card-api.md` documented a payload shape
-  (`name`/`productName`/`serialNumber`/`firmwareVersion`) the bridge never
-  actually sent, so the card's displayed model name silently never updated
-  from its hardcoded default in production. This information is still
-  used elsewhere in the bridge; only the card's now-corrected unused
-  reference to it was removed.
+
+- Removed the card's controller model text, which never updated.
 
 ---
 
 ## [1.1.2] — 2026-09-02
 
 ### Fixed
-- **Bad MQTT credentials never triggered the intended startup failure** —
-  the add-on checked a rejected connection's reason code against the old
-  MQTT 3.1.1 CONNACK values (`4`, `5`), but paho's `CallbackAPIVersion.VERSION2`
-  `on_connect` always delivers MQTT5-style reason codes (`134`, `135`) even
-  over a plain MQTT 3.1.1 connection. Wrong credentials silently never
-  matched, so instead of exiting with a clear "check your credentials"
-  error, the add-on retried the same bad credentials forever, logging only
-  a misleading "MQTT not yet connected after 2s — broker may be slow,
-  continuing." Confirmed empirically against a real broker rejecting bad
-  credentials.
-- **Bridge's own availability sensor stayed offline after a reconnect with
-  zero entities enabled** — `republish_availability()` skipped its
-  unconditional top-level "available" republish whenever no per-entity
-  availability topics existed to republish alongside it, so a bridge
-  running with everything disabled (e.g. `mode: none`) never came back
-  online in Home Assistant after a broker reconnect.
+
+- Wrong MQTT credentials stop the add-on with a clear error instead of
+  retrying forever.
+- The bridge's availability comes back after a reconnect with no entities
+  enabled.
 
 ## [1.1.1] — 2026-08-26
 
 ### Fixed
-- **Stale ghost entity left behind when a point's entity type changes across
-  a restart** — fixes [GitHub issue #23](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/23):
-  1.1.0 intentionally reclassified points `2002`, `1820`, and `1827` from
-  generic on/off binary sensors to proper multi-state sensors (point `2002`,
-  the QN10 diverter valve, now reports "Heating"/"Hot water" instead of
-  ON/OFF). The bridge is supposed to clear the old entity's retained
-  discovery config whenever a point's type changes so Home Assistant doesn't
-  keep a dead duplicate around, but that check only consulted an in-memory
-  record that always started empty on a fresh process — so on the very
-  restart the type change took effect, the old on/off entity was left behind
-  with no further updates, showing as unavailable in HA even though the
-  bridge itself was working correctly. The bridge now reconstructs that
-  record from every discovery config already retained on the MQTT broker at
-  startup, so it can detect a type change immediately after an upgrade and
-  clean up the stale entity automatically — no manual steps required. This
-  also correctly handles a point retained under more than one domain at
-  once, rather than depending on the arbitrary order retained messages
-  arrive from the broker. Verified end-to-end on real hardware.
+
+- A point whose entity type changed no longer leaves a dead duplicate
+  entity behind
+  ([#23](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/23)).
 
 ## [1.1.0] — 2026-08-24
 
 ### Added
-- **Wanted-points re-enable safety net** — fixes [GitHub issue #21](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/21):
-  a point you explicitly enabled could permanently stop coming back if it
-  ever disappeared from a bulk fetch outside the predictive dynamic-point
-  tracking mechanism (most commonly: a setting changed directly on the
-  controller itself rather than through Home Assistant). The bridge now
-  remembers every point you've explicitly enabled (via the Entity Manager
-  card, applying a mode, or restoring a snapshot) independently of *why* it
-  might later get disabled, and automatically re-enables it the moment it
-  reappears in a bulk fetch — regardless of whether it was ever tracked as
-  a dynamic point. This runs alongside the existing dynamic-point-map
-  learning mechanism, not in place of it; a mode change or snapshot flush
-  still correctly overrides a point's wanted status, since those are
-  intentional user actions. Verified end-to-end on real hardware. See
-  `ARCHITECTURE.md` §4.4 for the full design.
+
+- A point you enabled is re-enabled automatically when it returns after
+  disappearing
+  ([#21](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/21)).
 
 ### Fixed
-- A point that first appeared outside a post-write scan window — before its
-  real controlling switch/select had ever been learned — could get
-  permanently stuck unable to ever be linked to that controller again, even
-  after correctly toggling it via Home Assistant afterward. Fixed by
-  clearing the point's "static baseline" bookkeeping whenever it's
-  auto-disabled, mirroring what already happened on the dynamic-specific
-  disappearance path.
-- The dashboard-update notification sent whenever a dynamic point
-  appears/disappears always referenced the "Nibe Menus" dashboard and told
-  you to open it — but that dashboard only exists when the entity mode is
-  set to `menus`. In any other mode the notification now points at the
-  Nibe Bridge dashboard (provisioned in every mode) instead of a dashboard
-  that was never created.
-- Firmware `description` fields encoding dropdown/enum options weren't
-  parsed correctly for every register family: some use `':'` as the
-  key/value separator instead of `'='`, and at least one register mixes
-  both separators within the same string. Affected points showed a raw
-  number field instead of the correct dropdown, or lost some of their
-  option labels. Both value-parsing and entity-type classification
-  (`select` vs `number`) now handle every separator convention found
-  across all 4 shipped translation dumps.
-- `menu_structure.yaml`: point 3281 ("Affect hot water") had the wrong
-  option range documented (`off/on`) — corrected to the real firmware
-  values (`Small / Medium / Large / Medium / Mini`).
+
+- A point that first appeared outside a post-write scan can still be
+  linked to its controller later.
+- The dynamic points notification points at the right dashboard in every
+  mode.
+- Option descriptions using `:` instead of `=` are parsed, so those points
+  get their dropdown.
+- Corrected the documented range of "Affect hot water" (3281).
 
 ### Changed
-- Completed the mutation-testing hardening pass (mutmut) across every
-  remaining module — `nibe_entity_manager.py`, `nibe_lovelace.py`,
-  `nibe_ha_integration.py`, `nibe_test_runner.py`, `generate_nibe_mqtt.py`,
-  `nibe_api.py`, `nibe_connectivity_check.py`, `nibe_caching.py`,
-  `nibe_discovery_config.py`, `nibe_dynamic_map.py`, `nibe_mqtt_publisher.py`.
-  Coverage-only; no behavioural changes. See `ARCHITECTURE.md` §6 for current
-  status and the tooling reliability caveats discovered along the way.
-  Includes a new dedicated `tests/test_discovery_config.py` for
-  `nibe_discovery_config.py`'s pure config builders, previously only
-  covered indirectly through other modules' test files.
-- Merged Dependabot's dev/test dependency bump (hypothesis, ruff, mypy,
-  types-PyYAML) and fixed the ruff/mypy findings it surfaced once the local
-  toolchain actually matched the bumped versions.
-- `Dockerfile` now copies `translations/` into the built image so the
-  translations-vs-`config.yaml` parity test can run for real inside the
-  deployed container, not just from a development checkout.
-- Documentation: absolute GitHub links in `README.md` (relative links to
-  `DOCS.md`/`SECURITY.md` didn't resolve when the README is rendered
-  outside the repository, e.g. on the Home Assistant add-on store);
-  `DOCS.md` clarifies that snapshots survive app updates and host reboots
-  and are only ever removed by a full uninstall, notes how long the "Run
-  Test Suite" button takes on an ODROID-M1, and adds a newly-confirmed root
-  cause for intermittent REST API connection drops on some controllers —
-  network-discovery integrations (nmap Tracker, UniFi's device tracker)
-  port-scanning the controller's limited embedded TCP stack.
+
+- Mutation-testing pass over all modules; dependency updates; documentation
+  fixes.
 
 ---
 
 ## [1.0.7] — 2026-08-20
 
 ### Fixed
-- `NibeApiClient` had no coordination between the poll thread, the write
-  executor, and the management executor — all three could send requests to
-  the controller at genuinely the same time, with nothing preventing it. A
-  community report (GitHub discussion #2) traced intermittent connection
-  drops to overlapping request load on the controller's embedded TCP stack,
-  and found that a request-serializing reverse proxy resolved it. `request()`
-  now holds a lock for the full duration of each logical request (including
-  any retry backoff), guaranteeing at most one request is ever in flight
-  against the controller at a time — the same effect that reverse proxy was
-  providing, built into the client itself.
+
+- Only one request at a time is sent to the controller, which fixes
+  connection drops on some controllers.
 
 ---
 
 ## [1.0.6] — 2026-08-20
 
 ### Added
-- **Entity name localization** — a new `language` option translates entity
-  titles/descriptions via the Nibe REST API's own `Accept-Language`
-  support (confirmed against a live SMO S40: `nl`/`de`/`sv` return
-  correctly translated text). `auto` (default) detects Home Assistant's
-  own configured language via the Supervisor API; any other value
-  overrides auto-detection. The dropdown mirrors the controller's own
-  hand-verified "Language" select entity (`VALUE_MAPPINGS[3745]`).
-  Does not translate the "Nibe Menus" Lovelace dashboard, which stays
-  static English content by design. An unsupported language, an
-  unrecognised one, or an individual point missing from NIBE's own
-  translation catalog all fail safely — no error, silent fallback to
-  English, matching the API's own default behaviour.
-- **`mode_switch_behavior` option** (`replace`/`merge`, default
-  `replace`) — controls what happens to already-enabled entities when
-  switching `mode`. `replace` keeps the existing behaviour: entities not
-  in the newly selected mode's set are disabled, including anything
-  enabled manually via the Entity Manager card. `merge` only ever adds
-  the new mode's points; nothing already enabled is ever disabled by a
-  mode change.
-- 5 new `translations/*.yaml` files (French, Spanish, Italian, Czech,
-  Finnish) covering the app's own Configuration UI, added for NIBE's
-  stated strong-presence markets (Sweden, Norway, Finland, Denmark,
-  Germany, France, UK, Netherlands, Poland, Czech Republic, Italy,
-  Spain) alongside the 7 that already existed.
-- A test (`TestConfigTranslationsParity`) enforcing that every
-  `config.yaml` option has a matching, non-empty translation entry in
-  every `translations/*.yaml` file, and flagging stale entries for
-  removed options.
+
+- `language` option: entity names in the controller's language (`auto`
+  follows Home Assistant).
+- `mode_switch_behavior` option: `replace` or `merge` the enabled entities
+  when changing `mode`.
+- Configuration UI translations for French, Spanish, Italian, Czech and
+  Finnish.
 
 ### Fixed
-- Point `1760` ("Operating mode internal add. heat") was misclassified
-  as a `binary_sensor` — it's actually a 4-state integer (0–3). The
-  Nibe REST API reports `minValue: 0, maxValue: 0` for this point, which
-  is indistinguishable from the metadata shape of ~125 genuinely binary
-  points on the same firmware (confirmed against a real 1158-point API
-  dump), ruling out a general heuristic fix; resolved with a targeted
-  `_BINARY_SENSOR_EXCLUSIONS` entry, the same approach already used for
-  other points sharing this ambiguity.
-- `clean_string()` was not idempotent: mojibake-character removal ran
-  *after* quote-stripping, so a string like `0"Â` could leave a stray
-  trailing `"` that only a second call would strip. Reordered so
-  mojibake/soft-hyphen removal happens before quote-stripping.
-- A `select` entity's write path could silently drop a legitimate
-  command if its value-mapping labels were built from live API
-  description text in a different state than what was used to publish
-  the entity's options to HA (e.g. after a restart with a different
-  `language`). It now accepts a raw integer payload as a fallback when
-  it's one of the mapping's own known keys, instead of only matching by
-  label text.
-- `DOCS.md` incorrectly stated that `secrets.yaml` credentials take
-  priority over the app's configuration UI — it's actually the lowest-
-  priority source and only fills in fields left blank in the UI.
-- The **Test API Connection** diagnostic could report the controller as
-  unreachable even when the bridge's real polling connection worked fine,
-  because the diagnostic's `curl` call didn't widen OpenSSL's default TLS
-  security level the way the real connection does to tolerate the
-  controller's old embedded TLS stack. The compatibility cipher string is
-  now a shared constant (`TLS_COMPAT_CIPHERS` in `nibe_utils.py`) used by
-  both, so the diagnostic mirrors the real connection's TLS behaviour.
-- The connectivity check's summary logic conflated "curl never reached
-  the host" with "curl reached the host but got an error status" (e.g.
-  HTTP 500), and a 401/403 response discarded any concurrent ping
-  failure from the summary. Now distinguishes "reached the host" from
-  "genuine network outage," and reports combined failure modes (e.g.
-  blocked ICMP *and* stale credentials) instead of only the first one
-  found.
-- Static MQTT entity attributes (description, default value, Modbus
-  register, etc.) were republished unconditionally on every discovery
-  call with no dedup, while the discovery config itself was already
-  deduped by a content hash — meaning an attributes-only firmware change
-  had no dedicated mechanism ensuring it got republished, and unchanged
-  attributes were rewritten to the broker every poll for no reason. Added
-  a separate attributes-content hash so attributes are republished only
-  when they actually change, independent of the discovery config hash.
-- The Lovelace menu dashboard treated a real firmware point with
-  `variableId`/`point_id` of `0` identically to the schema's "no point"
-  sentinel (`point_id: null`), because the code used a truthy check
-  (`if point_id:`) rather than an explicit `is not None` check — silently
-  dropping any such point from menus, defaults, and dynamic-point lookups.
-- Lovelace dashboard creation could permanently skip creating the
-  dashboard on a fresh install if the initial `lovelace/dashboards/list`
-  WebSocket call itself failed (e.g. a dead socket) — an empty result
-  from a failed call was indistinguishable from "no dashboard exists
-  yet," so it proceeded as if nothing needed creating. Now checks the
-  call's own success flag and retries on the next restart instead of
-  writing a skip flag on a failed list.
-- The nightly test-runner subprocess can leave its HTML report truncated
-  mid-multibyte-UTF-8 sequence when killed (hard timeout or manual
-  abort), which raised `UnicodeDecodeError` when post-processing the
-  report — uncaught, this overwrote the carefully-tracked aborted/
-  timed-out status with a generic error state. Now caught alongside the
-  existing `OSError` handling.
 
-### Changed
-- `build_select_config()` no longer takes an unused `metadata` parameter,
-  tightening the pure-config-builder contract now that entity options are
-  resolved from `point_id`/`description` alone.
+- "Operating mode internal add. heat" (1760) was a binary sensor instead
+  of a 4-state sensor.
+- A select no longer drops a command after a language change.
+- DOCS.md had the `secrets.yaml` priority backwards.
+- "Test API Connection" uses the same TLS settings as the real connection,
+  and reports combined failures correctly.
+- Unchanged attributes are no longer republished every poll.
+- A point with id 0 is no longer dropped from the dashboards.
+- A failed check no longer stops the dashboard from ever being created.
+- A killed test run no longer reports a misleading error.
 
 ---
 
 ## [1.0.5] — 2026-08-18
 
 ### Added
-- **Test API Connection** debug button and **Connectivity Check Result**
-  sensor — runs an independent `ping` + `curl` diagnostic against the
-  configured Nibe controller, using the bridge's real configured TLS
-  verification mode and credentials, so it can distinguish a network
-  problem, a TLS/CA problem, and a rejected-credentials problem from each
-  other without needing SSH/terminal access to the Home Assistant host.
-  Deliberately shares no code with `NibeApiClient` so the result is
-  independent of any bug in the bridge's own HTTP client.
-- The "API Unreachable" notification (both at startup and after repeated
-  failed polls) now includes the actual last error reason from the API
-  client (e.g. "timed out waiting for a response" instead of a blank
-  message for exceptions with no message text) and points the user at the
-  new Test API Connection button for further diagnosis.
+
+- "Test API Connection" button and result sensor, to tell network, TLS
+  and credential problems apart.
+- The "API Unreachable" notification shows the actual error.
 
 ### Fixed
-- The controller's HA device identity (`device_id`) was derived fresh from
-  the API response at every startup, falling back to a generic default
-  whenever the device happened to be transiently unreachable at that exact
-  moment. Since the Management device is published unconditionally at
-  every startup regardless of discovery success, a startup that hit this
-  fallback created a *new* HA device under a different identity, leaving
-  the previous one behind as an orphaned, empty duplicate with the same
-  display name. The real, serial-derived device_id is now persisted and
-  reused on any startup where the device is unreachable, instead of
-  falling back to the generic default.
-- A `select` entity's live state could silently diverge from its discovery
-  config's option list (e.g. showing the raw firmware description text
-  like `"price"` instead of the curated override `"Price per kWh"`) if the
-  point's metadata happened to be incomplete on the specific poll that
-  first populated its cached value mapping — the mapping is now looked up
-  by point ID across the manual override table unconditionally, instead of
-  only when the register type could be resolved from that poll's metadata.
-- Several concurrency/locking gaps found via targeted audit: a Lovelace
-  provisioning-thread iteration over live, unlocked dicts also mutated by
-  the poll thread; `last_bulk_fetch` written outside the lock that
-  protects it elsewhere; a publisher warning-dedup set with a check-then-add
-  race across threads; and `_mgmt_subscriptions` read/appended without a
-  lock during MQTT reconnect replay.
-- The nightly test-runner subprocess launch could fail with an
-  unhelpful, un-diagnosable "permission denied" — the AppArmor profile
-  had no rule granting traversal into `/` itself (only subpaths), which
-  the subprocess's `cwd='/'` needs; the `TimeoutExpired` handler also now
-  captures and logs the subprocess's real output and reports actual
-  elapsed time, instead of a generic message assuming the 4-hour hard
-  limit was reached.
-- A stale test subprocess from a previous run (e.g. after an abnormal
-  restart) is now killed before starting a new one, rather than
-  potentially running concurrently with it.
-- The nightly test suite could fire real Home Assistant persistent
-  notifications from fabricated test fixture data — two tests exercised
-  the real, unmocked `notify_ha`/`dismiss_ha` functions (which make a
-  genuine HTTP call to the Supervisor API, gated only by `SUPERVISOR_TOKEN`
-  being present, which the test subprocess inherits from the live add-on
-  process). Root cause of a real, reproducible false "Critical" alarm
-  notification a user saw with no matching alarm on the physical
-  controller, and a spurious dismiss-notification call on every
-  successful nightly run.
-- `debug_mode` and `log_level: debug` both independently controlled
-  whether debug-only entities (Run Test Suite, Flush Dynamic Map, etc.)
-  were shown — now `debug_mode` is the sole control; `log_level` only
-  affects logging verbosity.
-- `debug_mode`, `remove_frontend`, and `mqtt_tls` were declared as
-  optional (`bool?`) in `config.yaml`'s schema despite each having a real
-  default, unlike every other option with a default — normalized to
-  required `bool`, matching the project's own established convention.
-- The License badge/link in `README.md` used a relative path, which
-  doesn't resolve inside Home Assistant's own add-on documentation
-  viewer (it only renders the single file it's given, not the rest of
-  the repo) — now points at the absolute GitHub URL, matching the
-  README's other doc links.
-- The self-signed-TLS fallback for the Nibe API connection lowered the
-  minimum TLS version and permitted weaker ciphers beyond what's needed
-  just to accept a self-signed certificate — removed; the fallback still
-  accepts an unverified certificate (its intentional purpose) but now
-  uses Python's modern secure defaults otherwise.
-- The generated nightly test report link had no cache-busting, so
-  browsers could keep serving a stale cached copy after a new run —
-  added a `?v=<timestamp>` query parameter.
+
+- A controller unreachable at startup no longer creates a duplicate HA
+  device.
+- A select's state could disagree with its option list.
+- Several thread-safety gaps.
+- "Run Test Suite" could fail on permissions, run twice, or send real
+  alarm notifications from test data.
+- Debug entities follow `debug_mode` alone.
+- The self-signed TLS fallback no longer weakens TLS beyond accepting the
+  certificate.
+- The test report link always shows the latest run.
 
 ### Changed
-- Several `except Exception` blocks across `app/` narrowed to the actual
-  bounded set of exceptions the wrapped code can raise, improving
-  diagnosability of unexpected failures — reverted in the one case
-  (`on_dynamic_map_message`) where the narrower set turned out to be
-  incomplete, since that handler wraps a call into another object's
-  method whose full exception contract shouldn't be assumed.
-- Several config.yaml options (`api_failure_threshold`,
-  `changelog_retention_days`, `mode`, `log_level`) are now validated or
-  bounds-clamped in Python as well as HA's schema, closing a bypass via
-  hand-edited `options.json` or the dev-only `NIBE_MODE`/`NIBE_LOG_LEVEL`
-  environment variables — an invalid `mode` previously silently disabled
-  every enabled entity with no distinguishing warning.
+
+- Option values are validated in the bridge as well as by HA's schema.
 
 ---
 
 ## [1.0.4] — 2026-08-16
 
 ### Fixed
-- MQTT discovery configs for every enabled entity were being republished
-  unconditionally on every restart, regardless of whether anything
-  actually changed — the dedup cache that's supposed to prevent this
-  lives only in memory on the MQTT publisher, and that publisher is
-  rebuilt fresh every restart. The retained-config scan performed at
-  startup now seeds the cache from what it actually finds on the broker,
-  so a restart with no real changes now republishes little to nothing
-  instead of every entity's config.
-- `NIBE_LOG_LEVEL`/`NIBE_MODE` environment variables (documented for
-  development/Docker use) were silently ignored whenever the bridge was
-  invoked through its normal CLI argument parser, because the parser's
-  own defaults made the CLI arguments always look "explicitly set,"
-  which unconditionally overrides lower-priority sources. Only affected
-  invocations that bypass `run.sh`'s own options.json-to-CLI passthrough
-  (e.g. running the container directly); the packaged add-on's normal
-  startup path was unaffected.
-- A changelog "mark all read" action updated its internal bookkeeping
-  before, rather than after, its MQTT publish calls — unlike the
-  equivalent history-update path, which does this in the opposite order
-  deliberately for crash-safety. A broker reconnect racing the publish
-  could let a stale retained changelog message override the
-  just-cleared unread state.
-- A file-persistence path in the dynamic-point-map fallback used a
-  default argument that was bound once at startup rather than resolved
-  per call — invisible in normal operation, but inconsistent with how
-  the same problem was already solved elsewhere in this codebase.
 
-### Changed
-- Deduplicated an HA-side notification identifier that was independently
-  computed in two separate places — no behavior change, removes a latent
-  risk of the two copies drifting out of sync in the future.
+- Discovery configs are no longer all republished on every restart.
+- `NIBE_LOG_LEVEL`/`NIBE_MODE` are honoured when running the container
+  directly.
+- "Mark all read" in the changelog can no longer be undone by a reconnect.
 
 ---
 
 ## [1.0.3] — 2026-08-15
 
 ### Fixed
-- MQTT auto-discovery via the Supervisor Services API silently overrode an
-  explicitly configured `mqtt_host` (e.g. a user's own external broker IP)
-  whenever the official Mosquitto add-on was installed and registered —
-  the startup log would show `core-mosquitto:1883` instead of the
-  configured broker, with the connection then failing because that
-  internal hostname isn't resolvable outside HA's own Docker network.
-  Auto-discovery now only runs when `mqtt_host` is still at its default
-  value; any other value means the user made an explicit choice and is no
-  longer silently overridden.
-- `resubscribe_all()` (running on paho's MQTT network thread after a
-  broker reconnect) reassigned `value_cache` and `last_bulk_fetch` with no
-  lock, racing against the poll loop thread's own reads/writes of the same
-  two attributes. Both races were bounded and self-healing in practice,
-  but relied on CPython implementation details rather than being correct
-  by construction — both are now reassigned under `_em_lock`.
-- The "Flush Dynamic Map" debug button mutated `dynamic_point_map` and
-  persisted it to disk without holding `_em_lock`, while the poll thread
-  and the write-executor thread both correctly serialize the same table
-  via that lock — a genuine data-structure race, not just a stale read: a
-  flush landing mid-mutation on either of those threads could corrupt
-  `dynamic_point_map._table`. Now serialized the same way as the other two
-  mutators, with a regression test proving real mutual exclusion.
-- A logger-level leak in three `_build_logging` tests (`tests/test_generate.py`)
-  left `logging.getLogger('nibe')` at `DEBUG`/`INFO` for the rest of the
-  test session depending on execution order, which under one unlucky
-  `pytest-randomly` seed turned a mocked-time deadline check in
-  `_run_learning_detection` into a genuine CPU-bound infinite loop —
-  the actual cause of an intermittent CI timeout. Each test now restores
-  the logger's level in its `finally` block.
-- The pytest subprocess behind the "Run Test Suite" debug button now
-  launches with `start_new_session=True`, and a new `abort_test_suite()`
-  kills its whole process group (not just the top-level PID) as the first
-  step of the add-on's shutdown sequence — killing only the top-level
-  process left `pytest -n auto`'s xdist workers running as orphans, still
-  holding the output pipes open, so shutdown would hang waiting for pipe
-  EOF that never came. An aborted run is now reported as a distinct
-  `aborted` status with no HA notification, instead of misreporting the
-  kill's exit code as a real test failure.
-- `run_test_suite` now resolves the pytest interpreter via `shutil.which()`
-  when `sys.executable` comes back empty (observed on the ODROID's
-  Alpine/musl container), and runs on its own dedicated executor instead
-  of sharing the 2-worker `mgmt_executor` pool, so a long test run can no
-  longer be queued behind (or itself block) unrelated management commands.
-- Fixed the success-path test-result summary: the raw pytest-html report
-  line wasn't reliably stripped, skipped-test progress dots weren't
-  recognised as noise, and the replacement report link was plain text
-  instead of a real Markdown link, which silently broke its clickability.
+
+- A configured `mqtt_host` is no longer replaced by `core-mosquitto`
+  when the Mosquitto add-on is installed.
+- Several thread-safety fixes, including "Flush Dynamic Map".
+- "Run Test Suite" can be stopped cleanly, finds Python on Alpine, and
+  runs on its own executor.
 
 ### Added
-- Dependabot config (`pip` + `github-actions`, grouped weekly updates) and
-  a CI workflow that runs the full test suite on every push/PR to `main`.
+
+- Dependabot and CI.
 
 [1.0.3]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.3
 
@@ -1101,43 +455,9 @@ changed intentionally beyond the fixes below.
 ## [1.0.2] — 2026-08-14
 
 ### Fixed
-- The "Run Test Suite" debug feature used `subprocess.run()` to launch the
-  bridge's own pytest suite, which blocks with no way to cancel it
-  externally. Python's own `atexit` hook for `ThreadPoolExecutor` then
-  blocked the whole add-on's process exit until that subprocess finished on
-  its own — up to the full 25-30+ minute run — so rebuilding or stopping
-  the add-on while a test run was in flight got the container SIGKILLed by
-  Docker's stop grace period (exit code 137) instead of shutting down
-  cleanly.
-- The pytest subprocess now launches with `start_new_session=True`, and a
-  new `abort_test_suite()` kills its *entire process group* (not just the
-  top-level PID) as the first step of the add-on's shutdown sequence —
-  killing only the top-level process left `pytest -n auto`'s xdist worker
-  subprocesses running as orphans, still holding the output pipes open, so
-  the shutdown sequence would hang waiting for pipe EOF that never came.
-- An aborted run (killed because the add-on is shutting down) is now
-  reported as a distinct `aborted` status with no HA notification, instead
-  of misreporting the kill's exit code as a real test **FAILED** result.
-- `run_test_suite` now resolves the pytest interpreter via `shutil.which()`
-  when `sys.executable` comes back empty — observed on the ODROID's
-  Alpine/musl container, where the bare `'python3'` fallback previously
-  depended on the *subprocess's* own `PATH` resolution and failed with
-  "no such file: python3".
-- Fixed the success-path test-result summary: the raw pytest-html report
-  line wasn't reliably stripped (the noise filter required an exact
-  3-dash prefix; real output sometimes used a different dash count),
-  skipped-test progress dots (`s`) weren't recognised as noise either, and
-  the replacement report link was written as plain text instead of a real
-  Markdown link, which silently broke its clickability. Added a
-  right-click hint, since Home Assistant's frontend intercepts same-origin
-  left-clicks for its own client-side router rather than opening the link.
 
-### Changed
-- `run_test_suite` now runs on its own dedicated single-worker executor
-  instead of sharing the 2-worker `mgmt_executor` pool with every other
-  management command, so a long test run can no longer be queued behind
-  (or itself block) unrelated commands like force-poll or snapshot
-  restore.
+- Stopping the add-on during a test run no longer gets it killed, and an
+  aborted run is no longer reported as failed.
 
 [1.0.2]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.2
 
@@ -1146,37 +466,12 @@ changed intentionally beyond the fixes below.
 ## [1.0.1] — 2026-08-14
 
 ### Fixed
-- Lovelace card file was copied to `/config/www` and the AppArmor profile granted
-  `/config/**` rw, but this add-on's `homeassistant_config` map actually mounts the
-  HA config directory at `/homeassistant`, not `/config`. The copy silently
-  "succeeded" against a path inside the container's own ephemeral filesystem, so
-  the card file never reached the host's real `www` folder — Home Assistant would
-  then report `Custom element doesn't exist: nibe-entity-manager-card` even though
-  startup logs claimed the file was copied and the Lovelace resource was
-  registered. `nibe_lovelace.py` and `apparmor.txt` now target `/homeassistant`
-  to match the actual mount.
+
+- The Entity Manager card file is copied to the right `www` folder.
 
 ### Changed
-- Extracted `ValueCache`/`LRUCache` out of `nibe_entity_manager.py` into a new
-  `nibe_caching.py` module.
-- Extracted MQTT discovery config-building out of `nibe_mqtt_publisher.py` into a
-  new, pure `nibe_discovery_config.py` module.
-- Extracted `_handle_run_tests` test-execution logic out of `nibe_ha_integration.py`
-  into a new `nibe_test_runner.py` module.
-- `nibe_ha_integration.py`'s `_handle_event` branches now take a lock-protected
-  snapshot of `_unique_id_map` instead of reading the live dict.
-- `nibe_lovelace.py`: extracted `_wait_for_registry_stable` from
-  `_setup_menu_dashboard`; fixed a debounce timer race with a new
-  `_regen_timer_lock`.
-- Split the ~9,800-line `tests/test_entity_manager.py` (which had accumulated
-  ~120 duplicate/shadowed test classes) into 9 files by subsystem: snapshots,
-  changelog, dynamic points, polling, commands, lifecycle, state, and discovery.
-- Added a GitHub Actions workflow (`.github/workflows/publish-image.yml`) for
-  building and publishing multi-arch add-on images (not yet enabled by default —
-  `config.yaml`'s `image:` key stays commented out until the workflow has been
-  run at least once).
-- Relicensed under `LICENSE.md` (replaces the previous `LICENSE` file).
-- Removed the unused `net_bind_service` AppArmor capability.
+
+- Code split into smaller modules; relicensed under `LICENSE.md`.
 
 [1.0.1]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.1
 
@@ -1185,6 +480,5 @@ changed intentionally beyond the fixes below.
 ## [1.0.0] — 2026-07-23
 
 Initial public release.
-
 
 [1.0.0]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.0.0

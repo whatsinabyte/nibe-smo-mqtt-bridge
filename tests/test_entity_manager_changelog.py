@@ -620,22 +620,70 @@ class TestChangelogConsistency(unittest.TestCase):
 
     def test_seq_guard_allows_load_when_seq_differs(self):
         """on_history_message must load the payload when incoming_seq differs
-        from _last_published_seq — this is the normal restart case."""
+        from _last_published_seq — the normal restart case, where this
+        process hasn't published yet and the retained copy carries the
+        previous process's _seq."""
         from nibe_entity_manager import EntityManager, _compress_payload
 
-        self.em._last_published_seq = 5
+        self.em._last_published_seq = 0
         self.em.change_history.clear()
         EntityManager._setup_history_loading(self.em)
 
         payload_data = {
             "history": [self._entry()],
-            "_seq": 3,  # different from _last_published_seq=5
+            "_seq": 3,  # the previous process's
         }
         msg = MagicMock()
         msg.payload = _compress_payload(payload_data).encode("utf-8")
         self.em._on_history_message(None, None, msg)
 
         self.assertEqual(len(self.em.change_history), 1)
+
+    def test_restart_continues_the_restored_seq(self):
+        """The card discards a history whose _seq isn't above the last one it
+        saw. Restarting the sequence at 1 on every bridge restart left an
+        open card ignoring every changelog update until it was reloaded."""
+        from nibe_entity_manager import EntityManager, _compress_payload, _decompress_payload
+
+        self.em._last_published_seq = 0
+        self.em._history_seq = 0
+        self.em.change_history.clear()
+        EntityManager._setup_history_loading(self.em)
+        msg = MagicMock()
+        msg.payload = _compress_payload({"history": [self._entry()], "_seq": 5}).encode("utf-8")
+        self.em._on_history_message(None, None, msg)
+
+        self.em._update_changelog_history(
+            {"added": [{"id": 1, "title": "T", "type": "sensor"}], "removed": []}
+        )
+        history_publishes = [
+            c for c in self.em.mqtt.publish.call_args_list if c.args[0].endswith("history")
+        ]
+        published = json.loads(_decompress_payload(history_publishes[-1].args[1].encode()))
+        self.assertEqual(published["_seq"], 6)
+
+    def test_late_echo_of_an_earlier_publish_does_not_roll_history_back(self):
+        """Two publishes in quick succession: the first one's echo arriving
+        after the second used to reload the older history over the newer,
+        and the next publish then lost the latest entry for good."""
+        from nibe_entity_manager import EntityManager
+
+        self.em._last_published_seq = 0
+        self.em.change_history.clear()
+        EntityManager._setup_history_loading(self.em)
+
+        def event(pid):
+            return {"added": [{"id": pid, "title": "T", "type": "sensor"}], "removed": []}
+
+        self.em._update_changelog_history(event(10))
+        first = [c for c in self.em.mqtt.publish.call_args_list if c.args[0].endswith("history")]
+        echo = MagicMock()
+        echo.payload = first[-1].args[1].encode("utf-8")
+        self.em._update_changelog_history(event(11))
+        self.em._on_history_message(None, None, echo)
+
+        ids = [a["id"] for e in self.em.change_history for a in e["added"]]
+        self.assertIn(11, ids)
 
     def test_seq_guard_skips_load_when_seq_matches(self):
         """on_history_message must skip loading when incoming_seq matches

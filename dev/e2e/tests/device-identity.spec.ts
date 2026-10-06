@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
 
 /**
  * ARCHITECTURE.md §4.1's "device identity persistence": the HA device
@@ -243,7 +243,7 @@ test('restarting while the controller is unreachable does not create a duplicate
 
     // Secondary: HA's registry gained nothing. Give it time to process the
     // republished discovery configs before concluding that.
-    await page.goto('/');
+    await gotoLoggedIn(page, '/');
     await expect
       .poll(async () => nibeDeviceCount(page), {
         timeout: 60_000,

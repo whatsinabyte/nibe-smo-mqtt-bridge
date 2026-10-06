@@ -133,6 +133,29 @@ describe('nibe/browser/snapshots', () => {
 });
 
 describe('nibe/browser/applied_mode', () => {
+  it('redraws an open snapshots modal when the mode changes', () => {
+    // The restore-blocked warning and the disabled Restore buttons depend on
+    // the mode; a switch made while the modal was open left them stale.
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/applied_mode', 'essential');
+    harness.publish('nibe/browser/snapshots', snapshotsPayload([sampleSnapshot()]));
+    el.showSnapshots();
+    const restore = () => el.shadowRoot.querySelector('.snapshot-restore-btn');
+    expect(restore().disabled).toBe(false);
+
+    harness.publish('nibe/browser/applied_mode', 'menus');
+    expect(el.shadowRoot.getElementById('snapshots-list').innerHTML).toContain('Restore is disabled');
+    expect(restore().disabled).toBe(true);
+  });
+
+  it('does not redraw the snapshots list while the modal is closed', () => {
+    const { el, harness } = createCard();
+    const spy = vi.spyOn(el, '_renderSnapshotsList');
+    harness.publish('nibe/browser/applied_mode', 'menus');
+    harness.publish('nibe/browser/snapshots', snapshotsPayload([sampleSnapshot()]));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('stores the plain-string payload trimmed', () => {
     const { el, harness } = createCard();
     harness.publish('nibe/browser/applied_mode', ' essential \n');
@@ -199,5 +222,78 @@ describe('snapshot names containing characters that break CSS selectors', () => 
     el._sendSnapshotCmd = payload => sent.push(payload);
     el.shadowRoot.querySelector('.snapshot-do-restore[data-mode="flush"]').click();
     expect(sent).toEqual([{ action: 'restore', name: NAME, mode: 'flush' }]);
+  });
+});
+
+// The bridge used to only log snapshot command results, so a refused save
+// (the snapshot limit) or restore looked to the user exactly like a success.
+describe('nibe/browser/snapshots/result', () => {
+  const result = (r) => JSON.stringify(r);
+
+  it('subscribes to the result topic', () => {
+    const { harness } = createCard();
+    expect(harness.findSubscription('nibe/browser/snapshots/result')).toBeTruthy();
+  });
+
+  it('a refused save shows the bridge message in red and an error toast', () => {
+    vi.useFakeTimers();
+    const { el, harness } = createCard();
+    el.isLoading = false;
+    el.showSnapshots();
+    el.shadowRoot.getElementById('snapshot-name-input').value = 'Winter';
+    el._handleSnapshotSave();
+    const toast = vi.spyOn(el, 'showToast');
+    harness.publish('nibe/browser/snapshots/result', result({
+      action: 'save', name: 'Winter', ok: false, message: 'Maximum of 10 snapshots reached.',
+    }));
+    const msgEl = el.shadowRoot.getElementById('snapshot-save-msg');
+    expect(msgEl.textContent).toBe('Maximum of 10 snapshots reached.');
+    expect(msgEl.style.color).toBe('rgb(229, 57, 53)');
+    expect(toast).toHaveBeenCalledWith('Maximum of 10 snapshots reached.', 'error', 6000);
+    vi.advanceTimersByTime(11000); // the no-response fallback must not overwrite it
+    expect(msgEl.textContent).toBe('Maximum of 10 snapshots reached.');
+    vi.useRealTimers();
+  });
+
+  it('a save with no reply says so after 10 seconds', () => {
+    vi.useFakeTimers();
+    const { el } = createCard();
+    el.showSnapshots();
+    el.shadowRoot.getElementById('snapshot-name-input').value = 'Winter';
+    el._handleSnapshotSave();
+    vi.advanceTimersByTime(10000);
+    expect(el.shadowRoot.getElementById('snapshot-save-msg').textContent).toContain('No response from the bridge');
+    vi.useRealTimers();
+  });
+
+  it('a refused restore keeps its panel open with the reason; a successful one closes it', () => {
+    vi.useFakeTimers();
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/snapshots', snapshotsPayload([sampleSnapshot({ name: 'Winter' })]));
+    el.showSnapshots();
+    const panel = () => el.shadowRoot.querySelector('.snapshot-restore-options');
+    el.shadowRoot.querySelector('.snapshot-restore-btn').click();
+    el.shadowRoot.querySelector('.snapshot-do-restore[data-mode="flush"]').click();
+    expect(panel().style.display).toBe('block');
+
+    harness.publish('nibe/browser/snapshots/result', result({
+      action: 'restore', name: 'Winter', ok: false, message: "Snapshot 'Winter' not found.",
+    }));
+    vi.advanceTimersByTime(5000);
+    expect(panel().style.display).toBe('block');
+    expect(el.shadowRoot.querySelector('.snapshot-restore-msg').textContent).toBe("Snapshot 'Winter' not found.");
+
+    harness.publish('nibe/browser/snapshots/result', result({
+      action: 'restore', name: 'Winter', ok: true, message: 'Restored 5 points',
+    }));
+    vi.advanceTimersByTime(3000);
+    expect(panel().style.display).toBe('none');
+    vi.useRealTimers();
+  });
+
+  it('ignores a malformed result without throwing', () => {
+    const { harness } = createCard();
+    expect(() => harness.publish('nibe/browser/snapshots/result', '{bad')).not.toThrow();
+    expect(() => harness.publish('nibe/browser/snapshots/result', 'null')).not.toThrow();
   });
 });

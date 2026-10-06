@@ -21,6 +21,55 @@ function seedEntities(el, harness, n = 5) {
 }
 
 describe('filters', () => {
+  // A search only decides whether an entity matches; the dropdown filters
+  // must still apply. Each search path used to return straight from a match,
+  // so the filters were ignored while searching and "Select all" picked up
+  // entities they had hidden.
+  function seedForSearch(el, harness) {
+    harness.publish('nibe/browser/all_metadata', allMetadataPayload([
+      sampleMetadataEntry({ id: 101, title: 'Pump BT1', type: 'switch', unit: '°C' }),
+      sampleMetadataEntry({ id: 102, title: 'Pump BT2', type: 'sensor', unit: '°C' }),
+      sampleMetadataEntry({ id: 103, title: 'Pump BT3', type: 'binary_sensor', unit: '°C' }),
+    ]));
+    harness.publish('nibe/browser/enabled_state', enabledStatePayload([101, 103]));
+  }
+
+  it('applies the type filter to an ID-prefix search match', () => {
+    const { el, harness } = createCard();
+    seedForSearch(el, harness);
+    el.typeFilter = 'switch';
+    el.searchTerm = '10';
+    expect(el.getFilteredEntities().map((e) => e.id)).toEqual([101]);
+  });
+
+  it('applies the status filter to a unit search match', () => {
+    const { el, harness } = createCard();
+    seedForSearch(el, harness);
+    el.statusFilter = 'disabled';
+    el.searchTerm = '°C';
+    expect(el.getFilteredEntities().map((e) => e.id)).toEqual([102]);
+  });
+
+  it('applies the type filter to a fuzzy title match', () => {
+    const { el, harness } = createCard();
+    seedForSearch(el, harness);
+    // Fuse is loaded lazily from a CDN in the real card; stand in for it.
+    el._fuse = { search: () => [101, 102, 103].map((id) => ({ item: { id } })) };
+    el.typeFilter = 'sensor';
+    el.searchTerm = 'pump';
+    expect(el.getFilteredEntities().map((e) => e.id)).toEqual([102]);
+  });
+
+  it('select all only selects what the filters show while searching', () => {
+    const { el, harness } = createCard();
+    seedForSearch(el, harness);
+    el.typeFilter = 'switch';
+    el.searchTerm = '10';
+    el.updateTable();
+    el.selectAll();
+    expect([...el.selectedIds]).toEqual([101]);
+  });
+
   it('filters by type', () => {
     const { el, harness } = createCard();
     seedEntities(el, harness);

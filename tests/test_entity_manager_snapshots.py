@@ -237,6 +237,15 @@ class TestSaveSnapshot(unittest.TestCase):
             em.mqtt_enabled_points.add(pid)
         return em
 
+    def test_save_records_the_known_mode_without_the_mode_file(self):
+        """The /data applied-mode file can be missing; the snapshot then said
+        mode "unknown" although the bridge knew which mode it applied."""
+        em = self._em_with_enabled([1])
+        em._applied_mode_known = "monitoring"
+        with patch.object(em, "_read_applied_mode_from_file", return_value=None):
+            em.save_snapshot("Test", path=self._path)
+        self.assertEqual(em._load_snapshots(path=self._path)[0]["mode"], "monitoring")
+
     def test_save_creates_snapshot_with_correct_fields(self):
         em = self._em_with_enabled([1, 2, 3])
         ok, _msg = em.save_snapshot("Test", path=self._path)
@@ -456,6 +465,35 @@ class TestRestoreSnapshot(unittest.TestCase):
         self.assertIn(2, em._wanted_points)
         self.assertIn(4, em._wanted_points)
 
+    def test_flush_restore_drops_a_point_disabled_by_the_absence_grace(self):
+        """Wanted but not enabled (disabled after _ABSENT_GRACE_S of absence),
+        so the flush loop over enabled points never reached it: when it came
+        back it was re-enabled, undoing the restored selection."""
+        em = self._em_with_firmware(all_pids=[1, 2, 3], enabled_pids=[1])
+        em._wanted_points = {1, 3}
+        self._seed_snapshot(em, "Snap", [1])
+        em.restore_snapshot("Snap", mode="flush", path=self._path)
+        self.assertNotIn(3, em._wanted_points)
+        self.assertIn(1, em._wanted_points)
+
+    def test_merge_restore_keeps_a_point_disabled_by_the_absence_grace(self):
+        em = self._em_with_firmware(all_pids=[1, 2, 3], enabled_pids=[1])
+        em._wanted_points = {1, 3}
+        self._seed_snapshot(em, "Snap", [2])
+        em.restore_snapshot("Snap", mode="merge", path=self._path)
+        self.assertIn(3, em._wanted_points)
+
+    def test_restore_is_blocked_in_a_known_menus_mode_without_the_mode_file(self):
+        """The guard read /data/applied_mode alone; where that file is
+        missing, a restore in menus mode went ahead."""
+        em = self._em_with_firmware(all_pids=[1, 2], enabled_pids=[1])
+        self._seed_snapshot(em, "Snap", [2])
+        em._applied_mode_known = "menus"
+        with patch.object(em, "_read_applied_mode_from_file", return_value=None):
+            ok, msg = em.restore_snapshot("Snap", mode="flush", path=self._path)
+        self.assertFalse(ok)
+        self.assertIn("menus", msg)
+
     def test_flush_does_not_disable_dynamic_points(self):
         em = self._em_with_firmware(
             all_pids=[1, 2, 10],
@@ -555,13 +593,17 @@ class TestRestoreSnapshot(unittest.TestCase):
     def test_restore_missing_points_logs_exact_message(self):
         em = self._em_with_firmware(all_pids=[1])
         self._seed_snapshot(em, "Snap", [1, 999, 998])
-        with self.assertLogs("nibe.restore", level="WARNING") as cm:
+        with self.assertLogs("nibe.restore", level="INFO") as cm:
             em.restore_snapshot("Snap", path=self._path)
-        self.assertEqual(len(cm.output), 1)
+        skipped = [line for line in cm.output if "no longer in firmware" in line]
         self.assertEqual(
-            cm.output[0],
-            "WARNING:nibe.restore:Snapshot 'Snap': 2 point(s) no longer in "
-            "firmware — skipped: [998, 999]",
+            skipped,
+            [
+                (
+                    "INFO:nibe.restore:Snapshot 'Snap': 2 point(s) no longer in "
+                    "firmware — skipped: [998, 999]"
+                )
+            ],
         )
 
     def test_restore_missing_points_log_list_truncated_to_10(self):
@@ -570,7 +612,7 @@ class TestRestoreSnapshot(unittest.TestCase):
         em = self._em_with_firmware(all_pids=[1, 2])
         missing_pids = list(range(100, 111))  # 11 missing ids: 100..110
         self._seed_snapshot(em, "BigSnap", missing_pids)
-        with self.assertLogs("nibe.restore", level="WARNING") as cm:
+        with self.assertLogs("nibe.restore", level="INFO") as cm:
             em.restore_snapshot("BigSnap", path=self._path)
         logged = cm.output[0]
         self.assertIn(str(sorted(missing_pids)[:10]), logged)

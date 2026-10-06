@@ -6,7 +6,6 @@ import { changelogHistoryPayload, changelogEntry, changelogUnreadPayload } from 
 // read loop (node:stream/web), which needs more than a single microtask/macrotask
 // tick to settle, and how long varies with machine load. A generous real
 // timer is simpler and more robust here than guessing the exact tick count.
-const flush = () => new Promise((r) => setTimeout(r, 100));
 
 describe('nibe/browser/changelog/history (gzip)', () => {
   it('decompresses and stores the history on the happy path', async () => {
@@ -15,7 +14,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry()], total_entries: 50, unread_count: 1, seq: 1 })
     );
-    await flush();
+    await harness.settle();
 
     expect(el.changelog).toHaveLength(1);
     expect(el.changelog[0].added[0].id).toBe(3755);
@@ -30,7 +29,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry({ added: [], removed: [] })], seq: 1 })
     );
-    await flush();
+    await harness.settle();
     expect(el.changelog).toHaveLength(0);
   });
 
@@ -43,7 +42,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
         seq: 1,
       })
     );
-    await flush();
+    await harness.settle();
     expect(el.changelog).toHaveLength(1);
     expect(el.changelog[0].added).toEqual([{ id: 1 }]);
   });
@@ -54,7 +53,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry({ id: 'a' })], seq: 5 })
     );
-    await flush();
+    await harness.settle();
     expect(el._lastChangelogSeq).toBe(5);
 
     // Stale replay with an older seq must be ignored entirely.
@@ -62,7 +61,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry({ id: 'b', added: [{ id: 999 }] })], seq: 3 })
     );
-    await flush();
+    await harness.settle();
     expect(el._lastChangelogSeq).toBe(5);
     expect(el.changelog[0].id).toBe('a');
   });
@@ -73,12 +72,12 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry({ id: 'a' })], seq: 5 })
     );
-    await flush();
+    await harness.settle();
     harness.publish(
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry({ id: 'b' })], seq: 6 })
     );
-    await flush();
+    await harness.settle();
     expect(el._lastChangelogSeq).toBe(6);
     expect(el.changelog[0].id).toBe('b');
   });
@@ -89,11 +88,11 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry()], seq: 1 })
     );
-    await flush();
+    await harness.settle();
     expect(el.changelog).toHaveLength(1);
 
     harness.publish('nibe/browser/changelog/history', '');
-    await flush();
+    await harness.settle();
     expect(el.changelog).toHaveLength(0);
   });
 
@@ -104,21 +103,21 @@ describe('nibe/browser/changelog/history (gzip)', () => {
     const { gzipSync } = await import('node:zlib');
     const raw = 'gzip1:' + gzipSync(Buffer.from('{not valid json', 'utf-8')).toString('base64');
     expect(() => harness.publish('nibe/browser/changelog/history', raw)).not.toThrow();
-    await flush();
+    await harness.settle();
     expect(el.changelog).toEqual([]);
   });
 
   it('does not throw on a non-gzip / garbage payload', async () => {
     const { el, harness } = createCard();
     expect(() => harness.publish('nibe/browser/changelog/history', 'not-even-gzip-prefixed')).not.toThrow();
-    await flush();
+    await harness.settle();
     expect(el.changelog).toEqual([]);
   });
 
   it('does not throw on null payload', async () => {
     const { harness } = createCard();
     expect(() => harness.publish('nibe/browser/changelog/history', null)).not.toThrow();
-    await flush();
+    await harness.settle();
   });
 
   it('refreshes the open changelog modal in place when fresh data arrives', async () => {
@@ -130,7 +129,7 @@ describe('nibe/browser/changelog/history (gzip)', () => {
       'nibe/browser/changelog/history',
       changelogHistoryPayload({ history: [changelogEntry()], seq: 1 })
     );
-    await flush();
+    await harness.settle();
 
     const content = el.shadowRoot.getElementById('changelog-content').innerHTML;
     expect(content).toContain('Extra pump speed');

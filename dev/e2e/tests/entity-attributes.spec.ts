@@ -1,7 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
 
 /**
  * DOCS.md's "Entity attributes" section makes a concrete promise to users
@@ -52,6 +52,20 @@ function candidateIds(): number[] {
   }
   ids.sort((a, b) => a - b);
   return ids;
+}
+
+/** Mirrors nibe_entity_detection.SAFETY_READ_ONLY_POINTS. */
+const SAFETY_READ_ONLY_POINTS = new Set<number>([
+  55749,
+  55884,
+  ...Array.from({ length: 24 }, (_, i) => 26817 + i),
+]);
+
+/** Mirrors is_writable_point(): holding (or no register) is writable, input
+ * is not, and the safety read-only points never are. */
+function expectedWritable(pointId: string, meta: any): boolean {
+  if (SAFETY_READ_ONLY_POINTS.has(Number(pointId))) return false;
+  return ['MODBUS_HOLDING_REGISTER', 'MODBUS_NO_REGISTER'].includes(meta.modbusRegisterType);
 }
 
 function dumpPoint(pointId: string): any {
@@ -112,7 +126,7 @@ test('an enabled entity carries the attributes DOCS.md promises, with the docume
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   const searchInput = card.locator('#search-input');
@@ -125,8 +139,15 @@ test('an enabled entity carries the attributes DOCS.md promises, with the docume
     const candidateId = String(candidate);
     await searchInput.fill(candidateId);
     const row = card.locator(`tr[data-id="${candidateId}"]`);
-    if ((await row.count()) === 0) continue;
-    await expect(row).toBeVisible({ timeout: 10_000 });
+    // The table re-renders on a debounce after the search box changes, so the
+    // row may not exist yet. A single immediate row.count() used to skip real
+    // candidates that simply hadn't been drawn — failing the spec whenever the
+    // first candidate happened to be enabled already by an earlier spec.
+    try {
+      await expect(row).toBeVisible({ timeout: 5_000 });
+    } catch {
+      continue; // genuinely not in the card
+    }
 
     const enableButton = row.locator('button[data-action="enable"]');
     if ((await enableButton.count()) === 0) continue;
@@ -180,9 +201,11 @@ test('an enabled entity carries the attributes DOCS.md promises, with the docume
   // modbusRegisterID and not the point id, which for many registers differs.
   expect(attributes.modbus_register).toBe(String(meta.modbusRegisterID));
 
-  // Documented as a boolean, and used directly in template conditions.
+  // Documented as a boolean, and used directly in template conditions. It
+  // follows the register type, not the firmware's isWritable flag (wrong on
+  // 17 holding registers), and is false for the safety read-only points.
   expect(typeof attributes.writable).toBe('boolean');
-  expect(attributes.writable).toBe(Boolean(meta.isWritable));
+  expect(attributes.writable).toBe(expectedWritable(pointId!, meta));
 
   // Documented as "factory default value in display units — e.g. 20 °C".
   // The substantive claim is "display units": the divisor-applied value, not
