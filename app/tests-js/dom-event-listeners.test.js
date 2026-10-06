@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createCard } from './support/create-card.js';
-import { allMetadataPayload, sampleMetadataEntry } from './support/fixtures.js';
+import { allMetadataPayload, sampleMetadataEntry, enabledStatePayload } from './support/fixtures.js';
 
 // This file exercises the real addEventListener callback bodies registered
 // in setupEventListeners() / setupMobileEventListeners() / attachTableEventListeners()
@@ -355,7 +355,8 @@ describe('lifecycle: connectedCallback / disconnectedCallback / getCardSize / sl
     el.disconnectedCallback();
 
     expect(el.mqttSetupDone).toBe(false);
-    expect(el.eventListenersSet).toBe(false);
+    // The DOM and its listeners survive a disconnect — see the next test.
+    expect(el.eventListenersSet).toBe(true);
     // cleanupSubscriptions() empties the local array synchronously.
     expect(el.mqttSubscriptions).toEqual([]);
 
@@ -366,6 +367,27 @@ describe('lifecycle: connectedCallback / disconnectedCallback / getCardSize / sl
     await Promise.resolve();
     await Promise.resolve();
     expect(harness.subscriptions).toEqual([]);
+  });
+
+  it('moving the card in the DOM leaves each control with one click handler', () => {
+    // Lovelace detaches and re-inserts card elements while it lays out a
+    // view. Re-attaching listeners on reconnect gave every control a second
+    // handler: the mobile filter toggle opened and closed in one tap, and a
+    // column header could never flip its sort direction.
+    const { el } = createCard();
+    const parent = el.parentNode;
+    el.remove();
+    parent.appendChild(el);
+
+    const th = el.shadowRoot.querySelector('th[data-sort="type"]');
+    th.click();
+    expect(el.sortAscending).toBe(true);
+    th.click();
+    expect(el.sortAscending).toBe(false);
+
+    el.shadowRoot.getElementById('mobile-filter-toggle').click();
+    expect(el.showMobileFilters).toBe(true);
+    expect(el.shadowRoot.getElementById('mobile-filter-panel').style.display).toBe('block');
   });
 
   it('getCardSize returns 4', () => {
@@ -401,5 +423,84 @@ describe('setupMqttSubscriptions error handling', () => {
     expect(() => el.setupMqttSubscriptions()).not.toThrow();
     expect(errorSpy).toHaveBeenCalledWith('MQTT setup failed:', expect.any(Error));
     errorSpy.mockRestore();
+  });
+});
+
+// Lovelace calls setConfig() again on a live card whenever it re-applies the
+// card's config, and render() rebuilds the whole shadow DOM. The card's state
+// survives that; what's on screen used to not.
+describe('setConfig() on a live card', () => {
+  function seededCard() {
+    vi.useFakeTimers();
+    const { el, harness } = createCard();
+    harness.publish(
+      'nibe/browser/all_metadata',
+      allMetadataPayload([1, 2, 3].map((id) => sampleMetadataEntry({ id, type: id === 2 ? 'switch' : 'sensor' })))
+    );
+    harness.publish('nibe/browser/enabled_state', enabledStatePayload([1]));
+    vi.runAllTimers();
+    return el;
+  }
+  const rowIds = (el) =>
+    [...el.shadowRoot.querySelectorAll('tbody tr[data-id]')].map((r) => Number(r.dataset.id));
+
+  it('redraws the table instead of leaving it empty', () => {
+    const el = seededCard();
+    expect(rowIds(el)).toHaveLength(3);
+    el.setConfig({});
+    expect(rowIds(el)).toHaveLength(3);
+    vi.useRealTimers();
+  });
+
+  it('keeps the search box and filters showing what is applied', () => {
+    const el = seededCard();
+    el.typeFilter = 'switch';
+    el.searchTerm = '2';
+    el.updateTable();
+    el.setConfig({});
+    expect(el.shadowRoot.getElementById('type-filter').value).toBe('switch');
+    expect(el.shadowRoot.getElementById('search-input').value).toBe('2');
+    expect(rowIds(el)).toEqual([2]);
+    vi.useRealTimers();
+  });
+
+  it('reopens an open changelog modal with its content', () => {
+    const el = seededCard();
+    el.showChangelog();
+    el.setConfig({});
+    const modal = el.shadowRoot.getElementById('changelog-modal');
+    expect(modal.classList.contains('show')).toBe(true);
+    expect(el.shadowRoot.getElementById('changelog-content').textContent).toContain('No changes recorded yet');
+    vi.useRealTimers();
+  });
+
+  it('reopens an open details modal for the same point', () => {
+    const el = seededCard();
+    el.showEntityDetails(2);
+    el.setConfig({});
+    expect(el._openModalId).toBe('details-modal');
+    expect(el.shadowRoot.getElementById('details-modal').classList.contains('show')).toBe(true);
+    expect(el.shadowRoot.querySelector('#details-modal .modal-body').innerHTML).toContain('>2<');
+    vi.useRealTimers();
+  });
+
+  it('keeps an open mobile filter panel open, so its toggle still works', () => {
+    const el = seededCard();
+    el.shadowRoot.getElementById('mobile-filter-toggle').click();
+    expect(el.showMobileFilters).toBe(true);
+    el.setConfig({});
+    expect(el.shadowRoot.getElementById('mobile-filter-panel').style.display).toBe('block');
+    el.shadowRoot.getElementById('mobile-filter-toggle').click(); // one tap closes it
+    expect(el.shadowRoot.getElementById('mobile-filter-panel').style.display).toBe('none');
+    vi.useRealTimers();
+  });
+
+  it('leaves the details modal closed if its point has gone meanwhile', () => {
+    const el = seededCard();
+    el.showEntityDetails(2);
+    el.entities.delete(2);
+    el.setConfig({});
+    expect(el._openModalId).toBeNull();
+    vi.useRealTimers();
   });
 });

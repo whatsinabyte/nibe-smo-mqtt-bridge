@@ -25,7 +25,7 @@ These topics are published by the bridge and consumed by the card. All are retai
 
 ### `nibe/browser/all_metadata`
 
-**Retained.** Published once at startup. Contains metadata for every known firmware point in a single batched message. The card uses this to populate the entity list, detail panels, and search index.
+**Retained.** Published at startup, and again whenever the set of points or a point's metadata changes: a point appearing or disappearing, or a binary sensor being reclassified. Contains metadata for every known firmware point in a single batched message. The card uses this to populate the entity list, detail panels, and search index.
 
 The payload is plain JSON (not compressed).
 
@@ -70,7 +70,7 @@ The payload is plain JSON (not compressed).
 - `modbusRegisterID` — Modbus TCP register address; `null` if not a Modbus point
 - `is_dynamic` — `true` for points that only appear when a controlling switch is active
 
-For individual point updates (after a dynamic point appears or disappears), a per-point message is published to `nibe/browser/meta/{point_id}` with the same schema as a single metadata entry (no outer `metadata`/`count` wrapper), plus one extra field not present in the batched form: `last_updated`, a per-point timestamp.
+For individual point updates (a dynamic point appearing, a point returning after an absence, or a reclassification), a per-point message is published to `nibe/browser/meta/{point_id}` with the same schema as a single metadata entry (no outer `metadata`/`count` wrapper), plus one extra field not present in the batched form: `last_updated`, a per-point timestamp.
 
 ---
 
@@ -368,12 +368,26 @@ Snapshot commands. JSON payload.
 
 - `flush` — disable all current entities, then enable the saved set
 - `merge` — keep current entities and additionally enable the saved set
-- Restore is blocked when the current mode is `menus` or `all` — the bridge logs a warning and takes no action
+- Restore is blocked when the current mode is `menus` or `all` — the bridge takes no action and reports the refusal on `nibe/browser/snapshots/result`
 
 **Delete:**
 ```json
 {"action": "delete", "name": "Summer Profile"}
 ```
+
+### `nibe/browser/snapshots/result`
+
+**Not retained.** The bridge's outcome for each command on `nibe/browser/snapshots/cmd`, published once the command has been handled. JSON payload:
+
+```json
+{"action": "save", "name": "Summer Profile", "ok": false, "message": "Maximum of 10 snapshots reached. Delete one before saving a new snapshot."}
+```
+
+- `action` / `name` — echo the command
+- `ok` — whether the bridge carried it out (a save can be refused at the snapshot limit; a restore for an unknown name or while the mode is `menus` or `all`)
+- `message` — human-readable outcome, shown by the card as is
+
+The card shows it next to the save form or in the restore panel, plus a toast. Before this topic existed the bridge only logged outcomes, so a refused command looked exactly like a successful one.
 
 ---
 

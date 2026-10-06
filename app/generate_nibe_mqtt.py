@@ -48,6 +48,7 @@ import atexit
 import base64
 import concurrent.futures
 import datetime
+import faulthandler
 import json
 import logging
 import os
@@ -313,11 +314,14 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
             def _yaml_val(key: str, _src: str = _secrets_content) -> str | None:
                 # Match: key: "value" or key: 'value' or key: bare_value
                 # Quoted: captures everything between the quotes (allows # and spaces).
-                # Unquoted: captures to end of line (no comment stripping — a bare
-                # value containing # is taken literally, which is correct YAML
-                # behaviour for scalars that are not followed by whitespace+#).
+                # Unquoted: to end of line, minus a trailing comment — in YAML a
+                # '#' preceded by whitespace starts one, so `pw: s3cret  # broker`
+                # is "s3cret", while `pw: a#b` keeps its '#'. Both used to be read
+                # whole, the comment becoming part of the credential.
+                # [ \t]* rather than \s* after the colon: \s also matches the
+                # newline, so an empty `key:` took the whole next line as its value.
                 m = re.search(
-                    rf"^{re.escape(key)}:\s*"
+                    rf"^{re.escape(key)}:[ \t]*"
                     rf'(?:"([^"]*)"'  # double-quoted value
                     rf"|'([^']*)'"  # single-quoted value
                     rf"|([^\n]*))",  # bare value (rest of line)
@@ -326,8 +330,12 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
                 )
                 if not m:
                     return None
-                # Return whichever capture group matched, stripped of whitespace.
-                return (m.group(1) or m.group(2) or m.group(3) or "").strip() or None
+                if m.group(1) is not None or m.group(2) is not None:
+                    return (m.group(1) or m.group(2) or "").strip() or None
+                bare = m.group(3) or ""
+                if bare.startswith("#"):
+                    return None  # `key: # comment` — no value
+                return re.split(r"\s#", bare, maxsplit=1)[0].strip() or None
 
             cfg.mqtt_username = _yaml_val("mqtt_user") or cfg.mqtt_username
             cfg.mqtt_password = _yaml_val("mqtt_password") or cfg.mqtt_password
@@ -470,12 +478,16 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
     # ── Derived values ─────────────────────────────────────────────────────
     cfg.api_base_url = f"https://{cfg.api_host}:{cfg.api_port}/api/v1/devices/0"
 
-    if cfg.nibe_basic_auth:
-        token = cfg.nibe_basic_auth
-        cfg.nibe_auth = token if token.startswith("Basic ") else f"Basic {token}"
-    elif cfg.nibe_username and cfg.nibe_password:
+    # Credentials entered in the add-on UI win; secrets.yaml's pre-encoded
+    # token is only the fallback when they're blank (DOCS.md: secrets.yaml
+    # "only fills in credential fields left blank"). The token used to win,
+    # so a stale one kept being sent after the UI credentials were changed.
+    if cfg.nibe_username and cfg.nibe_password:
         token = base64.b64encode(f"{cfg.nibe_username}:{cfg.nibe_password}".encode()).decode()
         cfg.nibe_auth = f"Basic {token}"
+    elif cfg.nibe_basic_auth:
+        token = cfg.nibe_basic_auth
+        cfg.nibe_auth = token if token.startswith("Basic ") else f"Basic {token}"
 
     cfg.warnings = deferred_warnings
     return cfg
@@ -860,7 +872,7 @@ def _run_scan_with_retry(
             break
         if attempt >= retries:
             break
-        log_restore.warning(
+        log_restore.info(
             "Scan returned 0 configs (attempt %d/%d) — broker may still be "
             "loading. Retrying in %ds...",
             attempt,
@@ -1146,6 +1158,9 @@ def _build_infrastructure(
             if _em:
                 _em[0].resubscribe_all()
                 _em[0].republish_availability()
+                # The broker may have lost its retained messages (see
+                # EntityManager.republish_retained_state) — put them back.
+                _em[0].republish_retained_state()
         elif rc_value in _FATAL_RC:
             log_mqtt.error(
                 "MQTT broker %s:%d refused the connection (reason %d) — "
@@ -1350,6 +1365,7 @@ def _run_startup_sequence(
 
     # ── Management interface ──────────────────────────────────────────────────
     publisher.publish_management_discovery(initial_mode, debug_mode=debug_mode)
+    entity_manager._mgmt_discovery_args = (initial_mode, debug_mode)
     publisher.publish_initial_device_modes(response)
 
     # Reset stale test result attrs from previous run so the sensor
@@ -1678,6 +1694,22 @@ def _shutdown(
 # ============================================================================
 
 
+def _register_thread_dump_signal() -> bool:
+    """Make SIGUSR1 print every thread's stack to stderr (the add-on log).
+
+    A diagnostic for a bridge that is misbehaving without logging anything —
+    e.g. a background thread spinning at full CPU while the poll loop logs
+    normally. ``docker kill --signal=USR1 addon_local_nibe_s_series`` then
+    shows exactly which thread is busy and where, without stopping the
+    process. Python is PID 1 in the container (run.sh execs it), so the
+    signal reaches it directly. Returns False where SIGUSR1 doesn't exist.
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    return True
+
+
 def main() -> None:  # pragma: no cover
     """Initialise all subsystems and run the polling loop.
 
@@ -1703,6 +1735,7 @@ def main() -> None:  # pragma: no cover
         log_api.warning("%s", warning)
 
     log_startup.info("Log level: %s", log_level)
+    _register_thread_dump_signal()
 
     initial_mode = _resolve_initial_mode(args, cfg)
     log_startup.info("Initial mode: %s", initial_mode)

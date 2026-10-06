@@ -292,10 +292,11 @@ class TestRunCurl(unittest.TestCase):
                 "--cacert",
                 "/ssl/nibe-ca.pem",
                 "-H",
-                "Authorization: Basic dGVzdA==",
+                "@-",
                 "https://192.0.2.1:8443/api/v1/devices/0/points",
             ],
         )
+        self.assertEqual(mock_run.call_args.kwargs["input"], "Authorization: Basic dGVzdA==\n")
 
     def test_url_targets_points_endpoint(self):
         from nibe_connectivity_check import _run_curl
@@ -387,6 +388,7 @@ class TestRunCurl(unittest.TestCase):
         self.assertEqual(
             mock_run.call_args.kwargs,
             {
+                "input": None,
                 "capture_output": True,
                 "text": True,
                 "timeout": 15,
@@ -580,8 +582,11 @@ class TestRunCurl(unittest.TestCase):
         ) as mock_run:
             _run_curl("https://192.0.2.1:8443/api/v1/devices/0", None, "Basic dXNlcjpwYXNz")
         cmd = mock_run.call_args.args[0]
+        # Sent on stdin, never in argv — argv is readable by any process in
+        # the container via /proc/<pid>/cmdline while curl runs.
         self.assertIn("-H", cmd)
-        self.assertIn("Authorization: Basic dXNlcjpwYXNz", cmd)
+        self.assertNotIn("Authorization: Basic dXNlcjpwYXNz", " ".join(cmd))
+        self.assertEqual(mock_run.call_args.kwargs["input"], "Authorization: Basic dXNlcjpwYXNz\n")
 
     def test_no_auth_header_omits_header_flag(self):
         from nibe_connectivity_check import _run_curl

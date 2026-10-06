@@ -1,6 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { pointEntityId } from './support/stack';
 
 /**
  * The removal half of the entity lifecycle. enable-entity.spec.ts covers
@@ -18,7 +19,7 @@ import { loginToHa, readToken } from './support/ha-login';
  */
 
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
-const BRIDGE_CONTAINER = 'nibe-e2e-bridge';
+const BRIDGE_CONTAINER = process.env.BRIDGE_CONTAINER || 'nibe-e2e-bridge';
 
 // An ordinary, always-present writable switch from the real reference dump.
 const POINT_ID = '3870'; // "Climate system 2"
@@ -69,7 +70,7 @@ test('disabling an entity via the card removes it from Home Assistant', async ({
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   const searchInput = card.locator('#search-input');
@@ -77,8 +78,6 @@ test('disabling an entity via the card removes it from Home Assistant', async ({
   // 1. Enable the point first, so this test owns the entity it later
   // removes rather than depending on whatever the configured mode happens
   // to have enabled.
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
 
   await searchInput.fill(POINT_ID);
   const row = card.locator(`tr[data-id="${POINT_ID}"]`);
@@ -95,8 +94,9 @@ test('disabling an entity via the card removes it from Home Assistant', async ({
     .poll(
       async () => {
         const after = await fetchStates(token);
+        const pointEntity = await pointEntityId(token, POINT_ID);
         const candidate = after.find(
-          (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('switch.')
+          (s) => s.entity_id === pointEntity && s.entity_id.startsWith('switch.')
         );
         if (candidate && candidate.state !== 'unavailable') {
           entityId = candidate.entity_id;

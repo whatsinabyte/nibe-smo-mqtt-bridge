@@ -102,6 +102,19 @@ class TestWritePointValidation(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 999, self._ei(lo=0, hi=0, degen=True)))
 
+    def test_min_equals_max_skips_range_without_degenerate_flag(self):
+        """is_degenerate_range is only ever set for number entities. A switch
+        or button reporting min=max=0 (3754, 8982, 3478 in a real dump) must
+        still reach the controller when written 1 — min == max is this
+        firmware's "no bounds declared" convention for every type. It used
+        to be rejected locally as "above maximum 0", so those switches could
+        never be turned on from HA."""
+        with patch(
+            "urllib.request.urlopen", return_value=self._resp({"3754": "modified"})
+        ) as mock_urlopen:
+            self.assertTrue(self.c.write_point(3754, 1, self._ei(lo=0, hi=0, degen=False)))
+            mock_urlopen.assert_called_once()
+
     def test_modified_true(self):
         with patch("urllib.request.urlopen", return_value=self._resp({"5": "modified"})):
             self.assertTrue(self.c.write_point(5, 1, self._ei()))
@@ -725,6 +738,19 @@ class TestRequestRetryProperties(unittest.TestCase):
             result = client.request("https://host/api/v1/devices/test/points")
         self.assertEqual(mock_open.call_count, 1, "the retry must not have been attempted")
         self.assertIsNone(result)
+
+    def test_no_write_is_started_once_shutting_down(self):
+        """The write paths don't go through request(), so they need the same
+        gate of their own — a write submitted during shutdown would otherwise
+        open a fresh 30s socket while holding the shared lock."""
+        client = self._client()
+        client.begin_shutdown()
+        info = {"is_writable": True, "metadata": {}}
+        with patch("urllib.request.urlopen") as mock_open:
+            self.assertFalse(client.write_point(1, 1, info))
+            self.assertFalse(client.reset_notifications())
+            self.assertFalse(client.write_device_mode("aidmode", "on"))
+        mock_open.assert_not_called()
 
     def test_begin_shutdown_is_idempotent(self):
         client = self._client()

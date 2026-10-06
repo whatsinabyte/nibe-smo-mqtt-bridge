@@ -10,6 +10,7 @@ import json
 import re
 import signal
 import subprocess
+import time
 import unittest
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -669,7 +670,7 @@ class TestNotifyHaProperties(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            self.assertLogs("nibe.mqtt", level="WARNING") as cm,
+            self.assertLogs("nibe.mqtt", level="INFO") as cm,
         ):
             notify_ha(MagicMock(), "My Title", "My Message", "notif_1")
         self.assertTrue(
@@ -687,7 +688,7 @@ class TestNotifyHaProperties(unittest.TestCase):
         with (
             patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
             patch("urllib.request.urlopen", return_value=MagicMock()),
-            self.assertLogs("nibe.mqtt", level="WARNING") as cm,
+            self.assertLogs("nibe.mqtt", level="INFO") as cm,
         ):
             notify_ha(MagicMock(), "My Title", "My Message", "notif_1")
         self.assertTrue(
@@ -1165,6 +1166,19 @@ class TestManagementHandlers(unittest.TestCase):
         with patch("nibe_ha_integration._publish_device_modes") as mock_modes:
             self._run("FORCE_POLL_PRESS", "")
         mock_modes.assert_called_once_with(self.em, self.publisher)
+
+    def test_force_poll_rereads_device_modes_instead_of_serving_the_cache(self):
+        """A forced poll must refresh aid/smart mode too — it used to serve
+        whatever the cache held, so it couldn't pick up a mode changed on the
+        controller itself."""
+        seen = []
+        self.em.device_modes_dirty = False
+        with patch(
+            "nibe_ha_integration._publish_device_modes",
+            side_effect=lambda em, _pub: seen.append(em.device_modes_dirty),
+        ):
+            self._run("FORCE_POLL_PRESS", "")
+        self.assertEqual(seen, [True])
 
     # ── enable / disable handlers ─────────────────────────────────────────────
 
@@ -1860,6 +1874,7 @@ class TestManagementHandlers(unittest.TestCase):
                 "--timeout=600",
                 "-n",
                 "auto",
+                "--dist=loadscope",
             ],
         )
 
@@ -1970,6 +1985,20 @@ class TestManagementHandlers(unittest.TestCase):
         self.assertIn("-n", args)
         n_idx = args.index("-n")
         self.assertEqual(args[n_idx + 1], "auto")
+
+    def test_run_tests_subprocess_keeps_each_test_class_on_one_worker(self):
+        """--dist=loadscope: classes sharing one /tmp path race across xdist
+        workers under the default distribution (a false failure on most
+        runs, see CONTRIBUTING.md)."""
+        with (
+            patch("subprocess.Popen") as mock_run,
+            patch("builtins.open", MagicMock()),
+            patch("nibe_ha_integration.dismiss_ha"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            mock_run.return_value.communicate.return_value = ("", "")
+            self._run("RUN_TESTS_PRESS", "")
+        self.assertIn("--dist=loadscope", mock_run.call_args.args[0])
 
     def test_run_tests_subprocess_starts_new_session(self):
         """The pytest subprocess must launch with start_new_session=True so
@@ -2525,6 +2554,9 @@ class TestRegistryWatcherEventHandling(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -2591,6 +2623,49 @@ class TestRegistryWatcherEventHandling(unittest.TestCase):
             }
         )
         self.assertEqual(w._unique_id_map.get("nibe_6983"), "number.nibe_6983_power")
+
+    def _rename_event(self, old, new):
+        # The shape HA fires for a rename: no unique_id, old_entity_id given.
+        return {
+            "data": {
+                "action": "update",
+                "entity_id": new,
+                "old_entity_id": old,
+                "changes": {"entity_id": old},
+            }
+        }
+
+    def test_rename_remaps_immediately_and_regenerates_the_dashboard(self):
+        """HA's update event never carries unique_id, and a rename doesn't
+        change the enabled set — the menu dashboard kept the old entity_id
+        (an "entity not available" row) until something unrelated rebuilt
+        it."""
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._unique_id_map["nibe_6983"] = "number.nibe_6983_power"
+        with patch.object(w, "_schedule_refresh_registry") as refresh:
+            w._handle_event(self._rename_event("number.nibe_6983_power", "number.my_power"))
+        self.assertEqual(w.entity_id_for(6983), "number.my_power")
+        w._em._on_enabled_state_change.assert_called_once_with()
+        refresh.assert_called_once()
+
+    def test_rename_of_another_integrations_entity_does_not_regenerate(self):
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._unique_id_map["other_1"] = "light.kitchen"
+        with patch.object(w, "_schedule_refresh_registry"):
+            w._handle_event(self._rename_event("light.kitchen", "light.kitchen_main"))
+        self.assertEqual(w._unique_id_map["other_1"], "light.kitchen_main")
+        w._em._on_enabled_state_change.assert_not_called()
+
+    def test_rename_outside_menus_mode_has_no_regen_to_call(self):
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._em._on_enabled_state_change = None
+        w._unique_id_map["nibe_6983"] = "number.nibe_6983_power"
+        with patch.object(w, "_schedule_refresh_registry"):
+            w._handle_event(self._rename_event("number.nibe_6983_power", "number.my_power"))
+        self.assertEqual(w.entity_id_for(6983), "number.my_power")
 
     def test_remove_event_clears_entry(self):
         w = self._make_watcher()
@@ -2741,6 +2816,9 @@ class TestScheduleRefreshRegistry(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._refresh_timer = None
@@ -2875,6 +2953,9 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -3010,17 +3091,120 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
         w = self._make_watcher(em)
         with (
             patch("nibe_ha_integration.notify_ha"),
+            patch.object(w, "_clear_disabled_by"),
             self.assertLogs("nibe.registry", level="INFO") as cm,
         ):
             w._on_entity_disabled("sensor.nibe_50827")
         self.assertTrue(
             any(
                 msg.splitlines()[0].endswith(
-                    "Republished discovery config for point 50827 to reverse HA-side disable"
+                    "Re-enabled dynamic point 50827 after a HA-side disable"
                 )
                 for msg in cm.output
             )
         )
+
+    def test_disabled_dynamic_point_is_re_enabled_in_the_registry(self):
+        """Republishing the discovery config never undid the disable —
+        disabled_by is registry state — so the entity stayed disabled in HA
+        though DOCS.md promises the bridge re-enables it."""
+        em = self._em_with_point(50827, is_dynamic=True)
+        w = self._make_watcher(em)
+        with (
+            patch("nibe_ha_integration.notify_ha"),
+            patch.object(w, "_clear_disabled_by") as clear,
+        ):
+            w._on_entity_disabled("sensor.nibe_50827")
+        clear.assert_called_once_with("sensor.nibe_50827")
+
+    def test_echo_of_our_own_re_enable_is_not_treated_as_the_user(self):
+        """Clearing disabled_by makes HA fire a registry update event; read
+        as the user re-enabling the entity, it replaced the "dynamic entity
+        disabled in HA" notification with a false "re-enabled via the HA
+        entity settings" one."""
+        w = self._make_watcher(self._em_with_point(50827, is_dynamic=True))
+        w._self_reenabled.add("sensor.nibe_50827")
+        with (
+            patch("nibe_ha_integration.notify_ha") as notify,
+            patch("nibe_ha_integration.dismiss_ha") as dismiss,
+        ):
+            w._on_entity_enabled("sensor.nibe_50827")
+        notify.assert_not_called()
+        dismiss.assert_not_called()
+        self.assertNotIn("sensor.nibe_50827", w._self_reenabled)  # consumed once
+
+    def test_a_genuine_user_re_enable_still_notifies(self):
+        w = self._make_watcher(self._em_with_point(50827, is_dynamic=True))
+        with (
+            patch("nibe_ha_integration.notify_ha") as notify,
+            patch("nibe_ha_integration.dismiss_ha"),
+        ):
+            w._on_entity_enabled("sensor.nibe_50827")
+        notify.assert_called_once()
+
+    def test_clear_disabled_by_sends_the_registry_update(self):
+        w = self._make_watcher(self._em_with_point(50827, is_dynamic=True))
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps({"id": 1, "type": "result", "success": True})
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+        ):
+            w._clear_disabled_by("sensor.nibe_50827")
+        self.assertIn("sensor.nibe_50827", w._self_reenabled)  # its echo is ours
+        sent = json.loads(ws.send.call_args.args[0])
+        self.assertEqual(sent["type"], "config/entity_registry/update")
+        self.assertEqual(sent["entity_id"], "sensor.nibe_50827")
+        self.assertIsNone(sent["disabled_by"])
+
+    def test_an_echo_handled_before_the_response_is_still_ours(self):
+        """HA delivers the registry event to the watcher's connection, which
+        can handle it before this call reads its response — it did when the
+        re-enable ran off the watcher thread (the deferred-discovery
+        reconcile)."""
+        w = self._make_watcher(self._em_with_point(50827, is_dynamic=True))
+        ws = MagicMock()
+
+        def recv_after_the_echo():
+            w._on_entity_enabled("sensor.nibe_50827")
+            return json.dumps({"id": 1, "type": "result", "success": True})
+
+        ws.recv.side_effect = recv_after_the_echo
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+            patch("nibe_ha_integration.notify_ha") as notify,
+            patch("nibe_ha_integration.dismiss_ha"),
+        ):
+            w._clear_disabled_by("sensor.nibe_50827")
+        notify.assert_not_called()
+
+    def test_a_failed_clear_expects_no_echo(self):
+        w = self._make_watcher(self._em_with_point(50827, is_dynamic=True))
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps({"id": 1, "type": "result", "success": False})
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+        ):
+            w._clear_disabled_by("sensor.nibe_50827")
+        self.assertNotIn("sensor.nibe_50827", w._self_reenabled)
+        ws_mod.create_connection.side_effect = OSError("down")
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+        ):
+            w._clear_disabled_by("sensor.nibe_50827")
+        self.assertNotIn("sensor.nibe_50827", w._self_reenabled)
 
     def test_disabled_static_point_sends_no_notification(self):
         """The documented 'no confusing notification for an intentional
@@ -3280,12 +3464,12 @@ class TestPublishStats(unittest.TestCase):
 
 class TestUpdateAlarmState(unittest.TestCase):
     """Fetches /notifications and updates the Active Alarms sensor plus an
-    edge-triggered HA persistent notification. Zero coverage before this.
-    The edge-trigger logic (_alarm_notification_active) exists specifically
-    to avoid re-notifying every poll cycle while an alarm remains active —
-    getting the 0->N / N->0 transition logic wrong means either notification
-    spam on every poll, or a notification that never clears after the
-    alarm resolves."""
+    HA persistent notification. The notification is (re)sent when the set of
+    active alarms changes — not on every poll while it stays the same — and
+    dismissed when they clear, or on the first poll after a start if none are
+    active. Getting this wrong means either notification spam on every poll,
+    a notification that never clears, or one that stays silent about a new
+    alarm."""
 
     def _alarm(
         self,
@@ -3452,25 +3636,66 @@ class TestUpdateAlarmState(unittest.TestCase):
         update_alarm_state = self._import()
         em = _make_em()
         em._alarm_notification_active = True  # already notified previously
+        em._alarm_notified_ids = ("1|High pressure alarm",)  # ...about this same alarm
         em._api.fetch_notifications.return_value = [self._alarm()]
         with patch("nibe_ha_integration.notify_ha") as mock_notify:
             update_alarm_state(em, MagicMock())
         mock_notify.assert_not_called()
 
-    def test_alarm_count_increasing_while_active_does_not_re_notify(self):
-        """Even if a SECOND distinct alarm appears while one is already
-        active, the flag still suppresses re-notification — by design,
-        not a bug, since the user already has an active notification."""
+    def test_new_alarm_while_one_is_active_updates_the_notification(self):
+        """A second, different alarm appearing while one is already shown
+        must re-send the notification (same id, so HA replaces it). It used
+        to stay at the first alarm, so the new one only showed on the sensor
+        — and alarm latency is the one thing here called safety-relevant."""
         update_alarm_state = self._import()
         em = _make_em()
         em._alarm_notification_active = True
+        em._alarm_notified_ids = ("1|High pressure alarm",)
         em._api.fetch_notifications.return_value = [
             self._alarm(alarm_id=1),
-            self._alarm(alarm_id=2),
+            self._alarm(alarm_id=2, header="Low brine flow"),
         ]
         with patch("nibe_ha_integration.notify_ha") as mock_notify:
             update_alarm_state(em, MagicMock())
-        mock_notify.assert_not_called()
+        mock_notify.assert_called_once()
+        self.assertIn("2 Active Alarm", mock_notify.call_args.kwargs["title"])
+        self.assertIn("Low brine flow", mock_notify.call_args.kwargs["message"])
+        self.assertEqual(mock_notify.call_args.kwargs["notification_id"], "nibe_active_alarms")
+
+    def test_alarm_replaced_by_another_updates_the_notification(self):
+        """Same count, different alarm: still a change worth telling."""
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._alarm_notification_active = True
+        em._alarm_notified_ids = ("1|High pressure alarm",)
+        em._api.fetch_notifications.return_value = [
+            self._alarm(alarm_id=7, header="Low brine flow")
+        ]
+        with patch("nibe_ha_integration.notify_ha") as mock_notify:
+            update_alarm_state(em, MagicMock())
+        mock_notify.assert_called_once()
+
+    def test_first_poll_with_no_alarms_clears_a_notification_from_before_a_restart(self):
+        """The alarms may have cleared while the bridge was down; a
+        notification left from the previous run is unknown to this process
+        and used to stay in HA until dismissed by hand."""
+        update_alarm_state = self._import()
+        em = _make_em()
+        self.assertIs(em._alarm_first_poll_pending, True)
+        em._api.fetch_notifications.return_value = []
+        with patch("nibe_ha_integration.dismiss_ha") as mock_dismiss:
+            update_alarm_state(em, MagicMock())
+            update_alarm_state(em, MagicMock())  # later polls: nothing to dismiss
+        mock_dismiss.assert_called_once_with(em.mqtt, "nibe_active_alarms")
+
+    def test_failed_poll_does_not_use_up_the_first_poll_dismiss(self):
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._api.fetch_notifications.return_value = None  # API error
+        with patch("nibe_ha_integration.dismiss_ha") as mock_dismiss:
+            update_alarm_state(em, MagicMock())
+        mock_dismiss.assert_not_called()
+        self.assertIs(em._alarm_first_poll_pending, True)
 
     # -- edge-triggered notification: N -> 0 transition ------------------------
 
@@ -3490,6 +3715,7 @@ class TestUpdateAlarmState(unittest.TestCase):
         update_alarm_state = self._import()
         em = _make_em()
         em._alarm_notification_active = False
+        em._alarm_first_poll_pending = False  # not the first poll since startup
         em._api.fetch_notifications.return_value = []
         with (
             patch("nibe_ha_integration.dismiss_ha") as mock_dismiss,
@@ -3790,10 +4016,29 @@ class TestPublishDeviceModesHaIntegration(unittest.TestCase):
         em = _make_em()
         em.device_modes_dirty = False
         em.device_modes_cache = {"aidMode": "on", "smartMode": "normal"}
+        em.device_modes_fetched_at = time.time()
         pub = MagicMock()
         fn(em, pub)
         em._api.fetch_device_info.assert_not_called()
         pub.publish_device_modes.assert_called_once_with(aid_mode="on", smart_mode="normal")
+
+    def test_expired_cache_refetches_even_when_not_dirty(self):
+        """Only the bridge's own mode writes ever set dirty, so a mode changed
+        on the controller (or from another app) never reached HA until a
+        restart. The cache must expire on its own."""
+        import nibe_ha_integration as nhi
+
+        fn = self._import()
+        em = _make_em()
+        em.device_modes_dirty = False
+        em.device_modes_cache = {"aidMode": "off", "smartMode": "normal"}
+        em.device_modes_fetched_at = time.time() - nhi._DEVICE_MODES_MAX_AGE_S - 1
+        em._api.fetch_device_info.return_value = {"aidMode": "on", "smartMode": "away"}
+        pub = MagicMock()
+        fn(em, pub)
+        em._api.fetch_device_info.assert_called_once()
+        pub.publish_device_modes.assert_called_once_with(aid_mode="on", smart_mode="away")
+        self.assertGreater(em.device_modes_fetched_at, time.time() - 5)
 
     def test_dirty_flag_forces_refetch_even_with_populated_cache(self):
         """A populated cache that's marked dirty (e.g. just after a mode
@@ -3907,6 +4152,7 @@ class TestPublishDeviceModesHaIntegration(unittest.TestCase):
         em = _make_em()
         em.device_modes_dirty = False
         em.device_modes_cache = {"aidMode": "on"}  # smartMode key missing
+        em.device_modes_fetched_at = time.time()
         pub = MagicMock()
         fn(em, pub)
         em._api.fetch_device_info.assert_not_called()
@@ -3920,6 +4166,7 @@ class TestPublishDeviceModesHaIntegration(unittest.TestCase):
         em = _make_em()
         em.device_modes_dirty = False
         em.device_modes_cache = {"smartMode": "away"}  # aidMode key missing
+        em.device_modes_fetched_at = time.time()
         pub = MagicMock()
         fn(em, pub)
         em._api.fetch_device_info.assert_not_called()
@@ -4350,6 +4597,9 @@ class TestRegistryFetchRaceCondition(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -4437,6 +4687,9 @@ class TestRegistryFetchMissingUniqueId(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -4822,6 +5075,9 @@ class TestDoRefreshRegistry(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -4893,6 +5149,58 @@ class TestDoRefreshRegistry(unittest.TestCase):
             w.refresh_registry()
         self.assertIn("nibe_100", w._unique_id_map)
         self.assertNotIn("other_integration", w._unique_id_map)
+
+    def test_nibe_entry_missing_from_registry_is_dropped(self):
+        """The response is the complete registry — a nibe_ entry that HA no
+        longer has must be removed, not left resolvable. Merging instead of
+        replacing kept a removed entity's stale entity_id in the map until
+        the next watcher reconnect, so the refresh scheduled by a remove
+        event could never actually clear it."""
+        w = self._make_watcher()
+        w._unique_id_map = {"nibe_100": "sensor.nibe_100", "nibe_200": "sensor.nibe_200"}
+        ws = self._mock_ws([{"unique_id": "nibe_200", "entity_id": "sensor.nibe_200"}])
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch("websocket.create_connection", return_value=ws),
+        ):
+            w.refresh_registry()
+        self.assertNotIn("nibe_100", w._unique_id_map)
+        self.assertIsNone(w.entity_id_for(100))
+        self.assertEqual(w._unique_id_map.get("nibe_200"), "sensor.nibe_200")
+
+    def test_non_nibe_entries_already_in_map_are_kept(self):
+        """Only nibe_ entries are replaced — entries for other integrations
+        (written by _fetch_entity_registry on connect) aren't refresh_registry's
+        to prune, since it filters them out of the response entirely."""
+        w = self._make_watcher()
+        w._unique_id_map = {"other_integration": "sensor.other"}
+        ws = self._mock_ws([])
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch("websocket.create_connection", return_value=ws),
+        ):
+            w.refresh_registry()
+        self.assertEqual(w._unique_id_map.get("other_integration"), "sensor.other")
+
+    def test_failed_response_leaves_map_untouched(self):
+        """An unsuccessful response says nothing about what HA holds — it
+        must not be treated as an empty registry and wipe every entry."""
+        import json as _json
+
+        w = self._make_watcher()
+        w._unique_id_map = {"nibe_100": "sensor.nibe_100"}
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            _json.dumps({"type": "auth_required"}),
+            _json.dumps({"type": "auth_ok"}),
+            _json.dumps({"id": 1, "type": "result", "success": False}),
+        ]
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch("websocket.create_connection", return_value=ws),
+        ):
+            w.refresh_registry()
+        self.assertEqual(w._unique_id_map, {"nibe_100": "sensor.nibe_100"})
 
     def test_refresh_timer_cleared_after_run(self):
         """_refresh_timer must be set to None after the fetch completes."""
@@ -5372,6 +5680,7 @@ class TestManagementHandlerEdgePaths(unittest.TestCase):
         em.api_consecutive_failures = 0
         em.device_modes_dirty = False
         em.device_modes_cache = {"aidMode": "on", "smartMode": "away"}
+        em.device_modes_fetched_at = time.time()
         pub = MagicMock()
         _publish_device_modes(em, pub)
         # Must publish from cache without hitting the API
@@ -5386,6 +5695,7 @@ class TestManagementHandlerEdgePaths(unittest.TestCase):
         em.api_consecutive_failures = 0
         em.device_modes_dirty = True
         em.device_modes_cache = {}
+        em.device_modes_fetched_at = 0.0
         em._api.fetch_device_info.return_value = None
         pub = MagicMock()
         with self.assertLogs("nibe.commands", level="WARNING") as cm:
@@ -5690,6 +6000,175 @@ class TestSetupMenuDashboardRemainingBranches(unittest.TestCase):
         open_ws_fn.assert_not_called()  # ws never opened for empty config
 
 
+class TestReconcileUserDisabled(unittest.TestCase):
+    """An entity disabled in HA's entity settings while the add-on was
+    stopped (or the watcher disconnected) sent no event: the bridge
+    republished it, HA kept it disabled, and the card listed it as enabled."""
+
+    def _watcher(self):
+        import threading
+
+        from nibe_ha_integration import HAEntityRegistryWatcher
+
+        w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
+        w._unique_id_map = {}
+        w._registry_map_lock = threading.Lock()
+        w._em = _make_em()
+        return w
+
+    def test_fetch_records_only_user_disabled_bridge_entities(self):
+        w = self._watcher()
+        w._next_id = lambda: 1
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps(
+            {
+                "id": 1,
+                "success": True,
+                "result": [
+                    {"unique_id": "nibe_4", "entity_id": "sensor.bt1", "disabled_by": "user"},
+                    {"unique_id": "nibe_5", "entity_id": "sensor.bt2", "disabled_by": None},
+                    {
+                        "unique_id": "nibe_6",
+                        "entity_id": "sensor.bt3",
+                        "disabled_by": "integration",
+                    },
+                    {"unique_id": "other_1", "entity_id": "light.x", "disabled_by": "user"},
+                ],
+            }
+        )
+        w._fetch_entity_registry(ws)
+        self.assertEqual(w._user_disabled_entities, {"sensor.bt1"})
+
+    def test_reconcile_mirrors_a_static_enabled_entity(self):
+        w = self._watcher()
+        w._unique_id_map = {"nibe_4": "sensor.bt1"}
+        w._user_disabled_entities = {"sensor.bt1"}
+        w._em.mqtt_enabled_points.add(4)
+        w._em.all_points_by_id[4] = {"variableId": 4, "is_dynamic": False}
+        with patch.object(w, "_on_entity_disabled") as mirror:
+            w._reconcile_user_disabled()
+        mirror.assert_called_once_with("sensor.bt1")
+
+    def test_a_second_reconcile_before_the_next_fetch_does_not_repeat(self):
+        """Connect and deferred discovery can both run it off one fetch; a
+        re-enabled dynamic entity stays enabled in the bridge, so without
+        forgetting it the second run re-enabled and notified it again."""
+        w = self._watcher()
+        w._unique_id_map = {"nibe_7": "sensor.dyn"}
+        w._user_disabled_entities = {"sensor.dyn"}
+        w._em.mqtt_enabled_points.add(7)
+        w._em.all_points_by_id[7] = {"variableId": 7, "is_dynamic": True}
+        with patch.object(w, "_on_entity_disabled") as mirror:
+            w._reconcile_user_disabled()
+            w._reconcile_user_disabled()
+        mirror.assert_called_once_with("sensor.dyn")
+
+    def test_reconcile_includes_dynamic_points_and_skips_not_enabled_ones(self):
+        """Dynamic entities are reconciled too now that their path re-enables
+        them in HA (which ends their disabled_by, so it doesn't repeat)."""
+        w = self._watcher()
+        w._unique_id_map = {"nibe_4": "sensor.bt1", "nibe_7": "sensor.dyn"}
+        w._user_disabled_entities = {"sensor.bt1", "sensor.dyn"}
+        w._em.mqtt_enabled_points.add(7)  # 4 is not enabled in the bridge
+        w._em.all_points_by_id[7] = {"variableId": 7, "is_dynamic": True}
+        with patch.object(w, "_on_entity_disabled") as mirror:
+            w._reconcile_user_disabled()
+        mirror.assert_called_once_with("sensor.dyn")
+
+    def test_reconcile_runs_after_deferred_discovery(self):
+        """Controller unreachable at startup: nothing was enabled yet when the
+        watcher connected, so the entities deferred discovery restores later
+        need the reconcile then."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+
+        em = _make_em()
+        w = HAEntityRegistryWatcher(em, MagicMock())
+        self.assertIn(w._reconcile_user_disabled, em._after_deferred_discovery)
+
+    def test_rename_before_mapping_regenerates_after_the_next_refresh(self):
+        """A rename for an entity the map doesn't hold yet (renamed right
+        after creation) used to change nothing; the next refresh maps its new
+        id, and the dashboard is regenerated then."""
+        w = self._watcher()
+        w._regen_after_refresh = False
+        w._apply_entity_id_rename("sensor.new_one", "sensor.renamed")
+        self.assertIs(w._regen_after_refresh, True)
+        w._em._on_enabled_state_change = MagicMock()
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps(
+            {
+                "id": 1,
+                "success": True,
+                "result": [{"unique_id": "nibe_9", "entity_id": "sensor.renamed"}],
+            }
+        )
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        w._next_map_seq = lambda: 1
+        w._newer_than_applied = lambda seq: True
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+        ):
+            w.refresh_registry()
+        w._em._on_enabled_state_change.assert_called_once_with()
+        self.assertIs(w._regen_after_refresh, False)
+
+
+class TestHandleHaStatus(unittest.TestCase):
+    """Home Assistant's MQTT birth message ("online" on homeassistant/status)
+    republishes the bridge's retained state — HA's documented convention for
+    discovery publishers, so a restarted HA finds the entities even if the
+    broker lost its retained messages."""
+
+    def setUp(self):
+        import concurrent.futures
+
+        from nibe_ha_integration import ManagementCommandHandler
+        from nibe_mqtt_publisher import MgmtTopic
+
+        self.MgmtTopic = MgmtTopic
+        self.em = _make_em()
+        self.em.republish_retained_state = MagicMock()
+        self.mqtt = MagicMock()
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        ManagementCommandHandler(self.mqtt, self.em, MagicMock(), self.executor).register_all()
+
+    def tearDown(self):
+        self.executor.shutdown(wait=False)
+
+    def _handler(self):
+        for call in self.mqtt.message_callback_add.call_args_list:
+            if call.args[0] == self.MgmtTopic.HA_STATUS:
+                return call.args[1]
+        raise KeyError("no handler for homeassistant/status")
+
+    def _message(self, payload):
+        msg = MagicMock()
+        msg.payload = payload
+        return msg
+
+    def test_subscribed_to_home_assistant_status(self):
+        self.assertEqual(self.MgmtTopic.HA_STATUS, "homeassistant/status")
+        self.assertIn(
+            self.MgmtTopic.HA_STATUS, [c.args[0] for c in self.mqtt.subscribe.call_args_list]
+        )
+
+    def test_online_republishes_retained_state(self):
+        self._handler()(None, None, self._message(b"online"))
+        self.executor.shutdown(wait=True)
+        self.em.republish_retained_state.assert_called_once_with()
+
+    def test_offline_does_nothing(self):
+        self._handler()(None, None, self._message(b"offline"))
+        self.executor.shutdown(wait=True)
+        self.em.republish_retained_state.assert_not_called()
+
+
 class TestRegenMenuDashboardWsCloseException(unittest.TestCase):
     """ws.close() raising in _regen_menu_dashboard's finally must not propagate."""
 
@@ -5726,6 +6205,9 @@ class TestFetchEntityRegistryRemainingPaths(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -5768,6 +6250,9 @@ class TestRegistryWatcherStart(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -5833,6 +6318,9 @@ class TestRegistryWatcherStop(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -5899,6 +6387,9 @@ class TestConnectAndSubscribe(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -6035,6 +6526,42 @@ class TestConnectAndSubscribe(unittest.TestCase):
             )
         )
 
+    def test_connect_reconciles_entities_disabled_in_ha_meanwhile(self):
+        """A disable made in HA while the add-on was stopped (or this watcher
+        disconnected) sends no event; every connect checks the registry."""
+        w = self._make_watcher()
+        ws_mod, _ws = self._make_ws_mod(
+            [
+                {"type": "auth_required"},
+                {"type": "auth_ok"},
+                {"id": 1, "type": "result", "success": True},  # sub OK
+            ]
+        )
+        with (
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_fetch_entity_registry", return_value={"nibe_4": "sensor.bt1"}),
+            patch.object(w, "_reconcile_user_disabled") as reconcile,
+        ):
+            w._connect_and_subscribe("tok")
+        reconcile.assert_called_once_with()
+
+    def test_connect_with_failed_registry_fetch_does_not_reconcile(self):
+        w = self._make_watcher()
+        ws_mod, _ws = self._make_ws_mod(
+            [
+                {"type": "auth_required"},
+                {"type": "auth_ok"},
+                {"id": 1, "type": "result", "success": True},  # sub OK
+            ]
+        )
+        with (
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_fetch_entity_registry", return_value={}),
+            patch.object(w, "_reconcile_user_disabled") as reconcile,
+        ):
+            w._connect_and_subscribe("tok")
+        reconcile.assert_not_called()
+
     def test_success_updates_unique_id_map_from_fetch_entity_registry(self):
         """_unique_id_map must be set to _fetch_entity_registry()'s actual
         return value, not left as None/unset — patch it directly so the
@@ -6065,6 +6592,9 @@ class TestRegistryWatcherPingPong(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -6262,6 +6792,9 @@ class TestRegistryWatcherRun(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -6359,7 +6892,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
             patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
             patch.object(w, "_connect_and_subscribe", return_value=ws),
             patch.object(w._stop_event, "wait") as mock_wait,
-            self.assertLogs("nibe.registry", level="WARNING") as cm,
+            self.assertLogs("nibe.registry", level="INFO") as cm,
         ):
 
             def fake_wait(timeout=None):
@@ -6453,7 +6986,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
             mock_wait.side_effect = fake_wait
             w._run()
         # "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)"
-        warning_call = mock_log.warning.call_args
+        warning_call = mock_log.info.call_args
         caught_exc = warning_call.args[1]
         self.assertEqual(str(caught_exc), "WebSocket closed by server (empty recv)")
 
@@ -6503,7 +7036,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
                 side_effect=[RuntimeError("specific reason"), RuntimeError("stop")],
             ),
             patch.object(w._stop_event, "wait") as mock_wait,
-            self.assertLogs("nibe.registry", level="WARNING") as cm,
+            self.assertLogs("nibe.registry", level="INFO") as cm,
         ):
 
             def fake_wait(timeout=None):
@@ -6537,7 +7070,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
 
             mock_wait.side_effect = fake_wait
             w._run()
-        mock_log.warning.assert_called_once_with(
+        mock_log.info.assert_called_once_with(
             "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)",
             real_err,
             w._INITIAL_BACKOFF,
@@ -6975,7 +7508,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
             patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
             patch.object(w, "_connect_and_subscribe", side_effect=fake_connect),
             patch("nibe_ha_integration.time.time", side_effect=fake_time),
-            self.assertLogs("nibe.registry", level="WARNING") as cm,
+            self.assertLogs("nibe.registry", level="INFO") as cm,
         ):
             w._run()
         expected = (
@@ -7161,7 +7694,7 @@ class TestRegistryWatcherRun(unittest.TestCase):
             patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
             patch.object(w, "_connect_and_subscribe", side_effect=fake_connect),
             patch.object(w._stop_event, "wait"),
-            self.assertLogs("nibe.registry", level="WARNING") as cm,
+            self.assertLogs("nibe.registry", level="INFO") as cm,
         ):
             w._run()
         # Second reconnect warning must report "failure 2/10" — a `=1`
@@ -7245,6 +7778,9 @@ class TestHandleEventExceptionIsolation(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -7414,6 +7950,9 @@ class TestRefreshRegistryAuthHandshake(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -8178,6 +8717,26 @@ class TestExtractFailureLinesDirect(unittest.TestCase):
 
         return _extract_failure_lines
 
+    def test_setup_errors_are_extracted_alongside_failures(self):
+        """pytest lists a test that broke in setup (a failing fixture) as
+        ERROR, not FAILED; only FAILED lines were taken, so a run with only
+        setup errors produced a failure notification naming no test."""
+        fn = self._fn()
+        text = (
+            "E   RuntimeError: fixture exploded\n"
+            "=========================== short test summary info ============================\n"
+            "FAILED tests/test_a.py::test_one - AssertionError: nope\n"
+            "ERROR tests/test_b.py::test_two - RuntimeError: fixture exploded\n"
+            "1 failed, 1 error in 0.26s\n"
+        )
+        self.assertEqual(
+            fn(text),
+            [
+                "tests/test_a.py::test_one - AssertionError: nope",
+                "tests/test_b.py::test_two - RuntimeError: fixture exploded",
+            ],
+        )
+
     def test_content_before_failures_marker_is_not_captured(self):
         """in_failures must start False — an E-prefixed line appearing
         BEFORE the '=== FAILURES ===' marker must not be captured by the
@@ -8884,12 +9443,12 @@ class TestAbortTestSuite(unittest.TestCase):
             with (
                 patch("os.killpg"),
                 patch("os.getpgid", return_value=4242),
-                self.assertLogs("nibe.commands", level="WARNING") as cm,
+                self.assertLogs("nibe.commands", level="INFO") as cm,
             ):
                 abort_test_suite("custom shutdown reason")
             self.assertEqual(
                 cm.output,
-                ["WARNING:nibe.commands:Aborting in-flight test suite run: custom shutdown reason"],
+                ["INFO:nibe.commands:Aborting in-flight test suite run: custom shutdown reason"],
             )
         finally:
             nibe_test_runner._current_proc = None
@@ -9788,6 +10347,9 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -9900,6 +10462,44 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
                 w._refresh_timer.cancel()
         mock_sched.assert_called_once()
 
+    def test_remove_without_uid_still_schedules_refresh_as_safety_net(self):
+        """The reverse-scan invalidation is immediate, but the scheduled
+        refresh_registry() fallback must still fire too -- a safety net for
+        a refresh whose registry fetch was already in flight when the remove
+        event arrived, whose response re-adds the just-deleted entry."""
+        w = self._make_watcher()
+        w._unique_id_map["nibe_100"] = "sensor.nibe_100"
+        with patch.object(w, "_schedule_refresh_registry") as mock_sched:
+            w._handle_event(
+                {
+                    "data": {
+                        "action": "remove",
+                        "entity_id": "sensor.nibe_100",
+                        # deliberately no 'unique_id'
+                    }
+                }
+            )
+        mock_sched.assert_called_once()
+
+    def test_remove_without_uid_only_invalidates_matching_entries(self):
+        """The reverse scan must match by value (entity_id), not remove
+        unrelated entries -- a map with several points must only lose the
+        one whose entity_id matches this event."""
+        w = self._make_watcher()
+        w._unique_id_map["nibe_100"] = "sensor.nibe_100"
+        w._unique_id_map["nibe_200"] = "sensor.nibe_200"
+        w._handle_event(
+            {
+                "data": {
+                    "action": "remove",
+                    "entity_id": "sensor.nibe_100",
+                    # deliberately no 'unique_id'
+                }
+            }
+        )
+        self.assertNotIn("nibe_100", w._unique_id_map)
+        self.assertEqual(w._unique_id_map.get("nibe_200"), "sensor.nibe_200")
+
     # ── remove: no uid → _schedule_refresh_registry ──────────────────────────
 
     def test_remove_no_uid_calls_schedule_refresh_registry(self):
@@ -10002,9 +10602,17 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
 
     # ── remove: no uid → map unchanged (537→539 False branch) ────────────────
 
-    def test_remove_without_uid_does_not_touch_map(self):
-        """remove event with no unique_id (uid is None/falsy) must not
-        attempt to pop from _unique_id_map — the if uid: False branch (537→539)."""
+    def test_remove_without_uid_invalidates_by_reverse_lookup(self):
+        """remove event with no unique_id (uid is None/falsy) -- the normal
+        case for MQTT-platform entities -- must still immediately
+        invalidate the stale mapping via a reverse scan (by entity_id,
+        since that's what the event actually gives us), rather than only
+        relying on the slower async refresh_registry() fallback. Without
+        this, something reading entity_id_for() in the gap before that
+        refresh lands (e.g. a menu dashboard regen triggered by the same
+        disable) can resolve a just-removed point to its stale entity_id
+        and bake that into a saved config -- confirmed happening in the
+        wild, not just a theoretical race."""
         w = self._make_watcher()
         w._unique_id_map["nibe_100"] = "sensor.nibe_100"
         w._handle_event(
@@ -10016,8 +10624,9 @@ class TestHandleEventBranchCoverage(unittest.TestCase):
                 }
             }
         )
-        # Map must be unchanged
-        self.assertIn("nibe_100", w._unique_id_map)
+        # The stale entry must be gone immediately, not just eventually via
+        # the scheduled refresh.
+        self.assertNotIn("nibe_100", w._unique_id_map)
 
 
 # ===========================================================================
@@ -10349,6 +10958,30 @@ class TestGetHaLanguage(unittest.TestCase):
             result = _get_ha_language()
         self.assertEqual(result, "nl")
 
+    def test_norwegian_and_regional_tags_become_the_bridges_codes(self):
+        """HA names Norwegian "nb"/"nn" and adds region/script parts; the
+        bridge's language list and translations use "no" and bare codes, so a
+        Norwegian HA used to get English value labels."""
+        from nibe_ha_integration import _api_language
+
+        self.assertEqual(_api_language("nb"), "no")
+        self.assertEqual(_api_language("nn"), "no")
+        self.assertEqual(_api_language("en-GB"), "en")
+        self.assertEqual(_api_language("pt_BR"), "pt")
+        self.assertEqual(_api_language("NL"), "nl")
+        self.assertEqual(_api_language(""), "")
+
+    def test_returns_the_normalised_language(self):
+        import nibe_ha_integration as _hi
+        from nibe_ha_integration import _get_ha_language
+
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            self._mock_api({"language": "nb"}),
+        ):
+            self.assertEqual(_get_ha_language(), "no")
+        self.assertEqual(_hi._ha_language, "no")
+
     def test_returns_empty_string_when_language_absent(self):
         from nibe_ha_integration import _get_ha_language
 
@@ -10600,6 +11233,9 @@ class TestRefreshRegistrySuccessFalse(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -10646,6 +11282,9 @@ class TestWatcherLoopUnknownMessageType(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -10699,6 +11338,9 @@ class TestHandleEventNoEidBranches(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -10758,6 +11400,9 @@ class TestOnEntityEnabledDisabledPointDictNone(unittest.TestCase):
         from nibe_ha_integration import HAEntityRegistryWatcher
 
         w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
         w._unique_id_map = {}
         w._registry_map_lock = threading.Lock()
         w._stop_event = threading.Event()
@@ -11000,6 +11645,44 @@ class TestHandleSnapshotCmd(unittest.TestCase):
             self._send({"action": "restore", "name": "Test", "mode": "merge"})
         mock_restore.assert_called_once_with("Test", "merge")
 
+    def _results(self):
+        import json
+
+        from nibe_mqtt_publisher import BrowserTopic
+
+        return [
+            (json.loads(c.args[1]), c.kwargs.get("retain"))
+            for c in self.em.mqtt.publish.call_args_list
+            if c.args[0] == BrowserTopic.SNAPSHOTS_RESULT
+        ]
+
+    def test_a_refused_save_is_reported_to_the_card(self):
+        """Results were only logged, so a refused save (the snapshot limit)
+        looked to the user exactly like a success."""
+        refused = (
+            False,
+            "Maximum of 10 snapshots reached. Delete one before saving a new snapshot.",
+        )
+        with patch.object(self.em, "save_snapshot", return_value=refused):
+            self._send({"action": "save", "name": "Winter"})
+        self.assertEqual(
+            self._results(),
+            [
+                (
+                    {"action": "save", "name": "Winter", "ok": False, "message": refused[1]},
+                    False,
+                )
+            ],
+        )
+
+    def test_a_successful_restore_is_reported_too(self):
+        with patch.object(self.em, "restore_snapshot", return_value=(True, "Restored 5 points")):
+            self._send({"action": "restore", "name": "Winter", "mode": "merge"})
+        self.assertEqual(
+            [r for r, _ in self._results()],
+            [{"action": "restore", "name": "Winter", "ok": True, "message": "Restored 5 points"}],
+        )
+
     def test_restore_defaults_to_flush(self):
         with patch.object(self.em, "restore_snapshot", return_value=(True, "ok")) as mock_restore:
             self._send({"action": "restore", "name": "Test"})
@@ -11204,3 +11887,65 @@ class TestHandleSnapshotCmd(unittest.TestCase):
                 ),
                 f"payload={payload!r}",
             )
+
+
+class TestRegistryFetchOrdering(unittest.TestCase):
+    """Several full-registry fetches can be in flight at once, each over its
+    own connection, and each replaces the nibe_ entries when applied. One
+    finishing after a newer one must not roll the map back."""
+
+    def _watcher(self):
+        import threading
+
+        from nibe_ha_integration import HAEntityRegistryWatcher
+
+        w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
+        w._unique_id_map = {}
+        w._registry_map_lock = threading.Lock()
+        return w
+
+    def _mock_ws(self, entries):
+        ws = MagicMock()
+        ws.recv.side_effect = [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "auth_ok"}),
+            json.dumps({"id": 1, "type": "result", "success": True, "result": entries}),
+        ]
+        return ws
+
+    def test_older_refresh_finishing_last_is_discarded(self):
+        w = self._watcher()
+        newer = [
+            {"unique_id": "nibe_1", "entity_id": "sensor.nibe_1"},
+            {"unique_id": "nibe_2", "entity_id": "sensor.nibe_2"},
+        ]
+        # The older fetch takes its sequence number first, but its response
+        # is applied after the newer one's.
+        older_seq = w._next_map_seq()
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch("websocket.create_connection", return_value=self._mock_ws(newer)),
+        ):
+            w.refresh_registry()
+        self.assertEqual(w.entity_id_for(2), "sensor.nibe_2")
+        with w._registry_map_lock:
+            applied = w._newer_than_applied(older_seq)
+        self.assertFalse(applied, "a fetch older than the applied one must be dropped")
+        self.assertEqual(w.entity_id_for(2), "sensor.nibe_2")
+
+    def test_fetches_in_order_all_apply(self):
+        w = self._watcher()
+        for entries in (
+            [{"unique_id": "nibe_1", "entity_id": "sensor.nibe_1"}],
+            [{"unique_id": "nibe_2", "entity_id": "sensor.nibe_2"}],
+        ):
+            with (
+                patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+                patch("websocket.create_connection", return_value=self._mock_ws(entries)),
+            ):
+                w.refresh_registry()
+        self.assertIsNone(w.entity_id_for(1))
+        self.assertEqual(w.entity_id_for(2), "sensor.nibe_2")

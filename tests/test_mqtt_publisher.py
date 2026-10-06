@@ -212,12 +212,15 @@ class TestCrossFunctionProperties(unittest.TestCase):
 
     @given(
         _nibe_point_id.filter(
-            lambda p: p not in __import__("nibe_entity_detection").ENTITY_TYPE_OVERRIDES
+            lambda p: (
+                p not in __import__("nibe_entity_detection").ENTITY_TYPE_OVERRIDES
+                and p not in __import__("nibe_entity_detection").SAFETY_READ_ONLY_POINTS
+            )
         )
     )
     def test_switch_candidate_metadata_gives_switch_or_select_type(self, pid):
-        """If is_switch_candidate(meta) is True and point is not overridden
-        and register is HOLDING → detect_entity_type returns 'switch' or 'select'
+        """If is_switch_candidate(meta) is True, the point is neither overridden
+        nor on the safety read-only list, and register is HOLDING → detect_entity_type returns 'switch' or 'select'
         (select wins when a valid value mapping is present for this point)."""
         from nibe_entity_detection import detect_entity_type, is_switch_candidate
 
@@ -234,13 +237,16 @@ class TestCrossFunctionProperties(unittest.TestCase):
 
     @given(
         _nibe_point_id.filter(
-            lambda p: p not in __import__("nibe_entity_detection").ENTITY_TYPE_OVERRIDES
+            lambda p: (
+                p not in __import__("nibe_entity_detection").ENTITY_TYPE_OVERRIDES
+                and p not in __import__("nibe_entity_detection").SAFETY_READ_ONLY_POINTS
+            )
         ),
         st.text(min_size=1, max_size=10).filter(lambda s: s.strip()),
     )
     def test_number_candidate_metadata_gives_number_or_select_type(self, pid, unit):
         """If is_number_candidate(meta) is True and register is HOLDING
-        and point not overridden → detect_entity_type returns 'number' or 'select'
+        and point not overridden or on the safety read-only list → detect_entity_type returns 'number' or 'select'
         (select wins when a valid description mapping is present)."""
         from nibe_entity_detection import detect_entity_type, is_number_candidate
 
@@ -360,7 +366,7 @@ class TestMqttDiscoveryPublisherInit(unittest.TestCase):
         from nibe_mqtt_publisher import resolve_unit
 
         pub = self._pub()
-        with self.assertLogs("nibe.mqtt", level="WARNING") as cm:
+        with self.assertLogs("nibe.mqtt", level="DEBUG") as cm:
             resolve_unit(50827, "%RH", "Humidity", pub._unit_override_warnings_issued)
         self.assertTrue(any("50827" in msg for msg in cm.output))
         self.assertIn(50827, pub._unit_override_warnings_issued)
@@ -4546,7 +4552,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
         warned = set()
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             resolve_unit(4562, "%", "Manual pump speed", warned)
             mock_warn.assert_called_once()
         self.assertIn(4562, warned)
@@ -4557,7 +4563,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
         warned = set()
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             resolve_unit(4562, "%", "Manual pump speed", warned)
         args = mock_warn.call_args.args
         self.assertIn("unit overridden", args[0])
@@ -4573,7 +4579,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
         warned = set()
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             resolve_unit(4562, "%", "Manual pump speed", warned)
             resolve_unit(4562, "%", "Manual pump speed", warned)
             resolve_unit(4562, "%", "Manual pump speed", warned)
@@ -4583,7 +4589,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
         warned = set()
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             resolve_unit(4562, "%", "Manual pump speed", warned)
             resolve_unit(50827, "%RH", "Humidity: ths-10", warned)
         self.assertEqual(mock_warn.call_count, 2)
@@ -4602,7 +4608,7 @@ class TestResolveUnitWarningLogging(unittest.TestCase):
         from nibe_mqtt_publisher import log_mqtt, resolve_unit
 
         warned = set()
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             resolve_unit(4562, "%", "", warned)
         args = mock_warn.call_args.args
         self.assertEqual(args[2], "Point 4562")
@@ -4660,7 +4666,7 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
 
         pub = self._publisher()
         point = self._point(4562, unit="%")
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             pub.publish_entity_discovery(point, {})
         self.assertTrue(any("unit overridden" in c.args[0] for c in mock_warn.call_args_list))
 
@@ -4672,7 +4678,7 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
 
         pub = self._publisher()
         point = self._point(4562, unit="%")
-        with patch.object(log_mqtt, "warning") as mock_warn:
+        with patch.object(log_mqtt, "debug") as mock_warn:
             pub.publish_entity_discovery(point, {})
             pub.publish_entity_discovery(point, {})
         override_warnings = [c for c in mock_warn.call_args_list if "unit overridden" in c.args[0]]
@@ -4713,7 +4719,7 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
         pub = self._publisher()
         config = {}
         metadata = {"minValue": 0, "maxValue": 0, "divisor": 1, "intDefaultValue": 0}
-        with patch.object(log_entities, "warning") as mock_warn:
+        with patch.object(log_entities, "debug") as mock_warn:
             import nibe_discovery_config as discovery_config
             from nibe_mqtt_publisher import t_command, t_state
 
@@ -4808,7 +4814,7 @@ class TestRangeWarningTrimmedMessages(unittest.TestCase):
 
         pub = self._publisher()
         metadata = {"minValue": 0, "maxValue": 0, "divisor": 1, "intDefaultValue": 0}
-        with patch.object(log_entities, "warning") as mock_warn:
+        with patch.object(log_entities, "debug") as mock_warn:
             import nibe_discovery_config as discovery_config
             from nibe_mqtt_publisher import t_command, t_state
 
@@ -11060,6 +11066,44 @@ class TestPublishEntityDiscoveryRetainAndHash(unittest.TestCase):
             if "/config" in c[0][0] and c[0][0] != old_config_topic
         ]
         self.assertTrue(new_config_calls, "New entity_type's discovery config must be published")
+
+    def test_entity_type_change_publishes_attributes_on_the_new_topic(self):
+        """The attributes payload is identical across a domain change, so a
+        hash keyed on point_id alone treated the new domain's attributes
+        topic as already published — a binary_sensor reclassified to sensor
+        reached HA with no attributes at all (point_id included). The old
+        domain's attributes and availability topics must be cleared too."""
+        pub, mqtt = self._pub()
+        point = self._point(100)
+        point["entity_type"] = "binary_sensor"
+        pub.publish_entity_discovery(point, {})
+        mqtt.reset_mock()
+
+        point["entity_type"] = "sensor"
+        pub.publish_entity_discovery(point, {})
+
+        published = {c[0][0]: c[0][1] for c in mqtt.publish.call_args_list}
+        new_attrs = "homeassistant/sensor/nibe_100/attributes"
+        self.assertIn(new_attrs, published, "new domain's attributes topic never published")
+        self.assertNotEqual(published[new_attrs], "")
+        self.assertEqual(published.get("homeassistant/binary_sensor/nibe_100/attributes"), "")
+        self.assertEqual(published.get("homeassistant/binary_sensor/nibe_100/available"), "")
+
+    def test_forget_published_hashes_resends_but_keeps_type_tracking(self):
+        """A republish must resend the config, but the last-published type
+        still drives stale-domain cleanup on a later type change."""
+        pub, mqtt = self._pub()
+        point = self._point(100)
+        pub.publish_entity_discovery(point, {})
+        mqtt.publish.reset_mock()
+        pub.publish_entity_discovery(point, {})
+        unchanged = [c for c in mqtt.publish.call_args_list if c.args[0].endswith("/config")]
+        self.assertEqual(unchanged, [])  # unchanged config is suppressed...
+        pub.forget_published_hashes(100)
+        pub.publish_entity_discovery(point, {})
+        resent = [c for c in mqtt.publish.call_args_list if c.args[0].endswith("/config")]
+        self.assertEqual(len(resent), 1)  # ...until forgotten
+        self.assertIn(100, pub._point_entity_types)
 
     def test_invalidate_config_hash_clears_entity_type_tracking(self):
         """invalidate_config_hash must also forget the tracked entity_type,

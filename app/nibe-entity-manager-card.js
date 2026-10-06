@@ -71,7 +71,6 @@ class NibeEntityManager extends HTMLElement {
     this.entities = new Map();
     this.filteredEntities = [];
     this.selectedIds = new Set();
-    this.dynamicEntityIds = new Set();
 
     this.config = {
       title:                 '',
@@ -139,11 +138,63 @@ class NibeEntityManager extends HTMLElement {
     if (config) {
       Object.assign(this.config, config);
     }
+    const openModalId = this._openModalId;
     this.render();
     // Re-attach DOM event listeners every time the skeleton is rebuilt.
     this.setupEventListeners();
     this.setupMobileEventListeners();
     this.eventListenersSet = true;
+    this._restoreViewState(openModalId);
+  }
+
+  /**
+   * Put the freshly rendered skeleton back in step with the card's state.
+   *
+   * Lovelace calls setConfig() again on a live card whenever it re-applies
+   * the card's config, and render() rebuilds the whole shadow DOM from
+   * scratch. Without this the table came back empty until the next MQTT
+   * message happened to trigger a redraw (in steady state that can be a
+   * long time), an open changelog/snapshots modal vanished mid-read, and the
+   * search box and filter dropdowns showed blank while the old search and
+   * filters were still being applied.
+   */
+  _restoreViewState(openModalId) {
+    this.setElementValue('search-input', this.searchTerm);
+    this.setElementValue('type-filter', this.typeFilter);
+    this.setElementValue('status-filter', this.statusFilter);
+    this.setElementValue('writable-filter', this.writableFilter);
+    this.setElementValue('dynamic-filter', this.dynamicFilter);
+    this.setElementValue('mobile-type-filter', this.typeFilter);
+    this.setElementValue('mobile-status-filter', this.statusFilter);
+    this.setElementValue('mobile-writable-filter', this.writableFilter);
+    this.setElementValue('mobile-dynamic-filter', this.dynamicFilter);
+    this.setElementValue(
+      'mobile-sort-filter', `${this.sortField}-${this.sortAscending ? 'asc' : 'desc'}`
+    );
+    // The mobile filter panel too: render() draws it closed, so an open one
+    // came back closed with showMobileFilters still true — and the first tap
+    // on its toggle then did nothing visible.
+    const panel = this.shadowRoot.getElementById('mobile-filter-panel');
+    const indicator = this.shadowRoot.getElementById('mobile-filter-indicator');
+    if (panel) panel.style.display = this.showMobileFilters ? 'block' : 'none';
+    if (indicator) indicator.textContent = this.showMobileFilters ? '▲' : '▼';
+    this.updateSearchClearButton();
+    this.updateChangelogBadge();
+    if (this.entities.size > 0) this.updateTable();
+
+    // The modal elements are new and hidden; reopen whichever was open,
+    // with its content rebuilt from state (showEntityDetails re-renders from
+    // the current entity, and does nothing if the point has gone meanwhile).
+    this._openModalId = null;
+    if (openModalId === 'changelog-modal') {
+      this._renderChangelogContent();
+      this.showModal(openModalId);
+    } else if (openModalId === 'snapshots-modal') {
+      this._renderSnapshotsList();
+      this.showModal(openModalId);
+    } else if (openModalId === 'details-modal' && this._detailsPointId != null) {
+      this.showEntityDetails(this._detailsPointId);
+    }
   }
 
   render() {
@@ -1405,6 +1456,10 @@ class NibeEntityManager extends HTMLElement {
           { type: 'mqtt/subscribe', topic: 'nibe/browser/snapshots' }
         ),
         this._hass.connection.subscribeMessage(
+          (msg) => this.handleSnapshotResultMessage(msg),
+          { type: 'mqtt/subscribe', topic: 'nibe/browser/snapshots/result' }
+        ),
+        this._hass.connection.subscribeMessage(
           (msg) => this.handleAppliedModeMessage(msg),
           { type: 'mqtt/subscribe', topic: 'nibe/browser/applied_mode' }
         ),
@@ -1440,16 +1495,6 @@ class NibeEntityManager extends HTMLElement {
 
       const data = JSON.parse(msg.payload);
       if (!data.metadata || typeof data.metadata !== 'object') return;
-
-      // Clear dynamic set before repopulating — a full all_metadata message
-      // is authoritative.  Without this, dynamic points removed from firmware
-      // would persist in dynamicEntityIds across broker reconnects (Finding 3).
-      // Only clear when we have a full batch (count > 0) to avoid wiping on
-      // an empty or malformed message.
-      const incomingCount = Object.keys(data.metadata).length;
-      if (incomingCount > 0) {
-        this.dynamicEntityIds.clear();
-      }
 
       let updated = 0;
       for (const [idStr, metadata] of Object.entries(data.metadata)) {
@@ -1498,9 +1543,6 @@ class NibeEntityManager extends HTMLElement {
         };
 
         this.entities.set(pointId, entity);
-        if (entity.isDynamic) {
-          this.dynamicEntityIds.add(pointId);
-        }
         updated++;
       }
 
@@ -1543,7 +1585,6 @@ class NibeEntityManager extends HTMLElement {
       for (const [pointId] of this.entities) {
         if (!authoritative.has(pointId)) {
           this.entities.delete(pointId);
-          this.dynamicEntityIds.delete(pointId);
           removed++;
         }
       }
@@ -1796,7 +1837,6 @@ class NibeEntityManager extends HTMLElement {
       if (!msg.payload || msg.payload.trim() === '') {
         if (this.entities.has(pointId)) {
           this.entities.delete(pointId);
-          this.dynamicEntityIds.delete(pointId);
           this.debouncedUpdate();
         }
         return;
@@ -1834,16 +1874,17 @@ class NibeEntityManager extends HTMLElement {
 
       this.entities.set(pointId, entity);
 
-      if (entity.isDynamic) {
-        this.dynamicEntityIds.add(pointId);
-      }
-
-      // Re-render when a new entity arrives OR when is_dynamic changes on an
-      // existing entity (dynamic points appear after the initial load and the
-      // disable button must update from active to greyed-out).
-      const dynamicChanged = existingEntity &&
-        existingEntity.isDynamic !== entity.isDynamic;
-      if (!existingEntity || dynamicChanged) {
+      // Re-render when a new entity arrives OR when something the table shows
+      // changes on an existing one: is_dynamic (dynamic points appear after
+      // the initial load and the disable button must update from active to
+      // greyed-out), or its type/title (a binary_sensor reclassified to
+      // sensor kept its old badge until something else re-rendered).
+      const displayChanged = existingEntity && (
+        existingEntity.isDynamic !== entity.isDynamic ||
+        existingEntity.type !== entity.type ||
+        existingEntity.title !== entity.title
+      );
+      if (!existingEntity || displayChanged) {
         this.debouncedUpdate();
       }
 
@@ -2143,31 +2184,33 @@ class NibeEntityManager extends HTMLElement {
         const modbus     = entity.modbusRegisterID != null
                            ? entity.modbusRegisterID.toString() : '';
 
+        // The search only decides whether the entity matches at all; a match
+        // still has to pass the type/status/writable/dynamic filters below.
+        // Returning true straight from a match used to skip them, so with a
+        // search active the filters were silently ignored — and "Select all"
+        // then picked up entities the filters had hidden.
         const exactMatch = termLower !== '' && (idStr === termLower || modbus === termLower)
                         || unitLower.includes(termLower);
-        if (exactMatch) {
-          this._exactMatchIds.add(entity.id);
-          return true;
-        }
-
-        const prefixMatch = termLower !== ''
+        const prefixMatch = !exactMatch && termLower !== ''
                           && (idStr.startsWith(termLower) || modbus.startsWith(termLower));
-        if (prefixMatch) {
-          this._prefixMatchIds.add(entity.id);
-          return true;
-        }
 
         // Fuzzy match on title via Fuse.js (when loaded and query ≥ 3 chars).
         // Falls back to substring matching if Fuse is not yet available.
         const title = (entity.title || '').toLowerCase();
+        let titleMatch;
         if (term.length >= 3 && this._fuse) {
           // Fuse searches the full entity list — check if this entity is in results.
-          if (!this._fuseResultIds) return title.includes(termLower);
-          return this._fuseResultIds.has(entity.id);
+          titleMatch = this._fuseResultIds
+            ? this._fuseResultIds.has(entity.id)
+            : title.includes(termLower);
+        } else {
+          // Fuse not loaded or query < 3 chars: exact substring on title.
+          titleMatch = title.includes(termLower);
         }
 
-        // Fuse not loaded or query < 3 chars: exact substring on title.
-        if (!title.includes(termLower)) return false;
+        if (!exactMatch && !prefixMatch && !titleMatch) return false;
+        if (exactMatch) this._exactMatchIds.add(entity.id);
+        else if (prefixMatch) this._prefixMatchIds.add(entity.id);
       }
 
       if (this.typeFilter && entity.type !== this.typeFilter) return false;
@@ -2704,6 +2747,8 @@ class NibeEntityManager extends HTMLElement {
   showEntityDetails(pointId) {
     const entity = this.entities.get(pointId);
     if (!entity) return;
+    // Remembered so _restoreViewState can reopen it after a re-render.
+    this._detailsPointId = pointId;
 
     const displayValue = (value, defaultValue = 'N/A') => {
       if (value === null || value === undefined || value === '') {
@@ -2912,9 +2957,9 @@ class NibeEntityManager extends HTMLElement {
     } catch {
       this.snapshots = [];
     }
-    // Re-render if the modal is currently open
-    const modal = this.shadowRoot?.getElementById('snapshots-modal');
-    if (modal && modal.style.display !== 'none') {
+    // Re-render if the modal is currently open (modals are shown by a CSS
+    // class and tracked in _openModalId — style.display is never set).
+    if (this._openModalId === 'snapshots-modal') {
       this._renderSnapshotsList();
     }
   }
@@ -2927,6 +2972,12 @@ class NibeEntityManager extends HTMLElement {
       this.appliedMode = payload.trim();
     } catch {
       this.appliedMode = '';
+    }
+    // The snapshots list shows (and disables Restore under) a warning that
+    // depends on the mode; redraw it if open, or a mode switch made while
+    // it was open left the warning and the disabled buttons stale.
+    if (this._openModalId === 'snapshots-modal') {
+      this._renderSnapshotsList();
     }
   }
 
@@ -3071,15 +3122,12 @@ class NibeEntityManager extends HTMLElement {
         this._sendSnapshotCmd({ action: 'restore', name, mode });
         const msgEl = this._findByDataFor(container, '.snapshot-restore-msg', name);
         if (msgEl) {
-          msgEl.textContent = mode === 'flush'
-            ? 'Replacing selection… changes will appear within a few seconds.'
-            : 'Adding to selection… changes will appear within a few seconds.';
+          msgEl.style.color = 'var(--ha-color-secondary-text,#888)';
+          msgEl.textContent = mode === 'flush' ? 'Replacing selection…' : 'Adding to selection…';
         }
-        // Hide options panel after a moment
-        setTimeout(() => {
-          const panel = this._findByDataFor(container, '.snapshot-restore-options', name);
-          if (panel) panel.style.display = 'none';
-        }, 3000);
+        // The panel stays open until the bridge reports the outcome — see
+        // handleSnapshotResultMessage. It used to close after 3 seconds
+        // whatever happened, so a refused restore looked like a success.
       });
     });
 
@@ -3112,7 +3160,57 @@ class NibeEntityManager extends HTMLElement {
     if (msgEl) {
       msgEl.style.color = 'var(--ha-color-secondary-text,#888)';
       msgEl.textContent = `Saving "${name}"…`;
-      setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 4000);
+      // Replaced by the bridge's own result (handleSnapshotResultMessage);
+      // this only fires if none arrives.
+      clearTimeout(this._snapshotSaveTimer);
+      this._snapshotSaveTimer = setTimeout(() => {
+        msgEl.style.color = '#e53935';
+        msgEl.textContent = `No response from the bridge — "${name}" may not have been saved.`;
+      }, 10000);
+    }
+  }
+
+  /**
+   * Handle a non-retained message from nibe/browser/snapshots/result: the
+   * bridge's outcome for a save/restore/delete command. Results used to be
+   * only logged by the bridge, so a refused save (the snapshot limit) or
+   * restore (unknown name, blocked mode) looked exactly like a success.
+   */
+  handleSnapshotResultMessage(msg) {
+    try {
+      if (!msg.payload) return;
+      const result = JSON.parse(msg.payload);
+      if (!result || typeof result !== 'object') return;
+      const ok = Boolean(result.ok);
+      const text = String(result.message || (ok ? 'Done.' : 'The bridge refused this.'));
+      const colour = ok ? 'var(--ha-color-secondary-text,#888)' : '#e53935';
+
+      if (result.action === 'save') {
+        clearTimeout(this._snapshotSaveTimer);
+        const msgEl = this.shadowRoot?.getElementById('snapshot-save-msg');
+        if (msgEl) {
+          msgEl.style.color = colour;
+          msgEl.textContent = text;
+          this._snapshotSaveTimer = setTimeout(() => { msgEl.textContent = ''; }, ok ? 4000 : 15000);
+        }
+      } else if (result.action === 'restore') {
+        const container = this.shadowRoot?.getElementById('snapshots-list');
+        const name = String(result.name || '');
+        const msgEl = container && this._findByDataFor(container, '.snapshot-restore-msg', name);
+        if (msgEl) {
+          msgEl.style.color = colour;
+          msgEl.textContent = text;
+        }
+        if (ok && container) {
+          setTimeout(() => {
+            const panel = this._findByDataFor(container, '.snapshot-restore-options', name);
+            if (panel) panel.style.display = 'none';
+          }, 3000);
+        }
+      }
+      this.showToast(text, ok ? 'success' : 'error', ok ? 3000 : 6000);
+    } catch (e) {
+      console.warn('Failed to parse snapshot result:', e);
     }
   }
 
@@ -3454,7 +3552,9 @@ class NibeEntityManager extends HTMLElement {
   disconnectedCallback() {
     this.cleanupSubscriptions();
     this.mqttSetupDone = false;
-    this.eventListenersSet = false;
+    // eventListenersSet stays: the shadow DOM and its listeners survive a
+    // disconnect, and Lovelace moves card elements around while laying out
+    // a view — re-attaching on reconnect doubled every handler.
 
     if (this.updateTimeout) {
       clearTimeout(this.updateTimeout);

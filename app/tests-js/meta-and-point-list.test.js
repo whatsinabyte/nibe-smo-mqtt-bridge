@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createCard } from './support/create-card.js';
 import {
   allMetadataPayload,
@@ -18,11 +18,9 @@ describe('nibe/browser/meta/{id} (per-point)', () => {
     const { el, harness } = createCard();
     harness.publish('nibe/browser/meta/4', JSON.stringify(sampleMetadataEntry({ id: 4, is_dynamic: true })));
     expect(el.entities.has(4)).toBe(true);
-    expect(el.dynamicEntityIds.has(4)).toBe(true);
 
     harness.publish('nibe/browser/meta/4', '');
     expect(el.entities.has(4)).toBe(false);
-    expect(el.dynamicEntityIds.has(4)).toBe(false);
   });
 
   it('a whitespace-only payload is also treated as removal', () => {
@@ -30,6 +28,26 @@ describe('nibe/browser/meta/{id} (per-point)', () => {
     harness.publish('nibe/browser/meta/4', JSON.stringify(sampleMetadataEntry({ id: 4 })));
     harness.publish('nibe/browser/meta/4', '   ');
     expect(el.entities.has(4)).toBe(false);
+  });
+
+  it('re-renders when an existing entity changes type', () => {
+    // A binary_sensor reclassified to sensor republishes its metadata; the
+    // table must redraw its badge without waiting for some other render.
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/meta/4', JSON.stringify(sampleMetadataEntry({ id: 4, type: 'binary_sensor' })));
+    const spy = vi.spyOn(el, 'debouncedUpdate');
+    harness.publish('nibe/browser/meta/4', JSON.stringify(sampleMetadataEntry({ id: 4, type: 'sensor' })));
+    expect(el.entities.get(4).type).toBe('sensor');
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it('does not re-render when an existing entity\'s metadata is unchanged', () => {
+    const { el, harness } = createCard();
+    const payload = JSON.stringify(sampleMetadataEntry({ id: 4 }));
+    harness.publish('nibe/browser/meta/4', payload);
+    const spy = vi.spyOn(el, 'debouncedUpdate');
+    harness.publish('nibe/browser/meta/4', payload);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('preserves the enabled flag across a metadata refresh', () => {

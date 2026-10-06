@@ -1,6 +1,7 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as path from 'path';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { pointEntityId, setMockValue } from './support/stack';
 
 /**
  * A real switch write, end to end: HA's switch.turn_on/turn_off service →
@@ -74,15 +75,15 @@ test('a switch round-trips a real HA turn_on through the bridge to the controlle
   test.setTimeout(240_000);
 
   const token = readToken();
+  // The dump's value (off), whatever an earlier spec on this stack wrote.
+  await setMockValue(POINT_ID, 0);
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
 
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
 
   const searchInput = card.locator('#search-input');
   await searchInput.fill(POINT_ID);
@@ -100,8 +101,9 @@ test('a switch round-trips a real HA turn_on through the bridge to the controlle
     .poll(
       async () => {
         const after = await fetchStates(token);
+        const pointEntity = await pointEntityId(token, POINT_ID);
         const candidate = after.find(
-          (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('switch.')
+          (s) => s.entity_id === pointEntity && s.entity_id.startsWith('switch.')
         );
         if (candidate && candidate.state !== 'unavailable') {
           entityId = candidate.entity_id;

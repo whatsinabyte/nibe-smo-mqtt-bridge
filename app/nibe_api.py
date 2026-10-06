@@ -175,6 +175,34 @@ class NibeApiClient:
         if self._shutting_down is not None:
             self._shutting_down.set()
 
+    def _shutdown_refuses(self, what: str) -> bool:
+        """True (and logs why) when shutdown has begun, so a write path can
+        decline to open a fresh 30s socket — same rule request() applies."""
+        if self._shutting_down is not None and self._shutting_down.is_set():
+            log_commands.debug("%s skipped — shutting down", what)  # pragma: no mutate
+            return True
+        return False
+
+    def _urlopen_serialized(self, req: urllib.request.Request) -> bytes:
+        """Send one request under self._lock and return the response body.
+
+        For the write paths (write_point, reset_notifications,
+        write_device_mode), which don't retry and need the raw HTTPError to
+        report the controller's own error body, so they can't go through
+        request(). They must still hold the same lock, or the serialization
+        request() exists to provide (at most one request in flight against
+        the controller — see its docstring) silently doesn't cover writes:
+        they used to call urlopen directly, so a write from the write
+        executor or a management action could overlap the poll thread's
+        bulk fetch, the exact overlapping load the lock was added to stop.
+        """
+        with self._lock:
+            response = urllib.request.urlopen(  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
+                req, context=self.ssl_context, timeout=30
+            )  # pragma: no mutate
+            body: bytes = response.read()
+            return body
+
     # ------------------------------------------------------------------ #
     # Low-level request                                                    #
     # ------------------------------------------------------------------ #
@@ -411,6 +439,15 @@ class NibeApiClient:
         # Same None-vs-False truthiness equivalence as is_writable above —
         # only used via `if not is_degenerate:` below.
         is_degenerate = entity_info.get("is_degenerate_range", False)
+        # min == max is this firmware's "no bounds declared" convention for
+        # every entity type, not just numbers — is_degenerate_range is only
+        # ever set by build_number_config, so a switch or button reporting
+        # min=max=0 (e.g. 3754 "Activate forced control", 8982 "Away mode
+        # status", 3478 "Reset alarm") used to have every write of 1 rejected
+        # here as "above maximum 0", before it ever reached the controller —
+        # those switches could be turned off but never on.
+        if min_val is not None and min_val == max_val:
+            is_degenerate = True
 
         if not is_degenerate:
             if min_val is not None and value < min_val:
@@ -427,6 +464,9 @@ class NibeApiClient:
                 )
                 # pragma: no mutate end
                 return False
+
+        if self._shutdown_refuses(f"Write to point {point_id}"):
+            return False
 
         payload = json.dumps(
             [
@@ -455,10 +495,7 @@ class NibeApiClient:
                 method="PATCH",
             )
             # pragma: no mutate end
-            response = urllib.request.urlopen(  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
-                req, context=self.ssl_context, timeout=30
-            )  # pragma: no mutate
-            data_json = json.loads(response.read().decode())
+            data_json = json.loads(self._urlopen_serialized(req).decode())
             point_resp = data_json.get(str(point_id))
 
             # Accept both the documented string response and the actual full-object
@@ -565,6 +602,8 @@ class NibeApiClient:
 
         Returns True on HTTP 204, False on any error.
         """
+        if self._shutdown_refuses("Notifications reset"):
+            return False
         # Header key casing is irrelevant — urllib.request.Request normalises
         # header names internally, so mutating the case here is unobservable.
         # pragma: no mutate start
@@ -577,9 +616,7 @@ class NibeApiClient:
             req = urllib.request.Request(
                 f"{self.base_url}/notifications", headers=headers, method="DELETE"
             )
-            urllib.request.urlopen(
-                req, context=self.ssl_context, timeout=30
-            )  # pragma: no mutate  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
+            self._urlopen_serialized(req)
             log_commands.info("Notifications reset: all alarms cleared")  # pragma: no mutate
             return True
         except urllib.error.HTTPError as e:
@@ -630,6 +667,8 @@ class NibeApiClient:
             The string value to write (e.g. "on"/"off" for aidmode,
             "normal"/"away" for smartmode).
         """
+        if self._shutdown_refuses(f"Device mode {mode_type} write"):
+            return False
         url = f"{self.base_url}/{mode_type}"
         payload = json.dumps({mode_type: value})
         try:
@@ -647,9 +686,7 @@ class NibeApiClient:
                 method="POST",
             )
             # pragma: no mutate end
-            urllib.request.urlopen(
-                req, context=self.ssl_context, timeout=30
-            )  # pragma: no mutate  # self.base_url is admin-configured, not runtime-controllable input  # nosec B310
+            self._urlopen_serialized(req)
             log_commands.info("Device mode %s set to %s", mode_type, value)  # pragma: no mutate
             return True
         except urllib.error.HTTPError as e:

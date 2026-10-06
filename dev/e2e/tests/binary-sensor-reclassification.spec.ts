@@ -1,7 +1,8 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { pointEntityId } from './support/stack';
 
 /**
  * Proves, against a real Home Assistant instance, that the bridge's dynamic
@@ -89,17 +90,6 @@ function binarySensorCandidateIds(): number[] {
   return ids;
 }
 
-async function fetchStates(token: string): Promise<Array<{ entity_id: string; state: string }>> {
-  const ctx = await pwRequest.newContext();
-  const resp = await ctx.get(`${HA_URL}/api/states`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  expect(resp.ok()).toBeTruthy();
-  const states = await resp.json();
-  await ctx.dispose();
-  return states;
-}
-
 async function fetchState(
   token: string,
   entityId: string
@@ -146,7 +136,7 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
   await loginToHa(page);
 
   // 2. Navigate to the seeded Nibe Bridge dashboard / Entity Manager view.
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
 
@@ -167,9 +157,6 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
   // Enable button at all.
   await expect(card.locator('.badge-enabled').first()).toBeVisible({ timeout: 60_000 });
 
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
-
   // 3-4. Enable candidates one at a time (same round trip as
   // enable-entity.spec.ts: hass.callService -> real broker -> real bridge)
   // until one produces a genuinely new, available binary_sensor.* entity —
@@ -183,25 +170,42 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
     const candidateId = String(candidate);
     await searchInput.fill(candidateId);
     const row = card.locator(`tr[data-id="${candidateId}"]`);
-    if ((await row.count()) === 0) continue;
-    await expect(row).toBeVisible({ timeout: 10_000 });
-
-    const enableButton = row.locator('button[data-action="enable"]');
-    if ((await enableButton.count()) > 0) {
-      await enableButton.click();
-      await expect(row.locator('.badge-enabled')).toBeVisible({ timeout: 30_000 });
+    // The table re-renders on a debounce after the search box changes, so the
+    // row may not exist yet. A single immediate row.count() used to skip real
+    // candidates that simply hadn't been drawn — failing the spec whenever the
+    // first candidate happened to be enabled already by an earlier spec.
+    try {
+      await expect(row).toBeVisible({ timeout: 5_000 });
+    } catch {
+      continue; // genuinely not in the card
     }
+
+    // Only a point this test enables itself: one already enabled may have
+    // been reclassified by an earlier run on this stack (reclassification is
+    // persistent), or enabled by a mode another spec applied.
+    const enableButton = row.locator('button[data-action="enable"]');
+    if ((await enableButton.count()) === 0) {
+      await searchInput.fill('');
+      continue;
+    }
+    await enableButton.click();
+    await expect(row.locator('.badge-enabled')).toBeVisible({ timeout: 30_000 });
     await searchInput.fill('');
 
+    // Found by its own unique_id — "any new binary_sensor" also matched
+    // entities a mode change on this stack happened to create meanwhile.
+    let entityId: string | null = null;
     try {
       await expect
         .poll(
           async () => {
-            const after = await fetchStates(token);
-            const match = after.find(
-              (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('binary_sensor.')
-            );
-            return match && match.state !== 'unavailable' ? match.entity_id : null;
+            const id = await pointEntityId(token, candidateId);
+            const current = id ? await fetchState(token, id) : null;
+            entityId =
+              id?.startsWith('binary_sensor.') && current !== null && current.state !== 'unavailable'
+                ? id
+                : null;
+            return entityId;
           },
           { timeout: 15_000 }
         )
@@ -209,12 +213,8 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
     } catch {
       continue; // this candidate didn't pan out — try the next one
     }
-    const after = await fetchStates(token);
-    const match = after.find(
-      (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('binary_sensor.')
-    );
     pointId = candidateId;
-    binaryEntityId = match!.entity_id;
+    binaryEntityId = entityId;
     break;
   }
   expect(
@@ -222,8 +222,6 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
     'no candidate point produced a new available binary_sensor.* entity'
   ).not.toBeNull();
   expect(binaryEntityId).not.toBeNull();
-
-  const afterEnableIds = new Set((await fetchStates(token)).map((s) => s.entity_id));
 
   // 5. Simulate the device reporting a non-boolean value on a later poll —
   // the mock API has no built-in way to do this on its own (it replays one
@@ -249,12 +247,11 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
         const oldState = await fetchState(token, binaryEntityId!);
         if (oldState !== null) return false; // old entity still present — not reclassified yet
 
-        const after = await fetchStates(token);
-        const candidate = after.find(
-          (s) => !afterEnableIds.has(s.entity_id) && s.entity_id.startsWith('sensor.')
-        );
-        if (candidate && candidate.state !== 'unavailable') {
-          sensorEntityId = candidate.entity_id;
+        // The same point's entity, now in the sensor domain.
+        const id = await pointEntityId(token, pointId!);
+        const current = id ? await fetchState(token, id) : null;
+        if (id?.startsWith('sensor.') && current !== null && current.state !== 'unavailable') {
+          sensorEntityId = id;
           return true;
         }
         return false;
@@ -272,4 +269,17 @@ test('a binary_sensor that starts reporting a non-boolean value is reclassified 
   // REST API), not just carrying a stale "unavailable" state.
   const oldStateAfter = await fetchState(token, binaryEntityId!);
   expect(oldStateAfter).toBeNull();
+
+  // 7. The Entity Manager card must list it as a sensor too. Its bulk
+  // all_metadata message is only published at discovery, so the bridge has
+  // to republish the point's own metadata topic; without that, a freshly
+  // loaded card kept showing it as a binary sensor until the bridge
+  // restarted. Reloading makes the card rebuild from retained state alone.
+  await page.reload();
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await searchInput.fill(pointId!);
+  await expect(
+    card.locator(`tr[data-id="${pointId}"] .badge-sensor`),
+    `the card still lists reclassified point ${pointId} as a binary sensor after a reload`
+  ).toBeVisible({ timeout: 30_000 });
 });

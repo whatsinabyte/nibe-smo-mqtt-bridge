@@ -40,11 +40,13 @@ configuration:
     description: >-
       Uživatelské jméno pro ověřování u MQTT brokeru. Ponechte prázdné,
       pokud váš broker nevyžaduje ověřování.
+      Při výchozí hodnotě "core-mosquitto" poskytuje Supervisor účet doplňku Mosquitto, který má přednost před tímto polem.
   mqtt_password:
     name: Heslo MQTT
     description: >-
       Heslo pro ověřování u MQTT brokeru. Ponechte prázdné, pokud váš
       broker nevyžaduje ověřování.
+      Při výchozí hodnotě "core-mosquitto" poskytuje Supervisor účet doplňku Mosquitto, který má přednost před tímto polem.
   device_name:
     name: Název zařízení
     description: >-

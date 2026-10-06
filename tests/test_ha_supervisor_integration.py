@@ -616,6 +616,16 @@ class TestReconnectRacingDebouncedRefreshAgainstARealServer:
     fetch are genuinely in flight against the server at the same time."""
 
     def test_no_crash_and_a_consistent_final_map_survives_the_race(self) -> None:
+        # Both racing fetches see the same registry, as they would against a
+        # real Home Assistant. (They used to be given different ones, with
+        # the test asserting the reconnect's always won — but each fetch now
+        # carries a sequence number and only the newest is applied, so which
+        # one is newest is a scheduling detail, and a real Core can't answer
+        # two near-simultaneous fetches with contradictory registries.)
+        REGISTRY = [
+            {"unique_id": "nibe_100", "entity_id": "sensor.nibe_100"},
+            {"unique_id": "nibe_200", "entity_id": "sensor.nibe_200"},
+        ]
         run_connections = [0]
         refresh_connections = [0]
         errors: list[BaseException] = []
@@ -637,9 +647,7 @@ class TestReconnectRacingDebouncedRefreshAgainstARealServer:
                                 "id": first["id"],
                                 "type": "result",
                                 "success": True,
-                                "result": [
-                                    {"unique_id": "nibe_100", "entity_id": "sensor.nibe_100"},
-                                ],
+                                "result": REGISTRY,
                             }
                         ),
                     )
@@ -692,9 +700,7 @@ class TestReconnectRacingDebouncedRefreshAgainstARealServer:
                                 "id": reg_req["id"],
                                 "type": "result",
                                 "success": True,
-                                "result": [
-                                    {"unique_id": "nibe_200", "entity_id": "sensor.nibe_200"},
-                                ],
+                                "result": REGISTRY,
                             }
                         ),
                     )
@@ -724,13 +730,10 @@ class TestReconnectRacingDebouncedRefreshAgainstARealServer:
             assert errors == [], f"Server-side handler raised: {errors}"
             assert run_connections[0] >= 2, "The watcher never reconnected"
             assert refresh_connections[0] >= 1, "The debounced refresh_registry() never ran"
-            # The reconnect's wholesale reassignment is the last write to
-            # settle in every timing this test has produced -- its entry
-            # must survive. Whether nibe_100 (the earlier, racing refresh)
-            # also survives depends on exact scheduling and is not asserted
-            # -- the real guarantee under test is no crash and no dict
-            # corruption, not a specific winner.
+            # Whichever fetch is applied last, the map must be whole: no
+            # crash, no corruption, and every entity the registry holds.
             assert isinstance(watcher._unique_id_map, dict)
+            assert watcher.entity_id_for(100) == "sensor.nibe_100"
             assert watcher.entity_id_for(200) == "sensor.nibe_200"
         finally:
             stub.close()

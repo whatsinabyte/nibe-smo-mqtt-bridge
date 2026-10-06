@@ -847,6 +847,12 @@ class TestDynamicPointMap(unittest.TestCase):
         m.restore_from_bulk({1001, 2001})
         self.assertFalse(m[1001].firmware_removed)
 
+    def test_restore_from_bulk_returns_only_the_restored_points(self):
+        m = self._map_with_entries()
+        m._table[1001].firmware_removed = True
+        self.assertEqual(m.restore_from_bulk({1001, 2001}), {1001})
+        self.assertEqual(m.restore_from_bulk({1001, 2001}), set())
+
     # ── record_outcome ────────────────────────────────────────────────
 
     def test_record_outcome_controlling(self):
@@ -1076,9 +1082,20 @@ class TestDynamicPointMap(unittest.TestCase):
     def test_to_file_oserror_returns_false(self):
         """OSError on write (e.g. read-only filesystem) returns False without raising."""
         m = self._map_with_entries()
-        with patch("builtins.open", side_effect=OSError("read-only")):
+        with patch("nibe_dynamic_map.tempfile.mkstemp", side_effect=OSError("read-only")):
             result = m.to_file("/tmp/nibe_test_readonly.json")
         self.assertFalse(result)
+
+    def test_to_file_failed_rename_leaves_no_temp_file_behind(self):
+        import os
+        import tempfile
+
+        m = self._map_with_entries()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            with patch("nibe_dynamic_map.os.replace", side_effect=OSError("disk full")):
+                self.assertFalse(m.to_file(path))
+            self.assertEqual(os.listdir(d), [])
 
     # ── flush ─────────────────────────────────────────────────────────
 
@@ -1822,33 +1839,27 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
 
     # -- post-write-scan baseline disappearance --------------------------------
 
-    def test_post_write_scan_baseline_point_vanishing_is_newly_discovered(self):
-        """During a post-write scan, a baseline (previously assumed static)
-        point disappearing entirely is the FIRST discovery that it's
-        actually dynamic — must be reported as disappeared even though it
-        was never in dynamic_point_map at all."""
+    def test_post_write_scan_baseline_point_vanishing_is_not_a_dynamic_disappearance(self):
+        """A baseline (static) point missing during a post-write scan used to
+        be taken for a newly discovered dynamic point and disabled on the
+        spot. Within 90s of any write that includes a controller restart or
+        a partial response, so it now gets the ordinary absence grace."""
         em = self._ready_em()
         em.post_write_active = True
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])  # 601 vanished
         with patch.object(em, "_publish_dynamic_changes") as mock_pub:
             em._fetch_bulk_data(detect_changes=True)
-        mock_pub.assert_called_once()
-        _, disappeared_arg, *_rest = mock_pub.call_args.args
-        self.assertIn(601, disappeared_arg)
+        mock_pub.assert_not_called()
 
-    def test_post_write_scan_removes_vanished_point_from_baseline(self):
-        """The real side effect: a baseline point discovered to be dynamic
-        this way must be permanently removed from baseline_point_ids, not
-        just reported once and left in place."""
+    def test_post_write_scan_keeps_a_vanished_static_point_in_baseline(self):
         em = self._ready_em()
         em.post_write_active = True
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])
         with patch.object(em, "_publish_dynamic_changes"):
             em._fetch_bulk_data(detect_changes=True)
-        self.assertNotIn(601, em.baseline_point_ids)
-        self.assertIn(600, em.baseline_point_ids)  # untouched, still present
+        self.assertEqual(em.baseline_point_ids, {600, 601})
 
     def test_post_write_scan_already_known_dynamic_point_not_double_counted(self):
         """A baseline point that ALSO happens to be a known dynamic point
@@ -2213,7 +2224,8 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
 
     @given(_PID_SET, _PID_SET, _PID_SET)
     def test_post_write_baseline_disappearance(self, baseline, known_dynamic, current_ids):
-        """Post-write: baseline − current_ids − known_dynamic ⊆ disappeared."""
+        """Post-write: no point of baseline − current_ids − known_dynamic (a
+        static point missing) is reported as disappeared."""
         assume(current_ids)
         em = self._make_em_with_dynamic_map(known_dynamic, frozenset())
         em.post_write_active = True
@@ -2232,10 +2244,9 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._raw_api(current_ids)
         with patch.object(em, "_publish_dynamic_changes") as mock_pub:
             em._fetch_bulk_data(detect_changes=True)
-        if expected_newly_absent:
-            self.assertTrue(mock_pub.called)
+        if mock_pub.called:
             _, actual, *_rest = mock_pub.call_args.args
-            self.assertTrue(expected_newly_absent <= actual)
+            self.assertFalse(expected_newly_absent & actual)
 
     @given(_PID_SET, _PID_SET)
     def test_non_dynamic_points_never_in_disappeared(self, all_pids, current_ids):
@@ -3159,17 +3170,13 @@ class TestFlushMaxValDefault(unittest.TestCase):
         self.assertEqual(entry.unprocessed_values, {0, 1})
 
 
-class TestToFileTmpSuffixExact(unittest.TestCase):
-    """to_file: the temp file written to disk before the atomic rename must
-    be named exactly path + '.tmp'.
+class TestToFileTempName(unittest.TestCase):
+    """to_file writes a sibling temp file and renames it into place. The temp
+    name must be unique per write: a fixed path + ".tmp" lets two concurrent
+    writers truncate each other's half-written file and rename the mixture
+    into place (see ARCHITECTURE.md's durability note on /data files)."""
 
-    A prior test only checked that path + '.tmp' no longer exists *after*
-    the call — trivially true even if the mutant used a different suffix
-    entirely (since that file was never created). This test instead
-    captures the actual argument passed to os.replace during the call.
-    """
-
-    def test_replace_source_argument_is_dot_tmp_suffixed(self):
+    def test_temp_file_is_a_unique_sibling(self):
         import os
         import tempfile
         from unittest.mock import patch
@@ -3177,22 +3184,23 @@ class TestToFileTmpSuffixExact(unittest.TestCase):
         from nibe_dynamic_map import DynamicPointMap
 
         m = DynamicPointMap()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            path = f.name
         real_replace = os.replace
-        captured = {}
+        sources = []
 
         def spy_replace(src, dst):
-            captured["src"] = src
-            captured["dst"] = dst
+            sources.append((src, dst))
             return real_replace(src, dst)
 
-        try:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
             with patch("nibe_dynamic_map.os.replace", side_effect=spy_replace):
-                result = m.to_file(path)
-            self.assertTrue(result)
-            self.assertEqual(captured["src"], path + ".tmp")
-            self.assertEqual(captured["dst"], path)
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+                self.assertTrue(m.to_file(path))
+                self.assertTrue(m.to_file(path))
+            (src1, dst1), (src2, dst2) = sources
+            self.assertEqual((dst1, dst2), (path, path))
+            for src in (src1, src2):
+                self.assertEqual(os.path.dirname(src), d)
+                self.assertTrue(os.path.basename(src).startswith(".map.json."))
+                self.assertTrue(src.endswith(".tmp"))
+            self.assertNotEqual(src1, src2, "temp name must be unique per write")
+            self.assertEqual(os.listdir(d), ["map.json"])

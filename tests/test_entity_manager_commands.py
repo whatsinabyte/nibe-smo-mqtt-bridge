@@ -1308,10 +1308,12 @@ class TestHandleCommandWorkerFailurePath(unittest.TestCase):
     value the controller actually rejected."""
 
     def _entity_info(self, point_id=100, entity_type="switch", display_title="Test point"):
+        # The shape publish_entity_discovery returns: the title is in the
+        # indexed point (point_data), not in entity_info itself.
         return {
             "point_id": point_id,
             "entity_type": entity_type,
-            "display_title": display_title,
+            "point_data": {"display_title": display_title},
             "state_topic": f"nibe/state/{point_id}",
         }
 
@@ -1494,6 +1496,22 @@ class TestHandleCommandWorkerFailurePath(unittest.TestCase):
         em._api.fetch_point.return_value = None
         em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
         self.assertEqual(em._notify.call_args.kwargs["notification_id"], _NOTIF_WRITE_ERROR)
+
+    def test_notification_names_the_setting_from_its_indexed_point(self):
+        """entity_info as publish_entity_discovery builds it carries the
+        title in point_data; the notification read a top-level key that
+        never exists, so it always said "point N (point N)"."""
+        em = _make_em()
+        em._api.write_point.return_value = False
+        em._api.fetch_point.return_value = None
+        info = {
+            "point_id": 3478,
+            "entity_type": "button",
+            "state_topic": None,
+            "point_data": {"display_title": "Reset alarm"},
+        }
+        em._handle_command_worker(info, 1, "PRESS", "cmd1")
+        self.assertIn("to Reset alarm (point 3478)", em._notify.call_args.kwargs["message"])
 
     def test_point_title_falls_back_to_point_id_when_display_title_absent(self):
         """When entity_info has no 'display_title' key, point_title must

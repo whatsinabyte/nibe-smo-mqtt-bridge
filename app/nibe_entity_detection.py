@@ -193,6 +193,10 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         22077: {0: "Off", 1: "On"},
         # Alarm — no firmware description
         1709: {0: "No alarm", 1: "Active alarm"},
+        # All sub units operating prio (an input register). Values as observed
+        # on a live controller, in step with its other status entities;
+        # hot water and pool weren't observable there and stay raw numbers.
+        56150: {0: "Idle", 1: "Heating", 2: "Cooling"},
     },
     "holding": {
         # Language selection — ordering reflects Nibe's market priority.
@@ -246,6 +250,19 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         4821: {0: "Intermittent", 1: "Auto"},
         4729: {0: "Intermittent", 1: "Auto"},
         4778: {0: "Intermittent", 1: "Auto"},
+        # No firmware description for these either: options as the
+        # controller's own menu lists them (language English), in that order,
+        # verified on a live controller. Without a mapping they showed as bare
+        # 0–2 numbers, and 4692/4085 as switches.
+        4692: {0: "Target temp", 1: "Delta temp"},  # Charging method
+        4085: {0: "Linear", 1: "Binary"},  # Internal additional heat stepping mode
+        5482: {0: "Intermittent", 1: "Continuous", 2: "10 days cont."},  # Operating mode
+        7022: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 3)
+        7023: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 4)
+        23141: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 5)
+        23142: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 6)
+        23143: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 7)
+        23144: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 8)
         # Requested operating mode (SG Ready) — no firmware description.
         # Numeric order confirmed tested on real hardware (firmware 4.12.8,
         # S1256) via the Home Assistant community: "You set that to 0-3 for
@@ -301,8 +318,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # number a user can look up. Enable only once all four values are
         # measured:
         # 3260: {10: "Standard", 30: "Encouraged", ...},  # 20/40 unknown
-        # Operating prioritisation
-        56150: {10: "Off", 20: "Hot water", 30: "Heating", 40: "Pool", 60: "Cooling"},
         # Heat pump type codes (best-effort, not officially documented)
         2471: {
             17: "S2125-12",
@@ -347,23 +362,14 @@ ENTITY_TYPE_OVERRIDES: dict[int, str] = {
     12392: "switch",  # Show outdoor temperature — 0/1 but auto-detects as number
     12393: "switch",  # Show indoor temperature — 0/1 but auto-detects as number
     3706: "switch",  # Periodic increase activated — persistent on/off, not a number
-    4970: "number",  # blockFreq 2 — auto-detects as switch (0/1 shape) but is a frequency value
-    4969: "number",  # blockFreq 1 — same
     8982: "switch",  # Away mode — max=0 in metadata (firmware quirk) so auto-detects as number
     3754: "switch",  # Activate forced control — same firmware quirk
+    8060: "switch",  # Defrost requested (EB101) — 0–1 holding register, but s8, so auto-detects as number
     # ── MODBUS_NO_REGISTER — would fall through to sensor/diagnostic without override ──
     32824: "switch",  # Power limitation activation
     # ── THS-10 accessory — auto-detects as number without override ────────────
     5110: "switch",  # Prevent condensation climate system 1
     5214: "switch",  # Limit humidity in the room, cooling climate system 1
-    # ── MODBUS_HOLDING_REGISTER + isWritable=False — handled by auto-detect ──
-    # _detect_holding_entity now returns ('sensor', 'diagnostic') for all
-    # HOLDING registers where isWritable=False. The overrides below are no
-    # longer needed — kept as comments for historical reference.
-    # 3937: 'sensor'   # Auxiliary operation on alarm
-    # 4030: 'sensor'   # More hot water (Number of minutes)
-    # 5222: 'sensor'   # Delay timer EME
-    # 1948: 'sensor'   # Holiday function status
     # ── Time-of-day registers — stored as seconds, shown as HH:MM ────────────
     3708: "time",  # Periodic increase start time
     12401: "time",  # HW circulation start time period 1
@@ -376,7 +382,7 @@ ENTITY_TYPE_OVERRIDES: dict[int, str] = {
     1827: "sensor",  # Step controlled add. heat blocking
     2002: "sensor",  # Diver­ter valve hot water (QN10)
     # ── binary_sensor — non-INPUT or non-standard shape, cannot be auto-detected ──
-    # Point 22077 is s16 + isWritable=True so _is_auto_binary_sensor() skips it.
+    # Point 22077 is an s16 holding register, so _is_auto_binary_sensor() skips it.
     22077: "binary_sensor",  # AUX from Modbus
 }
 
@@ -397,6 +403,12 @@ UNIT_OVERRIDES: dict[int, str] = {
     # variableType=time registers — formerly exposed as number with "s" unit.
     # Now exposed as HA time entities (HH:MM:SS), no unit needed.
     # Unit overrides below are intentionally removed; see ENTITY_TYPE_OVERRIDES.
+    # Seconds of blank time left, charge pumps 1–8 (818–821 are pumps 8–5;
+    # they used to be missing, so only pumps 1–4 showed a unit).
+    818: "s",
+    819: "s",
+    820: "s",
+    821: "s",
     822: "s",
     823: "s",
     824: "s",
@@ -416,6 +428,24 @@ UNIT_OVERRIDES: dict[int, str] = {
     1217: "DM",
     1218: "DM",
     1219: "DM",
+    # DM start source, priority 1–5 smart energy source — the settings for
+    # the start DM values above, which showed no unit.
+    5294: "DM",
+    5295: "DM",
+    5296: "DM",
+    5297: "DM",
+    5298: "DM",
+    # Firmware reports no unit; the unit is the one the installer menus give
+    # (menu_structure.yaml), each one Home Assistant recognises.
+    995: "bar",  # Pressure sensor, injection (EB101-BP11)
+    849: "%",  # Degree of opening EEV (EB101)
+    3282: "°C",  # Pool offset (SPA)
+    3283: "°C",  # Cooling offset (SPA)
+    4529: "°C",  # Cooling/heating sensor set point
+    4685: "°C",  # Hot water compressors step difference
+    3861: "h",  # Floor drying ongoing time
+    4030: "min",  # More hot water, minutes remaining
+    14314: "W",  # Available power (Solar PV, via Modbus)
 }
 
 # Per-point device_class overrides.
@@ -458,6 +488,38 @@ def apply_divisor_override(point_id: int, metadata: dict) -> dict:
     if override is None or metadata.get("divisor") == override:
         return metadata
     return {**metadata, "divisor": override}
+
+
+# Per-point raw minValue/maxValue overrides (None keeps the firmware's own),
+# for a declared bound confirmed wrong — same reason as DIVISOR_OVERRIDES:
+# it feeds both HA's number range and write_point's own range check.
+RANGE_OVERRIDES: dict[int, tuple[int | None, int | None]] = {
+    # Stop temperature HW periodic increase (the anti-legionella cycle):
+    # declares minValue 55 with divisor 10, i.e. 5.5 °C — a factor of ten
+    # below the real 55 °C minimum (installer menu range 55 – 70 °C; the
+    # live value in every reference dump is raw 550, that very minimum).
+    3702: (550, None),
+}
+
+
+def apply_metadata_overrides(point_id: int, metadata: dict) -> dict:
+    """apply_divisor_override plus RANGE_OVERRIDES — call this wherever a
+    fresh metadata dict enters the system (see apply_divisor_override)."""
+    metadata = apply_divisor_override(point_id, metadata)
+    bounds = RANGE_OVERRIDES.get(point_id)
+    if bounds is None:
+        return metadata
+    lo, hi = bounds
+    if (lo is None or metadata.get("minValue") == lo) and (
+        hi is None or metadata.get("maxValue") == hi
+    ):
+        return metadata
+    patched = dict(metadata)
+    if lo is not None:
+        patched["minValue"] = lo
+    if hi is not None:
+        patched["maxValue"] = hi
+    return patched
 
 
 # Unit → HA device_class lookup (after _UNIT_NORMALISE has been applied).
@@ -872,6 +934,45 @@ def get_entity_options(
 # ============================================================================
 
 
+# Registers the bridge never writes, whatever their register type — DOCS.md
+# "Intentionally Unexposed Registers" explains each group. Exposed as
+# read-only sensors. This used to rest on the firmware's isWritable flag,
+# which is not relied on (see is_writable_point) and never covered 55884 or
+# the spot prices at all.
+SAFETY_READ_ONLY_POINTS: frozenset[int] = frozenset(
+    {
+        # Block new compressor — responds only during an active system event.
+        55749,
+        # Set point value power — a direct compressor power request with no
+        # firmware timeout, kept across power cycles.
+        55884,
+        # Spot price per hour, 00:00–24:00 — value format undocumented.
+        *range(26817, 26841),
+    }
+)
+
+
+def is_writable_point(metadata: dict, point_id: int | None = None) -> bool:
+    """Whether a point accepts writes, judged by its register type alone.
+
+    The firmware's own isWritable flag isn't relied on: it follows the
+    register type everywhere except 17 holding registers flagged false —
+    among them 3478 "Reset alarm", a trigger-only register, and 4064
+    "Oper. mode", which has a value mapping — so a control the user could
+    see was refused by the bridge before the controller was even asked.
+    Input registers are read-only by definition; a holding register is
+    writable, and the controller's own per-point write verdict ("modified"
+    / "error: read only value", see write_point) has the final word. The
+    one REST-only point (MODBUS_NO_REGISTER: 32824, an on/off switch) is
+    treated as writable too; a point without a register type is not. Judged
+    per REST point: an input and a holding register can share a Modbus
+    register number.
+    """
+    if point_id in SAFETY_READ_ONLY_POINTS:
+        return False
+    return metadata.get("modbusRegisterType") in ("MODBUS_HOLDING_REGISTER", "MODBUS_NO_REGISTER")
+
+
 def is_switch_candidate(metadata: dict) -> bool:
     """Return True if a holding register has the signature of a boolean on/off switch."""
     return all(
@@ -897,7 +998,7 @@ def is_number_candidate(metadata: dict) -> bool:
 
 # ── Auto-detection support for binary_sensor (INPUT registers only) ───────────
 #
-# INPUT register u8 points with min=0, max≤1, no unit, and isWritable=False are
+# INPUT register u8 points with min=0, max≤1 and no unit are
 # almost always on/off status flags. We auto-detect them as binary_sensor rather
 # than requiring every flag to be listed in ENTITY_TYPE_OVERRIDES.
 #
@@ -933,7 +1034,7 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset(
         2528,  # Heat pump type + compressor size (EB100)
         # Step count
         6717,  # Ext. add. heat active steps
-        # Firmware version register (bitfield-encoded, not a flag)
+        # Firmware version register (a version number, not a flag)
         14987,  # Version, inverter (EB101)
         # Compressor count registers — value is 0..N, not a binary flag
         666,
@@ -998,9 +1099,9 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
       - variableSize == 'u8'
       - minValue == 0, maxValue <= 1
       - no unit
-      - isWritable is False
+      - not writable (an input register — see is_writable_point)
       - point ID not in _BINARY_SENSOR_EXCLUSIONS
-      - if in VALUE_MAPPINGS['input'], must have exactly 2 states (not 3+)
+      - if in VALUE_MAPPINGS['input'], its values must be exactly 0 and 1
       - description (if present) has at most 2 enum pairs
     """
     if (
@@ -1011,7 +1112,7 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
         # compared with `> 1`. Verified empirically.
         metadata.get("maxValue", 99) > 1
         or metadata.get("unit")
-        or metadata.get("isWritable") is not False
+        or is_writable_point(metadata)
     ):
         return False
 
@@ -1019,14 +1120,17 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
     if point_id in _BINARY_SENSOR_EXCLUSIONS:
         return False
 
-    # If the point has a VALUE_MAPPINGS entry, use the state count as ground
-    # truth — 2 states is binary, 3+ states is a multi-state sensor.
+    # If the point has a VALUE_MAPPINGS entry, it is ground truth: only a
+    # mapping of exactly the values 0 and 1 is binary. 3+ states is a
+    # multi-state sensor, and so is a 2-state mapping on other values (e.g.
+    # 2701 ACS status, 3 = Passive / 7 = Active) — published as a
+    # binary_sensor, its first real value would only get it reclassified.
     # VALUE_MAPPINGS is a static dict literal that always has an 'input'
     # key, so .get('input', ...)'s default is dead code — verified
     # empirically, any default value (including None) is unobservable.
     if point_id is not None:
         mapping = VALUE_MAPPINGS.get("input", {}).get(point_id)
-        if mapping is not None and len(mapping) > 2:
+        if mapping is not None and set(mapping) != {0, 1}:
             return False
 
     # Falls through to `if description:` below — None, '', and any string
@@ -1058,6 +1162,9 @@ def detect_entity_type(point: dict) -> tuple[str, str]:
     # get_register_type — any non-matching default is unobservable.
     # Verified empirically.
     modbus_type = metadata.get("modbusRegisterType", "")
+
+    if point_id in SAFETY_READ_ONLY_POINTS:
+        return "sensor", "diagnostic"
 
     if point_id in ENTITY_TYPE_OVERRIDES:
         to_type = ENTITY_TYPE_OVERRIDES[point_id]
@@ -1175,12 +1282,6 @@ def _detect_holding_entity(point: dict, metadata: dict) -> tuple[str, str]:
     # anything), producing a genuinely empty select entity.
     if len(parse_description_mapping(description) or {}) >= 2:
         return "select", "config"
-
-    # isWritable=False on a HOLDING register means the REST API will reject any
-    # write — the firmware marks these as Modbus-TCP-only. Expose as a read-only
-    # sensor rather than a writable control (number/switch).
-    if metadata.get("isWritable") is False:
-        return "sensor", "diagnostic"
 
     if is_switch_candidate(metadata):
         return "switch", "config"

@@ -39,11 +39,13 @@ configuration:
     description: >-
       Nazwa użytkownika do uwierzytelniania w brokerze MQTT. Pozostaw
       puste, jeśli broker nie wymaga uwierzytelniania.
+      Przy domyślnej wartości "core-mosquitto" Supervisor dostarcza konto dodatku Mosquitto, które ma pierwszeństwo przed tym polem.
   mqtt_password:
     name: Hasło MQTT
     description: >-
       Hasło do uwierzytelniania w brokerze MQTT. Pozostaw puste, jeśli
       broker nie wymaga uwierzytelniania.
+      Przy domyślnej wartości "core-mosquitto" Supervisor dostarcza konto dodatku Mosquitto, które ma pierwszeństwo przed tym polem.
   device_name:
     name: Nazwa urządzenia
     description: >-

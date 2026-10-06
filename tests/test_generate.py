@@ -582,6 +582,30 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(secrets='mqtt_password: "pass#word"\n')
         self.assertEqual(cfg.mqtt_password, "pass#word")
 
+    def test_secrets_yaml_trailing_comment_is_not_part_of_the_value(self):
+        """In YAML a '#' after whitespace starts a comment; it used to be read
+        into the credential."""
+        cfg = self._load(secrets="mqtt_password: s3cret  # my broker\n")
+        self.assertEqual(cfg.mqtt_password, "s3cret")
+
+    def test_secrets_yaml_hash_inside_a_bare_value_is_kept(self):
+        cfg = self._load(secrets="mqtt_password: pass#word\n")
+        self.assertEqual(cfg.mqtt_password, "pass#word")
+
+    def test_secrets_yaml_quoted_value_with_trailing_comment(self):
+        cfg = self._load(secrets='mqtt_password: "pa ss#1"  # note\n')
+        self.assertEqual(cfg.mqtt_password, "pa ss#1")
+
+    def test_secrets_yaml_empty_value_does_not_take_the_next_line(self):
+        """`\\s*` after the colon crossed the newline."""
+        cfg = self._load(secrets="mqtt_user:\nmqtt_password: pw\n")
+        self.assertIsNone(cfg.mqtt_username)
+        self.assertEqual(cfg.mqtt_password, "pw")
+
+    def test_secrets_yaml_comment_only_value_is_empty(self):
+        cfg = self._load(secrets="mqtt_user: # none yet\n")
+        self.assertIsNone(cfg.mqtt_username)
+
     def test_secrets_yaml_does_not_override_options_json_credentials(self):
         """options.json credentials take priority over secrets.yaml."""
         cfg = self._load(
@@ -812,15 +836,22 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._load(secrets="nibe_basic_auth: dXNlcjpwYXNz\n")
         self.assertTrue(cfg.nibe_auth.startswith("Basic "))
 
-    def test_nibe_basic_auth_wins_over_username_password_when_both_present(self):
-        """When both a pre-encoded nibe_basic_auth (secrets.yaml-only) and
-        nibe_username/nibe_password (options.json) are present, the
-        if/elif in load_config() must prefer nibe_basic_auth — this was
-        never directly exercised; every other test sets only one or the
-        other, which can't tell an `if/elif` apart from an `if/if` that
-        happened to only ever see one branch's inputs."""
+    def test_ui_username_password_win_over_secrets_basic_auth(self):
+        """DOCS.md: secrets.yaml only fills in credentials left blank in the
+        add-on UI. The secrets token used to win, so a stale one kept being
+        sent after the UI credentials were changed."""
+        import base64
+
         cfg = self._load(
             options={"nibe_username": "optuser", "nibe_password": "optpass"},
+            secrets="nibe_basic_auth: Basic cHJlZW5jb2RlZA==\n",
+        )
+        expected = "Basic " + base64.b64encode(b"optuser:optpass").decode()
+        self.assertEqual(cfg.nibe_auth, expected)
+
+    def test_secrets_basic_auth_used_when_ui_credentials_are_incomplete(self):
+        cfg = self._load(
+            options={"nibe_username": "optuser", "nibe_password": ""},
             secrets="nibe_basic_auth: Basic cHJlZW5jb2RlZA==\n",
         )
         self.assertEqual(cfg.nibe_auth, "Basic cHJlZW5jb2RlZA==")
@@ -2504,7 +2535,7 @@ class TestRunScanWithRetry(unittest.TestCase):
 
     def test_retry_warning_logged_with_exact_text(self):
         em = self._em([set(), {1}])
-        with patch("time.sleep"), self.assertLogs("nibe.restore", level="WARNING") as cm:
+        with patch("time.sleep"), self.assertLogs("nibe.restore", level="INFO") as cm:
             self.fn(em, retries=3, backoffs=[3, 6, 12])
         self.assertTrue(
             any(
@@ -4137,6 +4168,8 @@ class TestBuildInfrastructure(unittest.TestCase):
         # resubscribe_all and republish_availability must have been called
         fake_em.resubscribe_all.assert_called_once()
         fake_em.republish_availability.assert_called_once()
+        # ...and the retained state, which the broker may have lost
+        fake_em.republish_retained_state.assert_called_once()
 
     def test_device_id_derived_from_serial(self):
         """device_id must incorporate the serial number from the API response."""
@@ -8670,3 +8703,17 @@ class TestConfigTranslationsParity(unittest.TestCase):
                     (entry.get("description") or "").strip(),
                     f"{path.name}: {key} has an empty 'description'",
                 )
+
+
+class TestThreadDumpSignal(unittest.TestCase):
+    """SIGUSR1 dumps every thread's stack to stderr — the diagnostic for a
+    thread misbehaving without logging (e.g. spinning at full CPU)."""
+
+    def test_registers_sigusr1_with_all_threads(self):
+        import signal
+
+        from generate_nibe_mqtt import _register_thread_dump_signal
+
+        with patch("generate_nibe_mqtt.faulthandler.register") as mock_register:
+            self.assertTrue(_register_thread_dump_signal())
+        mock_register.assert_called_once_with(signal.SIGUSR1, all_threads=True, chain=False)

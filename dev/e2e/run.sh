@@ -106,6 +106,12 @@ echo "==> Seeding HA (onboarding + MQTT integration)"
 # the container kept running the old code.
 docker compose run --build --rm ha-seed
 
+echo "==> Starting the fake Supervisor"
+# Started after seeding because it builds its Core credentials from the token
+# the seeder just wrote. --build for the same reason as every other service
+# here. See fake-supervisor/fake_supervisor.py.
+docker compose up -d --build supervisor
+
 echo "==> Starting the bridge (rebuilding from the repo's real Dockerfile)"
 # --build is not optional: `docker compose up` alone only builds an image
 # the first time a service has never been built, and silently reuses

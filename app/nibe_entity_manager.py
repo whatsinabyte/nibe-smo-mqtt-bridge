@@ -74,14 +74,16 @@ from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
 from nibe_entity_detection import (
     MODES,
     apply_divisor,
-    apply_divisor_override,
+    apply_metadata_overrides,
     clean_string,
+    create_entity_id,
     detect_entity_type,
     get_register_type,
     get_value_mapping,
+    is_writable_point,
     reverse_divisor,
 )
-from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_config
+from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_attributes, t_config
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_api = logging.getLogger("nibe.api")
@@ -99,6 +101,21 @@ log_history = logging.getLogger("nibe.history")
 # Write commands
 _CMD_ID_LENGTH = 8  # hex chars in a correlation ID (uuid4 prefix)
 _TEXT_REGISTER_MAX_LEN = 64  # max chars for a Nibe string register
+
+# Every HA domain publish_entity_discovery can publish a point under — the
+# set of discovery topics a point's retained config could be sitting on when
+# the bridge no longer knows which one it used (see
+# _clear_retained_discovery).
+_DISCOVERY_DOMAINS = (
+    "sensor",
+    "binary_sensor",
+    "switch",
+    "number",
+    "select",
+    "button",
+    "text",
+    "time",
+)
 
 # Post-write dynamic-point scan window
 _POST_WRITE_SCAN_S = 90  # seconds to keep accelerated bulk polling
@@ -146,6 +163,7 @@ _MQTT_SCAN_TIMEOUT_S = 15  # seconds to wait for the sentinel round-trip
 # Applied-mode persistence (entity mode reconciliation across restarts)
 _APPLIED_MODE_FILE = "/data/applied_mode"
 _WANTED_POINTS_FILE = "/data/wanted_points.json"
+_RECLASSIFIED_POINTS_FILE = "/data/reclassified_points.json"
 _SNAPSHOTS_FILE = "/data/snapshots.json"
 _SNAPSHOTS_MAX = 10  # maximum number of named snapshots
 _APPLIED_MODE_TIMEOUT_S = 5  # seconds to wait for the retained applied_mode
@@ -467,10 +485,12 @@ class EntityManager:
 
         # Points dynamically reclassified from binary_sensor -> sensor after
         # being observed reporting a raw value other than 0/1 (see
-        # _reclassify_binary_sensor). Tracked so the loud warning log fires
-        # once per point (on the reclassifying transition) rather than on
-        # every subsequent poll while the point stays reclassified — see
-        # _reclassify_binary_sensor's docstring for the full rationale.
+        # _reclassify_binary_sensor). Persisted (retained RECLASSIFIED_POINTS
+        # topic plus _RECLASSIFIED_POINTS_FILE) and applied by
+        # _get_cached_entity_type, so the correction survives restarts and a
+        # dynamic point's reappearance instead of being re-derived from the
+        # static metadata (which says binary_sensor again) every time. Also
+        # gates the loud warning log to the reclassifying transition itself.
         self._binary_sensor_reclassified: set[int] = set()
 
         # ── Point registry ────────────────────────────────────────────────────
@@ -550,6 +570,16 @@ class EntityManager:
         # cleared the moment it comes back. Gates the destructive disable in
         # _update_entity_state; see _ABSENT_GRACE_S for why that wait exists.
         self._absent_since: dict[int, float] = {}
+        # Enabled points (retained discovery config on the broker) that were
+        # missing from the bulk response at startup, so restore_from_mqtt
+        # could not rebuild them: point_id -> when that was found. They keep
+        # their retained config — the absence may be a controller that is
+        # still coming up — and get the same _ABSENT_GRACE_S as a runtime
+        # absence via _expire_absent_at_startup. Without this they were never
+        # cleaned up at all: the runtime grace path only covers active
+        # entities, so a point a firmware update removed while the bridge was
+        # down stayed an unavailable entity in HA forever.
+        self._absent_at_startup: dict[int, float] = {}
         self.initial_discovery_complete: bool = False
 
         # ── Wanted points (catch-all re-enable safety net) ────────────────────
@@ -567,6 +597,10 @@ class EntityManager:
         # _setup_dynamic_map_loading), with _WANTED_POINTS_FILE as a
         # filesystem fallback (see discover_points()).
         self._wanted_points: set[int] = set()
+        # Forces one _reconcile_wanted_points run on the first successful poll
+        # after startup; after that it only runs on a fetch that contains a
+        # point the previous fetch didn't (see update_all_states).
+        self._wanted_reconcile_pending: bool = True
 
         # ── Write metrics (Finding 3) ─────────────────────────────────────────
         # Monotonically increasing counters for the lifetime of this bridge session.
@@ -641,6 +675,12 @@ class EntityManager:
         # next poll refreshes from the API.
         self.device_modes_cache: dict[str, str] = {}
         self.device_modes_dirty: bool = True
+        # When device_modes_cache was last filled from the API. The cache
+        # also expires after nibe_ha_integration._DEVICE_MODES_MAX_AGE_S (see _publish_device_modes):
+        # dirty is only ever set by the bridge's own aid/smart mode writes, so
+        # without an expiry a mode changed on the controller itself (or from
+        # another app) never reached HA until the bridge restarted.
+        self.device_modes_fetched_at: float = 0.0
         # Incremented under _em_lock every time a write handler sets
         # device_modes_dirty = True. _publish_device_modes captures this
         # before its unlocked fetch_device_info() call and compares it
@@ -651,7 +691,23 @@ class EntityManager:
 
         # ── Notification flags ────────────────────────────────────────────────
         self._api_notification_active: bool = False
+        # True until this process's first successful bulk fetch — see there.
+        self._api_first_success_pending: bool = True
+        # What republish_retained_state needs that only startup knows: the
+        # arguments management discovery was published with, and the
+        # applied mode (its /data file may not survive a container rebuild).
+        self._mgmt_discovery_args: tuple[str, bool] | None = None
+        # Run once complete_deferred_discovery has restored the entities —
+        # see HAEntityRegistryWatcher._reconcile_user_disabled.
+        self._after_deferred_discovery: list[Callable[[], None]] = []
+        self._applied_mode_known: str | None = None
         self._alarm_notification_active: bool = False
+        # The alarms the current notification lists (see update_alarm_state),
+        # so a change in the set re-sends it rather than leaving it stale.
+        self._alarm_notified_ids: tuple | None = None
+        # True until the first successful alarm poll: a notification left from
+        # before a restart is unknown to this process and must still be cleared.
+        self._alarm_first_poll_pending: bool = True
         self._last_alarm_count: int = -1  # -1 forces first log
         self._last_stats_key: tuple | None = None
         self._write_notification_active: bool = False
@@ -680,6 +736,8 @@ class EntityManager:
         self.change_history: deque = deque(maxlen=_CHANGELOG_MAX_ENTRIES)
         self.changelog_retention_days: int = 90
         self._history_seq: int = 0
+        # See _point_catalog_changed / _flush_point_catalog.
+        self._point_catalog_dirty = False
         self._last_published_seq: int = 0
         self._last_prune_time: float = 0.0  # for hourly prune cadence
 
@@ -746,7 +804,7 @@ class EntityManager:
     def _index_point(self, point: dict) -> None:
         point_id = point["variableId"]
         if "metadata" in point:
-            point["metadata"] = apply_divisor_override(point_id, point["metadata"])
+            point["metadata"] = apply_metadata_overrides(point_id, point["metadata"])
         self.all_points_by_id[point_id] = point
 
     def _deindex_point(self, point_id: int) -> None:
@@ -758,6 +816,32 @@ class EntityManager:
     # ------------------------------------------------------------------ #
     # Discovery                                                            #
     # ------------------------------------------------------------------ #
+
+    def _point_catalog_changed(self) -> None:
+        """Tell the card the set or shape of its points changed: the point
+        list now, and the bulk all_metadata batch once at the end of this
+        poll (_flush_point_catalog).
+
+        Both are retained, and Home Assistant doesn't deliver them to a
+        freshly loaded card in any fixed order relative to each other or to
+        the per-point meta/{id} topics. all_metadata used to be published
+        only at discovery, so whenever it arrived last it overrode fresher
+        state: a reclassified point went back to binary_sensor in the card
+        (observed against HA 2026.9), and a point deindexed since startup
+        could be added back after the point list had pruned it.
+
+        all_metadata is deferred rather than sent here because it is about
+        half a megabyte and some callers run once per point — an accessory
+        install or a firmware update changes dozens of points in one poll.
+        """
+        self._pub.publish_point_list(self.all_points_by_id)
+        self._point_catalog_dirty = True
+
+    def _flush_point_catalog(self) -> None:
+        """Publish all_metadata if anything changed it since the last flush."""
+        if self._point_catalog_dirty:
+            self._point_catalog_dirty = False
+            self._pub.publish_all_metadata(self.all_points)
 
     def discover_points(self) -> bool:
         """Fetch all points from the API and establish the static baseline.
@@ -799,6 +883,17 @@ class EntityManager:
             except (OSError, ValueError):
                 pass
 
+        # Same fallback for the reclassified set — it must be in place before
+        # the fetch below classifies (and indexes) every point.
+        if not self._binary_sensor_reclassified:
+            try:
+                with open(_RECLASSIFIED_POINTS_FILE, encoding="utf-8") as f:
+                    loaded = json.loads(f.read())
+                if isinstance(loaded, list):
+                    self._binary_sensor_reclassified = {int(pid) for pid in loaded}
+            except (OSError, ValueError):
+                pass
+
         if not self._fetch_bulk_data(detect_changes=False):
             log_discovery.error("Initial discovery failed")  # pragma: no mutate
             return False
@@ -819,15 +914,22 @@ class EntityManager:
             # pragma: no mutate end
             self._persist_dynamic_map()
 
+        # Both judge presence against the whole bulk response, not the static
+        # baseline: known dynamic points are deliberately left out of the
+        # baseline, so passing it marked every dynamic switch/select's own
+        # entry firmware_removed on every startup while it was right there
+        # in the response — and the restore could never clear it. A point
+        # shown by a dynamic select then stopped being expected, so the
+        # startup reconcile deleted its live entity as stale.
+        bulk_point_ids = set(self.bulk_data)
+
         # Restore firmware_removed status for any entries that reappeared
-        self.dynamic_point_map.restore_from_bulk(self.baseline_point_ids)
+        self.dynamic_point_map.restore_from_bulk(bulk_point_ids)
 
         # Mark entries whose point_id is no longer in the firmware's bulk
         # response as firmware_removed — suppresses future learning-mode
         # probes on switches/selects the firmware has removed.
-        newly_removed = self.dynamic_point_map.mark_absent_as_firmware_removed(
-            self.baseline_point_ids
-        )
+        newly_removed = self.dynamic_point_map.mark_absent_as_firmware_removed(bulk_point_ids)
         if newly_removed:
             # pragma: no mutate start
             log_discovery.info(
@@ -898,7 +1000,7 @@ class EntityManager:
         )
 
         if action == "apply":
-            log_restore.warning(
+            log_restore.info(
                 "Deferred MQTT scan found 0 existing discovery configs — "
                 "looks like a fresh install. Applying mode '%s'.",
                 initial_mode,
@@ -926,6 +1028,11 @@ class EntityManager:
             len(self.mqtt_enabled_points),
             len(self.active_entities),
         )  # pragma: no mutate
+        for callback in list(self._after_deferred_discovery):
+            try:
+                callback()
+            except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+                log_discovery.warning("After-deferred-discovery callback failed: %s", e)
         return True
 
     def apply_startup_action(
@@ -1065,6 +1172,16 @@ class EntityManager:
         Only republishes configs whose hash has changed since the last run,
         reducing MQTT traffic on restarts where nothing has changed.
         """
+        # This rebuilds the entire enabled set from the broker, so rebuild the
+        # stats counts from zero alongside it. Points enabled before the scan
+        # — dynamic points re-activated by _reconcile_dynamic_points inside
+        # discover_points(), or wanted points re-enabled by a poll before a
+        # deferred discovery completes — were already counted once, and
+        # restore counting them again inflated the stats sensor.
+        self._stats_type_counts = {}
+        self._stats_category_counts = {}
+        self._stats_writable_count = 0
+
         if not self.mqtt_enabled_points:
             log_restore.info("No existing MQTT configs found")  # pragma: no mutate
             return 0
@@ -1083,7 +1200,7 @@ class EntityManager:
             point = self.all_points_by_id.get(point_id)
             if not point:
                 # pragma: no mutate start
-                log_restore.warning(
+                log_restore.info(
                     "Point %d is in the enabled list but has no metadata — "
                     "it may be a dynamic point not currently active, "
                     "or it was removed in a firmware update. Skipping restore.",
@@ -1091,6 +1208,16 @@ class EntityManager:
                 )
                 # pragma: no mutate end
                 failed_points.append(point_id)
+                # Only a real absence starts the grace clock. With no bulk
+                # data at all (controller unreachable at startup) every point
+                # looks missing; timing them from now would let a first
+                # answer that is incomplete — a controller still booting —
+                # delete everything it omits the moment it arrives, if the
+                # outage lasted longer than the grace period. Deferred
+                # discovery runs this restore again once the controller
+                # answers, and tracks real absences from then.
+                if self.bulk_data:
+                    self._absent_at_startup[point_id] = time.time()
                 continue
 
             entity_info = self._pub.publish_entity_discovery(point, self.bulk_data)
@@ -1165,7 +1292,12 @@ class EntityManager:
         # is meant to record. A subsequent mode change still un-marks what it
         # disables (see apply_mode), so a reconcile-on-startup sequence stays
         # correct: restore backfills, then apply_mode prunes.
-        newly_wanted = self.mqtt_enabled_points - self._wanted_points
+        # Points absent at startup count too: they were in the broker's
+        # enabled list just the same, and marking them is what gets them
+        # re-enabled (by _reconcile_wanted_points) if they come back.
+        newly_wanted = (
+            self.mqtt_enabled_points | set(self._absent_at_startup)
+        ) - self._wanted_points
         if newly_wanted:
             self._wanted_points.update(newly_wanted)
             self._persist_wanted_points()
@@ -1246,7 +1378,7 @@ class EntityManager:
         point = self.all_points_by_id.get(point_id)
         if not point:
             # pragma: no mutate start
-            log_entities.warning(
+            log_entities.info(
                 "Cannot enable point %d: not in bulk data "
                 "(conditional point absent for this firmware/accessory configuration?)",
                 point_id,
@@ -1341,6 +1473,12 @@ class EntityManager:
 
     def _disable_entity_locked(self, point_id: int) -> bool:
         """Implementation of disable_entity — caller must hold _em_lock."""
+        # A disabled entity is no longer polled, so a reappearance of its
+        # point would never clear its absence record — and after a later
+        # re-enable, the next brief absence (a controller reboot) would be
+        # measured from that stale first miss and destroy the entity at
+        # once instead of after _ABSENT_GRACE_S.
+        self._absent_since.pop(point_id, None)
         if point_id not in self.mqtt_enabled_points:
             return True
 
@@ -1476,6 +1614,24 @@ class EntityManager:
                     # firmware-absence artifact — undoing it via
                     # _reconcile_wanted_points would fight the mode switch.
                     self._unmark_wanted(point_id)
+                if self.mode_switch_behavior != "merge":
+                    # Points that were enabled but absent at startup (see
+                    # _absent_at_startup) aren't in mqtt_enabled_points, so
+                    # to_disable never includes them — yet the mode excludes
+                    # them just the same. Left alone they stay wanted and keep
+                    # their retained config, and would be re-enabled on return
+                    # despite the new mode.
+                    for point_id in (set(self._absent_at_startup) - target) - protected:
+                        self._clear_retained_discovery(point_id)
+                        self._pub.invalidate_config_hash(point_id)
+                        self._unmark_wanted(point_id)
+                        del self._absent_at_startup[point_id]
+                    # Likewise points disabled after the absence grace period:
+                    # still wanted (so a return re-enables them), but not
+                    # enabled, so to_disable never covers them either.
+                    # Dynamic points are left to the dynamic path.
+                    for point_id in self._excluded_wanted_points(target, protected):
+                        self._unmark_wanted(point_id)
             finally:
                 if not was_suppressed:
                     with self._suppress_lock:
@@ -1541,15 +1697,42 @@ class EntityManager:
             failures_before = self.api_consecutive_failures
             known_count = len(self.dynamic_point_map.all_known_dynamic_point_ids())
             should_detect = bool(known_count) or _post_write_now_active
+            # The previous successful fetch's point set (_fetch_bulk_data
+            # replaces it with the new one on success).
+            previous_point_ids = set(self.published_configs)
             result = self._fetch_bulk_data(detect_changes=should_detect)
             lock_was_busy = result is False and self.api_consecutive_failures == failures_before
             if not lock_was_busy:
                 with self._em_lock:
                     self.last_bulk_fetch = current_time
-                if result and self._wanted_points:
-                    self._reconcile_wanted_points(set(self.bulk_data.keys()))
+                current_point_ids = set(self.bulk_data.keys())
+                if result and self.initial_discovery_complete:
+                    self._restore_reappeared_map_entries(current_point_ids)
+                if result and self.initial_discovery_complete and self._absent_at_startup:
+                    self._expire_absent_at_startup(current_point_ids)
+                # A wanted point can only need re-enabling if it has just come
+                # back, i.e. this fetch holds an id the previous one didn't —
+                # judged by set difference, not size: a point leaving and
+                # another returning in the same poll leaves the count unchanged
+                # (or smaller) while still bringing a point back. Not on every
+                # poll, so a point left wanted while intentionally disabled
+                # can't be fought over by the poll loop. Plus once after
+                # startup, for points the startup itself found missing.
+                # Gated on initial_discovery_complete: before a deferred
+                # discovery finishes the point index is still empty, so a run
+                # there could do nothing useful — and would use up the
+                # one-time startup run that the first real poll needs.
+                if (
+                    result
+                    and self.initial_discovery_complete
+                    and self._wanted_points
+                    and (self._wanted_reconcile_pending or current_point_ids - previous_point_ids)
+                ):
+                    self._wanted_reconcile_pending = False
+                    self._reconcile_wanted_points(current_point_ids)
 
         if not self.active_entities_by_id:
+            self._flush_point_catalog()
             return
 
         log_entities.debug("Updating %d active entities", len(self.active_entities_by_id))
@@ -1558,6 +1741,30 @@ class EntityManager:
 
         for entity_info in snapshot:
             self._update_entity_state(entity_info)
+        # Once per poll, after the bulk fetch and every entity update — the
+        # two places that change the card's points.
+        self._flush_point_catalog()
+
+    def _restore_reappeared_map_entries(self, current_point_ids: set[int]) -> None:
+        """Clear firmware_removed on map entries whose point is back.
+
+        discover_points marks an entry firmware_removed when its point is
+        absent from the startup bulk response, and used to be the only place
+        that restored one. A switch/select that is itself dynamic is absent
+        at startup whenever whatever shows it is off — so once it was
+        switched back on, its learned outcomes were ignored on writes, it was
+        never probed, and the menu dashboard didn't inject what it shows,
+        all until the next restart happened to catch it present.
+        """
+        with self._em_lock:
+            restored = self.dynamic_point_map.restore_from_bulk(current_point_ids)
+        if restored:
+            log_discovery.info(
+                "DynamicPointMap: %d point(s) back in bulk, no longer firmware_removed: %s",
+                len(restored),
+                sorted(restored),
+            )  # pragma: no mutate
+            self._persist_dynamic_map()
 
     def _update_entity_state(self, entity_info: dict) -> None:
         """Read the cached bulk value for one entity and publish its HA state."""
@@ -1626,15 +1833,19 @@ class EntityManager:
                 with self._post_write_lock:
                     post_write_snapshot = self.post_write_active
                     controlling_point_snapshot = self._post_write_controlling_point
-                if post_write_snapshot:
-                    # Absence during a post-write scan means this is a dynamic
-                    # point disappearing. Route through _publish_dynamic_changes
-                    # so it is deindexed, its MQTT meta is cleared, the changelog
-                    # is updated, and the frontend is notified — not just disabled.
-                    if point_id not in (
-                        self.dynamic_point_map.all_known_dynamic_point_ids()
-                        - self.active_dynamic_points
-                    ):
+                known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
+                if post_write_snapshot and (
+                    point_id in known_dynamic or point_id in self.active_dynamic_points
+                ):
+                    # A known dynamic point absent during a post-write scan is
+                    # disappearing. Route through _publish_dynamic_changes so it
+                    # is deindexed, its MQTT meta is cleared, the changelog is
+                    # updated, and the frontend is notified — not just disabled.
+                    # Any other point takes the absence grace path below, write
+                    # or no write: a static point briefly missing within 90s of
+                    # any write (a controller restart, a partial response) used
+                    # to be disabled on the spot, deleting its HA entity.
+                    if point_id in self.active_dynamic_points:
                         # Message text mutations here are log-only (no
                         # assertion on log content, only on the resulting
                         # _publish_dynamic_changes call) — not pragma'd
@@ -1695,6 +1906,25 @@ class EntityManager:
                     # its real controlling point re-opens a scan window.
                     self.baseline_point_ids.discard(point_id)
                     self.disable_entity(point_id, remove_from_wanted=False)
+                    # Five minutes of continuous absence means the firmware no
+                    # longer serves this point, so stop presenting it as one
+                    # that exists — same cleanup as a dynamic disappearance in
+                    # _publish_dynamic_changes. Left indexed, the card kept
+                    # listing it until the next restart, and enabling it
+                    # (enable_entity / restore_snapshot both treat
+                    # all_points_by_id as "exists in firmware") created an
+                    # entity that could only go unavailable and be disabled
+                    # again. Must follow the disable, which reads the point's
+                    # metadata for its stats bookkeeping. If the point comes
+                    # back, _fetch_bulk_data re-indexes it before
+                    # _reconcile_wanted_points runs, so the wanted-points
+                    # re-enable still works.
+                    with self._em_lock:
+                        self._deindex_point(point_id)
+                    self.mqtt.publish(
+                        BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
+                    )
+                    self._point_catalog_changed()
             return
 
         # Present again (or never missing): forget any absence so a later gap
@@ -1824,7 +2054,7 @@ class EntityManager:
                         "%s–%s and not the recognised 0 sentinel — publishing "
                         "unavailable, but this may be worth investigating.",
                         point_id,
-                        entity_info.get("display_title", ""),
+                        entity_info.get("point_data", {}).get("display_title", ""),
                         raw_value,
                         min_val,
                         max_val,
@@ -1877,9 +2107,11 @@ class EntityManager:
                 state_value = d.isoformat()  # YYYY-MM-DD
             except (ValueError, OverflowError):
                 state_value = str(raw_value)
-        elif entity_type == "sensor" and point_id in (2453, 14987):
+        elif entity_type == "sensor" and point_id == 2453:
             # EB101 firmware version — encoded as major<<12 | minor<<6 | patch.
             # e.g. 12481 → 3.3.1. Confirmed from S2125-12 firmware 3.3.1.
+            # The inverter version (14987) is a plain u8 number (61 in
+            # myUplink as well) and is published as-is.
             try:
                 v = int(raw_value)
                 major = (v >> 12) & 0x3F
@@ -1972,6 +2204,22 @@ class EntityManager:
             if mapping and raw_value in mapping:
                 label = mapping[raw_value]
                 state_value = self._value_translations.get(label, label)
+            elif mapping:
+                # Not one of the select's options: HA rejects such a state
+                # (logging a warning every poll) and the entity just shows its
+                # last value. Unavailable is the honest answer, as for an
+                # out-of-range number; the next valid value brings it back.
+                if point_id not in self._range_warnings_issued:
+                    log_entities.warning(
+                        "Point %d (%s): value %s is not one of its select options — "
+                        "publishing unavailable",
+                        point_id,
+                        entity_info.get("point_data", {}).get("display_title", ""),
+                        raw_value,
+                    )  # pragma: no mutate
+                    self._range_warnings_issued.add(point_id)
+                self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                return
             else:
                 state_value = str(raw_value)
         elif entity_type == "sensor":
@@ -2069,6 +2317,7 @@ class EntityManager:
         """
         if point_id not in self._binary_sensor_reclassified:
             self._binary_sensor_reclassified.add(point_id)
+            self._persist_reclassified_points()
             title = entity_info.get("point_data", {}).get("display_title", f"Point {point_id}")
             # pragma: no mutate start
             log_entities.warning(
@@ -2084,7 +2333,25 @@ class EntityManager:
 
         point = entity_info.get("point_data")
         if point is not None:
+            type_changed = point.get("entity_type") != "sensor"
+            # Move this point's stats count from its old type to "sensor" —
+            # changing entity_type alone left it counted under binary_sensor,
+            # and its eventual disable would then decrement sensor instead.
+            # Guarded so a retry after a failed republish (point already
+            # "sensor", entity_info not yet updated) doesn't move it twice.
+            if point.get("entity_type") != "sensor" and point_id in self.mqtt_enabled_points:
+                self._decrement_stats(point)
+                point["entity_type"] = "sensor"
+                self._increment_stats(point)
             point["entity_type"] = "sensor"
+            # point_data is the dict the entity was enabled with. A poll
+            # without change detection re-indexes every point into a fresh
+            # dict, so all_points_by_id may hold another one — still
+            # binary_sensor for the rest of this poll, which is exactly what
+            # the point catalog published below would have told the card.
+            indexed = self.all_points_by_id.get(point_id)
+            if indexed is not None and indexed is not point:
+                indexed["entity_type"] = "sensor"
             # category is left as whatever detect_entity_type() originally
             # assigned — we have no more information about the correct
             # category than we did before; only entity_type is known-wrong.
@@ -2093,6 +2360,13 @@ class EntityManager:
             if new_entity_info:
                 entity_info.clear()
                 entity_info.update(new_entity_info)
+            # Without this the card kept listing the point as a binary_sensor
+            # until the next restart: meta/{id} updates an open card, and the
+            # catalog keeps a freshly loaded one from applying the stale
+            # discovery-time all_metadata over it.
+            if type_changed:
+                self._pub.publish_point_metadata(point)
+                self._point_catalog_changed()
         return "sensor"
 
     # ------------------------------------------------------------------ #
@@ -2155,6 +2429,10 @@ class EntityManager:
 
             current_point_ids = set()
             new_points = []
+            # Points re-indexed by the non-detect branch below after initial
+            # discovery (e.g. one deindexed by the absence-grace disable that
+            # has since come back) — announced to the card after the loop.
+            reindexed_points: list[int] = []
             # Snapshot post_write_active and _post_write_controlling_point
             # together, once, for the whole fetch cycle. The write executor
             # does not block for the scan window — it sets these flags and
@@ -2203,7 +2481,7 @@ class EntityManager:
                     # which isn't caught by the (ValueError, KeyError) below
                     # and would abort the whole bulk fetch for every point.
                     value_data = point_data.get("value") or {}
-                    metadata = apply_divisor_override(point_id, point_data.get("metadata") or {})
+                    metadata = apply_metadata_overrides(point_id, point_data.get("metadata") or {})
 
                     # ── String cache (Finding 2) ──────────────────────────────
                     # title and description never change between firmware updates.
@@ -2333,7 +2611,7 @@ class EntityManager:
                                         "metadata": metadata,
                                         "entity_type": entity_type_p,
                                         "entity_category": category_p,
-                                        "is_writable": metadata.get("isWritable", False),
+                                        "is_writable": is_writable_point(metadata, point_id),
                                         "is_dynamic": False,
                                     }
                                 )
@@ -2358,9 +2636,14 @@ class EntityManager:
                                 point_obj = self.all_points_by_id.get(point_id)
                                 if point_obj:
                                     self._pub.publish_point_metadata(point_obj)
-                                self._pub.publish_point_list(self.all_points_by_id)
+                                self._point_catalog_changed()
 
                     if not detect_changes and not self.dynamic_point_map.is_known_dynamic(point_id):
+                        if (
+                            self.initial_discovery_complete
+                            and point_id not in self.all_points_by_id
+                        ):
+                            reindexed_points.append(point_id)
                         # 'title' key unused for classification — not
                         # pragma'd, 'description' is real/tested (see
                         # test_classified_select_from_enum_description).
@@ -2380,7 +2663,7 @@ class EntityManager:
                                 "metadata": metadata,
                                 "entity_type": entity_type,
                                 "entity_category": category,
-                                "is_writable": metadata.get("isWritable", False),
+                                "is_writable": is_writable_point(metadata, point_id),
                                 "is_dynamic": False,
                             }
                         )
@@ -2421,22 +2704,11 @@ class EntityManager:
                     if pid not in current_point_ids
                 }
 
-                # During post-write scan: baseline points that went absent
-                # are newly discovered dynamic disappearances.
-                if post_write_snapshot:
-                    newly_absent = self.baseline_point_ids - current_point_ids - known_dynamic_ids
-                    # Entire call is unobservable — nothing captures/formats
-                    # this log record in tests. Verified empirically. (An
-                    # earlier version of this comment incorrectly claimed
-                    # pid would crash on None via %d — it does not.)
-                    for pid in newly_absent:
-                        log_discovery.debug(
-                            "Point %d absent during post-write scan — "
-                            "treating as dynamic disappearance",
-                            pid,
-                        )  # pragma: no mutate
-                        self.baseline_point_ids.discard(pid)
-                        disappeared_points.add(pid)
+                # A baseline point that isn't a known dynamic point is not
+                # taken for a dynamic disappearance just because a write was
+                # made in the last 90s: it may be a controller restart or a
+                # partial response, so it gets the same absence grace period
+                # as at any other time (_update_entity_state).
 
                 if disappeared_points:
                     # Entire call is unobservable — nothing captures/formats
@@ -2448,6 +2720,16 @@ class EntityManager:
                         "Dynamic points absent from this fetch: %s",
                         sorted(disappeared_points),
                     )  # pragma: no mutate
+
+            # The detect_changes path announces a returning point itself
+            # (publish_point_metadata/publish_point_list in its "new permanent
+            # point" branch); this one used to re-index silently, so a point
+            # deindexed by the absence-grace disable came back enabled (via
+            # _reconcile_wanted_points) but never reappeared in the card.
+            if reindexed_points and self._pub:
+                for pid in reindexed_points:
+                    self._pub.publish_point_metadata(self.all_points_by_id[pid])
+                self._point_catalog_changed()
 
             self.published_configs = current_point_ids
 
@@ -2478,6 +2760,19 @@ class EntityManager:
 
             elapsed = time.time() - start_time
             self.last_fetch_duration = elapsed
+
+            # Both notifications promise to clear once the controller answers,
+            # but whether one is showing is only known to the process that
+            # raised it. After a restart while the controller was unreachable —
+            # often the user's own troubleshooting step — they stayed in HA
+            # for good. Dismissed unconditionally on this process's first
+            # success, like the write-error notification at startup.
+            if self._api_first_success_pending:
+                self._api_first_success_pending = False
+                if self.mqtt and not self._api_notification_active:
+                    self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
+                if self.mqtt and not self._discovery_notification_active:
+                    self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
 
             if (
                 self.api_consecutive_failures >= self.api_failure_threshold
@@ -2517,7 +2812,15 @@ class EntityManager:
             log_discovery.debug(
                 "Processed %d points in %.2fs", len(current_point_ids), elapsed
             )  # pragma: no mutate
-            return bool(new_points or disappeared_points) if detect_changes else True
+            # Success is True regardless of whether anything changed, as the
+            # docstring says. This used to return
+            # `bool(new_points or disappeared_points)` when detect_changes was
+            # set, so a quiet poll returned False — which update_all_states
+            # reads as "the fetch lock was busy" and then skipped
+            # _reconcile_wanted_points. With any dynamic point known (the
+            # normal state once anything has been learned), the wanted-points
+            # safety net only ever ran on polls that also saw a dynamic change.
+            return True
 
         except urllib.error.HTTPError as e:
             # Captured immediately, before any logging that could yield the
@@ -2708,7 +3011,7 @@ class EntityManager:
                     "metadata": metadata,
                     "entity_type": entity_type,
                     "entity_category": category,
-                    "is_writable": metadata.get("isWritable", False),
+                    "is_writable": is_writable_point(metadata, point_id),
                     "is_dynamic": True,
                 }
                 self._index_point(processed)
@@ -2794,7 +3097,23 @@ class EntityManager:
                     log_discovery.debug(
                         "Created dynamic map entry for controlling point %d", controlling
                     )  # pragma: no mutate
-                self.dynamic_point_map.record_outcome(controlling, controlling_raw, new_pids)
+                # This controller's already-known dynamic points that are
+                # still present (active and in this bulk response) belong to
+                # this value too, even though they didn't newly appear: a
+                # point shown under more than one of a select's values stays
+                # put when switching between them. record_outcome replaces
+                # the value's list, so recording only the new arrivals would
+                # drop it — and at the next restart the startup reconcile
+                # would then treat the still-live point as stale and remove
+                # it. Empty whenever no such sharing exists.
+                still_present = (
+                    entry.all_known_dynamic_points()
+                    & self.active_dynamic_points
+                    & self.bulk_data.keys()
+                ) - set(new_pids)
+                self.dynamic_point_map.record_outcome(
+                    controlling, controlling_raw, sorted(set(new_pids) | still_present)
+                )
                 self._persist_dynamic_map()
             # Entire call is unobservable — nothing captures/formats this
             # log record in tests. Verified empirically. (An earlier
@@ -2813,14 +3132,19 @@ class EntityManager:
             for point_id in disappeared_points:
                 entity = self.all_points_by_id.get(point_id)
                 if entity:
+                    # Disable before deindexing: _disable_entity_locked reads
+                    # the point's metadata from all_points_by_id for its stats
+                    # decrement, and got {} (a silent no-op) when it ran after
+                    # _deindex_point, inflating the stats counts on every
+                    # dynamic appear/disappear cycle.
+                    if point_id in self.mqtt_enabled_points:
+                        self._disable_entity_locked(point_id)
                     self._deindex_point(point_id)
                     self._pub.invalidate_config_hash(point_id)
                     self.mqtt.publish(
                         BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
                     )
                     self.active_dynamic_points.discard(point_id)
-                    if point_id in self.mqtt_enabled_points:
-                        self._disable_entity_locked(point_id)
                     # The .get() defaults on 'title'/'type' below are
                     # unreachable — _index_point() always sets
                     # 'display_title'/'entity_type' on every stored point, so
@@ -2865,7 +3189,7 @@ class EntityManager:
         if enabled_new_pids:
             self._persist_active_dynamic()
 
-        self._pub.publish_point_list(self.all_points_by_id)
+        self._point_catalog_changed()
 
         # Populate triggered_by now that added/removed are fully built.
         # controlling_point_id is set when a write activates the scan window;
@@ -2945,7 +3269,7 @@ class EntityManager:
                 # existing precedent in restore_snapshot() — cheap, no MQTT
                 # round-trip needed for a cosmetic wording choice.
                 in_menus_mode = (
-                    self._read_applied_mode_from_file() == "menus"
+                    (self._applied_mode_known or self._read_applied_mode_from_file()) == "menus"
                 )  # pragma: no mutate — mode-name comparison, no observable difference at the boundary
 
                 # Same reasoning: join separator and closing-text wording
@@ -3266,6 +3590,18 @@ class EntityManager:
         # by _publish_dynamic_changes on the poll thread; _em_lock
         # serializes both against each other.
         with self._em_lock:
+            # Same as _publish_dynamic_changes: this controller's known
+            # dynamic points present both before and after the write belong
+            # to this value too (shared between values), not just the ones
+            # that newly appeared — record_outcome replaces the value's list.
+            entry = self.dynamic_point_map.get(point_id)
+            carried = (
+                entry.all_known_dynamic_points() & points_before & points_after
+                if entry is not None
+                else set()
+            )
+            if carried:
+                new_point_ids = sorted(set(new_point_ids) | carried)
             self.dynamic_point_map.record_outcome(point_id, value, new_point_ids)
             self._persist_dynamic_map()
 
@@ -3688,7 +4024,11 @@ class EntityManager:
             # from normal state updates by a stale pending entry.
             with self._pending_writes_lock:
                 self.pending_writes.pop(point_id, None)
-            point_title = entity_info.get("display_title", f"point {point_id}")
+            # The title is in the indexed point, not in entity_info itself —
+            # read from there, the notification always said "point N (point N)".
+            point_title = (
+                entity_info.get("point_data", {}).get("display_title") or f"point {point_id}"
+            )
             if self.mqtt and not self._write_notification_active:
                 msg = (
                     f"Could not write value '{payload}' to {point_title} "
@@ -3863,6 +4203,85 @@ class EntityManager:
             mgmt_count,
         )
         # pragma: no mutate end
+
+    def republish_retained_state(self) -> None:
+        """Republish everything the bridge keeps as retained MQTT state.
+
+        Retained messages survive a broker restart only if the broker persists
+        them — Mosquitto doesn't by default, and even with persistence it saves
+        only periodically, so a crash loses recent changes. The bridge treats
+        retained discovery configs as the record of which entities exist, and
+        reconnecting used to restore subscriptions, availability and states
+        only. After a broker lost its retained messages: the card was empty,
+        every entity vanished at Home Assistant's next restart, and the
+        bridge's own next restart found no configs, took it for a fresh
+        install and re-applied the mode, dropping manual additions.
+
+        Called on every reconnect and when Home Assistant announces itself
+        online (its MQTT birth message). Idempotent when the broker kept
+        everything — the same payloads again.
+        """
+        if not self.initial_discovery_complete or not self._pub:
+            return
+        # Never once shutdown has begun: with remove_frontend, shutdown clears
+        # every retained topic the bridge owns, and a reconnect landing in
+        # that window (this runs straight from on_connect) would put them all
+        # back, undoing an intentional uninstall cleanup.
+        if self._shutdown_event.is_set():
+            return
+        with self._active_entities_lock:
+            snapshot = list(self.active_entities_by_id.values())
+        for entity_info in snapshot:
+            point_id = entity_info["point_id"]
+            point = self.all_points_by_id.get(point_id) or entity_info.get("point_data")
+            if point is None:
+                continue
+            self._pub.forget_published_hashes(point_id)
+            self._pub.publish_entity_discovery(point, self.bulk_data)
+        if self._mgmt_discovery_args is not None:
+            self._pub.publish_management_discovery(*self._mgmt_discovery_args)
+        self._pub.publish_all_metadata(self.all_points)
+        self._pub.publish_point_list(self.all_points_by_id)
+        # Straight to the publisher: publish_enabled_state() would treat an
+        # unchanged set as nothing to do and skip the dashboard callback
+        # anyway, but this is a republish, not a change.
+        self._pub.publish_enabled_state(self.mqtt_enabled_points)
+        self._persist_wanted_points()
+        self._persist_reclassified_points()
+        if self._applied_mode_known:
+            self.mqtt.publish(BrowserTopic.APPLIED_MODE, self._applied_mode_known, retain=True)
+        self._persist_dynamic_map()
+        self._persist_active_dynamic()
+        self.publish_snapshots()
+        self._publish_changelog_history()
+        log_mqtt.info(
+            "Republished retained state: %d entity configs, catalog, enabled set, "
+            "dynamic map, snapshots and changelog",
+            len(snapshot),
+        )  # pragma: no mutate
+
+    def _publish_changelog_history(self) -> None:
+        """Republish the changelog as it stands, continuing its _seq so a
+        card that already saw the old one accepts it."""
+        with self._em_lock:
+            unread_count = sum(1 for e in self.change_history if e.get("unread", False))
+            self._history_seq += 1
+            history_payload = {
+                "history": list(self.change_history),
+                "total_entries": len(self.change_history),
+                "unread_count": unread_count,
+                "last_updated": time.time(),
+                "_seq": self._history_seq,
+            }
+        self.mqtt.publish(
+            BrowserTopic.CHANGELOG_HISTORY, _compress_payload(history_payload), retain=True
+        )
+        self.mqtt.publish(
+            BrowserTopic.CHANGELOG_UNREAD,
+            json.dumps({"unread_count": unread_count, "last_change": time.time()}),
+            retain=True,
+        )
+        self._last_published_seq = self._history_seq
 
     def republish_availability(self) -> None:
         """Republish 'online' for all active entities after a broker restart.
@@ -4205,10 +4624,29 @@ class EntityManager:
                 incoming_seq = data.get("_seq", -1)
                 if incoming_seq != -1 and incoming_seq == self._last_published_seq:
                     return
+                # Once this process has published, its in-memory history is
+                # the newest there is, and anything below its last _seq is
+                # its own earlier publish echoing back late — which used to
+                # reload the older history over the newer one, losing the
+                # latest entry for good with the next publish.
+                # A payload without _seq (an older bridge's) always loads.
+                if (
+                    incoming_seq != -1
+                    and isinstance(incoming_seq, int)
+                    and self._last_published_seq
+                    and incoming_seq < self._last_published_seq
+                ):
+                    return
                 # change_history is also mutated from the poll thread and
                 # mark_changelog_read — _em_lock (RLock) serializes them
                 # against this MQTT-client-thread callback.
                 with self._em_lock:
+                    # Continue the sequence rather than restart it: the card
+                    # discards a history whose _seq isn't above the last one
+                    # it saw, so restarting at 1 on every bridge restart left
+                    # an open card ignoring changelog updates until reloaded.
+                    if isinstance(incoming_seq, int) and incoming_seq > self._history_seq:
+                        self._history_seq = incoming_seq
                     if "history" in data and isinstance(data["history"], list):
                         clean_history: deque = deque(maxlen=self.change_history.maxlen)
                         for entry in data["history"]:
@@ -4341,11 +4779,39 @@ class EntityManager:
             "Persisted %d wanted point(s)", len(self._wanted_points)
         )  # pragma: no mutate
 
+    def _persist_reclassified_points(self, path: str | None = None) -> None:
+        """Persist _binary_sensor_reclassified. Write-ahead: file first, then
+        the retained MQTT topic — same ordering as _persist_wanted_points."""
+        if path is None:
+            path = _RECLASSIFIED_POINTS_FILE
+        payload = json.dumps(sorted(self._binary_sensor_reclassified))
+        try:
+            _atomic_write_text(path, payload)
+        except OSError as e:
+            log_entities.warning(
+                "Could not write reclassified-points fallback file: %s", e
+            )  # pragma: no mutate
+        self.mqtt.publish(BrowserTopic.RECLASSIFIED_POINTS, payload, retain=True)
+
     def _mark_wanted(self, point_id: int) -> None:
         """Record point_id as user-wanted and persist, if not already recorded."""
         if point_id not in self._wanted_points:
             self._wanted_points.add(point_id)
             self._persist_wanted_points()
+
+    def _excluded_wanted_points(self, keep: set[int], protected: set[int]) -> set[int]:
+        """Wanted points a replacing selection (a replace-mode switch, a flush
+        restore) excludes but its disable loop can't reach, because they
+        aren't enabled: points disabled after _ABSENT_GRACE_S of absence stay
+        wanted so that their return re-enables them — which would undo the
+        new selection. Known dynamic points are excluded; the dynamic path
+        owns them."""
+        return (
+            (self._wanted_points - self.mqtt_enabled_points)
+            - keep
+            - protected
+            - self.dynamic_point_map.all_known_dynamic_point_ids()
+        )
 
     def _unmark_wanted(self, point_id: int) -> None:
         """Remove point_id from the wanted set and persist, if it was present."""
@@ -4369,6 +4835,30 @@ class EntityManager:
                     )  # pragma: no mutate
                     self._enable_entity_locked(point_id)
 
+    def _expire_absent_at_startup(self, current_point_ids: set[int]) -> None:
+        """Resolve points that were absent at startup (see _absent_at_startup)
+        after a successful bulk fetch: one that has come back stops being
+        tracked (_reconcile_wanted_points re-enables it, since it is wanted);
+        one still absent after _ABSENT_GRACE_S gets its retained discovery
+        config cleared, so Home Assistant removes the entity. It stays
+        wanted, same as the runtime absence path, in case it ever returns."""
+        now = time.time()
+        with self._em_lock:
+            for point_id, since in list(self._absent_at_startup.items()):
+                if point_id in current_point_ids:
+                    del self._absent_at_startup[point_id]
+                elif now - since >= _ABSENT_GRACE_S:
+                    # pragma: no mutate start
+                    log_entities.info(
+                        "Point %d still absent %ds after startup — removing its entity",
+                        point_id,
+                        int(now - since),
+                    )
+                    # pragma: no mutate end
+                    self._clear_retained_discovery(point_id)
+                    self._pub.invalidate_config_hash(point_id)
+                    del self._absent_at_startup[point_id]
+
     def _persist_applied_mode(self, mode_name: str, path: str | None = None) -> None:
         """Persist the last-applied entity mode. Called at the end of apply_mode().
 
@@ -4391,6 +4881,7 @@ class EntityManager:
                 "Could not write applied-mode fallback file: %s", e
             )  # pragma: no mutate
         self.mqtt.publish(BrowserTopic.APPLIED_MODE, mode_name, retain=True)
+        self._applied_mode_known = mode_name
         log_restore.debug("Persisted applied mode: %s", mode_name)  # pragma: no mutate
 
     def _read_applied_mode_from_file(self, path: str | None = None) -> str | None:
@@ -4446,9 +4937,10 @@ class EntityManager:
         # broker's copy is unusable is deliberate: it may well hold a valid
         # record. See _known_mode_or_none.
         broker_mode = _known_mode_or_none(result[0])
-        if broker_mode is not None:
-            return broker_mode
-        return self._read_applied_mode_from_file()
+        mode = broker_mode if broker_mode is not None else self._read_applied_mode_from_file()
+        if mode is not None:
+            self._applied_mode_known = mode
+        return mode
 
     def _reconcile_dynamic_points(self) -> None:
         """Reconcile dynamic point state after startup bulk fetch.
@@ -4524,7 +5016,7 @@ class EntityManager:
                                 "metadata": metadata,
                                 "entity_type": entity_type,
                                 "entity_category": category,
-                                "is_writable": metadata.get("isWritable", False),
+                                "is_writable": is_writable_point(metadata, point_id),
                                 "is_dynamic": True,
                             }
                         )
@@ -4561,14 +5053,13 @@ class EntityManager:
                 else:
                     # Point is expected but absent from bulk fetch
                     if point_id in self.active_dynamic_points:
+                        self._clear_retained_discovery(point_id)
                         self._deindex_point(point_id)
                         self._pub.invalidate_config_hash(point_id)
                         self.mqtt.publish(
                             BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
                         )
                         self.active_dynamic_points.discard(point_id)
-                        if point_id in self.mqtt_enabled_points:
-                            self._disable_entity_locked(point_id)
                         # removed's exact count only affects the final log
                         # line and `if activated or removed:`'s truthiness —
                         # see the matching note at `activated += 1` above.
@@ -4584,12 +5075,11 @@ class EntityManager:
             # Case 3: stale persisted entries not in expected set
             stale = persisted_active - expected_active
             for point_id in stale:
+                self._clear_retained_discovery(point_id)
                 self._deindex_point(point_id)
                 self._pub.invalidate_config_hash(point_id)
                 self.mqtt.publish(BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True)
                 self.active_dynamic_points.discard(point_id)
-                if point_id in self.mqtt_enabled_points:
-                    self._disable_entity_locked(point_id)
                 # pragma: no mutate start
                 removed += 1
                 log_discovery.info(
@@ -4609,6 +5099,38 @@ class EntityManager:
             activated,
             removed,
         )
+
+    def _clear_retained_discovery(self, point_id: int) -> None:
+        """Remove a point's HA entity once the bridge has decided the point is
+        gone — a dynamic point the startup reconciliation found stale, or a
+        point absent at startup that never came back (see
+        _expire_absent_at_startup). Caller must hold _em_lock, and must call
+        this before _deindex_point (so _disable_entity_locked can still read
+        the point's metadata for its stats bookkeeping).
+
+        _reconcile_dynamic_points runs inside discover_points(), before
+        scan_mqtt_discovery() has filled mqtt_enabled_points from the broker
+        — so at startup that set is always empty here, and a check against it
+        alone never fires. The retained discovery config of a point that went
+        away while the bridge was down (its controlling switch changed on the
+        controller itself, or a firmware update removed it) then survived:
+        the scan found it, restore_from_mqtt() skipped it for having no
+        metadata, and nothing ever cleared it — leaving a ghost entity in HA.
+
+        When the point isn't known to be enabled, the domain it was published
+        under isn't known either (nothing has been scanned yet), so every
+        domain's config and attributes topic is cleared. An empty retained
+        publish to a topic holding nothing is a no-op on the broker. These
+        publishes go out before the scan subscribes on the same connection,
+        so the scan no longer sees the config at all.
+        """
+        if point_id in self.mqtt_enabled_points:
+            self._disable_entity_locked(point_id)
+            return
+        entity_id = create_entity_id(point_id)
+        for domain in _DISCOVERY_DOMAINS:
+            self.mqtt.publish(t_config(domain, entity_id), "", retain=True)
+            self.mqtt.publish(t_attributes(domain, entity_id), "", retain=True)
 
     def _setup_dynamic_map_loading(self) -> None:
         """Subscribe to retained MQTT topics to restore dynamic state on startup.
@@ -4708,9 +5230,26 @@ class EntityManager:
                 # thread with suppress_exceptions=False).
                 log_discovery.warning("Could not restore wanted_points from MQTT: %s", e)
 
+        def on_reclassified_points_message(_client: Any, _userdata: Any, message: Any) -> None:
+            if self.initial_discovery_complete:
+                return
+            try:
+                if not message.payload:
+                    return
+                point_ids = json.loads(message.payload.decode("utf-8"))  # pragma: no mutate
+                if not isinstance(point_ids, list):
+                    return
+                self._binary_sensor_reclassified.update(int(pid) for pid in point_ids)
+            except Exception as e:  # noqa: BLE001 — best-effort restore from
+                # external/retained MQTT data; same broad-catch reasoning as
+                # on_active_dynamic_message above (runs on paho's network
+                # thread with suppress_exceptions=False).
+                log_discovery.warning("Could not restore reclassified points from MQTT: %s", e)
+
         self._on_dynamic_map_message = on_dynamic_map_message
         self._on_active_dynamic_message = on_active_dynamic_message
         self._on_wanted_points_message = on_wanted_points_message
+        self._on_reclassified_points_message = on_reclassified_points_message
 
         self.mqtt.subscribe(BrowserTopic.DYNAMIC_MAP)
         self.mqtt.message_callback_add(BrowserTopic.DYNAMIC_MAP, on_dynamic_map_message)
@@ -4718,6 +5257,10 @@ class EntityManager:
         self.mqtt.message_callback_add(BrowserTopic.ACTIVE_DYNAMIC, on_active_dynamic_message)
         self.mqtt.subscribe(BrowserTopic.WANTED_POINTS)
         self.mqtt.message_callback_add(BrowserTopic.WANTED_POINTS, on_wanted_points_message)
+        self.mqtt.subscribe(BrowserTopic.RECLASSIFIED_POINTS)
+        self.mqtt.message_callback_add(
+            BrowserTopic.RECLASSIFIED_POINTS, on_reclassified_points_message
+        )
 
     def get_memory_usage(self) -> dict[str, Any]:
         """Return memory usage statistics for debugging and monitoring.
@@ -4782,6 +5325,12 @@ class EntityManager:
         if cached is not None:
             return cached
         result = detect_entity_type(point_data)
+        if result[0] == "binary_sensor" and point_id in self._binary_sensor_reclassified:
+            # Observed reporting a non-0/1 value at some point (see
+            # _reclassify_binary_sensor) — static metadata would make it a
+            # binary_sensor again, and republishing it as one deletes the
+            # sensor entity in HA only for the next poll to recreate it.
+            result = ("sensor", result[1])
         self._entity_type_cache.put(point_id, result)
         return result
 
@@ -4867,7 +5416,12 @@ class EntityManager:
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "point_ids": enabled_snapshot,
                 "point_count": len(enabled_snapshot),
-                "mode": self._read_applied_mode_from_file() or "unknown",
+                # The mode the bridge knows it applied first: the /data file
+                # alone can be missing (it doesn't survive a container rebuild
+                # everywhere), which saved the snapshot as mode "unknown".
+                "mode": self._applied_mode_known
+                or self._read_applied_mode_from_file()
+                or "unknown",
             }
             snapshots.append(snapshot)
             self._save_snapshots(snapshots, path=path)
@@ -4905,7 +5459,11 @@ class EntityManager:
         # Restoring into menus or all mode would conflict with the system-managed
         # entity set — the mode re-applies on restart and overwrites the restored
         # selection. Block restore and ask the user to switch to a manual mode first.
-        current_mode = self._read_applied_mode_from_file() or ""  # pragma: no mutate
+        # The mode the bridge knows it applied first — the /data file alone can
+        # be missing (see save_snapshot).
+        current_mode = (
+            self._applied_mode_known or self._read_applied_mode_from_file() or ""
+        )  # pragma: no mutate
         if current_mode in ("menus", "all"):
             return False, (
                 f"Cannot restore a snapshot while in '{current_mode}' mode. "
@@ -4919,7 +5477,7 @@ class EntityManager:
         missing = saved_ids - firmware_ids
 
         if missing:
-            log_restore.warning(
+            log_restore.info(
                 "Snapshot '%s': %d point(s) no longer in firmware — skipped: %s",
                 name,
                 len(missing),
@@ -4944,6 +5502,10 @@ class EntityManager:
                         self._disable_entity_locked(pid)
                         # Snapshot-driven disable is intentional user override —
                         # same reasoning as apply_mode's to_disable loop.
+                        self._unmark_wanted(pid)
+                    # And points the snapshot excludes that are wanted but not
+                    # enabled (see _excluded_wanted_points).
+                    for pid in self._excluded_wanted_points(valid_ids, protected):
                         self._unmark_wanted(pid)
 
                 # Enable all valid snapshot points not already enabled

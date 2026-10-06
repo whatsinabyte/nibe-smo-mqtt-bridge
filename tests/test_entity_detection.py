@@ -1005,7 +1005,13 @@ class TestIsAutoBinarySensorProperties(unittest.TestCase):
         from nibe_entity_detection import _is_auto_binary_sensor
 
         point = {"variableId": pid, "description": ""}
-        meta = {"variableSize": "u8", "minValue": 0, "maxValue": 1, "unit": "", "isWritable": True}
+        meta = {
+            "variableSize": "u8",
+            "minValue": 0,
+            "maxValue": 1,
+            "unit": "",
+            "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+        }
         self.assertFalse(_is_auto_binary_sensor(point, meta))
 
     @given(st.text(min_size=1).filter(lambda s: s.strip()))
@@ -1259,19 +1265,22 @@ class TestDetectHoldingEntityProperties(unittest.TestCase):
         self.assertEqual(entity_type, "number")
         self.assertEqual(category, "config")
 
-    @given(
-        _nibe_point_id.filter(
-            lambda p: p not in __import__("nibe_entity_detection").VALUE_MAPPINGS.get("holding", {})
-        )
-    )
-    def test_non_writable_holding_returns_sensor_diagnostic(self, pid):
-        """isWritable=False on HOLDING → sensor/diagnostic (Modbus-TCP only)."""
-        from nibe_entity_detection import _detect_holding_entity
+    def test_is_writable_point_goes_by_register_type_not_isWritable(self):
+        from nibe_entity_detection import is_writable_point
 
-        point = self._point(pid, writable=False)
-        entity_type, category = _detect_holding_entity(point, point["metadata"])
-        self.assertEqual(entity_type, "sensor")
-        self.assertEqual(category, "diagnostic")
+        for flag in (True, False, None):
+            self.assertTrue(
+                is_writable_point(
+                    {"modbusRegisterType": "MODBUS_HOLDING_REGISTER", "isWritable": flag}
+                )
+            )
+            self.assertFalse(
+                is_writable_point(
+                    {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "isWritable": flag}
+                )
+            )
+        self.assertTrue(is_writable_point({"modbusRegisterType": "MODBUS_NO_REGISTER"}))
+        self.assertFalse(is_writable_point({}))
 
     @given(_nibe_point_id)
     def test_never_raises(self, pid):
@@ -3587,8 +3596,8 @@ class TestGetEntityOptionsLogicGaps(unittest.TestCase):
 
 
 class TestIsAutoSensorLogicGaps(unittest.TestCase):
-    """_is_auto_binary_sensor: 'or' not 'and' in variableSize check,
-    len(mapping) > 2 not >= 2.
+    """_is_auto_binary_sensor: 'or' not 'and' in variableSize check, and a
+    2-entry mapping (keyed 0/1) is still a binary candidate.
 
     mutmut_4: 'or' → 'and' — changes which combinations trigger non-binary detection.
     mutmut_56: > 2 → >= 2 — a mapping with exactly 2 entries would no longer
@@ -3606,8 +3615,7 @@ class TestIsAutoSensorLogicGaps(unittest.TestCase):
         }
 
     def test_mapping_with_exactly_2_entries_is_binary(self):
-        """len(mapping) > 2 means exactly 2 entries IS a binary sensor candidate.
-        >= 2 would exclude it (2-entry mapping treated as non-binary)."""
+        """A point with no VALUE_MAPPINGS entry keeps its binary candidacy."""
         from nibe_entity_detection import _is_auto_binary_sensor
 
         # Use a point with a known 2-entry mapping in VALUE_MAPPINGS if available,
@@ -4135,15 +4143,16 @@ class TestDetectEntityTypeDispatch(unittest.TestCase):
         self.assertEqual(et, "sensor")
         self.assertEqual(cat, "diagnostic")
 
-    def test_holding_writable_false_gives_sensor(self):
-        """MODBUS_HOLDING_REGISTER + isWritable=False → sensor/diagnostic."""
+    def test_holding_isWritable_false_is_ignored(self):
+        """The firmware's isWritable flag isn't relied on (is_writable_point):
+        a holding register flagged false classifies like any other holding
+        register — 3478 "Reset alarm" and 4064 "Oper. mode" are flagged."""
         from nibe_entity_detection import detect_entity_type
 
-        p = self._point("MODBUS_HOLDING_REGISTER")
-        p["metadata"]["isWritable"] = False
-        et, cat = detect_entity_type(p)
-        self.assertEqual(et, "sensor")
-        self.assertEqual(cat, "diagnostic")
+        flagged = self._point("MODBUS_HOLDING_REGISTER")
+        flagged["metadata"]["isWritable"] = False
+        plain = self._point("MODBUS_HOLDING_REGISTER")
+        self.assertEqual(detect_entity_type(flagged), detect_entity_type(plain))
 
 
 class TestMutmutPhase2Survivors(unittest.TestCase):
@@ -4304,8 +4313,8 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
         self.assertFalse(_is_auto_binary_sensor(point, metadata))
 
     def test_is_auto_binary_sensor_exactly_two_states_is_still_binary(self):
-        """A VALUE_MAPPINGS entry with exactly 2 states (point 1838: Off/On)
-        must NOT be rejected — only > 2 states disqualifies it, not >= 2."""
+        """A VALUE_MAPPINGS entry with exactly the states 0 and 1 (point 1838:
+        Off/On) must NOT be rejected."""
         from nibe_entity_detection import _is_auto_binary_sensor
 
         point = {"variableId": 1838}
@@ -4317,6 +4326,28 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
             "isWritable": False,
         }
         self.assertTrue(_is_auto_binary_sensor(point, metadata))
+
+    def test_is_auto_binary_sensor_two_states_on_other_values_is_not_binary(self):
+        """2701 (ACS status) maps 3 = Passive / 7 = Active: two states, but
+        never 0/1. As a binary_sensor its first real value would only get it
+        reclassified to a sensor; it is a sensor from the start."""
+        from nibe_entity_detection import _is_auto_binary_sensor, detect_entity_type
+
+        metadata = {
+            "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+            "variableSize": "u8",
+            "minValue": 0,
+            "maxValue": 0,
+            "unit": "",
+        }
+        self.assertFalse(_is_auto_binary_sensor({"variableId": 2701}, metadata))
+        point = {
+            "variableId": 2701,
+            "title": "Status (ACS)",
+            "description": "",
+            "metadata": metadata,
+        }
+        self.assertEqual(detect_entity_type(point), ("sensor", "diagnostic"))
 
     # ── detect_entity_type: metadata-missing safety + override category ────
 
@@ -4415,3 +4446,209 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
         et, cat = _detect_input_entity(point, metadata)
         self.assertEqual(et, "sensor")
         self.assertEqual(cat, "diagnostic")
+
+
+class TestBlockFreqFlagsAreSwitches(unittest.TestCase):
+    """blockFreq 1/2 (EB101) are 0–1 flags ("Block freq N active" in the
+    installer menus; the Hz bands are separate registers), the same shape as
+    the EB102–EB108 flags, which are switches. They were overridden to
+    number on a "frequency value" claim the firmware's 0–1 range rules out,
+    so EB101's flags showed as 0–1 sliders."""
+
+    def test_eb101_flags_classify_like_the_other_heat_pumps(self):
+        from nibe_entity_detection import detect_entity_type
+
+        def flag(pid):
+            return {
+                "variableId": pid,
+                "title": "blockFreq 1 (EB101)",
+                "description": "",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "variableSize": "u8",
+                    "minValue": 0,
+                    "maxValue": 1,
+                    "unit": "",
+                    "divisor": 1,
+                },
+            }
+
+        for pid in (4969, 4970, 6936):
+            self.assertEqual(detect_entity_type(flag(pid))[0], "switch", pid)
+
+    def test_defrost_requested_is_a_switch(self):
+        """8060 "Defrost requested (EB101)": a 0–1 holding register (an
+        on/off flag in the installer menus), but s8, which the switch
+        auto-detection doesn't accept — it showed as a 0–1 number."""
+        from nibe_entity_detection import detect_entity_type
+
+        point = {
+            "variableId": 8060,
+            "title": "Defrost Requested EB101",
+            "description": "",
+            "metadata": {
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "variableSize": "s8",
+                "minValue": 0,
+                "maxValue": 1,
+                "unit": "",
+                "divisor": 1,
+            },
+        }
+        self.assertEqual(detect_entity_type(point)[0], "switch")
+
+
+class TestRangeOverrides(unittest.TestCase):
+    """3702 (the anti-legionella stop temperature) declares minValue 55 with
+    divisor 10 — 5.5 °C, a factor of ten below the real 55 °C minimum."""
+
+    def _meta(self):
+        return {"minValue": 55, "maxValue": 700, "divisor": 10, "unit": "°C"}
+
+    def test_3702_minimum_is_corrected_and_maximum_kept(self):
+        from nibe_entity_detection import apply_metadata_overrides
+
+        meta = apply_metadata_overrides(3702, self._meta())
+        self.assertEqual((meta["minValue"], meta["maxValue"], meta["divisor"]), (550, 700, 10))
+
+    def test_input_dict_is_not_mutated_and_other_points_are_untouched(self):
+        from nibe_entity_detection import apply_metadata_overrides
+
+        original = self._meta()
+        apply_metadata_overrides(3702, original)
+        self.assertEqual(original["minValue"], 55)
+        self.assertIs(apply_metadata_overrides(3703, original), original)
+
+    def test_divisor_override_still_applies(self):
+        from nibe_entity_detection import apply_metadata_overrides
+
+        meta = apply_metadata_overrides(29258, {"divisor": 1, "unit": "kW"})
+        self.assertEqual(meta["divisor"], 100)
+
+
+class TestUnitOverrideFamiliesAreComplete(unittest.TestCase):
+    """Unit overrides covered only part of two register families: charge
+    pumps 1–4 got "s" but pumps 5–8 (818–821) didn't, and the read-only DM
+    values got "DM" but the DM start settings (5294–5298) didn't."""
+
+    def test_every_charge_pump_blank_time_is_in_seconds(self):
+        from nibe_entity_detection import UNIT_OVERRIDES
+
+        for pid in range(818, 826):
+            self.assertEqual(UNIT_OVERRIDES.get(pid), "s", pid)
+
+    def test_every_dm_start_setting_is_in_degree_minutes(self):
+        from nibe_entity_detection import UNIT_OVERRIDES
+
+        for pid in range(5294, 5299):
+            self.assertEqual(UNIT_OVERRIDES.get(pid), "DM", pid)
+
+    def test_menu_documented_units_resolve_to_ha_device_classes(self):
+        """Units the firmware omits but the installer menus give — each one
+        HA recognises, with the device class it implies."""
+        from nibe_entity_detection import _UNIT_TO_DEVICE_CLASS, UNIT_OVERRIDES
+
+        expected = {
+            995: ("bar", "pressure"),
+            849: ("%", None),
+            3282: ("°C", "temperature"),
+            3283: ("°C", "temperature"),
+            4529: ("°C", "temperature"),
+            4685: ("°C", "temperature"),
+            3861: ("h", "duration"),
+            4030: ("min", "duration"),
+            14314: ("W", "power"),
+        }
+        for pid, (unit, device_class) in expected.items():
+            self.assertEqual(UNIT_OVERRIDES.get(pid), unit, pid)
+            self.assertEqual(_UNIT_TO_DEVICE_CLASS.get(unit), device_class, pid)
+
+
+class TestControllerVerifiedOptionLists(unittest.TestCase):
+    """Registers the firmware gives no description (so no value labels):
+    their options as the controller's own English menu lists them, verified
+    on a live controller. Without a mapping they were bare 0–2 numbers (or
+    switches, for the two-option ones)."""
+
+    def _point(self, pid, register, max_value):
+        return {
+            "variableId": pid,
+            "title": "T",
+            "description": "",
+            "metadata": {
+                "modbusRegisterType": f"MODBUS_{register}_REGISTER",
+                "variableSize": "u8",
+                "minValue": 0,
+                "maxValue": max_value,
+                "unit": "",
+                "divisor": 1,
+            },
+        }
+
+    def test_writable_option_lists_are_selects_with_those_options(self):
+        from nibe_entity_detection import detect_entity_type, get_entity_options
+
+        expected = {
+            4692: ["Target temp", "Delta temp"],
+            4085: ["Linear", "Binary"],
+            5482: ["Intermittent", "Continuous", "10 days cont."],
+            7022: ["Level monitor", "Blocked", "Off"],
+            23144: ["Level monitor", "Blocked", "Off"],
+        }
+        for pid, options in expected.items():
+            point = self._point(pid, "HOLDING", len(options) - 1)
+            self.assertEqual(detect_entity_type(point)[0], "select", pid)
+            self.assertEqual(get_entity_options(pid, ""), options, pid)
+
+
+class TestSafetyReadOnlyPoints(unittest.TestCase):
+    """DOCS.md "Intentionally Unexposed Registers": Block new compressor,
+    Set point value power and the spot prices are never
+    written by the bridge. That rested on the firmware's isWritable flag —
+    not relied on any more — and never covered 55884 or the spot prices, which
+    were writable all along."""
+
+    def _holding(self, pid, max_value=1):
+        return {
+            "variableId": pid,
+            "title": "T",
+            "description": "",
+            "metadata": {
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "variableSize": "u8",
+                "minValue": 0,
+                "maxValue": max_value,
+                "unit": "",
+                "divisor": 1,
+            },
+        }
+
+    def test_listed_points_are_read_only_sensors(self):
+        from nibe_entity_detection import detect_entity_type, is_writable_point
+
+        for pid in (55749, 55884, 26817, 26840):
+            point = self._holding(pid)
+            self.assertEqual(detect_entity_type(point), ("sensor", "diagnostic"), pid)
+            self.assertFalse(is_writable_point(point["metadata"], pid), pid)
+
+    def test_the_list_is_exactly_the_documented_registers(self):
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS
+
+        expected = {55749, 55884} | set(range(26817, 26841))
+        self.assertEqual(set(SAFETY_READ_ONLY_POINTS), expected)
+
+    def test_other_holding_registers_stay_writable(self):
+        from nibe_entity_detection import is_writable_point
+
+        self.assertTrue(is_writable_point(self._holding(4970)["metadata"], 4970))
+        self.assertTrue(is_writable_point(self._holding(3478)["metadata"]))
+
+    def test_external_sensor_readings_are_writable(self):
+        """Writing temperature values for BT1/BT25/… is a firmware feature
+        (changelog 2.21.12, activated per sensor in menu 7.5.9.2), so these
+        are not on the list."""
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS, is_writable_point
+
+        for pid in (26703, 26711, 29971, 33194, 33196):
+            self.assertNotIn(pid, SAFETY_READ_ONLY_POINTS)
+            self.assertTrue(is_writable_point(self._holding(pid)["metadata"], pid), pid)

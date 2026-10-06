@@ -686,6 +686,35 @@ class TestRealMisbehaviourAgainstARealServer:
             f"{stub_device.max_concurrent}) -- self._lock did not serialize them"
         )
 
+    def test_writes_are_serialized_with_reads_on_the_wire(self, stub_device) -> None:
+        """The write paths can't use request() (no retry, and they need the
+        raw HTTPError body), and used to call urlopen directly — so a write
+        or a management action could overlap the poll thread's bulk fetch,
+        the exact overlapping load self._lock exists to prevent. A read and
+        every kind of write fired at once must still reach the real server
+        one at a time."""
+        for _ in range(4):
+            stub_device.queue(_QueuedResponse(200, {"1": "modified"}, delay=0.1))
+        client = _client(stub_device)
+        info = {"is_writable": True, "metadata": {}}
+
+        threads = [
+            threading.Thread(target=client.fetch_bulk_points),
+            threading.Thread(target=client.write_point, args=(1, 1, info)),
+            threading.Thread(target=client.reset_notifications),
+            threading.Thread(target=client.write_device_mode, args=("aidmode", "on")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert len(stub_device.received) == 4
+        assert stub_device.max_concurrent == 1, (
+            f"Requests overlapped on the real server (max_concurrent="
+            f"{stub_device.max_concurrent}) -- a write path bypassed self._lock"
+        )
+
     def test_malformed_json_body_is_handled_gracefully_not_a_crash(self, stub_device) -> None:
         """A real firmware misbehaviour class: truncated/corrupt JSON in an
         otherwise-200 response. request()'s broad except clause around

@@ -39,11 +39,13 @@ configuration:
     description: >-
       Brugernavn til godkendelse hos MQTT-brokeren. Lad stå tomt, hvis
       din broker ikke kræver godkendelse.
+      Med standardværdien "core-mosquitto" leverer Supervisor Mosquitto-tilføjelsens konto, som har forrang for dette felt.
   mqtt_password:
     name: MQTT-adgangskode
     description: >-
       Adgangskode til godkendelse hos MQTT-brokeren. Lad stå tomt, hvis
       din broker ikke kræver godkendelse.
+      Med standardværdien "core-mosquitto" leverer Supervisor Mosquitto-tilføjelsens konto, som har forrang for dette felt.
   device_name:
     name: Enhedsnavn
     description: >-

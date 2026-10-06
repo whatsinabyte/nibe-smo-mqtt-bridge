@@ -133,17 +133,40 @@ try:
     #     seen. Does not cap at the current max (56150) to avoid missing new points.
     #
     #   st.sampled_from(known_interaction_pids): guarantees every run hits the
-    #     handful of IDs that have VALUE_MAPPINGS or ENTITY_TYPE_OVERRIDES entries,
-    #     regardless of example count. Without this, a 20-example CI run may never
-    #     hit e.g. pid=4821 which routes to 'select' despite looking like a switch.
+    #     IDs the bridge treats specially — VALUE_MAPPINGS, the *_OVERRIDES
+    #     tables, SAFETY_READ_ONLY_POINTS, _BINARY_SENSOR_EXCLUSIONS,
+    #     ESSENTIAL_POINTS and the per-point state decoders — regardless of
+    #     example count. Without this, a 20-example CI run may never hit e.g.
+    #     pid=4821 which routes to 'select' despite looking like a switch, and a
+    #     property that forgets one of these sets fails only once every few days.
     #
     # The combination catches both future unknown IDs and known tricky IDs.
     def _make_nibe_point_id_strategy():
-        from nibe_entity_detection import ENTITY_TYPE_OVERRIDES, VALUE_MAPPINGS
+        from nibe_entity_detection import (
+            _BINARY_SENSOR_EXCLUSIONS,
+            DEVICE_CLASS_OVERRIDES,
+            DIVISOR_OVERRIDES,
+            ENTITY_TYPE_OVERRIDES,
+            ESSENTIAL_POINTS,
+            RANGE_OVERRIDES,
+            SAFETY_READ_ONLY_POINTS,
+            UNIT_OVERRIDES,
+            VALUE_MAPPINGS,
+        )
 
+        # Point ids with their own branch in EntityManager's state decoding.
+        state_decoder_pids = {2022, 2453, 2509, 2685, 14987}
         known_pids = list(
             {pid for reg in VALUE_MAPPINGS.values() for pid in reg}
-            | set(ENTITY_TYPE_OVERRIDES.keys())
+            | set(ENTITY_TYPE_OVERRIDES)
+            | set(UNIT_OVERRIDES)
+            | set(DIVISOR_OVERRIDES)
+            | set(RANGE_OVERRIDES)
+            | set(DEVICE_CLASS_OVERRIDES)
+            | SAFETY_READ_ONLY_POINTS
+            | _BINARY_SENSOR_EXCLUSIONS
+            | ESSENTIAL_POINTS
+            | state_decoder_pids
         )
         return st.one_of(
             st.integers(min_value=0, max_value=65535),

@@ -1,5 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import { loginToHa, readToken } from './support/ha-login';
+import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
+import { haWs } from './support/stack';
 
 /**
  * Snapshot save → change the selection → restore, driven entirely through
@@ -50,7 +51,7 @@ test('a snapshot saved from the card restores the entity selection it captured',
 
   await loginToHa(page);
 
-  await page.goto('/nibe-bridge/entity-manager');
+  await gotoLoggedIn(page, '/nibe-bridge/entity-manager');
   const card = page.locator('nibe-entity-manager-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   const searchInput = card.locator('#search-input');
@@ -58,9 +59,6 @@ test('a snapshot saved from the card restores the entity selection it captured',
   const row = card.locator(`tr[data-id="${SNAPSHOT_POINT}"]`);
 
   // 1. Enable the point, so it is part of the selection the snapshot captures.
-  const before = await fetchStates(token);
-  const beforeIds = new Set(before.map((s) => s.entity_id));
-
   await searchInput.fill(SNAPSHOT_POINT);
   await expect(row).toBeVisible({ timeout: 10_000 });
   const enableButton = row.locator('button[data-action="enable"]');
@@ -69,21 +67,23 @@ test('a snapshot saved from the card restores the entity selection it captured',
   }
   await expect(row.locator('.badge-enabled')).toBeVisible({ timeout: 30_000 });
 
+  // Found by unique_id, not as "a new switch": an earlier spec on this
+  // stack may have left the point enabled already.
   let entityId: string | null = null;
   await expect
     .poll(
       async () => {
-        const after = await fetchStates(token);
-        const candidate = after.find(
-          (s) => !beforeIds.has(s.entity_id) && s.entity_id.startsWith('switch.')
-        );
-        if (candidate && candidate.state !== 'unavailable') {
-          entityId = candidate.entity_id;
+        const [reg] = await haWs(token, [{ type: 'config/entity_registry/list' }]);
+        const id = (reg.result ?? []).find((e: any) => e.unique_id === `nibe_${SNAPSHOT_POINT}`)
+          ?.entity_id;
+        const state = id && (await fetchStates(token)).find((s) => s.entity_id === id);
+        if (id?.startsWith('switch.') && state && state.state !== 'unavailable') {
+          entityId = id;
           return true;
         }
         return false;
       },
-      { timeout: 30_000, message: `no new entity appeared for point ${SNAPSHOT_POINT}` }
+      { timeout: 30_000, message: `no available entity for point ${SNAPSHOT_POINT}` }
     )
     .toBeTruthy();
   const target = entityId as unknown as string;

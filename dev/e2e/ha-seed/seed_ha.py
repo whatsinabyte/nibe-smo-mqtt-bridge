@@ -9,7 +9,8 @@ the dev/e2e harness:
   2. Drives HA's onboarding REST API to create the initial admin user
      (skips silently if onboarding is already done — e.g. a re-run against
      a persisted volume).
-  3. Exchanges the onboarding auth code for a long-lived-ish access token.
+  3. Exchanges the onboarding auth code for an access token (or logs in
+     through HA's login flow when onboarding was already done).
   4. Drives the MQTT integration's config-flow API to add a config entry
      pointing at the mosquitto broker in this compose network. Modern Home
      Assistant removed YAML-configured MQTT brokers, so this scripted
@@ -17,20 +18,15 @@ the dev/e2e harness:
      (the alternative — hand-writing a core.config_entries dict into
      .storage — is version-fragile and undocumented; this uses the same
      public REST API the frontend itself calls).
-  5. Writes the resulting long-lived access token to /seed-out/token.txt so
-     the Playwright test can log in without walking the login UI, and the
-     username/password to /seed-out/credentials.json.
+  5. Creates a long-lived access token and writes it to /seed-out/token.txt
+     so the Playwright tests can call HA's API without walking the login UI,
+     and the username/password to /seed-out/credentials.json. Long-lived
+     rather than the 30-minute token step 3 yields: iterating on specs
+     against a stack that stays up longer than that otherwise fails every
+     spec at once with authentication errors.
 
-Steps that are already done are skipped, so a re-run against a still-running
-HA (onboarding fully complete, container never restarted) is a no-op. Full
-re-runs against a *persisted-but-restarted* ha-config volume are not
-supported: the "user" onboarding step can only run once per volume, and
-this harness's default `homeassistant` auth provider does not accept the
-OAuth2 password grant used here as a fallback login (HA returns 400 for
-grant_type=password unless the legacy legacy_api_password provider is
-explicitly configured, which this harness does not do). For a clean re-run,
-tear the stack down with `docker compose down -v` (recreates ha-config from
-scratch) rather than reusing an existing volume — see README.md.
+Steps that are already done are skipped, so the seeder can be re-run against
+a stack that is already onboarded — e.g. to mint a fresh token.
 """
 
 from __future__ import annotations
@@ -101,7 +97,10 @@ def wait_for_ha(timeout: int = 180) -> None:
     while time.time() < deadline:
         try:
             status, _ = _req("GET", "/api/onboarding")
-            if status in (200, 401):
+            # Any HTTP answer means HA is serving. 404 is what an already
+            # onboarded instance returns here — treating only 200/401 as "up"
+            # made every re-run against a running stack time out.
+            if status in (200, 401, 404):
                 print("seed_ha: HA is up")
                 return
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
@@ -113,6 +112,11 @@ def wait_for_ha(timeout: int = 180) -> None:
 def onboard() -> str:
     """Run onboarding if needed. Returns a bearer access token either way."""
     status, steps = _req("GET", "/api/onboarding")
+    if status == 404:
+        # Home Assistant stops serving the onboarding API once every step is
+        # done — nothing to onboard, just log in.
+        print("seed_ha: onboarding already complete")
+        return _password_login()
     if status != 200:
         raise RuntimeError(f"GET /api/onboarding failed: {status} {steps}")
 
@@ -283,10 +287,45 @@ def setup_mqtt(token: str) -> None:
         raise RuntimeError(f"mqtt config flow did not complete: {status} {result}")
 
 
+def _long_lived_token(access_token: str) -> str:
+    """Exchange a short-lived access token for a long-lived one. Only HA's
+    WebSocket API offers this, hence websocket-client in this image."""
+    import websocket  # installed in this image's Dockerfile
+
+    ws = websocket.create_connection(
+        HA_URL.replace("http", "ws", 1) + "/api/websocket", timeout=30
+    )
+    try:
+        json.loads(ws.recv())  # auth_required
+        ws.send(json.dumps({"type": "auth", "access_token": access_token}))
+        auth = json.loads(ws.recv())
+        if auth.get("type") != "auth_ok":
+            raise RuntimeError(f"access token rejected: {auth}")
+        ws.send(
+            json.dumps(
+                {
+                    "id": 1,
+                    "type": "auth/long_lived_access_token",
+                    # Core refuses a second token under an existing name, and
+                    # the seeder can be re-run against the same instance.
+                    "client_name": f"e2e playwright {int(time.time())}",
+                    "lifespan": 3650,
+                }
+            )
+        )
+        resp = json.loads(ws.recv())
+        if not resp.get("success"):
+            raise RuntimeError(f"could not create long-lived token: {resp}")
+        return resp["result"]
+    finally:
+        ws.close()
+
+
 def main() -> None:
     wait_for_ha()
     token = onboard()
     setup_mqtt(token)
+    token = _long_lived_token(token)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     # Plaintext by design, not an oversight: USERNAME/PASSWORD are the

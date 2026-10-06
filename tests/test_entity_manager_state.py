@@ -5,6 +5,7 @@ Per-entity state processing and publishing tests for nibe_entity_manager.py — 
 for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
+import time
 import unittest
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -465,13 +466,13 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, 12481, "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/2453", "3.3.1", retain=True)
 
-    def test_point_14987_uses_same_eb101_decoding_as_2453(self):
-        """14987 is documented as an alternate register for the same
-        EB101 firmware version — must decode identically to 2453."""
+    def test_point_14987_inverter_version_published_as_plain_number(self):
+        """14987 (inverter version, u8) is a plain number — 61 on a real
+        S2125-12, also shown as 61 in myUplink — not the 2453 encoding."""
         em = _make_em()
         info = self._entity_info(point_id=14987, entity_type="sensor")
-        em._process_and_publish_state(info, 12481, "", self._metadata())
-        em.mqtt.publish.assert_any_call("nibe/state/14987", "3.3.1", retain=True)
+        em._process_and_publish_state(info, 61, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/14987", "61", retain=True)
 
     def test_point_2509_smo_firmware_version_decoding(self):
         """Confirmed worked example: 1035 (0x040B) -> 4.11."""
@@ -494,6 +495,18 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, "not-a-number", "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/2509", "not-a-number", retain=True)
 
+    def test_point_56150_operating_prio_shows_observed_labels(self):
+        """56150 reports 0/1/2 on a live controller — idle, heating, cooling,
+        in step with its other status entities (the reference dump's 2
+        coincides with 2022 decoding as Cooling). An unobserved value stays
+        a plain number."""
+        em = _make_em()
+        info = self._entity_info(point_id=56150, entity_type="sensor")
+        for raw, shown in ((0, "Idle"), (1, "Heating"), (2, "Cooling"), (20, "20")):
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
+            em.mqtt.publish.assert_any_call("nibe/state/56150", shown, retain=True)
+
     def test_point_2022_heating_and_compressor_running(self):
         """Hand-traced worked example: bit12 (Heating) + bit2+bit4 (compressor
         running) -> 'Heating (Running)'."""
@@ -508,6 +521,19 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(point_id=2022, entity_type="sensor")
         em._process_and_publish_state(info, "not-a-number", "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/2022", "not-a-number", retain=True)
+
+    def test_point_2022_reference_dump_value_decodes_to_cooling_running(self):
+        """The reference dump's real value, 5242909 (0x50001D: bits 0, 2, 3,
+        4, 20, 22), was read while 56150 reported 2 = Cooling. Decoded by the
+        bitfield alone — 2022 has no VALUE_MAPPINGS entry, as its value is
+        not an enum."""
+        from nibe_entity_detection import get_value_mapping
+
+        self.assertIsNone(get_value_mapping(2022, {}))
+        em = _make_em()
+        info = self._entity_info(point_id=2022, entity_type="sensor")
+        em._process_and_publish_state(info, 5242909, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Cooling (Running)", retain=True)
 
     def test_point_2022_idle_when_no_mode_bits_set(self):
         em = _make_em()
@@ -640,15 +666,18 @@ class TestProcessAndPublishState(unittest.TestCase):
             em._process_and_publish_state(info, 1, "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/555", "Auto", retain=True)
 
-    def test_select_unmapped_value_falls_back_to_raw_string(self):
-        """A raw value not present in the mapping (e.g. firmware added a
-        new enum value not yet in our table) must not crash — shows the
-        raw number rather than dropping the update."""
+    def test_select_unmapped_value_publishes_unavailable(self):
+        """A raw value that isn't one of the select's options (e.g. firmware
+        added an enum value our table lacks): HA rejects such a state with a
+        warning every poll and keeps showing the last value, so it is
+        published unavailable instead — like an out-of-range number."""
         em = _make_em()
         info = self._entity_info(point_id=555, entity_type="select")
         with patch("nibe_entity_manager.get_value_mapping", return_value={0: "Off", 1: "Auto"}):
             em._process_and_publish_state(info, 99, "", self._metadata())
-        em.mqtt.publish.assert_any_call("nibe/state/555", "99", retain=True)
+        topics = [(c.args[0], c.args[1]) for c in em.mqtt.publish.call_args_list]
+        self.assertIn((info["availability_topic"], "offline"), topics)
+        self.assertNotIn(("nibe/state/555", "99"), topics)
 
     def test_sensor_with_mapping_shows_label(self):
         em = _make_em()
@@ -1206,6 +1235,34 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         with patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 1):
             em._update_entity_state(entity_info)
 
+    def test_disabling_an_absent_entity_forgets_its_absence(self):
+        """A disabled entity isn't polled, so its point reappearing never
+        cleared the absence record. Re-enabled later, the next brief absence
+        was measured from that stale first miss and the entity was destroyed
+        at once instead of after the grace period."""
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        self._seed_point(em, point_id)
+        em.mqtt_enabled_points.add(point_id)
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            em._update_entity_state(self._entity_info(point_id))  # first miss
+        em.disable_entity(point_id)
+        self.assertNotIn(point_id, em._absent_since)
+
+        # Much later: re-enabled, and absent again for one poll.
+        em.mqtt_enabled_points.add(point_id)
+        later = t0 + nem._ABSENT_GRACE_S * 10
+        with (
+            patch("nibe_entity_manager.time.time", return_value=later),
+            patch.object(em, "disable_entity") as mock_disable,
+        ):
+            em._update_entity_state(self._entity_info(point_id))
+        mock_disable.assert_not_called()
+
     def test_absent_point_is_not_disabled_immediately(self):
         em = _make_em()
         em.post_write_active = False
@@ -1280,6 +1337,143 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         ):
             em._update_entity_state(info)
         mock_disable.assert_not_called()
+
+    def _seed_point(self, em, point_id=9999):
+        em.all_points_by_id[point_id] = {
+            "variableId": point_id,
+            "display_title": f"Point {point_id}",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "is_dynamic": False,
+            "metadata": {},
+        }
+
+    def test_grace_disable_deindexes_and_tells_the_card(self):
+        """After the grace period the firmware no longer serves the point, so
+        it must stop being presented as one that exists: removed from
+        all_points_by_id, its per-point card metadata cleared and a fresh
+        point_list published — same cleanup as a dynamic disappearance."""
+        from nibe_mqtt_publisher import BrowserTopic
+
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        self._seed_point(em, point_id)
+        em.mqtt_enabled_points.add(point_id)
+        with patch.object(em, "_persist_wanted_points"):
+            em._wanted_points.add(point_id)
+            self._absent_past_grace(em, self._entity_info(point_id))
+
+        self.assertNotIn(point_id, em.all_points_by_id)
+        em.mqtt.publish.assert_any_call(
+            BrowserTopic.META_TEMPLATE.format(id=point_id), "", retain=True
+        )
+        published = em._pub.publish_point_list.call_args.args[0]
+        self.assertNotIn(point_id, published)
+        # all_metadata as well (once per poll): a stale discovery-time copy
+        # reaching a freshly loaded card after point_list would otherwise add
+        # the point back.
+        em._flush_point_catalog()
+        catalog = em._pub.publish_all_metadata.call_args.args[0]
+        self.assertNotIn(point_id, [p["variableId"] for p in catalog])
+        # Still wanted, so it is re-enabled if it ever comes back.
+        self.assertIn(point_id, em._wanted_points)
+
+    def test_point_catalog_is_published_once_per_poll(self):
+        """all_metadata is about half a megabyte and some callers mark it
+        changed once per point, so many changes in one poll must still
+        publish it once; the small point list goes out every time."""
+        em = _make_em()
+        for _ in range(30):
+            em._point_catalog_changed()
+        self.assertEqual(em._pub.publish_point_list.call_count, 30)
+        em._pub.publish_all_metadata.assert_not_called()
+        em._flush_point_catalog()
+        em._flush_point_catalog()
+        em._pub.publish_all_metadata.assert_called_once()
+
+    def test_every_poll_flushes_the_point_catalog(self):
+        """Including a poll with no active entities, which returns early."""
+        em = _make_em()
+        em.last_bulk_fetch = time.time()  # no fetch due
+        em.active_entities_by_id.clear()
+        em._point_catalog_changed()
+        em.update_all_states()
+        em._pub.publish_all_metadata.assert_called_once()
+
+        em._pub.publish_all_metadata.reset_mock()
+        em.active_entities_by_id[1] = self._entity_info(1)
+        em._point_catalog_changed()
+        with patch.object(em, "_update_entity_state"):
+            em.update_all_states()
+        em._pub.publish_all_metadata.assert_called_once()
+
+    def test_grace_disabled_point_can_no_longer_be_enabled(self):
+        """Left indexed, enable_entity treated a firmware-removed point as
+        existing and created an entity that could only go unavailable."""
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        self._seed_point(em, point_id)
+        em.mqtt_enabled_points.add(point_id)
+        self._absent_past_grace(em, self._entity_info(point_id))
+        em._pub.publish_entity_discovery.reset_mock()
+
+        self.assertFalse(em.enable_entity(point_id))
+        em._pub.publish_entity_discovery.assert_not_called()
+
+    def test_grace_disable_decrements_stats_before_deindexing(self):
+        em = _make_em()
+        em.post_write_active = False
+        point_id = 9999
+        self._seed_point(em, point_id)
+        em._increment_stats(em.all_points_by_id[point_id])
+        em.mqtt_enabled_points.add(point_id)
+        self._absent_past_grace(em, self._entity_info(point_id))
+        self.assertEqual(em._stats_type_counts.get("sensor"), 0)
+
+    def test_returning_point_is_reindexed_and_announced_without_detect_changes(self):
+        """With detect_changes=False (no known dynamic points, no scan
+        window), a point deindexed by the grace disable is re-indexed
+        silently by _fetch_bulk_data — it must also be announced to the card
+        again, or it comes back enabled but missing from the card."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point_id = 9999
+        em._api.fetch_bulk_points.return_value = {
+            str(point_id): {
+                "title": "Returned",
+                "description": "",
+                "metadata": {"variableType": "integer"},
+                "value": {"integerValue": 5, "stringValue": "5", "isOk": True},
+            }
+        }
+
+        em._fetch_bulk_data(detect_changes=False)
+
+        self.assertIn(point_id, em.all_points_by_id)
+        em._pub.publish_point_metadata.assert_called_once_with(em.all_points_by_id[point_id])
+        self.assertIn(point_id, em._pub.publish_point_list.call_args.args[0])
+
+    def test_already_indexed_points_are_not_reannounced_every_poll(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point_id = 9999
+        self._seed_point(em, point_id)
+        em._api.fetch_bulk_points.return_value = {
+            str(point_id): {
+                "title": "Point",
+                "description": "",
+                "metadata": {},
+                "value": {"integerValue": 5, "stringValue": "5", "isOk": True},
+            }
+        }
+
+        em._fetch_bulk_data(detect_changes=False)
+
+        em._pub.publish_point_metadata.assert_not_called()
+        em._pub.publish_point_list.assert_not_called()
 
     def test_absent_point_is_discarded_from_baseline_point_ids(self):
         """A point that disappears outside a post-write scan must be removed
@@ -1578,8 +1772,8 @@ class TestUpdateEntityStateValueMappingSelfHealing(unittest.TestCase):
             em._update_entity_state(entity_info)
         self.assertIn("value_mapping", entity_info)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/3745"]
-        self.assertTrue(state_calls)
-        self.assertEqual(state_calls[0].args[1], "99")
+        self.assertEqual(state_calls, [])  # not a valid option: unavailable instead
+        em.mqtt.publish.assert_any_call("nibe/avail/3745", "offline", retain=True)
 
     def test_sensor_no_mapping_falls_through_to_divisor(self):
         """sensor where get_value_mapping() returns None falls through to
@@ -1929,7 +2123,40 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
     to _publish_dynamic_changes (mutant 111).
     """
 
-    def test_absent_during_post_write_routes_through_publish_dynamic_changes(self):
+    def test_static_point_absent_during_post_write_gets_the_absence_grace(self):
+        """Within 90s of a write, a static point missing from the bulk data
+        (a controller restart, a partial response) used to be taken for a
+        dynamic disappearance and disabled on the spot — its HA entity and
+        history deleted. It now goes unavailable and gets _ABSENT_GRACE_S."""
+        em = _make_em()
+        point_id = 800
+        em.baseline_point_ids.add(point_id)
+        em.mqtt_enabled_points.add(point_id)
+        em.post_write_active = True
+        em._post_write_controlling_point = 12345
+        em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
+        em.active_dynamic_points = set()
+        info = {
+            "point_id": point_id,
+            "entity_type": "sensor",
+            "availability_topic": f"nibe/avail/{point_id}",
+            "state_topic": f"nibe/state/{point_id}",
+        }
+        em.active_entities_by_id[point_id] = info
+        with (
+            patch.object(em, "_publish_dynamic_changes") as mock_pub_dyn,
+            patch.object(em, "disable_entity") as mock_disable,
+        ):
+            em._update_entity_state(info)
+        mock_pub_dyn.assert_not_called()
+        mock_disable.assert_not_called()
+        self.assertIn(point_id, em._absent_since)
+        em.mqtt.publish.assert_any_call(f"nibe/avail/{point_id}", "offline", retain=True)
+        self.assertIn(point_id, em.mqtt_enabled_points)
+
+    def test_active_dynamic_point_absent_during_post_write_routes_through_publish_dynamic_changes(
+        self,
+    ):
         em = _make_em()
         point_id = 800
         other_point = 801
@@ -1939,11 +2166,9 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
         em.mqtt_enabled_points.add(point_id)
         em.post_write_active = True
         em._post_write_controlling_point = controlling_point
-        # point_id is not a known dynamic point at all, so
-        # (known_dynamic - active_dynamic) does not contain it, and the
-        # "not in" guard is True -> routes through _publish_dynamic_changes.
-        em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
-        em.active_dynamic_points = set()
+        # An active dynamic point -> routes through _publish_dynamic_changes.
+        em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value={point_id})
+        em.active_dynamic_points = {point_id}
         info = {
             "point_id": point_id,
             "entity_type": "sensor",
@@ -2019,3 +2244,153 @@ class TestUpdateEntityStateDataFlowFields(unittest.TestCase):
         # Must not raise — mutant's None default would crash on metadata.get('variableSize', '')
         em._update_entity_state(entity_info)
         em.mqtt.publish.assert_any_call(f"nibe/state/{point_id}", "100", retain=True)
+
+
+class TestAbsentAtStartup(unittest.TestCase):
+    """An enabled point missing from the bulk response at startup can't be
+    restored (no metadata) but keeps its retained discovery config, in case
+    the controller is still coming up. It used to be dropped and then never
+    looked at again: the runtime absence-grace path only covers active
+    entities, so a point removed while the bridge was down stayed an
+    unavailable entity in HA forever — and, not being wanted, wasn't
+    re-enabled if it did come back."""
+
+    POINT = 9999
+
+    def _restored_em(self):
+        em = _make_em()
+        em.bulk_data = {100: {"raw_value": 1}}  # a successful fetch happened
+        em.mqtt_enabled_points.add(self.POINT)
+        with (
+            patch("nibe_entity_manager.time.time", return_value=1_700_000_000.0),
+            patch.object(em, "_persist_wanted_points"),
+        ):
+            em.restore_from_mqtt()
+        return em
+
+    def _config_clears(self, em):
+        return [
+            c.args[0]
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0].endswith(f"nibe_{self.POINT}/config") and c.args[1] == ""
+        ]
+
+    def test_restore_tracks_the_point_and_marks_it_wanted(self):
+        em = self._restored_em()
+        self.assertNotIn(self.POINT, em.mqtt_enabled_points)
+        self.assertEqual(em._absent_at_startup, {self.POINT: 1_700_000_000.0})
+        self.assertIn(self.POINT, em._wanted_points)
+        self.assertEqual(self._config_clears(em), [], "config must be kept for now")
+
+    def test_no_bulk_data_at_all_starts_no_grace_clock(self):
+        """Controller unreachable at startup: every point looks missing.
+        Timing them from now would let an incomplete first answer after a
+        long outage delete everything it omits at once."""
+        em = _make_em()
+        em.mqtt_enabled_points.add(self.POINT)
+        with patch.object(em, "_persist_wanted_points"):
+            em.restore_from_mqtt()
+        self.assertEqual(em._absent_at_startup, {})
+        # Not marked wanted either, yet: deferred discovery runs the restore
+        # again once the controller answers, and decides it then.
+
+    def test_point_returning_within_grace_is_untracked_and_kept(self):
+        import nibe_entity_manager as nem
+
+        em = self._restored_em()
+        with patch(
+            "nibe_entity_manager.time.time",
+            return_value=1_700_000_000.0 + nem._ABSENT_GRACE_S - 10,
+        ):
+            em._expire_absent_at_startup({self.POINT})
+        self.assertEqual(em._absent_at_startup, {})
+        self.assertEqual(self._config_clears(em), [])
+
+    def test_still_absent_after_grace_clears_its_entity_but_stays_wanted(self):
+        import nibe_entity_manager as nem
+
+        em = self._restored_em()
+        with patch(
+            "nibe_entity_manager.time.time",
+            return_value=1_700_000_000.0 + nem._ABSENT_GRACE_S + 1,
+        ):
+            em._expire_absent_at_startup(set())
+        self.assertEqual(em._absent_at_startup, {})
+        self.assertIn(f"homeassistant/sensor/nibe_{self.POINT}/config", self._config_clears(em))
+        em._pub.invalidate_config_hash.assert_called_with(self.POINT)
+        self.assertIn(self.POINT, em._wanted_points)
+
+    def test_still_absent_within_grace_is_left_alone(self):
+        em = self._restored_em()
+        with patch("nibe_entity_manager.time.time", return_value=1_700_000_000.0 + 60):
+            em._expire_absent_at_startup(set())
+        self.assertIn(self.POINT, em._absent_at_startup)
+        self.assertEqual(self._config_clears(em), [])
+
+    def test_update_all_states_runs_the_expiry_on_a_successful_poll(self):
+        em = self._restored_em()
+        em.initial_discovery_complete = True
+        em._api.fetch_bulk_points.return_value = {
+            "100": {
+                "title": "T",
+                "description": "",
+                "metadata": {},
+                "value": {"integerValue": 1, "stringValue": "", "isOk": True},
+            }
+        }
+        with patch.object(em, "_expire_absent_at_startup") as mock_expire:
+            em.update_all_states()
+        mock_expire.assert_called_once_with({100})
+
+
+class TestApplyModeHandlesAbsentAtStartup(unittest.TestCase):
+    """A mode change on the same restart as a startup absence: the absent
+    point isn't in mqtt_enabled_points, so apply_mode's to_disable never
+    covered it, and it stayed wanted with its retained config — to be
+    re-enabled on return despite the new mode excluding it."""
+
+    def test_replace_mode_drops_absent_point_outside_new_mode(self):
+        em = _make_em()
+        em.mode_switch_behavior = "replace"
+        em._absent_at_startup = {9999: 1_700_000_000.0}
+        with patch.object(em, "_persist_wanted_points"), patch.object(em, "_persist_applied_mode"):
+            em._wanted_points = {9999}
+            em.apply_mode("none")
+        self.assertEqual(em._absent_at_startup, {})
+        self.assertNotIn(9999, em._wanted_points)
+        cleared = [
+            c.args[0]
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0].endswith("nibe_9999/config") and c.args[1] == ""
+        ]
+        self.assertTrue(cleared, "its retained config must be cleared")
+
+    def test_replace_mode_drops_a_point_disabled_by_the_absence_grace(self):
+        """Disabled after _ABSENT_GRACE_S, a point stays wanted but isn't
+        enabled, so to_disable never covered it: on return it was re-enabled
+        despite the new mode."""
+        em = _make_em()
+        em.mode_switch_behavior = "replace"
+        with patch.object(em, "_persist_wanted_points"), patch.object(em, "_persist_applied_mode"):
+            em._wanted_points = {9999}
+            em.apply_mode("none")
+        self.assertNotIn(9999, em._wanted_points)
+
+    def test_replace_mode_leaves_known_dynamic_wanted_points_to_the_dynamic_path(self):
+        em = _make_em()
+        em.mode_switch_behavior = "replace"
+        em.dynamic_point_map.all_known_dynamic_point_ids = lambda: {9999}
+        with patch.object(em, "_persist_wanted_points"), patch.object(em, "_persist_applied_mode"):
+            em._wanted_points = {9999}
+            em.apply_mode("none")
+        self.assertIn(9999, em._wanted_points)
+
+    def test_merge_mode_leaves_absent_point_alone(self):
+        em = _make_em()
+        em.mode_switch_behavior = "merge"
+        em._absent_at_startup = {9999: 1_700_000_000.0}
+        with patch.object(em, "_persist_wanted_points"), patch.object(em, "_persist_applied_mode"):
+            em._wanted_points = {9999}
+            em.apply_mode("none")
+        self.assertIn(9999, em._absent_at_startup)
+        self.assertIn(9999, em._wanted_points)

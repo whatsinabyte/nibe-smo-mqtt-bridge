@@ -2325,8 +2325,15 @@ class TestBuildPointDefaults(unittest.TestCase):
     def test_non_writable_point_excluded(self):
         import nibe_lovelace as nl
 
-        points = {100: self._point(writable=False)}
+        points = {100: self._point(regtype="MODBUS_INPUT_REGISTER")}
         self.assertNotIn(100, nl._build_point_defaults(points))
+
+    def test_holding_point_flagged_isWritable_false_is_included(self):
+        """Writability goes by register type (is_writable_point)."""
+        import nibe_lovelace as nl
+
+        points = {100: self._point(writable=False)}
+        self.assertIn(100, nl._build_point_defaults(points))
 
     def test_non_holding_register_excluded(self):
         """e.g. MODBUS_INPUT_REGISTER (read-only sensor) has no settable default."""
@@ -2524,7 +2531,7 @@ class TestBuildPointDefaults(unittest.TestCase):
 
         points = {
             1: self._point(min_val=0, max_val=400, default=200, divisor=10, unit="°C"),
-            2: self._point(writable=False),
+            2: self._point(regtype="MODBUS_INPUT_REGISTER"),
             3: self._point(min_val=0, max_val=100, default=0),  # ambiguous zero, excluded
         }
         result = nl._build_point_defaults(points)
@@ -2539,7 +2546,7 @@ class TestBuildPointDefaults(unittest.TestCase):
         import nibe_lovelace as nl
 
         points = {
-            1: self._point(writable=False),  # excluded: not writable
+            1: self._point(regtype="MODBUS_INPUT_REGISTER"),  # excluded: not writable
             2: self._point(min_val=0, max_val=100, default=0),  # excluded: ambiguous zero
             3: self._point(min_val=0, max_val=400, default=200, divisor=10, unit="°C"),  # included
         }
@@ -3465,6 +3472,32 @@ class TestBuildDynamicInjection(unittest.TestCase):
         )
         self.assertEqual(set(result.keys()), {102})
 
+    def test_nested_dynamic_points_follow_their_dynamic_controller(self):
+        """100 shows 200, a dynamic select that itself shows 300. Only rendered
+        rows get injections and a dynamic point is never a row of its own, so
+        300 used to appear nowhere on the dashboard."""
+        import nibe_lovelace as nl
+
+        dpm = {
+            100: self._entry(100, {1: [200, 201]}),
+            200: self._entry(200, {1: [300]}),
+        }
+        watcher = self._registry_watcher({200: "select.b", 201: "sensor.b2", 300: "sensor.c"})
+        result = nl._build_dynamic_injection(dpm, {200, 201, 300}, watcher, {})
+        self.assertEqual(
+            [(eid, title) for eid, title, _, _ in result[100]],
+            [("select.b", "Point 200"), ("sensor.c", "↳ Point 300"), ("sensor.b2", "Point 201")],
+        )
+
+    def test_dynamic_controller_cycle_terminates(self):
+        """A learned cycle (100 shows 200, 200 shows 100) must not recurse forever."""
+        import nibe_lovelace as nl
+
+        dpm = {100: self._entry(100, {1: [200]}), 200: self._entry(200, {1: [100]})}
+        watcher = self._registry_watcher({100: "select.a", 200: "select.b"})
+        result = nl._build_dynamic_injection(dpm, {100, 200}, watcher, {})
+        self.assertEqual([r[0] for r in result[100]], ["select.b", "select.a"])
+
     def test_unresolved_entity_id_skips_that_point(self):
         """A dynamic point is active but the registry hasn't resolved its
         entity_id yet (race condition this bridge handles elsewhere with
@@ -3545,7 +3578,8 @@ class TestBuildDynamicInjection(unittest.TestCase):
         }
         result = nl._build_dynamic_injection(dpm, {200}, watcher, all_points)
         rng = result[100][0][2]
-        expected = f"{k_min:g} – {k_max:g}"
+        # min == max is "no bounds declared" — no range is shown at all.
+        expected = "" if k_min == k_max else f"{k_min:g} – {k_max:g}"
         self.assertEqual(rng, expected)
 
     def test_display_title_preferred_over_title(self):
@@ -3574,7 +3608,29 @@ class TestBuildDynamicInjection(unittest.TestCase):
         result = nl._build_dynamic_injection(dpm, {200}, watcher, {})
         _eid, title, rng, _dflt = result[100][0]
         self.assertEqual(title, "Point 200")
-        self.assertEqual(rng, "0 – 0")
+        self.assertEqual(rng, "")  # no metadata → no declared range, not "0 – 0"
+
+    def test_no_declared_range_shows_no_range(self):
+        """About half of all firmware points declare min == max — "no bounds
+        declared". The injected row used to read "Fan speed · 0 – 0 %"."""
+        import nibe_lovelace as nl
+
+        dpm = {100: self._entry(100, {1: [248]})}
+        watcher = self._registry_watcher({248: "sensor.fan"})
+        all_points = {
+            248: {"title": "Fan speed", "metadata": {"minValue": 0, "maxValue": 0, "unit": "%"}}
+        }
+        self.assertEqual(
+            nl._build_dynamic_injection(dpm, {248}, watcher, all_points)[100][0][2], ""
+        )
+        menu = {"id": "1", "title": "M", "settings": [{"label": "C", "point_id": 100}]}
+        cards = nl._build_menu_view(
+            menu,
+            self._registry_watcher({100: "switch.c"}),
+            dynamic_injection={100: [("sensor.fan", "Fan speed", "", "")]},
+        )
+        labels = [e.get("label") for c in cards if c["type"] == "entities" for e in c["entities"]]
+        self.assertIn("↳ Fan speed", labels)
 
     def test_mojibake_a_character_stripped_from_unit(self):
         """This function uses a different (older) mojibake-cleanup approach
@@ -3730,6 +3786,21 @@ class TestBuildUnplacedView(unittest.TestCase):
         result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
         self.assertIsNone(result)
 
+    def test_writable_register_without_declared_range_is_listed(self):
+        """min == max is this firmware's "no bounds declared" convention, not
+        a dead register (switches 3754/8982 report min=max=0 and work). A
+        writable register like that is exactly what this audit is for — real
+        firmware point 6016 used to be hidden from it. Read-only ones stay
+        out (test_degenerate_range_excluded below)."""
+        import nibe_lovelace as nl
+
+        bulk = {
+            100: self._holding_point("Ground water pump control", min_val=0, max_val=0, unit="%")
+        }
+        result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
+        labels = [e.get("label", "") for e in result["cards"][0]["cards"][1]["entities"]]
+        self.assertIn("Ground water pump control  ·  no declared range (%)", labels)
+
     def test_degenerate_range_excluded(self):
         """Status/enum read-only fields (e.g. real firmware point 2500
         'Compressor status' has min=max=0) are excluded — they have no
@@ -3842,17 +3913,17 @@ class TestBuildUnplacedView(unittest.TestCase):
         self.assertIn("1 read-only", content)
         self.assertIn("0 writable (series/grouped)", content)
 
-    def test_readonly_holding_register_goes_to_readonly_not_writable(self):
-        """A non-writable HOLDING register (isWritable=False) must not be
-        treated as a writable point even though its register type matches —
-        writability is the deciding factor, not register type alone."""
+    def test_holding_register_flagged_isWritable_false_is_writable(self):
+        """Writability goes by register type (is_writable_point): a holding
+        register the firmware flags isWritable=False — 3478 "Reset alarm" is
+        one — is listed with the writable settings."""
         import nibe_lovelace as nl
 
-        bulk = {100: self._holding_point("Locked setting", writable=False)}
+        bulk = {100: self._holding_point("Flagged setting", writable=False)}
         result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
         content = result["cards"][0]["cards"][0]["content"]
-        self.assertIn("1 read-only", content)
-        self.assertIn("0 writable (review)", content)
+        self.assertIn("0 read-only", content)
+        self.assertIn("1 writable (review)", content)
 
     def test_grouped_pattern_tariff(self):
         """The 'tariff' group pattern must route a matching WRITABLE
@@ -3895,10 +3966,10 @@ class TestBuildUnplacedView(unittest.TestCase):
 
     def test_missing_min_value_defaults_to_zero(self):
         """meta.get('minValue', 0) — when 'minValue' is entirely absent
-        (not just falsy), the default must be 0, matching maxValue=0's
-        default and correctly hitting the degenerate-range exclusion.
-        A wrong default (e.g. 1) would make mn != mx and wrongly include
-        an otherwise-degenerate point."""
+        (not just falsy), the default must be 0, matching the other bound's
+        0: a writable register then reads as min == max ("no bounds
+        declared") and is listed with no declared range. A wrong default
+        (e.g. 1) would produce a bogus 0–1 / 1–0 range instead."""
         import nibe_lovelace as nl
 
         bulk = {
@@ -3913,14 +3984,15 @@ class TestBuildUnplacedView(unittest.TestCase):
             }
         }
         result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
-        self.assertIsNone(result)  # mn=0 == mx=0 → degenerate, excluded
+        labels = [e.get("label", "") for e in result["cards"][0]["cards"][1]["entities"]]
+        self.assertIn("No minValue key  ·  no declared range", labels)
 
     def test_missing_max_value_defaults_to_zero(self):
-        """meta.get('maxValue', 0) — when 'maxValue' is entirely absent,
-        the default must be 0, matching minValue=0's default and
-        correctly hitting the degenerate-range exclusion. A wrong default
-        (e.g. 1) would make mn != mx and wrongly include an otherwise-
-        degenerate point."""
+        """meta.get('maxValue', 0) — when 'maxValue' is entirely absent
+        (not just falsy), the default must be 0, matching the other bound's
+        0: a writable register then reads as min == max ("no bounds
+        declared") and is listed with no declared range. A wrong default
+        (e.g. 1) would produce a bogus 0–1 / 1–0 range instead."""
         import nibe_lovelace as nl
 
         bulk = {
@@ -3935,7 +4007,8 @@ class TestBuildUnplacedView(unittest.TestCase):
             }
         }
         result = nl._build_unplaced_view(bulk, set(), self._watcher({}), {})
-        self.assertIsNone(result)  # mn=0 == mx=0 → degenerate, excluded
+        labels = [e.get("label", "") for e in result["cards"][0]["cards"][1]["entities"]]
+        self.assertIn("No maxValue key  ·  no declared range", labels)
 
     def test_divisor_key_actually_used_in_range_string(self):
         """meta.get('divisor', 1) must read the REAL 'divisor' key, not a
@@ -4727,20 +4800,53 @@ class TestBuildMenuView(unittest.TestCase):
         labels = [e.get("label", "") for e in entities_card["entities"]]
         self.assertIn("↳ Humidity  ·  0 – 100 %  ·  default: 50%", labels)
 
-    def test_dynamic_injection_only_appears_when_controlling_point_resolved(self):
-        """If the controlling switch itself isn't enabled yet, its injected
-        children shouldn't appear either (they'd be orphaned under nothing)."""
+    def test_dynamic_injection_appears_below_a_controller_without_entity(self):
+        """A controller the user disabled in HA keeps its real setting on the
+        device, so its dynamic points stay live, enabled entities with current
+        values — and this is the only place on the dashboard they appear.
+        They used to be hidden along with the controller's entity."""
         import nibe_lovelace as nl
 
         menu = self._menu(settings=[{"label": "Controlling switch", "point_id": 100}])
         cards = nl._build_menu_view(
             menu,
-            self._watcher({}),  # controlling point NOT resolved
+            self._watcher({}),  # controlling point has no HA entity
             dynamic_injection={100: [("sensor.humidity", "Humidity", "0 – 100 %", "")]},
+            controller_values={100: "on"},
         )
         entities_card = next(c for c in cards if c["type"] == "entities")
-        labels = [e.get("label", "") for e in entities_card["entities"]]
-        self.assertNotIn("↳ Humidity  ·  0 – 100 %", labels)
+        rows = entities_card["entities"]
+        labels = [e.get("label", "") for e in rows]
+        self.assertIn("↳ not enabled in HA  ·  current value: on", labels)
+        self.assertIn("↳ Humidity  ·  0 – 100 %", labels)
+        self.assertIn({"entity": "sensor.humidity"}, rows)
+
+    def test_controller_without_entity_or_known_value_says_not_enabled(self):
+        """No live reading to show (e.g. not ok) — plain "not enabled", and
+        the live dynamic points are still shown below it."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(settings=[{"label": "Controlling switch", "point_id": 100}])
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({}),
+            dynamic_injection={100: [("sensor.humidity", "Humidity", "0 – 100 %", "")]},
+        )
+        rows = next(c for c in cards if c["type"] == "entities")["entities"]
+        labels = [e.get("label", "") for e in rows]
+        self.assertIn("↳ not enabled", labels)
+        self.assertIn({"entity": "sensor.humidity"}, rows)
+
+    def test_controller_values_cover_injected_controllers_with_ok_readings(self):
+        import nibe_lovelace as nl
+
+        bulk = {
+            100: {"is_ok": True, "raw_value": 1, "metadata": {"minValue": 0, "maxValue": 1}},
+            200: {"is_ok": False, "raw_value": 1, "metadata": {}},
+            300: {"is_ok": True, "raw_value": 5, "metadata": {}},
+        }
+        injection = {100: [("e", "t", "r", "")], 200: [("e", "t", "r", "")]}
+        self.assertEqual(nl._build_controller_values(bulk, injection), {100: "on"})
 
     def test_setting_without_point_id_shows_only_divider(self):
         """The 'configured elsewhere' placeholder pattern (point_id: null,
@@ -5461,7 +5567,9 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             valid_top_level_menus,
             changed_from_default,
             render_submenus=True,
+            controller_values=None,
         ):
+            captured["controller_values"] = controller_values
             captured["known_dynamic"] = known_dynamic
             captured["point_defaults"] = point_defaults
             captured["dynamic_injection"] = dynamic_injection
@@ -5473,6 +5581,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
         self.assertEqual(captured["known_dynamic"], set())
         self.assertEqual(captured["point_defaults"], {})
         self.assertEqual(captured["dynamic_injection"], {})
+        self.assertEqual(captured["controller_values"], {})
 
 
 # ===========================================================================
@@ -7228,9 +7337,77 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
             with contextlib.suppress(OSError):
                 os.unlink(flag_file)
 
-    def test_flag_exists_skips_everything(self):
-        calls, _, _ = self._run(True, lambda p: {})
-        self.assertEqual(calls, [])
+    @staticmethod
+    def _existing_dashboard_resp(config_resp):
+        def ws_resp(payload):
+            t = payload.get("type")
+            if t == "lovelace/dashboards/list":
+                return {"success": True, "result": [{"url_path": "nibe-bridge", "id": 1}]}
+            if t == "lovelace/config":
+                return config_resp
+            return {"success": True}
+
+        return ws_resp
+
+    def test_existing_dashboard_without_config_gets_its_card(self):
+        """A create whose config save failed left the dashboard with no card,
+        and every later startup returned early on "already exists", so it
+        never got one. HA reports that state as config_not_found."""
+        calls, _, flag = self._run(
+            flag_exists=False,
+            ws_call_side_effect=self._existing_dashboard_resp(
+                {"success": False, "error": {"code": "config_not_found", "message": "x"}}
+            ),
+        )
+        saves = [c for c in calls if c.get("type") == "lovelace/config/save"]
+        self.assertEqual(len(saves), 1)
+        self.assertEqual(saves[0]["url_path"], "nibe-bridge")
+        self.assertEqual(
+            saves[0]["config"]["views"][0]["cards"][0]["type"], "custom:nibe-entity-manager-card"
+        )
+        self.assertEqual(flag, "provisioned\n")
+
+    def test_existing_dashboard_with_config_is_not_overwritten(self):
+        """A saved config may have been customised by the user."""
+        calls, _, _ = self._run(
+            flag_exists=False,
+            ws_call_side_effect=self._existing_dashboard_resp(
+                {"success": True, "result": {"views": []}}
+            ),
+        )
+        self.assertNotIn("lovelace/config/save", [c.get("type") for c in calls])
+
+    def test_existing_dashboard_config_call_failure_writes_nothing(self):
+        """A failed lookup says nothing about whether a config exists."""
+        calls, _, _ = self._run(
+            flag_exists=False, ws_call_side_effect=self._existing_dashboard_resp({})
+        )
+        self.assertNotIn("lovelace/config/save", [c.get("type") for c in calls])
+
+    def test_flag_exists_but_dashboard_deleted_recreates_it(self):
+        """The flag outlives the dashboard (only an uninstall teardown removes
+        it). Skipping on it meant a dashboard the user deleted was never
+        recreated, though restarting is the documented way to get it back."""
+
+        def ws_resp(payload):
+            t = payload.get("type")
+            if t == "lovelace/dashboards/list":
+                return {"success": True, "result": []}
+            if t == "lovelace/dashboards/create":
+                return {"success": True, "result": {"id": 42}}
+            return {"success": True}
+
+        calls, _, _ = self._run(True, ws_resp)
+        self.assertIn("lovelace/dashboards/create", [c.get("type") for c in calls])
+
+    def test_flag_exists_and_dashboard_present_creates_nothing(self):
+        def ws_resp(payload):
+            if payload.get("type") == "lovelace/dashboards/list":
+                return {"success": True, "result": [{"url_path": "nibe-bridge", "id": 7}]}
+            return {"success": True}
+
+        calls, _, _ = self._run(True, ws_resp)
+        self.assertNotIn("lovelace/dashboards/create", [c.get("type") for c in calls])
 
     def test_existing_dashboard_writes_flag_and_returns(self):
         def ws_resp(payload):
@@ -7313,12 +7490,6 @@ class TestSetupLovelaceDashboard(unittest.TestCase):
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(flag_file)
-
-    def test_flag_exists_debug_log_has_exact_text(self):
-        mock_log = self._run_with_log(True, lambda p: {})
-        mock_log.debug.assert_called_once_with(
-            "Nibe Bridge dashboard already provisioned — skipping"
-        )
 
     def test_list_call_failed_warning_has_exact_text(self):
         def ws_resp(payload):
@@ -7858,6 +8029,40 @@ class TestTeardownLovelace(unittest.TestCase):
             nl._teardown_lovelace(True)
         mock_open_ws.assert_not_called()
 
+    def test_teardown_also_removes_menu_dashboard(self):
+        """DOCS.md's uninstall cleanup lists the Nibe Menus dashboard; leaving
+        it behind after a menus-mode uninstall showed a dashboard of entities
+        whose discovery configs the same shutdown had just cleared."""
+        import nibe_lovelace as nl
+
+        dashboards = [
+            {"url_path": "nibe-bridge", "id": "bridge"},
+            {"url_path": "nibe-menus", "id": "menus"},
+        ]
+        deleted = []
+
+        def fake_ws_call(_ws, _mid, payload, _timeout=10):
+            t = payload.get("type")
+            if t == "lovelace/dashboards/list":
+                return {"success": True, "result": list(dashboards)}
+            if t == "lovelace/dashboards/delete":
+                deleted.append(payload["dashboard_id"])
+                return {"success": True}
+            return {"success": True, "result": []}
+
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch("nibe_lovelace.os.path.exists", return_value=False),
+            patch("nibe_lovelace.os.remove"),
+            patch(
+                "nibe_lovelace._open_ha_websocket",
+                side_effect=lambda: (MagicMock(), iter(range(1, 100)).__next__),
+            ),
+            patch("nibe_lovelace._ws_call", side_effect=fake_ws_call),
+        ):
+            nl._teardown_lovelace(True)
+        self.assertEqual(sorted(deleted), ["bridge", "menus"])
+
     def _make_teardown_ws(
         self, dashboard_id=7, resource_id=3, dash_delete_success=True, res_delete_success=True
     ):
@@ -8038,7 +8243,21 @@ class TestTeardownLovelace(unittest.TestCase):
             patch("nibe_lovelace.os.path.exists", return_value=False) as mock_exists,
         ):
             nl._teardown_lovelace(True)
-        mock_exists.assert_called_once_with("/homeassistant/www/nibe-entity-manager-card.js")
+        mock_exists.assert_any_call("/homeassistant/www/nibe-entity-manager-card.js")
+
+    def test_teardown_also_removes_the_debug_test_report(self):
+        """The debug "Run Test Suite" report lives next to the card in
+        /homeassistant/www (served unauthenticated at /local/) and used to be
+        left behind by an uninstall."""
+        import nibe_lovelace as nl
+
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": ""}),
+            patch("nibe_lovelace.os.path.exists", return_value=True),
+            patch("nibe_lovelace.os.remove") as mock_remove,
+        ):
+            nl._teardown_lovelace(True)
+        mock_remove.assert_any_call("/homeassistant/www/nibe_test_report.html")
 
     def test_card_file_removed_info_log_has_exact_text_and_real_path(self):
         import nibe_lovelace as nl
@@ -9189,9 +9408,13 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
         from conftest import _make_em as make_em_real
 
         em = make_em_real()
-        # Populate all_points_by_id so available_menu_points is non-empty
+        # Populate all_points_by_id and mqtt_enabled_points so
+        # available_menu_points is non-empty -- matches the real system,
+        # where apply_mode() has already enabled these points by the time
+        # _setup_menu_dashboard runs (see its own docstring comment).
         for pid in menu_pids:
             em.all_points_by_id[pid] = {"variableId": pid}
+            em.mqtt_enabled_points.add(pid)
         em.active_dynamic_points = set(dynamic_pids or [])
         return em
 
@@ -9388,12 +9611,12 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
         self.assertFalse(result)
 
     def test_available_menu_points_is_intersection_not_inverse(self):
-        """available_menu_points must be all_menu_points ∩ all_points_by_id
+        """available_menu_points must be all_menu_points ∩ mqtt_enabled_points
         — passed directly as _wait_for_registry_stable's 2nd positional
         arg, which makes it directly observable. pid 4 is a real menu
-        point (from menu_structure.yaml) that IS added to all_points_by_id
-        here, so the correct filtered set must include it; the buggy
-        'not in' inversion would exclude it instead."""
+        point (from menu_structure.yaml) that IS currently enabled here,
+        so the correct filtered set must include it; the buggy 'not in'
+        inversion would exclude it instead."""
         menu_pids = [4]
         em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
         rw = self._make_registry_watcher(em, resolved_pids=set(menu_pids))
@@ -9415,6 +9638,103 @@ class TestSetupMenuDashboardWaitLoop(unittest.TestCase):
 
         actual_available = mock_wait.call_args.args[1]
         self.assertIn(4, actual_available)
+
+    def test_available_menu_points_excludes_disabled_but_still_indexed_point(self):
+        """A point that's been disabled (e.g. by the absence-grace
+        mechanism after a firmware update removes its register) but is
+        still sitting in all_points_by_id (as it was before that disable
+        path started deindexing; a point the user disabled from the card is
+        in the same state today) -- must NOT be counted
+        as an expected-to-resolve menu point. Checking all_points_by_id
+        here instead of mqtt_enabled_points made the registry-stability
+        wait permanently plateau a few points short of 100%, since a
+        disabled point's entity_id can never resolve again."""
+        menu_pids = [4, 54]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
+        # Simulate 54 having been disabled after going absent: still
+        # indexed, but no longer enabled.
+        em.mqtt_enabled_points.discard(54)
+        rw = self._make_registry_watcher(em, resolved_pids={4})
+        open_ws_fn = MagicMock(return_value=None)
+
+        import nibe_lovelace as nl
+
+        with (
+            patch("nibe_lovelace.time.sleep"),
+            patch("nibe_lovelace._wait_for_registry_stable") as mock_wait,
+            patch("nibe_lovelace._build_point_defaults", return_value={}),
+            patch("nibe_lovelace._build_dynamic_injection", return_value={}),
+            patch(
+                "nibe_lovelace._build_menu_dashboard_config",
+                return_value={"views": [{"title": "Menu", "cards": []}]},
+            ),
+        ):
+            nl._setup_menu_dashboard(open_ws_fn, rw, debug_mode=False)
+
+        actual_available = mock_wait.call_args.args[1]
+        self.assertIn(4, actual_available)
+        self.assertNotIn(54, actual_available)
+
+    def _run_setup_with_refresh_tracking(self, em, rw):
+        """Run _setup_menu_dashboard with the wait and builders stubbed;
+        return the entity_id each menu point resolved to when the dashboard
+        config was built."""
+        import nibe_lovelace as nl
+
+        seen = {}
+
+        def fake_build(menu_structure, registry_watcher, *a, **k):
+            for pid in em.mqtt_enabled_points:
+                seen[pid] = registry_watcher.entity_id_for(pid)
+            return {"views": [{"title": "Menu", "cards": []}]}
+
+        with (
+            patch("nibe_lovelace.time.sleep"),
+            patch("nibe_lovelace._wait_for_registry_stable"),
+            patch("nibe_lovelace._build_point_defaults", return_value={}),
+            patch("nibe_lovelace._build_dynamic_injection", return_value={}),
+            patch("nibe_lovelace._build_menu_dashboard_config", side_effect=fake_build),
+        ):
+            nl._setup_menu_dashboard(MagicMock(return_value=None), rw, debug_mode=False)
+        return seen
+
+    def test_unresolved_menu_point_triggers_sync_refresh_before_build(self):
+        """A just-enabled menu point that the 70%-complete stability wait
+        let through unresolved must be resolved by a synchronous registry
+        refresh before the config is built — the watcher's own debounced
+        refresh usually lands after the regen reads entity_ids, which saved
+        the row as "not enabled" with no retry (the retry only re-checks
+        dynamic points)."""
+        menu_pids = [4, 54]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
+        resolved = {4}
+        rw = self._make_registry_watcher(em)
+        rw.entity_id_for = lambda pid: f"sensor.nibe_{pid}" if pid in resolved else None
+        rw.refresh_registry.side_effect = lambda: resolved.add(54)
+
+        seen = self._run_setup_with_refresh_tracking(em, rw)
+
+        rw.refresh_registry.assert_called_once()
+        self.assertEqual(seen[54], "sensor.nibe_54")
+
+    def test_all_resolved_skips_sync_refresh(self):
+        """No extra WebSocket round-trip when everything already resolved."""
+        menu_pids = [4, 54]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[])
+        rw = self._make_registry_watcher(em, resolved_pids=set(menu_pids))
+
+        self._run_setup_with_refresh_tracking(em, rw)
+
+        rw.refresh_registry.assert_not_called()
+
+    def test_unresolved_dynamic_point_triggers_sync_refresh(self):
+        menu_pids = [4]
+        em = self._make_em(menu_pids=menu_pids, dynamic_pids=[900])
+        rw = self._make_registry_watcher(em, resolved_pids={4})
+
+        self._run_setup_with_refresh_tracking(em, rw)
+
+        rw.refresh_registry.assert_called_once()
 
     def test_dynamic_injection_and_dashboard_config_called_with_real_args(self):
         """_build_dynamic_injection and _build_menu_dashboard_config must

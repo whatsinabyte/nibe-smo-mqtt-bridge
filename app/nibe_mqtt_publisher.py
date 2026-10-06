@@ -133,6 +133,8 @@ class MgmtTopic(StrEnum):
 
     # ── Bridge availability (shared LWT / online topic) ───────────────────
     AVAIL = f"{_HA_BASE}/sensor/nibe_bridge/available"
+    # Home Assistant's MQTT birth/will topic ("online" when HA has started).
+    HA_STATUS = f"{_HA_BASE}/status"
 
     # ── Enable / disable entity text inputs ──────────────────────────────
     ENABLE_SET = f"{_HA_BASE}/text/nibe_enable_entity/set"
@@ -177,12 +179,17 @@ class BrowserTopic(StrEnum):
     WANTED_POINTS = (
         f"{MQTT_PREFIX}/wanted_points"  # user-enabled point_ids, catch-all re-enable set
     )
+    RECLASSIFIED_POINTS = (
+        f"{MQTT_PREFIX}/reclassified_points"  # binary_sensors observed non-0/1, now sensors
+    )
     DEVICE_INFO = f"{MQTT_PREFIX}/device_info"
     POINT_LIST = f"{MQTT_PREFIX}/point_list"
     CHANGELOG_HISTORY = f"{MQTT_PREFIX}/changelog/history"
     CHANGELOG_UNREAD = f"{MQTT_PREFIX}/changelog/unread"
     SNAPSHOTS = f"{MQTT_PREFIX}/snapshots"  # retained: list of snapshots
     SNAPSHOTS_CMD = f"{MQTT_PREFIX}/snapshots/cmd"  # command topic (card → bridge)
+    # not retained: outcome of each snapshot command (bridge → card)
+    SNAPSHOTS_RESULT = f"{MQTT_PREFIX}/snapshots/result"
 
     # ── Observability topics ───────────────────────────────────────────────
     # BRIDGE_ALERT: non-retained, published when an alertable condition is
@@ -282,7 +289,7 @@ def resolve_unit(
     unit = clean_unit(unit)
     if was_overridden and warned is not None and point_id not in warned:
         # pragma: no mutate start
-        log_mqtt.warning(
+        log_mqtt.debug(
             "Point %d (%s): unit overridden \u2014 firmware reported %r, using %r instead.",
             point_id,
             title or f"Point {point_id}",
@@ -399,6 +406,15 @@ class MqttDiscoveryPublisher:
         self._config_hashes.pop(point_id, None)
         self._point_entity_types.pop(point_id, None)
         self._point_retained_domains.pop(point_id, None)
+        self._attributes_hashes.pop(point_id, None)
+
+    def forget_published_hashes(self, point_id: int) -> None:
+        """Make the next publish_entity_discovery for this point send its
+        config and attributes even if unchanged — for republishing to a broker
+        that lost its retained messages. Unlike invalidate_config_hash, keeps
+        the point's last-published type/domain, which type-change cleanup
+        still needs."""
+        self._config_hashes.pop(point_id, None)
         self._attributes_hashes.pop(point_id, None)
 
     def seed_config_hash_from_retained(self, point_id: int, payload: bytes) -> None:
@@ -635,6 +651,10 @@ class MqttDiscoveryPublisher:
             for stale_domain in sorted(stale_domains):
                 old_topic = t_config(stale_domain, entity_id)
                 self.mqtt.publish(old_topic, "", retain=True)
+                # The old domain's other retained topics would otherwise sit
+                # on the broker forever too.
+                self.mqtt.publish(t_attributes(stale_domain, entity_id), "", retain=True)
+                self.mqtt.publish(t_available(stale_domain, entity_id), "", retain=True)
                 # pragma: no mutate start
                 log_mqtt.info(
                     "Point %d: entity_type changed %s -> %s — cleared old discovery topic %s",
@@ -647,6 +667,12 @@ class MqttDiscoveryPublisher:
             # Force a fresh publish below even if the new config's hash
             # happens to collide with whatever was last stored.
             self._config_hashes.pop(point_id, None)
+            # Same for the attributes: the topic moved with the domain, but
+            # the payload is identical, so the hash check below would treat
+            # the new domain's attributes as already published and the
+            # entity would reach HA without any (point_id included) — seen
+            # for real on a binary_sensor reclassified to sensor.
+            self._attributes_hashes.pop(point_id, None)
 
         if self._config_hashes.get(point_id) == config_hash:
             log_mqtt.debug(

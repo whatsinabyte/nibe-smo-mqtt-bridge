@@ -2264,22 +2264,118 @@ class TestEnableEntityMissingPointLogLevel(unittest.TestCase):
 
     def test_missing_point_logs_warning_not_error(self):
         em = _make_em()
-        with self.assertLogs("nibe.entities", level="WARNING") as cm:
+        with self.assertLogs("nibe.entities", level="INFO") as cm:
             result = em.enable_entity(99999)
         self.assertFalse(result)
-        # Must be WARNING, not ERROR
+        # INFO: a conditional point absent on this installation is expected
+        # (e.g. 3671/5033 with a room sensor), not something to act on.
         self.assertTrue(
-            any("WARNING" in line for line in cm.output), "Missing point must log at WARNING level"
+            any(line.startswith("INFO:") for line in cm.output),
+            "Missing point must log at INFO level",
         )
         self.assertFalse(
-            any("ERROR" in line for line in cm.output), "Missing point must NOT log at ERROR level"
+            any(line.startswith(("WARNING:", "ERROR:")) for line in cm.output),
+            "Missing point must not log a warning or error",
         )
 
     def test_missing_point_message_mentions_conditional(self):
         em = _make_em()
-        with self.assertLogs("nibe.entities", level="WARNING") as cm:
+        with self.assertLogs("nibe.entities", level="INFO") as cm:
             em.enable_entity(99999)
         self.assertTrue(any("bulk data" in line or "conditional" in line for line in cm.output))
+
+
+class TestRepublishRetainedState(unittest.TestCase):
+    """After a broker lost its retained messages (restart without persistence,
+    or a crash between persistence saves), reconnecting used to restore only
+    subscriptions, availability and states — the card went empty, entities
+    vanished at HA's next restart, and the bridge's next restart took the
+    empty broker for a fresh install."""
+
+    def _em(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        point = {"variableId": 100, "entity_type": "sensor", "display_title": "T", "metadata": {}}
+        em.all_points_by_id[100] = point
+        em.active_entities_by_id[100] = {"point_id": 100, "point_data": point}
+        em.mqtt_enabled_points.add(100)
+        em._mgmt_discovery_args = ("essential", False)
+        em._applied_mode_known = "essential"
+        return em, point
+
+    def _topics(self, em):
+        return [c.args[0] for c in em.mqtt.publish.call_args_list]
+
+    def test_republishes_entity_discovery_bypassing_the_unchanged_cache(self):
+        em, point = self._em()
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+        em._pub.forget_published_hashes.assert_called_once_with(100)
+        em._pub.publish_entity_discovery.assert_called_once_with(point, em.bulk_data)
+
+    def test_republishes_management_catalog_and_card_state(self):
+        from nibe_mqtt_publisher import BrowserTopic
+
+        em, _ = self._em()
+        with (
+            patch.object(em, "_persist_wanted_points") as wanted,
+            patch.object(em, "_persist_reclassified_points") as reclassified,
+            patch.object(em, "_persist_dynamic_map") as dyn_map,
+            patch.object(em, "_persist_active_dynamic") as active,
+            patch.object(em, "publish_snapshots") as snapshots,
+        ):
+            em.republish_retained_state()
+        em._pub.publish_management_discovery.assert_called_once_with("essential", False)
+        em._pub.publish_all_metadata.assert_called_once()
+        em._pub.publish_point_list.assert_called_once()
+        em._pub.publish_enabled_state.assert_called_once_with(em.mqtt_enabled_points)
+        for m in (wanted, reclassified, dyn_map, active, snapshots):
+            m.assert_called_once()
+        topics = self._topics(em)
+        self.assertIn(BrowserTopic.APPLIED_MODE, topics)
+        self.assertIn(BrowserTopic.CHANGELOG_HISTORY, topics)
+
+    def test_changelog_republish_continues_the_sequence(self):
+        em, _ = self._em()
+        em._history_seq = 5
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+        self.assertEqual(em._history_seq, 6)
+        self.assertEqual(em._last_published_seq, 6)
+
+    def test_does_nothing_before_discovery_completes(self):
+        em, _ = self._em()
+        em.initial_discovery_complete = False
+        em.republish_retained_state()
+        em._pub.publish_entity_discovery.assert_not_called()
+        em.mqtt.publish.assert_not_called()
+
+    def test_does_nothing_once_shutdown_has_begun(self):
+        """With remove_frontend, shutdown clears every retained topic; a
+        reconnect landing after that must not put them back."""
+        em, _ = self._em()
+        em.begin_shutdown()
+        em.republish_retained_state()
+        em._pub.publish_entity_discovery.assert_not_called()
+        em.mqtt.publish.assert_not_called()
+
+    def test_applied_mode_is_remembered_from_persist(self):
+        em = _make_em()
+        with patch("nibe_entity_manager._atomic_write_text"):
+            em._persist_applied_mode("menus")
+        self.assertEqual(em._applied_mode_known, "menus")
 
 
 class TestRepublishAvailability(unittest.TestCase):

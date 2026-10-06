@@ -40,11 +40,13 @@ configuration:
     description: >-
       Nom d'utilisateur pour l'authentification au courtier MQTT. Laissez
       vide si votre courtier ne nécessite pas d'authentification.
+      Avec la valeur par défaut « core-mosquitto », le Supervisor fournit le compte du module Mosquitto, qui a priorité sur ce champ.
   mqtt_password:
     name: Mot de passe MQTT
     description: >-
       Mot de passe pour l'authentification au courtier MQTT. Laissez vide
       si votre courtier ne nécessite pas d'authentification.
+      Avec la valeur par défaut « core-mosquitto », le Supervisor fournit le compte du module Mosquitto, qui a priorité sur ce champ.
   device_name:
     name: Nom de l'appareil
     description: >-

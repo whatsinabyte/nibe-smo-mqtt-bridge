@@ -14,7 +14,6 @@ describe('nibe/browser/all_metadata', () => {
     expect(el.entities.get(3945).title).toBe('Heating setpoint');
     expect(el.entities.get(3945).divisor).toBe(10);
     expect(el.entities.get(4).isDynamic).toBe(true);
-    expect(el.dynamicEntityIds.has(4)).toBe(true);
     expect(el.isLoading).toBe(false);
   });
 
@@ -41,19 +40,6 @@ describe('nibe/browser/all_metadata', () => {
     expect(el.entities.get(3945).enabled).toBe(false);
     harness.publish('nibe/browser/enabled_state', enabledStatePayload([3945]));
     expect(el.entities.get(3945).enabled).toBe(true);
-  });
-
-  it('clears dynamicEntityIds on a fresh full batch so removed dynamic points do not linger', () => {
-    const { el, harness } = createCard();
-    harness.publish(
-      'nibe/browser/all_metadata',
-      allMetadataPayload([sampleMetadataEntry({ id: 4, is_dynamic: true })])
-    );
-    expect(el.dynamicEntityIds.has(4)).toBe(true);
-
-    // A later full batch without point 4 at all (it disappeared from firmware).
-    harness.publish('nibe/browser/all_metadata', allMetadataPayload([sampleMetadataEntry({ id: 5 })]));
-    expect(el.dynamicEntityIds.has(4)).toBe(false);
   });
 
   it('fills in defaults for missing/optional fields', () => {

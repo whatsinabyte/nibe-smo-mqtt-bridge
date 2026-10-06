@@ -1,3 +1,4 @@
+import './support/stacks';
 import { test, expect } from '@playwright/test';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
@@ -103,7 +104,7 @@ async function waitForBridgeReady(since: string): Promise<void> {
 async function recreateBridge(optionsFile?: string): Promise<void> {
   const since = new Date().toISOString();
   const prefix = optionsFile ? `BRIDGE_OPTIONS=${optionsFile} ` : '';
-  execSync(`${prefix}docker compose up -d --force-recreate bridge`, {
+  execSync(`${prefix}docker compose up -d --no-deps --force-recreate bridge`, {
     cwd: COMPOSE_DIR,
     stdio: 'ignore',
   });

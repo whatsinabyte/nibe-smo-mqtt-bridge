@@ -35,11 +35,13 @@ configuration:
     description: >-
       Username for MQTT broker authentication. Leave blank if your broker does
       not require authentication.
+      With the default "core-mosquitto", the Supervisor provides the Mosquitto add-on's account, which takes precedence over this field.
   mqtt_password:
     name: MQTT password
     description: >-
       Password for MQTT broker authentication. Leave blank if your broker does
       not require authentication.
+      With the default "core-mosquitto", the Supervisor provides the Mosquitto add-on's account, which takes precedence over this field.
   device_name:
     name: Device name
     description: >-

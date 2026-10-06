@@ -20,6 +20,7 @@ import { vi } from 'vitest';
  */
 export function createFakeHass(overrides = {}) {
   const subscriptions = []; // {topic, prefix, wildcard, cb}
+  const pending = []; // promises returned by async handlers, see settle()
   const published = []; // flattened list of every callService('mqtt','publish', data) call
 
   let callServiceImpl = () => Promise.resolve();
@@ -66,8 +67,20 @@ export function createFakeHass(overrides = {}) {
       const matches = subscriptions.filter((s) =>
         s.wildcard ? topic.startsWith(s.prefix) : s.topic === topic
       );
-      matches.forEach((s) => s.cb({ topic, payload }));
+      matches.forEach((s) => pending.push(s.cb({ topic, payload })));
       return matches.length;
+    },
+
+    /**
+     * Wait until every handler invoked so far has finished — including the
+     * async ones (the changelog history handler decompresses its payload
+     * through a real DecompressionStream). Waiting a fixed delay instead
+     * failed intermittently under load, when decompression outran it.
+     */
+    async settle() {
+      while (pending.length) {
+        await Promise.allSettled(pending.splice(0));
+      }
     },
 
     /** Find the subscription entry for an exact topic string (non-wildcard). */

@@ -45,6 +45,14 @@ class TestFetchBulkDataDivisorOverride(unittest.TestCase):
         em._fetch_bulk_data(detect_changes=False)
         self.assertEqual(em.bulk_data[29258]["metadata"]["divisor"], 100)
 
+    def test_range_override_applied_to_polled_metadata(self):
+        em = _make_em()
+        resp = self._response(3702, divisor=10, unit="°C", raw_value=550)
+        resp["3702"]["metadata"].update({"minValue": 55, "maxValue": 700})
+        em._api.fetch_bulk_points.return_value = resp
+        em._fetch_bulk_data(detect_changes=False)
+        self.assertEqual(em.bulk_data[3702]["metadata"]["minValue"], 550)
+
     def test_overridden_point_divisor_reapplied_on_every_poll(self):
         """Firmware keeps resending divisor=1 on every response -- a
         one-time-only fix (e.g. only in _index_point) would be silently
@@ -830,6 +838,7 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
         em = _make_em()
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
+        em._api_first_success_pending = False  # mid-run, not the first fetch
         em.api_consecutive_failures = em.api_failure_threshold + 1
         em._api_notification_active = True
         em._api.fetch_bulk_points.return_value = self._minimal_response()
@@ -843,6 +852,7 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
         em = _make_em()
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
+        em._api_first_success_pending = False  # mid-run, not the first fetch
         em._discovery_notification_active = True
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
@@ -850,6 +860,31 @@ class TestFetchBulkDataApiRestoration(unittest.TestCase):
 
         em._dismiss.assert_called_once_with(em.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
         self.assertIs(em._discovery_notification_active, False)
+
+    def test_first_success_clears_notifications_left_from_before_a_restart(self):
+        """Both notifications promise to clear once the controller answers,
+        but only the process that raised one knew it was showing. After a
+        restart while the controller was unreachable they stayed in HA."""
+        from nibe_entity_manager import _NOTIF_API_UNREACHABLE, _NOTIF_DISCOVERY_INCOMPLETE
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.baseline_point_ids.add(100)
+        self.assertIs(em._api_first_success_pending, True)
+        em._api.fetch_bulk_points.return_value = self._minimal_response()
+        em._fetch_bulk_data(detect_changes=False)
+        em._fetch_bulk_data(detect_changes=False)  # later successes: nothing more
+        self.assertEqual(
+            sorted(c.args[1] for c in em._dismiss.call_args_list),
+            sorted([_NOTIF_API_UNREACHABLE, _NOTIF_DISCOVERY_INCOMPLETE]),
+        )
+
+    def test_failed_fetch_does_not_use_up_the_first_success_dismiss(self):
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = None
+        em._fetch_bulk_data(detect_changes=False)
+        em._dismiss.assert_not_called()
+        self.assertIs(em._api_first_success_pending, True)
 
     def test_failure_count_exactly_at_threshold_triggers_dismiss(self):
         """The recovery check is `api_consecutive_failures >= api_failure_threshold`
@@ -1343,6 +1378,38 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
             em.update_all_states(force=True)
         mock_fetch.assert_called_once()
 
+    def test_poll_restores_a_map_entry_whose_point_is_back(self):
+        """A switch/select that is itself dynamic is absent at startup
+        whenever whatever shows it is off, so discover_points marks its entry
+        firmware_removed. Restoring only happened at startup, so once it was
+        switched back on its learned outcomes stayed ignored until the next
+        restart."""
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.dynamic_point_map._table[400] = DynamicPointEntry(
+            point_id=400, title="Dynamic select", entity_type="select", firmware_removed=True
+        )
+        em.bulk_data[400] = {"raw_value": 0, "is_ok": True, "metadata": {}}
+        with (
+            patch.object(em, "_fetch_bulk_data", return_value=True),
+            patch.object(em, "_persist_dynamic_map") as persist,
+        ):
+            em.update_all_states(force=True)
+        self.assertFalse(em.dynamic_point_map[400].firmware_removed)
+        persist.assert_called_once()
+
+    def test_poll_without_restorable_entries_does_not_persist_the_map(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        with (
+            patch.object(em, "_fetch_bulk_data", return_value=True),
+            patch.object(em, "_persist_dynamic_map") as persist,
+        ):
+            em.update_all_states(force=True)
+        persist.assert_not_called()
+
     def test_post_write_window_boundary_exact_equality_not_yet_expired(self):
         """The expiry check is `current_time > _post_write_until` (strict).
         At exact equality the window must NOT be considered expired yet."""
@@ -1478,6 +1545,7 @@ class TestFetchBulkDataApiRestorationNoPriorNotification(unittest.TestCase):
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
         em.api_consecutive_failures = em.api_failure_threshold + 1
+        em._api_first_success_pending = False  # mid-run, not the first fetch
         em._api_notification_active = False  # notification was never raised
         em._api.fetch_bulk_points.return_value = self._minimal_response()
         em._fetch_bulk_data(detect_changes=False)
@@ -1567,13 +1635,10 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         _, kwargs_or_args = mock_dyn.call_args[0][0], mock_dyn.call_args[0][1]
         self.assertIn(22001, kwargs_or_args)
 
-    def test_post_write_scan_newly_absent_baseline_point_is_disappeared(self):
+    def test_post_write_scan_absent_baseline_point_is_not_disappeared(self):
         """During a post-write scan, a baseline point (not a known dynamic
-        point) that's absent from this fetch must be treated as a newly
-        discovered dynamic disappearance — this exercises the `newly_absent`
-        branch specifically (distinct from the known-dynamic-point branch
-        above), which mutates disappeared_points via .add() and would crash
-        outright if disappeared_points were ever the wrong type."""
+        point) absent from this fetch is no longer taken for a dynamic
+        disappearance — it gets the ordinary absence grace period."""
         em = _make_em()
         em.initial_discovery_complete = True
         em.post_write_active = True
@@ -1582,9 +1647,9 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._resp(1)  # 999 absent
         with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
-        mock_dyn.assert_called_once()
-        self.assertIn(999, mock_dyn.call_args[0][1])
-        self.assertNotIn(999, em.baseline_point_ids)
+        for call in mock_dyn.call_args_list:
+            self.assertNotIn(999, call.args[1])
+        self.assertIn(999, em.baseline_point_ids)
 
     def test_known_dynamic_point_not_active_and_missing_is_not_disappeared(self):
         """A known dynamic point that is NOT in active_dynamic_points but is
@@ -1631,7 +1696,7 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
             }
         }
 
-    def test_baseline_point_absent_during_post_write_becomes_disappeared(self):
+    def test_baseline_point_absent_during_post_write_is_not_disappeared(self):
         em = _make_em()
         em.initial_discovery_complete = True
         em.post_write_active = True
@@ -1641,14 +1706,8 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
         em._api.fetch_bulk_points.return_value = self._resp(999)  # 555 absent
         with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
             em._fetch_bulk_data(detect_changes=True)
-        mock_dyn.assert_called_once()
-        disappeared_arg = mock_dyn.call_args[0][1]
-        self.assertIn(555, disappeared_arg)
-        self.assertNotIn(
-            555,
-            em.baseline_point_ids,
-            "point must be discarded from baseline_point_ids once reclassified as dynamic",
-        )
+        mock_dyn.assert_not_called()
+        self.assertIn(555, em.baseline_point_ids)
 
     def test_baseline_point_absent_outside_post_write_is_not_reclassified(self):
         """The same absence, but OUTSIDE a post-write scan window, must NOT
@@ -1667,10 +1726,10 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
 
 
 class TestFetchBulkDataReturnValue(unittest.TestCase):
-    """_fetch_bulk_data's return value contract:
-    detect_changes=True  -> bool(new_points or disappeared_points)
-    detect_changes=False -> True (unconditional success)
-    """
+    """_fetch_bulk_data's return value contract: True on success (whatever
+    detect_changes is, and whether or not anything changed), False on failure
+    or a busy lock — update_all_states tells those two apart by whether the
+    failure count moved."""
 
     def _resp(self, point_id):
         return {
@@ -1682,15 +1741,96 @@ class TestFetchBulkDataReturnValue(unittest.TestCase):
             }
         }
 
-    def test_detect_changes_true_no_changes_returns_false(self):
-        """With detect_changes=True and nothing new/disappeared, the return
-        value must be exactly False, not True and not None."""
+    def test_detect_changes_true_no_changes_returns_true(self):
+        """A successful fetch returns True whether or not anything changed —
+        False means failure or a busy lock. This used to return False for a
+        quiet poll whenever detect_changes was set, which update_all_states
+        read as "lock busy" and then skipped _reconcile_wanted_points."""
         em = _make_em()
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(100)
         em._api.fetch_bulk_points.return_value = self._resp(100)
         result = em._fetch_bulk_data(detect_changes=True)
-        self.assertIs(result, False)
+        self.assertIs(result, True)
+
+    def _em_with_known_dynamic_point(self):
+        """detect_changes=True polls (a dynamic point is known) — the case
+        where a quiet poll used to return False and skip the reconcile."""
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.dynamic_point_map._table[77] = DynamicPointEntry(
+            point_id=77,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            unprocessed_values=set(),
+            is_controlling=True,
+            dynamic_points_by_value={0: [], 1: [88]},
+        )
+        em._wanted_points = {100}
+        return em
+
+    def _bulk(self, *point_ids):
+        resp = {}
+        for pid in point_ids:
+            resp.update(self._resp(pid))
+        return resp
+
+    def _poll(self, em, *point_ids):
+        em._api.fetch_bulk_points.return_value = self._bulk(*point_ids)
+        em.last_bulk_fetch = 0
+        with patch.object(em, "_reconcile_wanted_points") as mock_reconcile:
+            em.update_all_states()
+        return mock_reconcile
+
+    def test_first_poll_after_startup_reconciles_wanted(self):
+        """Once after startup regardless of growth — covers points the
+        startup itself found missing. With a dynamic point known, a quiet
+        poll used to return False here and skip it entirely."""
+        em = self._em_with_known_dynamic_point()
+        em.baseline_point_ids.add(100)
+        em.published_configs = {100}
+        self._poll(em, 100).assert_called_once_with({100})
+
+    def test_polls_before_deferred_discovery_do_not_use_up_the_startup_run(self):
+        """With the controller unreachable at startup, polls keep running
+        before discovery completes. A reconcile there is pointless (empty
+        index) and used to consume the one-time startup run, so wanted
+        points present after the deferred discovery were never re-enabled."""
+        em = self._em_with_known_dynamic_point()
+        em.initial_discovery_complete = False
+        self._poll(em, 100).assert_not_called()
+        self.assertTrue(em._wanted_reconcile_pending)
+        em.initial_discovery_complete = True
+        em.baseline_point_ids.add(100)
+        self._poll(em, 100).assert_called_once_with({100})
+
+    def test_quiet_poll_after_that_does_not_reconcile(self):
+        em = self._em_with_known_dynamic_point()
+        em.baseline_point_ids.add(100)
+        em.published_configs = {100}
+        self._poll(em, 100)
+        self._poll(em, 100).assert_not_called()
+
+    def test_poll_with_a_returning_point_reconciles(self):
+        """A wanted point can only need re-enabling once it is back, which is
+        exactly a fetch holding an id the previous one didn't."""
+        em = self._em_with_known_dynamic_point()
+        em.published_configs = {200}
+        em.baseline_point_ids.add(200)
+        self._poll(em, 200)  # startup run
+        self._poll(em, 200, 100).assert_called_once_with({100, 200})
+
+    def test_point_swap_with_unchanged_size_still_reconciles(self):
+        """Judged by set difference, not size: one point leaving while the
+        wanted one returns keeps the count the same and must still trigger."""
+        em = self._em_with_known_dynamic_point()
+        em.published_configs = {200}
+        em.baseline_point_ids.add(200)
+        self._poll(em, 200)  # startup run
+        self._poll(em, 100).assert_called_once_with({100})
 
     def test_detect_changes_true_with_new_point_returns_true(self):
         """A known dynamic point appearing outside baseline/published_configs
@@ -1834,8 +1974,9 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
                 "title": "New Sensor",
                 "description": "desc",
                 "metadata": {
-                    "modbusRegisterType": "MODBUS_INPUT_REGISTER",
-                    "isWritable": writable,
+                    "modbusRegisterType": (
+                        "MODBUS_HOLDING_REGISTER" if writable else "MODBUS_INPUT_REGISTER"
+                    ),
                 },
                 "value": {"integerValue": 5, "stringValue": "", "isOk": True},
             }
@@ -1851,8 +1992,8 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         self.assertIs(em.all_points_by_id[600]["is_dynamic"], False)
 
     def test_new_permanent_point_is_writable_taken_from_metadata(self):
-        """is_writable in the indexed point must reflect metadata['isWritable']
-        (default False when absent) — not hardcoded."""
+        """is_writable in the indexed point must reflect the register type
+        (is_writable_point) — not hardcoded."""
         em = _make_em()
         em.initial_discovery_complete = True
         em.post_write_active = False
@@ -1936,7 +2077,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         em.initial_discovery_complete = True
         em.post_write_active = False
         metadata = {
-            "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            "modbusRegisterType": "MODBUS_INPUT_REGISTER",
             "isWritable": False,
         }
         em._api.fetch_bulk_points.return_value = {
@@ -1949,8 +2090,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         }
         em._fetch_bulk_data(detect_changes=True)
         self.assertEqual(em.all_points_by_id[606]["metadata"], metadata)
-        # isWritable=False on a HOLDING register -> sensor/diagnostic (see
-        # _detect_holding_entity).
+        # An input register -> sensor/diagnostic.
         self.assertEqual(em.all_points_by_id[606]["entity_category"], "diagnostic")
 
     def test_missing_title_key_falls_back_to_point_id_placeholder(self):
