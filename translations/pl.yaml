@@ -192,6 +192,7 @@ value_mappings:
   Additional heat only: Tylko ogrzewanie dodatkowe
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibracja
   Closed: Zamknięte
   Closed to pool: Zamknięte do basenu
   Closing: Zamykanie
@@ -199,6 +200,7 @@ value_mappings:
   Cooling: Chłodzenie
   Cut off: Odcięcie
   Encouraged: Zachęcane
+  Ext. hot water: Zewn. c.w.u.
   Heating: Ogrzewanie
   Hot water: Ciepła woda
   Hot water boost: Podbicie ciepłej wody
@@ -216,7 +218,8 @@ value_mappings:
   Own setting: Własne ustawienie
   Passive: Pasywny
   Pool: Basen
-  Preheating: Podgrzewanie wstępne
+  Pool 2: Basen 2
+  Preheating: Podgrzewanie
   Price per kWh: Cena za kWh
   Radiator: Grzejnik
   Radiator & Underfloor heating: Grzejnik i ogrzewanie podłogowe
@@ -225,4 +228,5 @@ value_mappings:
   Saving PLUS: Oszczędzanie PLUS
   Standard: Standardowy
   Starting: Uruchamianie
+  Transfer: Wymiana
   Underfloor heating: Ogrzewanie podłogowe

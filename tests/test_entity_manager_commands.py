@@ -1651,6 +1651,21 @@ class TestForceReadback(unittest.TestCase):
             or (len(mock_process.call_args.args) >= 5 and mock_process.call_args.args[4])
         )
 
+    def test_readback_applies_metadata_overrides(self):
+        """The single-point response carries the firmware's own metadata,
+        so the readback must correct it like every other entry point does
+        (_index_point, _fetch_bulk_data). 3702 declares a minimum of 55
+        with divisor 10 (5.5 °C); RANGE_OVERRIDES corrects it to 550
+        (55 °C). A readback of 300 (30 °C) is out of range and must show
+        unavailable — with the firmware's bound it passed as valid."""
+        em = _make_em()
+        em._api.fetch_point.return_value = {
+            "value": {"isOk": True, "integerValue": 300, "stringValue": ""},
+            "metadata": {"divisor": 10, "variableSize": "u16", "minValue": 55, "maxValue": 700},
+        }
+        em._force_readback(self._entity_info(point_id=3702, entity_type="number"))
+        em.mqtt.publish.assert_any_call("nibe/avail/3702", "offline", retain=True)
+
     def test_none_response_does_not_crash(self):
         """fetch_point returning None (API error) must not raise — just
         logs and gives up on the correction for this poll."""

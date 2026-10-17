@@ -200,11 +200,17 @@ test('a select entity round-trips a translated write through a real HA select.se
     .toBeTruthy();
   expect(entityId).not.toBeNull();
 
-  // Raw value 0 ("Auto") is the dump's default — confirm the initial state
-  // is the (untranslated, "Auto" is the same word in Dutch) label, proving
-  // the entity is real and responding before attempting a write.
-  const initial = await fetchState(token, entityId!);
-  expect(initial?.state).toBe('Auto');
+  // Raw value 0 ("Auto") is the dump's default — confirm the state reaches
+  // the (untranslated, "Auto" is the same word in Dutch) label, proving the
+  // entity is real and responding before attempting a write. Polled: an
+  // earlier run on this stack can leave it at "Handmatig" until the
+  // bridge's next poll reads the reset value.
+  await expect
+    .poll(async () => (await fetchState(token, entityId!))?.state, {
+      timeout: 60_000,
+      message: `${entityId} never showed the reset value "Auto"`,
+    })
+    .toBe('Auto');
 
   // The real proof: write the *translated* Dutch label for "Manual" — this
   // is only accepted at all if the write-back path's translated_reverse_map

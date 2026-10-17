@@ -14,6 +14,9 @@ detect_entity_type(point)          → (entity_type, entity_category)
 map_device_class(entity_type, unit, title) → str | None
 get_value_mapping(point_id, point_data, register_type) → dict | None
 get_entity_options(point_id, description)          → list[str]
+mapping_status(point_id)                           → str | None
+is_unitless_quantity(point_id, point)              → bool
+firmware_fingerprint(metadata)                     → dict
 get_register_type(point)           → "input" | "holding" | None
 clean_string(text)                 → str
 apply_divisor(raw, divisor)        → str
@@ -24,6 +27,7 @@ parse_description_mapping(desc)   → dict | None
 
 import logging
 import math
+import re
 
 log_detection = logging.getLogger("nibe.detection")
 
@@ -153,8 +157,12 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         1764: {0: "Inactive", 10: "Off", 20: "Opening", 30: "Closing"},
         1765: {10: "Off", 20: "Opening", 30: "Closing"},
         1766: {10: "Off", 20: "Active", 30: "Passive", 40: "Opening", 50: "Closing"},
-        # PV panels — verified empirically, no firmware description
-        1021: {10: "Off", 40: "On"},
+        # Operating mode PV panels — no firmware description. The same
+        # four-state encoding as the SG Ready status (3260); labels as
+        # yozik04/nibe PR #325 maps this register for an SMO S40 on 4.13.12.
+        # 10 and 40 observed on hardware (issue #29: PV steering off / on);
+        # 20 and 30 not yet observed.
+        1021: {10: "Normal", 20: "Block", 30: "Low price", 40: "Boost"},
         # Operating mode (Smart Price Adaption) — no firmware description.
         # 10/30 confirmed empirically across two independent installations:
         # GitHub issue #35 reported 10 with SPA confirmed off (point 4789 read
@@ -177,6 +185,11 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         637: {0: "Off", 1: "Active", 2: "Passive"},
         638: {0: "Off", 1: "Active", 2: "Passive"},
         2804: {0: "Off", 1: "Active", 2: "Passive"},
+        # Protection mode (EB101) — no firmware description. Labels as the
+        # outdoor unit's defrost registers (3098 for EB101) have them, and as
+        # a closed yozik04/nibe PR (#231) proposed for this register; not
+        # observed (the reference installation reads 0).
+        3097: {0: "Off", 1: "Active", 2: "Passive"},
         # ACS (Active Cooling System) — no firmware description
         2701: {3: "Passive", 7: "Active"},
         2702: {10: "Off", 20: "Opening", 30: "Closing"},
@@ -193,13 +206,50 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         22077: {0: "Off", 1: "On"},
         # Alarm — no firmware description
         1709: {0: "No alarm", 1: "Active alarm"},
+        # Operating mode SG Ready (register 1911): the read-only counterpart
+        # of 10614, in the multiple-of-ten encoding. Labels as the yozik04/
+        # nibe library maps this register for the S1155/S1255 and
+        # S1156/S1256 (its extensions.json). Two values are measured on
+        # hardware (VVM S320, GitHub issue #40): 10614 = Standard -> 10, and
+        # Encouraged -> 30 — the library's Normal Price and Low Price. High
+        # Price (20) and Free Electricity (40) aren't measured: the library
+        # has them, and so does its open PR #325 from an SMO S40 owner on
+        # 4.13.12 (as Block / Boost) — MAPPING_STATUS marks it partial.
+        3260: {10: "Normal Price", 20: "High Price", 30: "Low Price", 40: "Free Electricity"},
         # All sub units operating prio (an input register). Values as observed
         # on a live controller, in step with its other status entities;
         # hot water and pool weren't observable there and stay raw numbers.
         56150: {0: "Idle", 1: "Heating", 2: "Cooling"},
+        # Labels from the myUplink cloud API's own option list for these
+        # points (enumValues), which uses the same point ids. 10897 and
+        # 14952 aren't in the reference dump: they appear only under
+        # conditions not met when it was taken.
+        55000: {
+            10: "Off",
+            20: "Hot water",
+            25: "Ext. hot water",
+            30: "Heating",
+            40: "Pool",
+            41: "Pool 2",
+            50: "Transfer",
+            60: "Cooling",
+        },  # Priority
+        10897: {-1: "Calibration", 0: "Off", 1: "On"},  # Charge pump (EB101-GP12)
+        14952: {
+            0: "Off",
+            1: "Heating",
+            2: "Cooling",
+            3: "Hot water",
+            4: "Pool",
+            5: "Pool 2",
+            6: "Preheating",
+        },  # Operating priority (EB101-EP14)
     },
     "holding": {
-        # Language selection — ordering reflects Nibe's market priority.
+        # Language selection — ordering reflects Nibe's market priority. The
+        # names are spelled as the controller's own menu shows them (checked
+        # on a live controller): Český, Russkiy, Ukrayinska and Bǔlgarski are
+        # NIBE's spellings, not the languages' usual self-names.
         #
         # MULTI-PLACE UPDATE: this is the controller's own hand-verified list
         # of firmware-supported languages (Nibe documents none of this — each
@@ -220,14 +270,14 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
             4: "Español",
             5: "Suomi",
             6: "Lietuvių",
-            7: "Čeština",
+            7: "Český",
             8: "Polski",
             9: "Nederlands",
             10: "Norsk",
             11: "Dansk",
             12: "Eesti",
             13: "Latviešu",
-            14: "Русский",
+            14: "Russkiy",
             15: "Italiano",
             16: "Magyar",
             17: "Slovenčina",
@@ -236,8 +286,8 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
             20: "Română",
             21: "Íslenska",
             22: "Slovenščina",
-            23: "Українська",
-            24: "Български",
+            23: "Ukrayinska",
+            24: "Bǔlgarski",
         },
         3976: {
             0: "Own setting",
@@ -278,46 +328,7 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # one position — removed in the same release this entry was added.
         # See GitHub issue #35.
         10614: {0: "Cut off", 1: "Standard", 2: "Encouraged", 3: "Ordered"},
-        # Point 3260 ("Operating mode SG Ready", register 1911) is this
-        # register's read-only counterpart — same 4-state SG Ready concept,
-        # reported rather than requested. It follows this codebase's usual
-        # undocumented multiple-of-ten encoding instead of 10614's plain
-        # 0-3.
-        #
-        # Two of its four values are now confirmed on hardware (VVM S320,
-        # GitHub issue #40):
-        #
-        #   10614 = Standard (1)   ->  3260 = 10
-        #   10614 = Encouraged (2) ->  3260 = 30
-        #
-        # The first was confirmed twice, once from a resting system and again
-        # after reverting from Encouraged, so 10 is the rest state rather
-        # than a startup default.
-        #
-        # The guess that used to sit here — assuming 10614's index order at
-        # 20/30/40 spacing, giving {10: Standard, 20: Encouraged, 30: Cut
-        # off, 40: Ordered} — is REFUTED by that second measurement. It
-        # predicted 20 for Encouraged and the register read 30. That is the
-        # third assumption about this SG Ready pair to fail a hardware test:
-        # a previously-removed mapping and an earlier bit-encoding guess both
-        # predicted 10614's own values wrongly too, and only measurement ever
-        # settled them.
-        #
-        # Cut off and Ordered remain untested — the reporter declined to
-        # trigger them on a system doing live solar-surplus steering, which
-        # is reasonable. Their observation is that 30 may not encode *which*
-        # active state is in force at all, but simply that one is, in which
-        # case Cut off and Ordered would also read 30 and this register could
-        # not distinguish them. That is explicitly their hypothesis, not a
-        # measurement.
-        #
-        # Still left commented out, and deliberately not enabled as a partial
-        # {10: ..., 30: ...} mapping. If 30 does mean "any active state",
-        # labelling it "Encouraged" would misreport Cut off — a register
-        # showing a confidently wrong label is worse than one showing a raw
-        # number a user can look up. Enable only once all four values are
-        # measured:
-        # 3260: {10: "Standard", 30: "Encouraged", ...},  # 20/40 unknown
+        # Point 3260, the read-only SG Ready status: see the "input" table.
         # Heat pump type codes (best-effort, not officially documented)
         2471: {
             17: "S2125-12",
@@ -338,6 +349,7 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
             32: "F2040-12",
             33: "F2040-16",
             40: "SMO S40",
+            55: "S1155",
         },
         4790: {0: "Off", 1: "Comfort", 2: "Saving", 3: "Saving PLUS"},
         # Smart Energy Source control method
@@ -346,6 +358,256 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         3933: {0: "12h", 1: "24h"},
     },
 }
+
+# How far a VALUE_MAPPINGS entry has been checked, published as the static
+# `mapping` entity attribute and shown in the Entity Manager card, which
+# asks owners to report what their controller shows for the last two:
+#   confirmed — every value matched against a live controller, or stated
+#               by the firmware's own description
+#   partial   — some values confirmed, the others inferred or not known yet
+#               (an unknown value shows as a plain number)
+#   inferred  — no value confirmed: taken by analogy, from documentation,
+#               or of unrecorded origin (the initial commit kept no sources)
+# Only points whose labels Home Assistant actually shows are listed — sensors
+# and selects. The 0/1 mappings of binary sensors (1838, 2045, 2046, 3141,
+# 3146, 3147, 3149, 3151, 22077, 1709) are left out: HA shows on/off there.
+MAPPING_STATUSES = ("confirmed", "inferred", "partial")
+MAPPING_STATUS: dict[int, str] = {
+    # Options read off a live controller's own menu (language English).
+    3745: "confirmed",
+    4085: "confirmed",
+    4692: "confirmed",
+    5482: "confirmed",
+    7022: "confirmed",
+    7023: "confirmed",
+    23141: "confirmed",
+    23142: "confirmed",
+    23143: "confirmed",
+    23144: "confirmed",
+    # Both values observed on hardware: 3292 on two installations (issue #35).
+    3292: "confirmed",
+    # SG Ready request: the 0-3 order tested on real hardware (issue #35).
+    10614: "confirmed",
+    # The firmware's own description gives the order (0 = price).
+    5269: "confirmed",
+    # 0/1/2 observed on a live controller; hot water and pool not yet.
+    56150: "partial",
+    # Labels from the myUplink cloud API (enumValues). Seen on a live
+    # controller, in step with 56150 and 1758: 55000 30 (Heating) and 60
+    # (Cooling), 14952 1 (Heating), 10897 1 (On, the pump running).
+    55000: "partial",
+    10897: "partial",
+    14952: "partial",
+    # PV panels operating mode: 10 and 40 observed in issue #29 (ten
+    # transitions over six days); 20 and 30 from yozik04/nibe PR #325.
+    1021: "partial",
+    # SG Ready status: 10 and 30 measured (issue #40); 20 and 40 from the
+    # yozik04/nibe library's mapping of the same register.
+    3260: "partial",
+    # Heat pump types: 17 (S2125-12) and 40 (SMO S40) read on a live
+    # controller, 55 on an S1155's own module EB100 (GitHub issue #82);
+    # the other model codes are best-effort.
+    2471: "partial",
+    2527: "partial",
+    # Priority: Off (10), Heating (30) and Cooling (60) confirmed against
+    # 56150 over a day of a live controller's history, every change in step;
+    # Hot water (20) and Pool (40) not observable there.
+    1758: "partial",
+    # Frost protection, heat pumps 1-8: labels borrowed from the outdoor
+    # unit's defrost registers, which share the 0/1/2 domain (CHANGELOG
+    # 1.1.5). 2 = Passive confirmed on a live controller's menu 7.3.2.1 for
+    # heat pump 1 (2804); the other seven are the same register family on
+    # the same firmware. Off and Active not yet observed (Active is expected
+    # in frost).
+    632: "partial",
+    633: "partial",
+    634: "partial",
+    635: "partial",
+    636: "partial",
+    637: "partial",
+    638: "partial",
+    2804: "partial",
+    # Settings read on a live controller, HA and the controller's menu
+    # agreeing. Two-option ones are confirmed by one value: 4651 = 1 = Auto
+    # and 4821 = 0 = Intermittent, the same Intermittent/Auto mapping as
+    # 4729/4778, and 3933 = 1 = 24h. The manual lists "Auto, Intermittent",
+    # the reverse of the values — a manual's listing order is not the
+    # value order.
+    3933: "confirmed",
+    4651: "confirmed",
+    4729: "confirmed",
+    4778: "confirmed",
+    4821: "confirmed",
+    # Every option selected on a live controller and matched in HA: SPA
+    # "Affect heating" (menu 4.2.5), Operating mode (menu 4.1) and Flow
+    # setting climate system (menu 7.1.6.2).
+    4790: "confirmed",
+    3751: "confirmed",
+    3976: "confirmed",
+    # Protection mode (EB101): defrost-family labels, unobserved.
+    3097: "inferred",
+    # Shunt and ACS states from the initial commit, which recorded no
+    # evidence.
+    1762: "inferred",
+    1763: "inferred",
+    1764: "inferred",
+    1765: "inferred",
+    1766: "inferred",
+    2701: "inferred",
+    2702: "inferred",
+    2703: "inferred",
+}
+
+
+# Unitless sensors that are quantities — counts, sizes, speeds, raw sensor
+# readings — graphed in Home Assistant as numbers (state class measurement).
+# An allow-list, kept by id so it holds in every firmware language: the other
+# unitless sensors are mostly codes (operating modes, statuses, alarm numbers,
+# relay bitmasks), which read better as coloured state bars, and an unknown
+# point keeps the bars too. The spot prices (26817–26840) are left out: their
+# format is undocumented and "no price" is the register maximum.
+UNITLESS_QUANTITY_POINTS: frozenset[int] = frozenset(
+    {
+        # Available / docked / used compressors, per use.
+        *range(666, 671),
+        671,  # ... external control (S1155)
+        2784,  # Docked compressors external control (S1155)
+        1999,
+        2000,
+        2001,
+        2059,
+        2882,
+        2706,
+        2707,
+        2708,
+        2709,
+        2729,
+        # Active heat pumps
+        2024,
+        # Compressor size (EB101, EB100)
+        2472,
+        2528,
+        # Compressor, number of starts (EB101, EB100; 1959 "Compressor
+        # starter" on ground-source models, GitHub issue #82)
+        2505,
+        2561,
+        1959,
+        # BP4, unprocessed — per heat pump (EB100–EB108) and module (EP14/EP15)
+        2883,
+        2897,
+        2911,
+        2925,
+        2939,
+        2953,
+        2967,
+        2981,
+        2995,
+        3037,
+        3051,
+        3065,
+        3079,
+        3093,
+        3107,
+        3121,
+        # Low-pr. sens, unprocessed
+        3251,
+        3254,
+        3257,
+        # fan speed
+        3354,
+        3357,
+        3360,
+        # Ext. add. heat active steps
+        6717,
+    }
+)
+
+
+# Running totals that only go up — operating hours and compressor starts —
+# published with state class total_increasing, so a statistics graph can
+# show the increase per day, week or month. Kept by id, like
+# UNITLESS_QUANTITY_POINTS. Countdowns and per-program timers (time to
+# start, floor drying ongoing time) are not totals and stay measurements.
+TOTAL_INCREASING_POINTS: frozenset[int] = frozenset(
+    {
+        # Compressor, total time pool / pool 2 / cooling, per heat pump and module
+        555,
+        556,
+        558,
+        559,
+        561,
+        562,
+        564,
+        565,
+        567,
+        568,
+        570,
+        571,
+        573,
+        574,
+        576,
+        577,
+        579,
+        580,
+        582,
+        583,
+        585,
+        586,
+        588,
+        589,
+        591,
+        592,
+        594,
+        595,
+        597,
+        598,
+        599,
+        600,
+        601,
+        # Total op. time compr. cooling
+        605,
+        # Compressor, total time pool / pool 2, main unit (EP14)
+        606,
+        607,
+        # Total run time additional heat
+        1755,
+        # On ground-source models (S1155, GitHub issue #82): compressor
+        # starts, total and hot water run time, additional heat run time
+        # for hot water.
+        1959,
+        1961,
+        1963,
+        1865,
+        # Compressor, number of starts (EB101-EP14, EB100-EP14)
+        2505,
+        2561,
+        # Compressor, oper. time, total / hot water (EB101-EP14, EB100-EP15, EB100-EP14)
+        2506,
+        2507,
+        2544,
+        2545,
+        2562,
+        2563,
+        # Compressor, total time energy storage, main unit and heat pumps 1–8
+        *range(25671, 25689),
+    }
+)
+
+
+def is_unitless_quantity(point_id: int, point: dict) -> bool:
+    """True for a UNITLESS_QUANTITY_POINTS sensor that has no value labels —
+    a labelled sensor's state is text, and a state class would make HA
+    reject every state as non-numeric."""
+    return point_id in UNITLESS_QUANTITY_POINTS and get_value_mapping(point_id, point) is None
+
+
+def mapping_status(point_id: int) -> str | None:
+    """Return the MAPPING_STATUS entry for a point, or None — also for an
+    entry that isn't one of MAPPING_STATUSES, so a typo in the table never
+    reaches Home Assistant as an attribute value."""
+    status = MAPPING_STATUS.get(point_id)
+    return status if status in MAPPING_STATUSES else None
+
 
 # Per-point entity type overrides — always wins over auto-detection.
 # Key: point_id  Value: target HA entity type
@@ -365,6 +627,12 @@ ENTITY_TYPE_OVERRIDES: dict[int, str] = {
     8982: "switch",  # Away mode — max=0 in metadata (firmware quirk) so auto-detects as number
     3754: "switch",  # Activate forced control — same firmware quirk
     8060: "switch",  # Defrost requested (EB101) — 0–1 holding register, but s8, so auto-detects as number
+    # Automatic speed, heating medium pump GP1 (menu 7.1.2.2, on/off in the
+    # S1155 manual): 0–1, but declared with unit "%", so auto-detects as a
+    # 0–1 % number (ground-source models, GitHub issue #82).
+    4798: "switch",  # ... hot water
+    4799: "switch",  # ... heating
+    4800: "switch",  # ... pool
     # ── MODBUS_NO_REGISTER — would fall through to sensor/diagnostic without override ──
     32824: "switch",  # Power limitation activation
     # ── THS-10 accessory — auto-detects as number without override ────────────
@@ -487,7 +755,44 @@ def apply_divisor_override(point_id: int, metadata: dict) -> dict:
     override = DIVISOR_OVERRIDES.get(point_id)
     if override is None or metadata.get("divisor") == override:
         return metadata
-    return {**metadata, "divisor": override}
+    return _patch_metadata(metadata, {"divisor": override})
+
+
+# Key under which a patched metadata dict keeps the firmware's own values of
+# the fields an override replaced, so firmware_fingerprint() can still tell
+# when a firmware update changes them (e.g. NIBE fixing 3702's minimum).
+FIRMWARE_ORIGINAL_KEY = "firmware_original"
+
+# The fields of a point's metadata that describe the register itself: only a
+# firmware update changes them. Titles depend on the language option and
+# values change all the time, so neither is part of the fingerprint.
+FINGERPRINT_FIELDS = (
+    "modbusRegisterType",
+    "modbusRegisterID",
+    "variableSize",
+    "minValue",
+    "maxValue",
+    "divisor",
+    "unit",
+)
+
+
+def _patch_metadata(metadata: dict, changes: dict) -> dict:
+    """A copy of metadata with changes applied, recording the replaced
+    firmware values under FIRMWARE_ORIGINAL_KEY (the first override of a
+    field wins, so re-applying an override keeps the firmware's value)."""
+    originals = dict(metadata.get(FIRMWARE_ORIGINAL_KEY) or {})
+    for field in changes:
+        originals.setdefault(field, metadata.get(field))
+    return {**metadata, **changes, FIRMWARE_ORIGINAL_KEY: originals}
+
+
+def firmware_fingerprint(metadata: dict) -> dict:
+    """The firmware's own FINGERPRINT_FIELDS for a point, with any value an
+    override replaced put back."""
+    fingerprint = {field: metadata.get(field) for field in FINGERPRINT_FIELDS}
+    fingerprint.update(metadata.get(FIRMWARE_ORIGINAL_KEY) or {})
+    return fingerprint
 
 
 # Per-point raw minValue/maxValue overrides (None keeps the firmware's own),
@@ -514,12 +819,12 @@ def apply_metadata_overrides(point_id: int, metadata: dict) -> dict:
         hi is None or metadata.get("maxValue") == hi
     ):
         return metadata
-    patched = dict(metadata)
+    changes = {}
     if lo is not None:
-        patched["minValue"] = lo
+        changes["minValue"] = lo
     if hi is not None:
-        patched["maxValue"] = hi
-    return patched
+        changes["maxValue"] = hi
+    return _patch_metadata(metadata, changes)
 
 
 # Unit → HA device_class lookup (after _UNIT_NORMALISE has been applied).
@@ -810,6 +1115,17 @@ def _split_mapping_part(part: str) -> tuple[str, str] | None:
     return left.strip(), right.strip()
 
 
+_PLAIN_INT = re.compile(r"-?[0-9]+")
+
+
+def _plain_int(text: str) -> int | None:
+    """The integer a description key spells, or None. Only a plain decimal
+    integer counts, as the firmware writes keys ("0 = Off", "-1 = ..."):
+    int() also accepts "+5", "1_0" and non-ASCII digits, which made a label
+    like "+5" in "+5 = 5" read as the key."""
+    return int(text) if _PLAIN_INT.fullmatch(text) else None
+
+
 def parse_description_mapping(description: str) -> dict | None:
     """Parse a Nibe firmware enum description string into a {int: str} mapping.
 
@@ -834,13 +1150,11 @@ def parse_description_mapping(description: str) -> dict | None:
         if pair is None:
             continue
         left, right = pair
-        try:
-            mapping[int(left)] = right
-        except ValueError:
-            try:
-                mapping[int(right)] = left
-            except ValueError:
-                continue
+        key = _plain_int(left)
+        if key is not None:
+            mapping[key] = right
+        elif (key := _plain_int(right)) is not None:
+            mapping[key] = left
 
     result = mapping if mapping else None
     if len(_description_mapping_cache) < _DESCRIPTION_CACHE_MAX:
@@ -916,11 +1230,7 @@ def get_entity_options(
             if pair is None:
                 continue
             left, right = pair
-            try:
-                int(left)
-                text = right
-            except ValueError:
-                text = left
+            text = right if _plain_int(left) is not None else left
             if text and text not in options:
                 options.append(text)
         if len(options) >= 2:
@@ -971,6 +1281,31 @@ def is_writable_point(metadata: dict, point_id: int | None = None) -> bool:
     if point_id in SAFETY_READ_ONLY_POINTS:
         return False
     return metadata.get("modbusRegisterType") in ("MODBUS_HOLDING_REGISTER", "MODBUS_NO_REGISTER")
+
+
+def meaningful_default(
+    metadata: dict, point_id: int | None = None, mapping: dict | None = None
+) -> int | None:
+    """A writable holding setting's factory default (raw), or None when it
+    has none worth comparing against: no default, no declared range
+    (min == max), or a 0 default at a 0 minimum with a wider range — the
+    firmware's placeholder, not a documented default — unless *mapping*
+    (a select's options) names 0. The same rule the Nibe Menus dashboard
+    uses for "default: X" (_build_point_defaults)."""
+    if not is_writable_point(metadata, point_id):
+        return None
+    if metadata.get("modbusRegisterType") != "MODBUS_HOLDING_REGISTER":
+        return None
+    min_val = metadata.get("minValue", 0)
+    max_val = metadata.get("maxValue", 0)
+    default = metadata.get("intDefaultValue")
+    if min_val == max_val or not isinstance(default, int) or isinstance(default, bool):
+        return None
+    if mapping and default in mapping:
+        return default
+    if default == 0 and min_val == 0 and max_val > 1:
+        return None
+    return default
 
 
 def is_switch_candidate(metadata: dict) -> bool:
@@ -1042,6 +1377,8 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset(
         668,
         669,
         670,  # Available compressors (heating/HW/pool/cooling)
+        671,  # Available compressors external control (S1155, issue #82)
+        2784,  # Docked compressors external control (S1155, issue #82)
         1999,
         2000,
         2001,
@@ -1054,7 +1391,7 @@ _BINARY_SENSOR_EXCLUSIONS: frozenset[int] = frozenset(
         2729,  # Used compressors
         # Multi-state registers that happen to share the binary shape
         1758,
-        55000,  # Priority (5-state)
+        55000,  # Priority (8-state)
         55335,  # EEV Control Mode (EB101) — multi-state valve control
         1760,  # Operating mode internal add. heat (4-state: off/step1/step2/step3)
         # Operating mode PV panels — 2-state {10,40} value domain, so the
@@ -1133,16 +1470,12 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
         if mapping is not None and set(mapping) != {0, 1}:
             return False
 
-    # Falls through to `if description:` below — None, '', and any string
-    # with no '=' (e.g. 'XXXX') are all treated identically there. Verified
-    # empirically.
+    # More than two described options is an enum, not a boolean. Counted by
+    # parse_description_mapping, which reads both separators the firmware
+    # uses ('=' and ':', mixed within one string on 22268) — counting only
+    # '=' let a 0–0 register described '0: A, 1: B, 2: C' pass as binary.
     description = point.get("description", "")
-    if description:
-        pairs = [p for p in description.split(",") if "=" in p]
-        if len(pairs) > 2:
-            return False
-
-    return True
+    return len(parse_description_mapping(description or "") or {}) <= 2
 
 
 def detect_entity_type(point: dict) -> tuple[str, str]:

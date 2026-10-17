@@ -52,6 +52,7 @@ import base64
 import concurrent.futures
 import contextlib
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -78,9 +79,11 @@ from nibe_entity_detection import (
     clean_string,
     create_entity_id,
     detect_entity_type,
+    firmware_fingerprint,
     get_register_type,
     get_value_mapping,
     is_writable_point,
+    meaningful_default,
     reverse_divisor,
 )
 from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_attributes, t_config
@@ -165,6 +168,11 @@ _APPLIED_MODE_FILE = "/data/applied_mode"
 _WANTED_POINTS_FILE = "/data/wanted_points.json"
 _RECLASSIFIED_POINTS_FILE = "/data/reclassified_points.json"
 _SNAPSHOTS_FILE = "/data/snapshots.json"
+_FIRMWARE_RECORD_FILE = "/data/firmware_record.json"
+# Version registers whose change marks a firmware update: the controller
+# (2509, EB100), the outdoor unit (2453, EB101), its inverter (14987) and an
+# S135 (802). See _check_firmware_update.
+_FIRMWARE_VERSION_POINTS = (2509, 2453, 14987, 802)
 _SNAPSHOTS_MAX = 10  # maximum number of named snapshots
 _APPLIED_MODE_TIMEOUT_S = 5  # seconds to wait for the retained applied_mode
 # message — a single topic, not a full scan, so
@@ -179,6 +187,12 @@ _NOTIF_API_UNREACHABLE = "nibe_api_unreachable"
 _NOTIF_WRITE_ERROR = "nibe_write_error"
 _NOTIF_NO_ENTITIES = "nibe_no_entities"
 _NOTIF_DISCOVERY_INCOMPLETE = "nibe_discovery_incomplete"
+_NOTIF_ENTITY_IDS_CHANGED = "nibe_entity_ids_changed"
+# _report_entity_id_changes: wait this long after the last type change before
+# notifying (a startup republishes every changed point within seconds), and
+# at most this long for Home Assistant to register the new entity ids.
+_ID_CHANGE_QUIET_S = 60
+_ID_CHANGE_MAX_WAIT_S = 600
 
 
 # ── Changelog payload compression ─────────────────────────────────────────────
@@ -316,6 +330,62 @@ def decide_startup_action(
 # ============================================================================
 # VALUE MAPPING TRANSLATIONS
 # ============================================================================
+
+
+def _format_version(point_id: int, raw_value: object) -> str:
+    """A version register's raw value as its version string.
+
+    2453 (EB101) packs major<<12 | minor<<6 | patch: 12481 → 3.3.1,
+    confirmed from S2125-12 firmware 3.3.1. 2509 (SMO S40, EB100) packs
+    major<<8 | minor: 1035 = 0x040B → 4.11; the patch level isn't in this
+    register. Any other version register (14987, the inverter, is a plain
+    u8 — 61 in myUplink as well) is its plain number.
+    """
+    try:
+        v = int(raw_value)  # type: ignore[call-overload]
+    except (ValueError, TypeError):
+        return str(raw_value)
+    if point_id == 2453:
+        return f"{(v >> 12) & 0x3F}.{(v >> 6) & 0x3F}.{v & 0x3F}"
+    if point_id == 2509:
+        return f"{(v >> 8) & 0xFF}.{v & 0xFF}"
+    return str(v)
+
+
+_FINGERPRINT_LABELS = {
+    "modbusRegisterType": "register",
+    "modbusRegisterID": "Modbus register",
+    "variableSize": "size",
+    "minValue": "min",
+    "maxValue": "max",
+    "divisor": "divisor",
+    "unit": "unit",
+}
+
+
+def _describe_fingerprint_change(old: dict, new: dict) -> str:
+    """What changed between two firmware_fingerprint()s, e.g.
+    "min 55 → 550, unit '' → '°C'"; empty when nothing did."""
+
+    def show(field: str, value: object) -> str:
+        if field == "modbusRegisterType" and isinstance(value, str):
+            return value.removeprefix("MODBUS_").removesuffix("_REGISTER").lower()
+        if field == "unit":
+            return repr(value or "")
+        return str(value)
+
+    return ", ".join(
+        f"{label} {show(field, old.get(field))} → {show(field, new.get(field))}"
+        for field, label in _FINGERPRINT_LABELS.items()
+        if old.get(field) != new.get(field)
+    )
+
+
+def _fingerprint_checksum(points: dict) -> str:
+    """Checksum over the firmware record's points: ids and fingerprints only
+    — titles follow the language and entity types are the bridge's own."""
+    payload = json.dumps({key: entry[2] for key, entry in points.items()}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _atomic_write_text(path: str, payload: str) -> None:
@@ -582,6 +652,34 @@ class EntityManager:
         self._absent_at_startup: dict[int, float] = {}
         self.initial_discovery_complete: bool = False
 
+        # ── Firmware updates (_check_firmware_update) ─────────────────────────
+        # The version registers' raw values and the static point list
+        # ({id: [title, type]}) as of the last firmware version, persisted to
+        # _FIRMWARE_RECORD_FILE; None until loaded. Compared only once the
+        # point set has been unchanged for _ABSENT_GRACE_S
+        # (_point_set_stable_since), since a restarting controller serves a
+        # partial list for a minute — the same across several polls.
+        self._firmware_record: dict | None = None
+        # ── Entity ids changed by a type change (_report_entity_id_changes) ───
+        # point_id -> {old_domain, new_domain, title, old_id, since}, collected
+        # from the publisher's type_changes. entity_id_resolver is the
+        # registry watcher's entity_id_for, set at startup once it exists.
+        self.entity_id_resolver: Callable[[int], str | None] | None = None
+        self._id_changes: dict[int, dict] = {}
+        self._id_changes_last: float = 0.0
+        self._firmware_record_loaded: bool = False
+        self._point_set_last: set[int] = set()
+        self._point_set_stable_since: float = 0.0
+        # Cheap per-poll change detection for _check_firmware_update: the
+        # identity of each point's metadata object (_fetch_bulk_data only
+        # replaces it when its content changed), the dynamic points checked
+        # since the last change, and whether a full comparison is due (also
+        # once per process start).
+        self._metadata_identity: int = 0
+        self._dynamic_checked: set[int] = set()
+        self._firmware_check_due: bool = True
+        self._dynamic_changes: list[dict] = []
+
         # ── Wanted points (catch-all re-enable safety net) ────────────────────
         # Points explicitly enabled by the user (via enable_entity, apply_mode,
         # or restore_snapshot) that should reappear automatically if they ever
@@ -656,6 +754,15 @@ class EntityManager:
 
         # ── Misc state ────────────────────────────────────────────────────────
         self.last_states: dict[int, str] = {}
+        # The last availability payload sent per availability topic, and the
+        # points whose retained state was cleared (sentinel / out of range):
+        # each poll used to send every entity's "online" again, and flip a
+        # sentinel entity online → offline and clear its state again — about
+        # 1,150 messages a poll for 909 entities, each one processed by Home
+        # Assistant. Now only a change is sent (_publish_availability,
+        # _clear_state_once). Forgotten on disable and after a reconnect.
+        self._availability_sent: dict[str, str] = {}
+        self._state_cleared: set[int] = set()
         self.value_cache = ValueCache()
         self.last_bulk_fetch: float = 0  # pragma: no mutate — sentinel "never fetched"; ±1s is negligible against a real epoch timestamp
         self.bulk_interval: int = 30
@@ -1506,6 +1613,9 @@ class EntityManager:
         # disable_entity()'s docstring for why that clearing belongs at the
         # public entry point, not this shared internal helper.
         self.last_states.pop(point_id, None)
+        self._state_cleared.discard(point_id)
+        if entity_info and entity_info.get("availability_topic"):
+            self._availability_sent.pop(entity_info["availability_topic"], None)
         self.value_cache.discard(point_id)
         self._point_string_cache.pop(
             point_id, None
@@ -1693,6 +1803,8 @@ class EntityManager:
             self.post_write_interval if _post_write_now_active else self.bulk_interval
         )
 
+        # Per-step durations, logged once per poll at DEBUG ("Poll timing").
+        timing: dict[str, float] = {}
         if (current_time - last_bulk_fetch) >= effective_interval:
             failures_before = self.api_consecutive_failures
             known_count = len(self.dynamic_point_map.all_known_dynamic_point_ids())
@@ -1700,7 +1812,9 @@ class EntityManager:
             # The previous successful fetch's point set (_fetch_bulk_data
             # replaces it with the new one on success).
             previous_point_ids = set(self.published_configs)
+            fetch_started = time.perf_counter()
             result = self._fetch_bulk_data(detect_changes=should_detect)
+            timing["fetch"] = time.perf_counter() - fetch_started
             lock_was_busy = result is False and self.api_consecutive_failures == failures_before
             if not lock_was_busy:
                 with self._em_lock:
@@ -1710,6 +1824,13 @@ class EntityManager:
                     self._restore_reappeared_map_entries(current_point_ids)
                 if result and self.initial_discovery_complete and self._absent_at_startup:
                     self._expire_absent_at_startup(current_point_ids)
+                if result and self.initial_discovery_complete:
+                    started = time.perf_counter()
+                    self._check_firmware_update(current_point_ids)
+                    timing["firmware check"] = time.perf_counter() - started
+                started = time.perf_counter()
+                self._report_entity_id_changes()
+                timing["entity id check"] = time.perf_counter() - started
                 # A wanted point can only need re-enabling if it has just come
                 # back, i.e. this fetch holds an id the previous one didn't —
                 # judged by set difference, not size: a point leaving and
@@ -1739,11 +1860,21 @@ class EntityManager:
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())
 
+        started = time.perf_counter()
         for entity_info in snapshot:
             self._update_entity_state(entity_info)
+        timing["entity updates"] = time.perf_counter() - started
         # Once per poll, after the bulk fetch and every entity update — the
         # two places that change the card's points.
+        started = time.perf_counter()
         self._flush_point_catalog()
+        timing["catalog flush"] = time.perf_counter() - started
+        # pragma: no mutate start
+        log_entities.debug(
+            "Poll timing: %s",
+            ", ".join(f"{step} {seconds * 1000:.0f} ms" for step, seconds in timing.items()),
+        )
+        # pragma: no mutate end
 
     def _restore_reappeared_map_entries(self, current_point_ids: set[int]) -> None:
         """Clear firmware_removed on map entries whose point is back.
@@ -1870,7 +2001,7 @@ class EntityManager:
                     # Report the point as unreadable straight away. This is
                     # non-destructive: HA shows the entity unavailable and
                     # keeps it, its history and every reference to it.
-                    self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                    self._publish_availability(entity_info, "offline")
 
                     if now - first_absent < _ABSENT_GRACE_S:
                         if newly_absent:
@@ -1935,7 +2066,7 @@ class EntityManager:
                 self._absent_since.pop(point_id, None)
 
         if not self.bulk_data[point_id]["is_ok"]:
-            self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+            self._publish_availability(entity_info, "offline")
             return
 
         data = self.bulk_data[point_id]
@@ -1944,6 +2075,24 @@ class EntityManager:
         metadata = data.get("metadata", {})
 
         self._process_and_publish_state(entity_info, raw_value, string_value, metadata)
+
+    def _publish_availability(self, entity_info: dict, payload: str) -> None:
+        """Send an entity's availability (retained) unless it is what was
+        last sent on that topic (_availability_sent)."""
+        topic = entity_info.get("availability_topic")
+        if not topic or self._availability_sent.get(topic) == payload:
+            return
+        self.mqtt.publish(topic, payload, retain=True)
+        self._availability_sent[topic] = payload
+
+    def _clear_state_once(self, entity_info: dict) -> None:
+        """Clear an entity's retained state (an empty payload) once, until a
+        valid value is published again (_state_cleared)."""
+        point_id = entity_info["point_id"]
+        if point_id in self._state_cleared or not entity_info.get("state_topic"):
+            return
+        self.mqtt.publish(entity_info["state_topic"], "", retain=True)
+        self._state_cleared.add(point_id)
 
     def _process_and_publish_state(
         self,
@@ -1960,8 +2109,6 @@ class EntityManager:
         # register_type parameter is unused in its own implementation — any
         # value computed/passed here is unobservable.
         register_type = get_register_type({"metadata": metadata})  # pragma: no mutate
-
-        self.mqtt.publish(entity_info["availability_topic"], "online", retain=True)
 
         # Sentinel value handling
         sentinel_values = {
@@ -1980,7 +2127,7 @@ class EntityManager:
             # Sentinel means "sensor not connected / no valid value".
             # Publish offline so HA shows the entity as unavailable rather
             # than a misleading zero value regardless of entity type.
-            self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+            self._publish_availability(entity_info, "offline")
             # Clear any retained state value too, not just availability.
             # Otherwise a value published before this sentinel was ever
             # recognized (an older bridge version, or this point simply
@@ -1991,8 +2138,7 @@ class EntityManager:
             # availability topic, producing a permanent "Invalid value"
             # log entry on every future restart even though the bridge
             # itself stopped publishing anything bad long ago.
-            if entity_info.get("state_topic"):
-                self.mqtt.publish(entity_info["state_topic"], "", retain=True)
+            self._clear_state_once(entity_info)
             return
 
         # A second, register-specific sentinel — scoped to "number" entities
@@ -2061,15 +2207,14 @@ class EntityManager:
                     )
                     # pragma: no mutate end
                     self._range_warnings_issued.add(point_id)
-                self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                self._publish_availability(entity_info, "offline")
                 # See the storage-limit sentinel branch above for why the
                 # retained state value is cleared too, not just
                 # availability -- otherwise a stale "0" published before an
                 # HA restart keeps re-triggering "Invalid value ... (range
                 # X - Y)" on every future restart, indefinitely, even
                 # though the bridge stopped publishing it long ago.
-                if entity_info.get("state_topic"):
-                    self.mqtt.publish(entity_info["state_topic"], "", retain=True)
+                self._clear_state_once(entity_info)
                 return
 
         if entity_type == "binary_sensor" and raw_value not in (0, 1):
@@ -2107,29 +2252,8 @@ class EntityManager:
                 state_value = d.isoformat()  # YYYY-MM-DD
             except (ValueError, OverflowError):
                 state_value = str(raw_value)
-        elif entity_type == "sensor" and point_id == 2453:
-            # EB101 firmware version — encoded as major<<12 | minor<<6 | patch.
-            # e.g. 12481 → 3.3.1. Confirmed from S2125-12 firmware 3.3.1.
-            # The inverter version (14987) is a plain u8 number (61 in
-            # myUplink as well) and is published as-is.
-            try:
-                v = int(raw_value)
-                major = (v >> 12) & 0x3F
-                minor = (v >> 6) & 0x3F
-                patch = v & 0x3F
-                state_value = f"{major}.{minor}.{patch}"
-            except (ValueError, TypeError):
-                state_value = str(raw_value)
-        elif entity_type == "sensor" and point_id == 2509:
-            # SMO S40 (EB100) firmware version — encoded as major<<8 | minor.
-            # e.g. 1035 = 0x040B → 4.11 (patch not available in this register).
-            try:
-                v = int(raw_value)
-                major = (v >> 8) & 0xFF
-                minor = v & 0xFF
-                state_value = f"{major}.{minor}"
-            except (ValueError, TypeError):
-                state_value = str(raw_value)
+        elif entity_type == "sensor" and point_id in (2453, 2509):
+            state_value = _format_version(point_id, raw_value)
         elif entity_type == "sensor" and point_id == 2022:
             # Current status bitfield — community-decoded from SMO S40 register 31121.
             # Mode bits (high): 14=HW boost, 13=Hot water, 12=Heating, 20=Cooling
@@ -2218,7 +2342,7 @@ class EntityManager:
                         raw_value,
                     )  # pragma: no mutate
                     self._range_warnings_issued.add(point_id)
-                self.mqtt.publish(entity_info["availability_topic"], "offline", retain=True)
+                self._publish_availability(entity_info, "offline")
                 return
             else:
                 state_value = str(raw_value)
@@ -2243,9 +2367,28 @@ class EntityManager:
             divisor = metadata.get("divisor", 1)  # pragma: no mutate
             state_value = apply_divisor(raw_value, divisor)
 
-        change_threshold = metadata.get("change", 0)
+        # A valid value: available. Sent here, once the sentinel, range and
+        # option checks above have passed — sending "online" first and
+        # "offline" after made every such entity flip on every poll.
+        self._publish_availability(entity_info, "online")
+        self._state_cleared.discard(point_id)
+
+        # A setting's tile on the Nibe Menus dashboard shows live whether it
+        # differs from its factory default; the publisher republishes the
+        # attribute only when that flips.
+        if entity_info.get("entity_type") in ("number", "select", "switch"):
+            default = meaningful_default(metadata, point_id, entity_info.get("value_mapping"))
+            if default is not None:
+                self._pub.update_default_status(point_id, raw_value != default)
+
+        # Every real change is published, however small. The firmware's
+        # 'change' metadata is not a publish threshold: it is a setting's
+        # step (build_number_config). A measurement's resolution is its
+        # divisor — the controller shows the THS-10 at 20.8 while its change
+        # is 5 — and the last_states check below published every changed
+        # state even when 'change' was passed here.
         should_pub = force or self.value_cache.should_publish(
-            point_id, raw_value, change_threshold, min_interval=self.bulk_interval
+            point_id, raw_value, 0, min_interval=self.bulk_interval
         )
 
         if (
@@ -4089,11 +4232,13 @@ class EntityManager:
                 "Force readback for point %d: value not OK", point_id
             )  # pragma: no mutate
             return
+        # Fresh firmware metadata, so it gets the same corrections as at
+        # discovery and on every poll (apply_metadata_overrides).
         self._process_and_publish_state(
             entity_info,
             dv.get("integerValue", 0),
             dv.get("stringValue", ""),
-            response.get("metadata", {}),
+            apply_metadata_overrides(point_id, response.get("metadata") or {}),
             force=True,
         )
 
@@ -4153,6 +4298,11 @@ class EntityManager:
         with self._em_lock:
             self.value_cache = ValueCache()
             self.last_bulk_fetch = 0
+            # The broker may have lost its retained messages: the poll this
+            # forces resends every state (fresh value_cache), availability
+            # and cleared state included.
+            self._availability_sent.clear()
+            self._state_cleared.clear()
         entity_count = 0
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())
@@ -4296,8 +4446,12 @@ class EntityManager:
         """
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())
+        # After a reconnect the broker may have lost everything: forget what
+        # was sent, so the next poll sends each entity's real availability.
+        self._availability_sent.clear()
+        self._state_cleared.clear()
         for entity_info in snapshot:
-            self.mqtt.publish(entity_info["availability_topic"], "online", retain=True)
+            self._publish_availability(entity_info, "online")
         if self._mgmt_avail_topic:
             self.mqtt.publish(self._mgmt_avail_topic, "online", retain=True)
         if snapshot or self._mgmt_avail_topic:
@@ -4519,7 +4673,8 @@ class EntityManager:
         Returns True if pruning ran (useful for tests).
 
         Keeps at least 50 entries regardless of age so the changelog is
-        never wiped entirely on a long-running installation.
+        never wiped entirely on a long-running installation, and every
+        firmware update entry (source "firmware_change").
         """
         now = time.time()
         if now - self._last_prune_time < _CHANGELOG_PRUNE_S:
@@ -4553,7 +4708,13 @@ class EntityManager:
             old = [e for e in valid if e.get("timestamp", 0) < cutoff_ts]
 
             needed = max(0, _CHANGELOG_MIN_ENTRIES - len(recent))
-            kept = recent + old[:needed]
+            # Firmware updates are kept whatever their age: a few a year, and
+            # they say when points appeared or changed — worth more than the
+            # ordinary appearances that would push them out. The deque's
+            # _CHANGELOG_MAX_ENTRIES cap still applies.
+            # (valid is newest first, so filtering keeps that order.)
+            keep_ids = {id(e) for e in recent + old[:needed]}
+            kept = [e for e in valid if id(e) in keep_ids or e.get("source") == "firmware_change"]
 
             pruned = len(self.change_history) - len(kept)
             if pruned > 0:
@@ -4575,6 +4736,10 @@ class EntityManager:
             "source": change_event.get("source", "firmware"),
             "triggered_by": change_event.get("triggered_by"),
         }
+        if change_event.get("note"):
+            history_entry["note"] = change_event["note"]
+        if change_event.get("changed"):
+            history_entry["changed"] = change_event["changed"]
         # change_history is also mutated from mark_changelog_read (MQTT
         # command-handler thread) and _setup_history_loading's callbacks
         # (MQTT client thread) — _em_lock serializes all of them.
@@ -4858,6 +5023,343 @@ class EntityManager:
                     self._clear_retained_discovery(point_id)
                     self._pub.invalidate_config_hash(point_id)
                     del self._absent_at_startup[point_id]
+
+    def _report_entity_id_changes(self) -> None:
+        """Tell the user which entity ids a type change replaced.
+
+        A point whose entity type changes (an update reclassifying it, or a
+        binary sensor reclassified at runtime) is a new entity in Home
+        Assistant, under a new entity id: automations, scripts and
+        dashboards using the old one stop working. The publisher records
+        each change; once none has followed for _ID_CHANGE_QUIET_S and the
+        registry knows every new id (or _ID_CHANGE_MAX_WAIT_S has passed),
+        one notification lists them, old → new.
+
+        The old id is the registry's, when the watcher already knew it at
+        the time of the change; at startup — where an update's changes
+        happen — it doesn't run yet, so the old id is derived from the new
+        one: HA generates both from the device and entity name, so they
+        differ only in the domain unless the user renamed the entity. Each
+        line names the entity and point too, so a renamed one is still
+        recognisable.
+        """
+        now = time.time()
+        changes = self._pub.type_changes
+        for _ in range(len(changes)):
+            point_id, old_domain, new_domain, title = changes.popleft()
+            known = self.entity_id_resolver(point_id) if self.entity_id_resolver else None
+            entry = self._id_changes.setdefault(
+                point_id,
+                {
+                    "old_domain": old_domain,
+                    "old_id": known if known and known.startswith(f"{old_domain}.") else None,
+                    "since": now,
+                },
+            )
+            entry["new_domain"] = new_domain
+            entry["title"] = title
+            self._id_changes_last = now
+        if not self._id_changes or now - self._id_changes_last < _ID_CHANGE_QUIET_S:
+            return
+
+        new_ids = {}
+        for point_id, entry in self._id_changes.items():
+            new_id = self.entity_id_resolver(point_id) if self.entity_id_resolver else None
+            if new_id and new_id.startswith(f"{entry['new_domain']}."):
+                new_ids[point_id] = new_id
+        oldest = min(entry["since"] for entry in self._id_changes.values())
+        if len(new_ids) < len(self._id_changes) and now - oldest < _ID_CHANGE_MAX_WAIT_S:
+            return
+
+        lines = []
+        for point_id, entry in sorted(self._id_changes.items()):
+            new_id = new_ids.get(point_id)
+            old_id = entry["old_id"] or (
+                f"{entry['old_domain']}.{new_id.split('.', 1)[1]}" if new_id else None
+            )
+            old_text = f"`{old_id}`" if old_id else f"a `{entry['old_domain']}` entity"
+            new_text = f"`{new_id}`" if new_id else f"a new `{entry['new_domain']}` entity"
+            lines.append(f"- {entry['title']} (point {point_id}): {old_text} → {new_text}")
+        message = (
+            "These entities changed type, so Home Assistant gave them a new entity id. "
+            "Update automations, scripts and dashboards that use the old one; the history "
+            "continues under the new id from now on. If you had renamed one of these "
+            "entities, its old id was the one you chose.\n\n" + "\n".join(lines)
+        )
+        # pragma: no mutate start
+        log_entities.info("Entity ids changed by a type change: %d entities", len(lines))
+        # pragma: no mutate end
+        self._notify(
+            self.mqtt,
+            title="Nibe Bridge: entity ids changed",
+            message=message,
+            notification_id=_NOTIF_ENTITY_IDS_CHANGED,
+        )
+        self._id_changes.clear()
+
+    def _check_firmware_update(self, current_point_ids: set[int]) -> None:
+        """Record a firmware update in the changelog.
+
+        An update is recognised by a changed version register
+        (_FIRMWARE_VERSION_POINTS). That isn't watertight: 2509 holds the
+        SMO S40's major.minor only, so a release that only raises the patch
+        level goes unnoticed. In NIBE's changelog those are 14 of 69
+        releases, and the ones since the local REST API exists (4.7.6, 4.8.7,
+        4.12.8) changed no registers. Points appearing or changing without a
+        version change can't be told apart from a setting or connected
+        hardware, so they only renew the record.
+
+        The record holds every static point's firmware_fingerprint (its
+        register as the firmware describes it: type, size, range, divisor,
+        unit, with any override's value put back) and a checksum over them;
+        titles and the bridge's own entity types are kept for the entry's
+        text but are not part of the checksum. Steady polls only compare the
+        point set and the identity of each point's metadata object
+        (_fetch_bulk_data replaces it only when its content changed). After a
+        change, and once per process start, the full comparison runs once the
+        point set has been stable for _ABSENT_GRACE_S — a restarting
+        controller serves a partial list for about a minute, the same across
+        several polls. With a version change it writes one changelog entry
+        (source "firmware_change"): the versions, and the static points
+        added, removed and changed. A language change renews the record
+        silently, since units follow the language.
+
+        Dynamic points are compared one by one, the moment each appears,
+        with its own recorded fingerprint (kept while it is hidden): a
+        setting can show or hide one but not change its description, so a
+        difference is the firmware's, version change or not. Their changes go
+        into the next update entry, or, once the point set is stable, into an
+        entry of their own. Which dynamic points are shown is recorded too: an
+        update keeps the controller's settings, so at a version change the
+        ones shown before but not after count as removed by it, and the ones
+        newly shown as added. Between updates, showing or hiding one is a
+        setting and reported as nothing.
+        """
+        now = time.time()
+        if current_point_ids != self._point_set_last:
+            self._point_set_last = set(current_point_ids)
+            self._point_set_stable_since = now
+            self._firmware_check_due = True
+            self._dynamic_checked &= current_point_ids
+        with self._em_lock:
+            identity = hash(tuple(id(d.get("metadata")) for d in self.bulk_data.values()))
+            if identity != self._metadata_identity:
+                self._metadata_identity = identity
+                self._firmware_check_due = True
+                self._dynamic_checked.clear()
+            dynamic_ids = self.dynamic_point_map.all_known_dynamic_point_ids() | set(
+                self.active_dynamic_points
+            )
+            to_check = (current_point_ids & dynamic_ids) - self._dynamic_checked
+        if to_check:
+            self._check_dynamic_points(to_check)
+            self._dynamic_checked |= to_check
+
+        if now - self._point_set_stable_since < _ABSENT_GRACE_S:
+            return
+        if not self._firmware_check_due:
+            if self._dynamic_changes:
+                self._write_firmware_entry([], [], [], {}, {})
+            return
+        self._firmware_check_due = False
+
+        record = self._load_firmware_record()
+        language = self._api.language if isinstance(self._api.language, str) else ""
+        with self._em_lock:
+            versions = {
+                str(pid): self.bulk_data[pid].get("raw_value")
+                for pid in _FIRMWARE_VERSION_POINTS
+                if pid in self.bulk_data and self.bulk_data[pid].get("is_ok")
+            }
+            points = {
+                str(pid): self._describe_point(pid)
+                for pid in sorted(current_point_ids - dynamic_ids)
+            }
+        checksum = _fingerprint_checksum(points)
+        present = sorted(str(pid) for pid in current_point_ids & dynamic_ids)
+        if (
+            record is None
+            or record.get("language", language) != language
+            or "checksum" not in record
+        ):
+            # First run, a language change, or a record from before the
+            # checksum: take the current state as the reference. Dynamic
+            # points already present get recorded on the next poll.
+            self._save_firmware_record(versions, points, checksum, language, present)
+            self._dynamic_checked.clear()
+            return
+        old_versions = record.get("versions") or {}
+        if not any(
+            pid in old_versions and old_versions[pid] != raw for pid, raw in versions.items()
+        ):
+            # No version change: whatever changed is a setting, connected
+            # hardware, or a patch-only release the version register can't
+            # show — it only renews the record.
+            if (
+                checksum != record["checksum"]
+                or versions != old_versions
+                or present != record.get("dynamic_present")
+            ):
+                self._save_firmware_record(versions, points, checksum, language, present)
+            if self._dynamic_changes:
+                self._write_firmware_entry([], [], [], {}, {})
+            return
+
+        # A version changed: compare everything. The update keeps the
+        # controller's settings, so the dynamic points shown before it should
+        # be shown again — the ones that aren't, or are new, are the update's.
+        old_points = record.get("points") or {}
+        added = [
+            {"id": int(key), "title": entry[0], "type": entry[1]}
+            for key, entry in points.items()
+            if key not in old_points
+        ]
+        removed = [
+            {"id": int(key), "title": entry[0], "type": entry[1]}
+            for key, entry in old_points.items()
+            if key not in points
+        ]
+        old_present = record.get("dynamic_present")
+        if old_present is not None:
+            known = record.get("dynamic") or {}
+            for key in present:
+                if key not in old_present:
+                    entry = self._describe_point(int(key))
+                    added.append({"id": int(key), "title": entry[0], "type": entry[1]})
+            for key in old_present:
+                if key not in present:
+                    entry = known.get(key) or [f"Point {key}", "unknown"]
+                    removed.append({"id": int(key), "title": entry[0], "type": entry[1]})
+        added.sort(key=lambda e: e["id"])
+        removed.sort(key=lambda e: e["id"])
+        changed = []
+        for key, entry in points.items():
+            old_entry = old_points.get(key)
+            if old_entry and len(old_entry) >= 3:
+                changes = _describe_fingerprint_change(old_entry[2], entry[2])
+                if changes:
+                    changed.append(
+                        {"id": int(key), "title": entry[0], "type": entry[1], "changes": changes}
+                    )
+        self._write_firmware_entry(added, removed, changed, old_versions, versions, points)
+        self._save_firmware_record(versions, points, checksum, language, present)
+
+    def _describe_point(self, pid: int) -> list:
+        """[title, entity type, firmware_fingerprint] for the firmware record."""
+        point = self.all_points_by_id.get(pid, {})
+        return [
+            point.get("display_title") or point.get("title") or f"Point {pid}",
+            point.get("entity_type", "unknown"),
+            firmware_fingerprint(self.bulk_data[pid].get("metadata") or {}),
+        ]
+
+    def _check_dynamic_points(self, point_ids: set[int]) -> None:
+        """Compare dynamic points that just appeared with their own record
+        (_check_firmware_update); record ones not seen before."""
+        record = self._load_firmware_record()
+        if record is None:
+            return  # nothing recorded yet: the first full comparison sets it up
+        recorded = record.setdefault("dynamic", {})
+        with self._em_lock:
+            seen = {str(pid): self._describe_point(pid) for pid in sorted(point_ids)}
+        written = False
+        for key, entry in seen.items():
+            old_entry = recorded.get(key)
+            if old_entry and len(old_entry) >= 3 and old_entry[2] != entry[2]:
+                self._dynamic_changes.append(
+                    {
+                        "id": int(key),
+                        "title": entry[0],
+                        "type": entry[1],
+                        "changes": _describe_fingerprint_change(old_entry[2], entry[2]),
+                    }
+                )
+            if old_entry != entry:
+                recorded[key] = entry
+                written = True
+        if written:
+            self._write_firmware_record_file()
+
+    def _write_firmware_entry(
+        self,
+        added: list,
+        removed: list,
+        changed: list,
+        old_versions: dict,
+        versions: dict,
+        points: dict | None = None,
+    ) -> None:
+        """One firmware_change changelog entry, including the dynamic point
+        changes collected so far."""
+        changed = sorted(changed + self._dynamic_changes, key=lambda e: e["id"])
+        self._dynamic_changes = []
+        titles = points or {}
+        version_changes = [
+            pid for pid in versions if pid in old_versions and old_versions[pid] != versions[pid]
+        ]
+        if version_changes:
+            note = "; ".join(
+                f"{titles.get(pid, [f'Point {pid}'])[0]}: "
+                f"{_format_version(int(pid), old_versions[pid])} → "
+                f"{_format_version(int(pid), versions[pid])}"
+                for pid in version_changes
+            )
+        else:
+            note = "Found when these dynamic points were shown again."
+        # pragma: no mutate start
+        log_discovery.info(
+            "Firmware change detected (%s): %d point(s) added, %d removed, %d changed",
+            note,
+            len(added),
+            len(removed),
+            len(changed),
+        )
+        # pragma: no mutate end
+        self._update_changelog_history(
+            {
+                "added": added,
+                "removed": removed,
+                "changed": changed,
+                "source": "firmware_change",
+                "note": note,
+            }
+        )
+
+    def _load_firmware_record(self) -> dict | None:
+        """The firmware record, read from _FIRMWARE_RECORD_FILE once."""
+        if not self._firmware_record_loaded:
+            self._firmware_record_loaded = True
+            try:
+                with open(_FIRMWARE_RECORD_FILE, encoding="utf-8") as f:
+                    loaded = json.loads(f.read())
+                if isinstance(loaded, dict) and isinstance(loaded.get("versions"), dict):
+                    self._firmware_record = loaded
+            except (OSError, ValueError):
+                pass
+        return self._firmware_record
+
+    def _save_firmware_record(
+        self, versions: dict, points: dict, checksum: str, language: str, present: list
+    ) -> None:
+        """Replace the firmware record (keeping the per-point dynamic
+        fingerprints) and persist it; present is the dynamic points shown."""
+        dynamic = (self._firmware_record or {}).get("dynamic") or {}
+        self._firmware_record = {
+            "versions": versions,
+            "language": language,
+            "checksum": checksum,
+            "points": points,
+            "dynamic": dynamic,
+            "dynamic_present": present,
+        }
+        self._write_firmware_record_file()
+
+    def _write_firmware_record_file(self) -> None:
+        try:
+            _atomic_write_text(_FIRMWARE_RECORD_FILE, json.dumps(self._firmware_record))
+            log_discovery.debug("Firmware record written")  # pragma: no mutate
+        except OSError as e:
+            log_discovery.warning("Could not write the firmware record: %s", e)  # pragma: no mutate
 
     def _persist_applied_mode(self, mode_name: str, path: str | None = None) -> None:
         """Persist the last-applied entity mode. Called at the end of apply_mode().

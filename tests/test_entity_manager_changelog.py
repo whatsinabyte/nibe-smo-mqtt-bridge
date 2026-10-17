@@ -9,7 +9,7 @@ import json
 import time
 import unittest
 from collections import deque
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from conftest import (
     _make_em,
@@ -1983,3 +1983,402 @@ class TestChangelogHistorySurvivesSimulatedRestart(unittest.TestCase):
 
         self.assertEqual(len(reader.change_history), 1)
         self.assertFalse(reader.change_history[0]["unread"])
+
+
+class TestPruneKeepsFirmwareUpdates(unittest.TestCase):
+    """Firmware update entries survive the age-based prune: they are rare,
+    and the ordinary entries that would push them past the 50 kept would
+    otherwise erase the record of when points appeared or changed."""
+
+    def test_old_firmware_update_survives_newer_entries(self):
+        em = _make_em()
+        em._last_prune_time = 0.0
+        now = time.time()
+
+        def entry(age_days, source="firmware"):
+            return {
+                "timestamp": now - age_days * 86400,
+                "iso_timestamp": "x",
+                "added": [],
+                "removed": [],
+                "source": source,
+            }
+
+        recent = [entry(1) for _ in range(60)]
+        old_update = entry(200, "firmware_change")
+        old_other = entry(201)
+        em.change_history = deque(recent + [old_update, old_other], maxlen=500)
+        em._prune_changelog_if_due()
+        self.assertIn(old_update, em.change_history)
+        self.assertNotIn(old_other, em.change_history)
+        self.assertEqual(list(em.change_history)[-1], old_update)
+
+
+class TestFirmwareUpdateEntry(unittest.TestCase):
+    """_check_firmware_update: one changelog entry per firmware update,
+    taken only once the point set has been unchanged for _ABSENT_GRACE_S —
+    a restarting controller serves a partial list for about a minute, the
+    same list across several polls."""
+
+    STATIC = frozenset({2509, 4, 10, 11})
+
+    def setUp(self):
+        from unittest.mock import patch
+
+        import nibe_entity_manager as nem
+
+        self.nem = nem
+        self.em = _make_em()
+        self.em._update_changelog_history = MagicMock()
+        self.now = 1_000_000.0
+        patcher = patch("nibe_entity_manager.time.time", side_effect=lambda: self.now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.set_points(self.STATIC, version=1037)  # 4.13
+
+    def set_points(self, ids, version, metadata=None):
+        metadata = metadata or {}
+        self.em.bulk_data = {
+            pid: {"is_ok": True, "raw_value": 0, "metadata": metadata.get(pid, {})} for pid in ids
+        }
+        if 2509 in ids:
+            self.em.bulk_data[2509]["raw_value"] = version
+        self.em.all_points_by_id = {
+            pid: {"display_title": f"Point title {pid}", "entity_type": "sensor"} for pid in ids
+        }
+        self.em.all_points_by_id.get(2509, {})["display_title"] = "Version (EB100)"
+
+    def poll(self, ids, seconds_later):
+        self.now += seconds_later
+        self.em._check_firmware_update(set(ids))
+
+    def settle(self, ids):
+        """Two polls with the same point set, the grace period apart."""
+        self.poll(ids, 15)
+        self.poll(ids, self.nem._ABSENT_GRACE_S)
+
+    def record(self):
+        with open(self.nem._FIRMWARE_RECORD_FILE, encoding="utf-8") as f:
+            return json.loads(f.read())
+
+    def test_first_stable_list_is_recorded_without_an_entry(self):
+        self.settle(self.STATIC)
+        self.assertEqual(self.record()["versions"], {"2509": 1037})
+        self.assertEqual(set(self.record()["points"]), {"2509", "4", "10", "11"})
+        self.em._update_changelog_history.assert_not_called()
+
+    def test_nothing_happens_before_the_list_is_stable(self):
+        self.poll(self.STATIC, 15)
+        self.poll(self.STATIC, self.nem._ABSENT_GRACE_S - 1)
+        with self.assertRaises(OSError):
+            self.record()
+
+    def test_update_reports_versions_and_point_changes(self):
+        self.settle(self.STATIC)
+        new = (self.STATIC - {11}) | {12}
+        self.set_points(new, version=1038)  # 4.14
+        self.settle(new)
+        self.em._update_changelog_history.assert_called_once()
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(entry["source"], "firmware_change")
+        self.assertEqual(entry["note"], "Version (EB100): 4.13 → 4.14")
+        self.assertEqual([e["id"] for e in entry["added"]], [12])
+        self.assertEqual([e["id"] for e in entry["removed"]], [11])
+        self.assertEqual(entry["removed"][0]["title"], "Point title 11")
+        self.assertEqual(self.record()["versions"], {"2509": 1038})
+
+    def test_update_reports_changed_register_descriptions(self):
+        from nibe_entity_detection import apply_metadata_overrides
+
+        before = {
+            10: {"maxValue": 100, "unit": ""},
+            3702: apply_metadata_overrides(3702, {"minValue": 55, "maxValue": 700}),
+        }
+        ids = self.STATIC | {3702}
+        self.set_points(ids, version=1037, metadata=before)
+        self.settle(ids)
+        after = {
+            10: {"maxValue": 200, "unit": "°C"},
+            # NIBE fixing the minimum we override: the bridge's value stays
+            # 550 either way, the firmware's own goes 55 → 550.
+            3702: apply_metadata_overrides(3702, {"minValue": 550, "maxValue": 700}),
+        }
+        self.set_points(ids, version=1038, metadata=after)
+        self.settle(ids)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        changed = {e["id"]: e["changes"] for e in entry["changed"]}
+        self.assertEqual(changed[10], "max 100 → 200, unit '' → '°C'")
+        self.assertEqual(changed[3702], "min 55 → 550")
+        self.assertEqual(set(changed), {10, 3702})
+
+    def test_partial_list_during_the_restart_is_not_reported_as_removed(self):
+        """The 4.13.12 update served 1145 of 1169 points for four polls. The
+        entry must compare against the full list that follows."""
+        self.settle(self.STATIC)
+        self.set_points({2509, 4}, version=1038)
+        for _ in range(4):
+            self.poll({2509, 4}, 15)
+        self.em._update_changelog_history.assert_not_called()
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual((entry["added"], entry["removed"]), ([], []))
+
+    def dynamic(self, *pids):
+        self.em.dynamic_point_map = MagicMock()
+        self.em.dynamic_point_map.all_known_dynamic_point_ids.return_value = set(pids)
+
+    def test_dynamic_point_is_recorded_the_poll_it_is_first_seen(self):
+        self.dynamic(30)
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC | {30}, version=1037, metadata={30: {"maxValue": 100}})
+        self.poll(self.STATIC | {30}, 15)  # the point set just changed: not stable
+        self.assertEqual(self.record()["dynamic"]["30"][2]["maxValue"], 100)
+        self.assertNotIn("30", self.record()["points"])
+
+    def test_point_change_without_a_version_change_only_renews_the_record(self):
+        """Can't be told apart from a setting or connected hardware (or a
+        patch-only release, which the version register doesn't show)."""
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC | {20}, version=1037)
+        self.settle(self.STATIC | {20})
+        self.em._update_changelog_history.assert_not_called()
+        self.assertIn("20", self.record()["points"])
+
+    def test_changed_description_without_a_version_change_only_renews_the_record(self):
+        self.set_points(self.STATIC, version=1037, metadata={10: {"maxValue": 100}})
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC, version=1037, metadata={10: {"maxValue": 200}})
+        self.settle(self.STATIC)
+        self.em._update_changelog_history.assert_not_called()
+        self.assertEqual(self.record()["points"]["10"][2]["maxValue"], 200)
+
+    def test_a_later_update_reports_against_the_renewed_record(self):
+        """An accessory installed between updates isn't reported as added by
+        the next one."""
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC | {20}, version=1037)
+        self.settle(self.STATIC | {20})
+        self.set_points(self.STATIC | {20, 21}, version=1038)
+        self.settle(self.STATIC | {20, 21})
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual([e["id"] for e in entry["added"]], [21])
+
+    def test_language_change_renews_the_record_silently(self):
+        """Units follow the language ("DM" / "GRD MIN")."""
+        self.em._api.language = "en"
+        self.set_points(self.STATIC, version=1037, metadata={10: {"unit": "DM"}})
+        self.settle(self.STATIC)
+        self.em._api.language = "nl"
+        self.set_points(self.STATIC, version=1037, metadata={10: {"unit": "GRD MIN"}})
+        self.settle(self.STATIC)
+        self.em._update_changelog_history.assert_not_called()
+        self.assertEqual(self.record()["language"], "nl")
+
+    def test_steady_polls_build_no_fingerprints(self):
+        """The full comparison only runs after a change: on a steady poll the
+        bulk data's metadata objects are the same ones, and nothing is built
+        (it cost 26 ms a poll on an ODROID before)."""
+        self.settle(self.STATIC)
+        with patch.object(self.em, "_describe_point", wraps=self.em._describe_point) as spy:
+            for _ in range(5):
+                self.poll(self.STATIC, 15)
+            self.assertEqual(spy.call_count, 0)
+            self.set_points(self.STATIC, version=1037)  # fresh metadata objects
+            self.settle(self.STATIC)
+            self.assertGreater(spy.call_count, 0)
+
+    def test_hidden_dynamic_point_stays_recorded(self):
+        self.dynamic(30)
+        self.set_points(self.STATIC | {30}, version=1037)
+        self.settle(self.STATIC | {30})
+        self.poll(self.STATIC | {30}, 15)  # recorded the poll after the baseline
+        self.set_points(self.STATIC, version=1037)
+        self.settle(self.STATIC)
+        self.assertIn("30", self.record()["dynamic"])
+
+    def test_dynamic_change_found_after_the_update_gets_its_own_entry(self):
+        """Hidden during the update, the point is checked when it reappears:
+        a setting can't change a register's description, the firmware did."""
+        self.dynamic(30)
+        ids = self.STATIC | {30}
+        self.set_points(ids, version=1037, metadata={30: {"maxValue": 100}})
+        self.settle(ids)
+        self.poll(ids, 15)
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)  # the update's own entry, without 30
+        self.assertEqual(self.em._update_changelog_history.call_count, 1)
+        self.set_points(ids, version=1038, metadata={30: {"maxValue": 200}})
+        self.settle(ids)
+        self.assertEqual(self.em._update_changelog_history.call_count, 2)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(
+            [(e["id"], e["changes"]) for e in entry["changed"]], [(30, "max 100 → 200")]
+        )
+        self.assertEqual(entry["note"], "Found when these dynamic points were shown again.")
+
+    def test_dynamic_points_stay_out_of_the_static_list(self):
+        self.dynamic(10)
+        self.settle(self.STATIC)
+        self.assertNotIn("10", self.record()["points"])
+        self.assertEqual(self.record()["dynamic_present"], ["10"])
+
+    def test_update_compares_which_dynamic_points_are_shown(self):
+        """An update keeps the controller's settings, so a dynamic point
+        shown before it and missing after was removed by it; one newly shown
+        was added. 30 changed its description too."""
+        self.dynamic(30, 31, 32)
+        ids = self.STATIC | {30, 31}
+        self.set_points(ids, version=1037, metadata={30: {"maxValue": 100}})
+        self.settle(ids)
+        self.poll(ids, 15)
+        after = self.STATIC | {30, 32}
+        self.set_points(after, version=1038, metadata={30: {"maxValue": 200}})
+        self.settle(after)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(
+            [(e["id"], e["changes"]) for e in entry["changed"]], [(30, "max 100 → 200")]
+        )
+        self.assertEqual([e["id"] for e in entry["added"]], [32])
+        self.assertEqual([e["id"] for e in entry["removed"]], [31])
+
+    def test_dynamic_point_shown_between_updates_is_a_setting(self):
+        self.dynamic(30)
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC | {30}, version=1037)
+        self.settle(self.STATIC | {30})
+        self.em._update_changelog_history.assert_not_called()
+        self.assertEqual(self.record()["dynamic_present"], ["30"])
+
+    def test_record_survives_a_restart(self):
+        self.settle(self.STATIC)
+        self.em = _make_em()
+        self.em._update_changelog_history = MagicMock()
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        self.assertEqual(
+            self.em._update_changelog_history.call_args.args[0]["note"],
+            "Version (EB100): 4.13 → 4.14",
+        )
+
+
+class TestChangelogEntryNote(unittest.TestCase):
+    def test_note_and_changed_are_kept_on_the_entry(self):
+        em = _make_em()
+        changed = [{"id": 10, "title": "T", "type": "number", "changes": "max 1 → 2"}]
+        em._update_changelog_history(
+            {
+                "added": [],
+                "removed": [],
+                "changed": changed,
+                "source": "firmware_change",
+                "note": "x: 1 → 2",
+            }
+        )
+        self.assertEqual(em.change_history[0]["note"], "x: 1 → 2")
+        self.assertEqual(em.change_history[0]["changed"], changed)
+        self.assertEqual(em.change_history[0]["source"], "firmware_change")
+
+
+class TestEntityIdChangeNotification(unittest.TestCase):
+    """_report_entity_id_changes: a type change gives an entity a new id in
+    Home Assistant; one notification lists them, once the changes have
+    settled and the registry knows the new ids."""
+
+    def setUp(self):
+        from unittest.mock import patch
+
+        import nibe_entity_manager as nem
+
+        self.nem = nem
+        self.em = _make_em()
+        self.em._pub.type_changes = deque()
+        self.em._notify = MagicMock()
+        self.ids = {}
+        self.em.entity_id_resolver = lambda pid: self.ids.get(pid)
+        self.now = 1_000_000.0
+        patcher = patch("nibe_entity_manager.time.time", side_effect=lambda: self.now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_at(self, seconds_later):
+        self.now += seconds_later
+        self.em._report_entity_id_changes()
+
+    def message(self):
+        self.em._notify.assert_called_once()
+        return self.em._notify.call_args.kwargs["message"]
+
+    def test_lists_old_and_new_ids_once_settled(self):
+        self.em._pub.type_changes.append((2701, "binary_sensor", "sensor", "Status (ACS)"))
+        self.run_at(1)
+        self.ids[2701] = "sensor.smo_s40_status_acs"
+        self.run_at(self.nem._ID_CHANGE_QUIET_S - 2)
+        self.em._notify.assert_not_called()  # still within the quiet period
+        self.run_at(2)
+        self.assertIn(
+            "- Status (ACS) (point 2701): `binary_sensor.smo_s40_status_acs` → "
+            "`sensor.smo_s40_status_acs`",
+            self.message(),
+        )
+        self.assertEqual(
+            self.em._notify.call_args.kwargs["notification_id"], "nibe_entity_ids_changed"
+        )
+
+    def test_waits_for_the_registry_to_know_the_new_id(self):
+        self.em._pub.type_changes.append((7022, "number", "select", "Blocking actions (ERS 3)"))
+        self.run_at(1)  # picked up by a poll
+        self.run_at(self.nem._ID_CHANGE_QUIET_S + 1)
+        self.em._notify.assert_not_called()  # HA hasn't registered the select yet
+        self.ids[7022] = "select.smo_s40_blocking_actions_ers_3"
+        self.run_at(15)
+        self.assertIn("`number.smo_s40_blocking_actions_ers_3` →", self.message())
+
+    def test_old_id_from_the_registry_keeps_a_renamed_entity(self):
+        """A runtime change, with the watcher running: the old id is the
+        registry's own, renamed or not."""
+        self.ids[998] = "binary_sensor.my_fan"
+        self.em._pub.type_changes.append((998, "binary_sensor", "sensor", "Fan status"))
+        self.run_at(1)
+        self.ids[998] = "sensor.smo_s40_fan_status"
+        self.run_at(self.nem._ID_CHANGE_QUIET_S)
+        self.assertIn("`binary_sensor.my_fan` → `sensor.smo_s40_fan_status`", self.message())
+
+    def test_gives_up_waiting_and_says_what_is_known(self):
+        self.em._pub.type_changes.append((8060, "number", "switch", "Defrost Requested"))
+        self.run_at(1)
+        self.run_at(self.nem._ID_CHANGE_MAX_WAIT_S)
+        self.assertIn("a `number` entity → a new `switch` entity", self.message())
+
+    def test_one_notification_for_many_changes(self):
+        for pid in (4969, 4970):
+            self.em._pub.type_changes.append((pid, "number", "switch", f"block Freq {pid}"))
+            self.ids[pid] = f"switch.smo_s40_block_freq_{pid}"
+        self.run_at(1)  # picked up by a poll
+        self.run_at(self.nem._ID_CHANGE_QUIET_S + 1)
+        self.assertEqual(self.message().count("\n- "), 2)
+        self.run_at(self.nem._ID_CHANGE_QUIET_S + 1)
+        self.em._notify.assert_called_once()  # nothing new, nothing sent again
+
+
+class TestPublisherRecordsTypeChanges(unittest.TestCase):
+    def test_clearing_an_old_domain_records_the_change(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
+        pub = MqttDiscoveryPublisher(
+            mqtt_client=MagicMock(), device_info={}, device_id="t", device_name="T"
+        )
+        pub._point_retained_domains[2701] = {"binary_sensor"}
+        point = {
+            "variableId": 2701,
+            "display_title": "Status (ACS)",
+            "description": "",
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_writable": False,
+            "metadata": {"unit": "", "divisor": 1, "modbusRegisterType": "MODBUS_INPUT_REGISTER"},
+        }
+        pub.publish_entity_discovery(point, {})
+        self.assertEqual(
+            list(pub.type_changes), [(2701, "binary_sensor", "sensor", "Status (ACS)")]
+        )

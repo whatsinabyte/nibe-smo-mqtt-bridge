@@ -187,6 +187,7 @@ value_mappings:
   Additional heat only: Pouze přídavné topení
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibrace
   Closed: Zavřeno
   Closed to pool: Uzavřeno do bazénu
   Closing: Zavírání
@@ -194,7 +195,8 @@ value_mappings:
   Cooling: Chlazení
   Cut off: Odpojeno
   Encouraged: Podporováno
-  Heating: Topení
+  Ext. hot water: Ext. teplá voda
+  Heating: Vytápění
   Hot water: Teplá voda
   Hot water boost: Posílení teplé vody
   Idle: V klidu
@@ -211,7 +213,8 @@ value_mappings:
   Own setting: Vlastní nastavení
   Passive: Pasivní
   Pool: Bazén
-  Preheating: Předehřev
+  Pool 2: Bazén 2
+  Preheating: Předehřívání
   Price per kWh: Cena za kWh
   Radiator: Radiátor
   Radiator & Underfloor heating: Radiátor a podlahové topení
@@ -219,5 +222,6 @@ value_mappings:
   Saving: Úspora
   Saving PLUS: Úspora PLUS
   Standard: Standardní
-  Starting: Spouští se
+  Starting: Spouštění
+  Transfer: Přenos
   Underfloor heating: Podlahové topení

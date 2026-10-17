@@ -374,21 +374,48 @@ def _isolate_device_id_persistence(tmp_path):
 def _isolate_data_file_persistence(tmp_path):
     import nibe_dynamic_map as ndm
     import nibe_entity_manager as nem
+    import nibe_lovelace as nl
 
     originals = (
         nem._APPLIED_MODE_FILE,
         nem._WANTED_POINTS_FILE,
+        nem._RECLASSIFIED_POINTS_FILE,
         nem._SNAPSHOTS_FILE,
+        nem._FIRMWARE_RECORD_FILE,
         ndm._FILE_FALLBACK,
+        nl._LOVELACE_FLAG,
+        nl._MENU_DASHBOARD_FLAG,
     )
     nem._APPLIED_MODE_FILE = str(tmp_path / "applied_mode")
     nem._WANTED_POINTS_FILE = str(tmp_path / "wanted_points.json")
+    nem._RECLASSIFIED_POINTS_FILE = str(tmp_path / "reclassified_points.json")
     nem._SNAPSHOTS_FILE = str(tmp_path / "snapshots.json")
+    nem._FIRMWARE_RECORD_FILE = str(tmp_path / "firmware_record.json")
     ndm._FILE_FALLBACK = str(tmp_path / "dynamic_point_map.json")
+    nl._LOVELACE_FLAG = str(tmp_path / "lovelace_provisioned")
+    nl._MENU_DASHBOARD_FLAG = str(tmp_path / "lovelace_menus_provisioned")
     yield
     (
         nem._APPLIED_MODE_FILE,
         nem._WANTED_POINTS_FILE,
+        nem._RECLASSIFIED_POINTS_FILE,
         nem._SNAPSHOTS_FILE,
+        nem._FIRMWARE_RECORD_FILE,
         ndm._FILE_FALLBACK,
+        nl._LOVELACE_FLAG,
+        nl._MENU_DASHBOARD_FLAG,
     ) = originals
+
+
+# The same hazard for Home Assistant itself. In the add-on container the
+# suite inherits the real SUPERVISOR_TOKEN, and with it every call that goes
+# to the Supervisor API — notify_ha, dismiss_ha, the registry, Lovelace —
+# reaches the live installation. Per-test patching of notify_ha was tried
+# and kept missing call sites: a "Compressor overload" notification once,
+# then "1 active alarm(s) … • X" from tests that relied on
+# _alarm_notification_active to suppress it after the alarm-set check made
+# that insufficient. Removing the token for every test makes those calls
+# take their no-token path; a test that needs one sets its own.
+@pytest.fixture(autouse=True)
+def _no_supervisor_token(monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)

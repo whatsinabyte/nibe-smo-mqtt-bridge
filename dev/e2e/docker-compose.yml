@@ -21,8 +21,11 @@ services:
     environment:
       MOCK_NIBE_DUMP: /data/all_points_en.json
       MOCK_NIBE_PORT: "8443"
+      # Another model's dump and product name — e.g. the S1155 from GitHub
+      # issue #82, on its own stack (stacks.sh up-one / ground-source-s1155).
+      MOCK_PRODUCT_NAME: ${MOCK_PRODUCT_NAME:-SMO S40}
     volumes:
-      - ../../reference-dumps/all_points_en.json:/data/all_points_en.json:ro
+      - ${MOCK_DUMP:-../../reference-dumps/all_points_en.json}:/data/all_points_en.json:ro
     ports:
       # Exposed to the host so Playwright tests (running outside Docker) can
       # reach the /mock-control/* test-only endpoints directly (value
@@ -95,6 +98,9 @@ services:
       # requirements changes do). BRIDGE_APP_DIR points it at another tree —
       # a snapshot, or one with a fix reverted for a negative control.
       - ${BRIDGE_APP_DIR:-../../app}:/app:ro
+      # The value-label translations from the same tree, over the image's
+      # copy (the Dockerfile copies translations/ in at build time).
+      - ${BRIDGE_APP_DIR:-../../app}/../translations:/translations:ro
     environment:
       # Empty by default, so the bridge behaves as it always has here: the
       # Supervisor-only parts (registry watcher, Lovelace provisioning, HA

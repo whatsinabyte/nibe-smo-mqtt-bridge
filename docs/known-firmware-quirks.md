@@ -53,7 +53,9 @@ confirmed exceptions, corrected via `UNIT_OVERRIDES` /
   (`700`, 70 °C) is right. Home Assistant's number entity therefore
   offered 5.5 – 55 °C as well. `RANGE_OVERRIDES` sets the raw minimum to
   `550`; it applies to both HA's range and the bridge's own range check
-  on writes.
+  on writes. The error is the REST API's alone: NIBE's Modbus register
+  export (as collected in the yozik04/nibe library) declares `550` for
+  every S-series model.
 - **Point 4562 (heating medium pump manual-speed switch) — firmware
   reports `unit: '%'`** on a plain 0=auto/1=manual switch. Overridden to
   no unit.
@@ -99,11 +101,24 @@ the installer menu range is 1 – 24 months.
 A declared maximum can also be off by one. Point 3745 ("Language")
 declares `0`–`25`, i.e. 26 languages, and the installer menu even says
 "26 language options". The controller's own drop-down offers 25, values
-0–24, from English to Български, and nothing beyond. The firmware
+0–24, from English to Bǔlgarski, and nothing beyond. The firmware
 changelog's most recent language addition, Bulgarian and Ukrainian in
 2.26.3 (2024-03-08), is the end of that list, and no later release adds
-one. The bridge's Language select offers the 25 real options, so the
-phantom value 25 can't be written from Home Assistant.
+one. NIBE's Modbus register export agrees: maximum `24` there, so the extra
+value is the REST API's. The bridge needs no correction here: Language is a
+select whose options come from `VALUE_MAPPINGS`, so 25 is never offered. Its
+labels are spelled as the controller's menu shows them; four are NIBE's own
+transliterations rather than the languages' usual self-names: Český,
+Russkiy, Ukrayinska and Bǔlgarski.
+
+Two writable settings show the same discrepancy between the two NIBE sources:
+3959 ("Output AUX1") and 12463 ("AUX relay (AUX11)"), function assignments
+for the AUX outputs in menu 7.4, declare `0`–`33` in the REST API and
+`0`–`32` in the Modbus register export. They are plain numbers without an
+option list, so here the declared maximum is what Home Assistant enforces.
+Two values are confirmed on a controller: 0 is no function and 5 is alarm
+output (the factory default). Which maximum is right is not yet checked, so
+the bridge keeps the REST range.
 
 This convention isn't specific to this bridge's own reference hardware —
 an independent project reading the same local REST API,
@@ -265,7 +280,17 @@ some use `key:value`, and at least one register mixes both separators
 within the same string. Affected points showed a raw number field instead
 of a dropdown, or lost some option labels, until parsing was widened to
 handle every separator convention found across all 4 shipped translation
-dumps.
+dumps. The binary-sensor check counts options with the same parser: it used
+to count only `=` pairs, so a 0–0 status register described
+`0: A, 1: B, 2: C` would have passed as a boolean. No register in the
+reference dumps hit that (22268 mixes both separators but declares 0–255).
+
+How far each hard-coded mapping below and elsewhere has been confirmed is
+recorded in `MAPPING_STATUS` and shown as the `mapping` attribute.
+
+A manual's listing order is not the value order. The SMO S40 manual lists
+the charge pump modes (menu 7.1.2.1) as "Auto, Intermittent", but on a live
+controller 0 is Intermittent and 1 is Auto (4651, 4821).
 
 Some option-based registers have no `description` at all, in any
 language, so the firmware never says what their values mean. They show a
@@ -277,6 +302,14 @@ status, observed alongside its other status entities:
 - 5482, operating mode: Intermittent / Continuous / 10 days cont.
 - 4692, charging method: Target temp / Delta temp.
 - 4085, internal additional heat stepping mode: Linear / Binary.
+- 3260, operating mode SG Ready (read-only): 10 = Normal Price, 20 = High
+  Price, 30 = Low Price, 40 = Free Electricity, as the yozik04/nibe library
+  maps the same register. 10 and 30 were measured on a VVM S320 (issue #40);
+  20 and 40 rest on that library, and its open PR #325 from an SMO S40 owner
+  on 4.13.12 agrees (as Block and Boost).
+- 1021, operating mode PV panels (read-only): the same four-state encoding —
+  10 = Normal, 20 = Block, 30 = Low price, 40 = Boost, as PR #325 maps it.
+  10 and 40 were seen on hardware (issue #29, PV steering off and on).
 - 56150, all sub units operating prio (read-only): 0 = Idle, 1 = Heating,
   2 = Cooling, observed on a live controller in step with its other status
   entities. The values for hot water and pool haven't been observed yet and
@@ -327,6 +360,31 @@ on/off holding register like the many other flags, but declared `s8`
 rather than `u8`, so the switch auto-detection (which requires `u8`)
 made it a 0–1 number. Overridden to `switch` in `ENTITY_TYPE_OVERRIDES`.
 
+The same on ground-source models: 4798, 4799 and 4800, "Automatic speed
+heating medium pump" for hot water, heating and pool (menu 7.1.2.2, on/off
+in the S1155 installer manual), are 0–1 holding registers declared with unit
+`%`, so they too auto-detected as 0–1 numbers. Also overridden to `switch`
+(GitHub issue #82, from an S1155's own dump).
+
+## No sign of whether a number is a code, a quantity or a running total
+
+The metadata of a unitless integer looks the same whether the value is a
+code (an operating mode, an alarm number, a relay bitmask: 2502 "Relay
+status") or a quantity (2472 "Compressor size", 2706 "Used compressors
+hot water"). Nothing marks a running total either: 2505 "Compressor,
+number of starts" and the operating-hour counters (2506 "Compressor,
+oper. time, total", unit `h`) look like the countdown 2501 "Compressor,
+time to start" or the per-program 3861 "Floor drying ongoing time". Home
+Assistant needs the difference: a state class makes a sensor a graph with
+long-term statistics, and `total_increasing` gives the increase per
+period. Titles follow the language setting, so they can't decide either.
+The bridge keeps both by point number in `nibe_entity_detection.py`:
+`UNITLESS_QUANTITY_POINTS` (graphed, state class `measurement`) and
+`TOTAL_INCREASING_POINTS`. Any other unitless sensor stays without a state
+class, shown as state bars, and any other sensor with a unit stays a
+`measurement`. The hourly spot prices (26817–26840) are kept out: their
+format is undocumented, and "no price" is the register maximum.
+
 ## `firmwareId` isn't a firmware version
 
 The device endpoint (`GET /api/v1/devices/{deviceId}`) returns a
@@ -353,5 +411,53 @@ undocumented. Matched against myUplink on this project's own installation:
 The bridge decodes 2509 and 2453 into version strings and publishes 14987
 and 802 as-is.
 
+No local source has the SMO S40's patch level: no register in the dumps holds
+any encoding of 4.13.12, and the local API's device information has only
+`firmwareId`. myUplink shows the full version because NIBE's cloud API
+reports it (`firmware.currentFwVersion`, which Home Assistant's myUplink
+integration uses). So a release that only raises the patch level can't be
+detected locally. In NIBE's version history that is 14 of 69 releases; the
+ones since the local REST API exists (4.7.6, 4.8.7, 4.12.8) changed no
+registers. The patch number isn't a count within a minor version either:
+4.13 started at .12, and 4.12.6 was followed by 4.12.8.
+
 The bridge passes the value through unchanged: it's logged at startup
 (`firmware: nibe-n`) and published as the HA device's `model_id`.
+
+## "Over the past hour" means the previous clock hour
+
+The energy log points (25154 and 25157, produced energy for heating and
+cooling; 25158, 25161 and 25162, used energy for heating, cooling and by
+the additional heater) are titled "… over the past hour", which reads as
+a rolling 60 minutes. Observed on this project's own installation, each
+one reports the previous full clock hour instead: at 14:20 it shows
+13:00–14:00, and the value changes once an hour.
+
+The bridge publishes the values as they come. DOCS.md ("Getting More
+from the Data") explains the consequences: in a graph every hour appears
+one hour late, and summing the values into daily totals misses hours that
+repeat the previous value. The lifetime totals (28392, 28393) are the
+reliable source for anything longer than an hour.
+
+## A register the controller no longer uses: the room setpoint
+
+Since firmware 4.3.5 the room temperature is set per zone — one setpoint per
+zone for heating and cooling alike, shown in menu 1.1.1 on the controller —
+but the older per-climate-system setpoints still exist and still accept
+writes: 3945 "Room sensor set point value climate system 1" (Modbus 206) and
+5079, its cooling counterpart (Modbus 988). Writing them changes nothing the
+controller does. Reported for an S735 on 4.13.12 (yozik04/nibe issue #327:
+the written value reads back, but menu 1.1.1 and myUplink don't change), and
+consistent with this project's own SMO S40: 3945 reads 20.0 °C while menu
+1.1.1 shows 21.0 °C, the value of 32341 "Desired room temperature for zone
+1". The Nibe Menus dashboard therefore leads menu 1.1 with the zone setpoint
+and marks 3945 and 5079 as having no effect.
+
+## Energy log power can read high under SG Ready
+
+On a VVM S320 with an F2050 (firmware 4.7.6), "Energy log - Current power
+consumption" (25165) read about 3.8 kW while an SG Ready input had raised
+hot water demand, against about 2.1–2.3 kW measured by the solar inverter
+and shown in myUplink (yozik04/nibe issue #290). The bridge publishes the
+controller's value unchanged.
+

@@ -438,6 +438,91 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, 348, "", self._metadata(divisor=10))
         em.mqtt.publish.assert_any_call("nibe/state/999", "34.8", retain=True)
 
+    # -- availability is sent on change only --------------------------------
+
+    def _avail_and_clears(self, em):
+        return [
+            (c.args[0], c.args[1])
+            for c in em.mqtt.publish.call_args_list
+            if c.args[0] in ("nibe/avail/100", "nibe/state/100")
+            and c.args[1] in ("online", "offline", "")
+        ]
+
+    def test_steady_value_sends_availability_once(self):
+        """Every poll used to send each entity's "online" again — about 900
+        messages a poll for HA to process."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        for _ in range(3):
+            em._process_and_publish_state(info, 21, "", self._metadata(), force=True)
+        self.assertEqual(self._avail_and_clears(em), [("nibe/avail/100", "online")])
+
+    def test_steady_sentinel_goes_offline_and_clears_once_without_flipping(self):
+        """A disconnected sensor used to flip online → offline and have its
+        state cleared on every poll: two HA state changes each time."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        for _ in range(3):
+            em._process_and_publish_state(info, -32768, "", self._metadata(variableSize="s16"))
+        self.assertEqual(
+            self._avail_and_clears(em), [("nibe/avail/100", "offline"), ("nibe/state/100", "")]
+        )
+
+    def test_each_transition_is_sent(self):
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        meta = self._metadata(variableSize="s16")
+        for raw in (-32768, 21, -32768):
+            em._process_and_publish_state(info, raw, "", meta, force=True)
+        self.assertEqual(
+            self._avail_and_clears(em),
+            [
+                ("nibe/avail/100", "offline"),
+                ("nibe/state/100", ""),
+                ("nibe/avail/100", "online"),
+                ("nibe/avail/100", "offline"),
+                ("nibe/state/100", ""),
+            ],
+        )
+
+    def test_reconnect_sends_everything_again(self):
+        """republish_availability (after a reconnect: the broker may have lost
+        it all) forgets what was sent; the next poll sends the real state."""
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        em.active_entities_by_id[100] = info
+        meta = self._metadata(variableSize="s16")
+        em._process_and_publish_state(info, -32768, "", meta)
+        em.republish_availability()
+        em._process_and_publish_state(info, -32768, "", meta)
+        self.assertEqual(
+            self._avail_and_clears(em),
+            [
+                ("nibe/avail/100", "offline"),
+                ("nibe/state/100", ""),
+                ("nibe/avail/100", "online"),
+                ("nibe/avail/100", "offline"),
+                ("nibe/state/100", ""),
+            ],
+        )
+
+    def test_resubscribe_after_reconnect_resends_availability(self):
+        em = _make_em()
+        info = self._entity_info(entity_type="sensor")
+        em._process_and_publish_state(info, 21, "", self._metadata())
+        # _make_em skips the handler setup that resubscribe_all re-registers.
+        for handler in (
+            "_on_history_message",
+            "_on_unread_message",
+            "_on_dynamic_map_message",
+            "_on_active_dynamic_message",
+        ):
+            setattr(em, handler, MagicMock())
+        em.resubscribe_all()
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(info, 21, "", self._metadata())
+        self.assertEqual(self._avail_and_clears(em), [("nibe/avail/100", "online")])
+
     # -- point-specific firmware decoding ------------------------------------
 
     def test_point_2685_periodic_increase_date_conversion(self):
@@ -507,6 +592,23 @@ class TestProcessAndPublishState(unittest.TestCase):
             em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
             em.mqtt.publish.assert_any_call("nibe/state/56150", shown, retain=True)
 
+    def test_cloud_labelled_points_show_their_labels(self):
+        """55000 (Priority), 10897 (charge pump) and 14952 (operating
+        priority) carry the labels of the myUplink cloud's own option lists,
+        including the values never seen locally (25, 41, 50, -1, 6)."""
+        em = _make_em()
+        cases = {
+            55000: ((25, "Ext. hot water"), (41, "Pool 2"), (50, "Transfer"), (60, "Cooling")),
+            10897: ((-1, "Calibration"), (1, "On")),
+            14952: ((5, "Pool 2"), (6, "Preheating")),
+        }
+        for pid, pairs in cases.items():
+            info = self._entity_info(point_id=pid, entity_type="sensor")
+            for raw, shown in pairs:
+                em.mqtt.publish.reset_mock()
+                em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
+                em.mqtt.publish.assert_any_call(f"nibe/state/{pid}", shown, retain=True)
+
     def test_point_2022_heating_and_compressor_running(self):
         """Hand-traced worked example: bit12 (Heating) + bit2+bit4 (compressor
         running) -> 'Heating (Running)'."""
@@ -521,6 +623,63 @@ class TestProcessAndPublishState(unittest.TestCase):
         info = self._entity_info(point_id=2022, entity_type="sensor")
         em._process_and_publish_state(info, "not-a-number", "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/2022", "not-a-number", retain=True)
+
+    def test_point_1021_pv_panels_operating_mode_labels(self):
+        """1021 uses the SG Ready four-state encoding (yozik04/nibe PR #325,
+        an SMO S40 on 4.13.12); 10 and 40 observed in GitHub issue #29."""
+        from nibe_entity_detection import mapping_status
+
+        em = _make_em()
+        info = self._entity_info(point_id=1021, entity_type="sensor")
+        for raw, shown in ((10, "Normal"), (20, "Block"), (30, "Low price"), (40, "Boost")):
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
+            em.mqtt.publish.assert_any_call("nibe/state/1021", shown, retain=True)
+        self.assertEqual(mapping_status(1021), "partial")
+
+    def test_point_3097_protection_mode_labels(self):
+        """3097 (Protection mode EB101): the defrost family's labels,
+        inferred — shown, with the card's report link."""
+        from nibe_entity_detection import mapping_status
+
+        em = _make_em()
+        info = self._entity_info(point_id=3097, entity_type="sensor")
+        for raw, shown in ((0, "Off"), (1, "Active"), (2, "Passive")):
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
+            em.mqtt.publish.assert_any_call("nibe/state/3097", shown, retain=True)
+        self.assertEqual(mapping_status(3097), "inferred")
+
+    def test_point_3260_sg_ready_status_labels(self):
+        """3260 (Operating mode SG Ready) as the yozik04/nibe library maps the
+        same register; 10 and 30 measured in GitHub issue #40."""
+        from nibe_entity_detection import detect_entity_type, mapping_status
+
+        em = _make_em()
+        info = self._entity_info(point_id=3260, entity_type="sensor")
+        for raw, shown in (
+            (10, "Normal Price"),
+            (20, "High Price"),
+            (30, "Low Price"),
+            (40, "Free Electricity"),
+        ):
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
+            em.mqtt.publish.assert_any_call("nibe/state/3260", shown, retain=True)
+        self.assertEqual(mapping_status(3260), "partial")
+        point = {
+            "variableId": 3260,
+            "title": "Operating mode (SG Ready)",
+            "description": "",
+            "metadata": {
+                "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+                "variableSize": "u8",
+                "minValue": 0,
+                "maxValue": 0,
+                "unit": "",
+            },
+        }
+        self.assertEqual(detect_entity_type(point)[0], "sensor")
 
     def test_point_2022_reference_dump_value_decodes_to_cooling_running(self):
         """The reference dump's real value, 5242909 (0x50001D: bits 0, 2, 3,
@@ -826,9 +985,40 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         m.update(kw)
         return m
 
+    def test_number_reports_whether_it_differs_from_its_default(self):
+        """Every value of a number setting with a meaningful default tells
+        the publisher whether it differs from it (the tile's live
+        default_status); a sensor, or a number without one, doesn't."""
+        em = _make_em()
+        meta = self._metadata(
+            modbusRegisterType="MODBUS_HOLDING_REGISTER",
+            minValue=50,
+            maxValue=350,
+            intDefaultValue=200,
+        )
+        number = self._entity_info(entity_type="number")
+        em._process_and_publish_state(number, 200, "", meta)
+        em._process_and_publish_state(number, 215, "", meta)
+        self.assertEqual(
+            [c.args for c in em._pub.update_default_status.call_args_list],
+            [(100, False), (100, True)],
+        )
+        em._pub.update_default_status.reset_mock()
+        switch_meta = self._metadata(
+            modbusRegisterType="MODBUS_HOLDING_REGISTER", minValue=0, maxValue=1, intDefaultValue=0
+        )
+        em._process_and_publish_state(self._entity_info(entity_type="switch"), 1, "", switch_meta)
+        self.assertEqual(em._pub.update_default_status.call_args.args, (100, True))
+        em._pub.update_default_status.reset_mock()
+        em._process_and_publish_state(self._entity_info(entity_type="sensor"), 215, "", meta)
+        em._process_and_publish_state(number, 215, "", self._metadata())
+        em._pub.update_default_status.assert_not_called()
+
     @given(
         entity_type=st.sampled_from(_ENTITY_TYPES),
-        raw_value=st.integers(min_value=-32767, max_value=32767),  # exclude sentinel
+        # Excludes the u8 sentinel (255) of _metadata's variableSize; the
+        # s16 one (-32768) is outside the range anyway.
+        raw_value=st.integers(min_value=-32767, max_value=32767).filter(lambda v: v != 255),
     )
     @example(entity_type="sensor", raw_value=0)
     @example(entity_type="binary_sensor", raw_value=0)
@@ -836,18 +1026,33 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
     @example(entity_type="time", raw_value=9015)  # 02:30:00
     @example(entity_type="number", raw_value=50)
     def test_non_sentinel_always_publishes_online_availability(self, entity_type, raw_value):
-        """For any non-sentinel value, availability must be published 'online'
-        before the state.  Regression guard: a new entity type added without
-        updating the sentinel check would skip the online publish."""
+        """For any non-sentinel value the entity ends up 'online', sent once
+        — except a number outside its declared range, which is unavailable.
+        Checked on the entity's current topic: a binary sensor reporting
+        neither 0 nor 1 is reclassified, and gets a new one. Regression
+        guard: a new entity type added without updating the sentinel check
+        would skip the online publish."""
+        # A binary sensor reporting neither 0 nor 1 is reclassified, which
+        # rebuilds the entity from the (here mocked) publisher — covered by
+        # the reclassification tests instead.
+        assume(entity_type != "binary_sensor" or raw_value in (0, 1))
         em = _make_em()
         info = self._entity_info(entity_type=entity_type)
+        metadata = self._metadata()
         with patch("nibe_entity_manager.get_value_mapping", return_value=None):
-            em._process_and_publish_state(info, raw_value, "", self._metadata())
-        avail_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/avail/100"]
-        self.assertTrue(avail_calls, f"No availability publish for entity_type={entity_type!r}")
-        self.assertEqual(
-            avail_calls[0].args[1], "online", f"Expected 'online', got {avail_calls[0].args[1]!r}"
+            em._process_and_publish_state(info, raw_value, "", metadata)
+        topic = info["availability_topic"]
+        avail = [c.args[1] for c in em.mqtt.publish.call_args_list if c.args[0] == topic]
+        lo, hi = metadata.get("minValue"), metadata.get("maxValue")
+        out_of_range = (
+            info["entity_type"] == "number"
+            and lo is not None
+            and hi is not None
+            and lo != hi
+            and not lo <= raw_value <= hi
         )
+        expected = "offline" if out_of_range else "online"
+        self.assertEqual(avail, [expected], f"entity_type={entity_type!r}, raw={raw_value}")
 
     @given(entity_type=st.sampled_from(_ENTITY_TYPES))
     @example(entity_type="sensor")
@@ -1020,9 +1225,10 @@ class TestChangeThresholdWiring(unittest.TestCase):
 
     # -- zero threshold (default) ------------------------------------------
 
-    def test_zero_change_threshold_always_publishes(self):
-        """change=0 (default for most points) must never suppress — every
-        poll publishes, which is the existing behaviour for static sensors."""
+    def test_zero_change_threshold_publishes_changes_only(self):
+        """change=0 (most points) counts any change, but an unchanged value
+        isn't sent again: the state is retained, and with menus mode's ~900
+        entities the repeats were hundreds of identical messages a poll."""
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1031,9 +1237,23 @@ class TestChangeThresholdWiring(unittest.TestCase):
         em.mqtt.publish.reset_mock()
         em._process_and_publish_state(info, 100, "", meta)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
-        self.assertGreater(
-            len(state_calls), 0, "change=0: same value must still publish on every poll"
-        )
+        self.assertEqual(state_calls, [], "change=0: an unchanged value must not be sent again")
+        em._process_and_publish_state(info, 101, "", meta)
+        state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
+        self.assertEqual(len(state_calls), 1)
+
+    def test_every_real_change_is_published_whatever_change_says(self):
+        """'change' is a setting's step, not a publish threshold: the
+        controller shows the THS-10 (change 5, divisor 10) in 0.1 °C steps,
+        so Home Assistant gets every one of them."""
+        em = _make_em()
+        em.bulk_interval = 0
+        info = self._entity_info()
+        meta = self._metadata(change=5)
+        for raw in (203, 204, 205, 206, 207, 208):
+            em.mqtt.publish.reset_mock()
+            em._process_and_publish_state(info, raw, "", meta)
+            em.mqtt.publish.assert_any_call("nibe/state/1708", str(raw / 10), retain=True)
 
     # -- missing field fallback --------------------------------------------
 
@@ -1046,7 +1266,7 @@ class TestChangeThresholdWiring(unittest.TestCase):
         meta = {"variableSize": "s16", "divisor": 10}  # no 'change' key
         em._process_and_publish_state(info, 100, "", meta)
         em.mqtt.publish.reset_mock()
-        em._process_and_publish_state(info, 100, "", meta)
+        em._process_and_publish_state(info, 101, "", meta)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
         self.assertGreater(len(state_calls), 0)
 

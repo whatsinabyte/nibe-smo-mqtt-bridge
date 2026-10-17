@@ -516,7 +516,7 @@ def _build_logging(level: str = "info") -> None:
     class _Formatter(logging.Formatter):
         def format(self, record: logging.LogRecord) -> str:
             ct = datetime.datetime.fromtimestamp(record.created).astimezone()
-            ts = ct.strftime("%H:%M:%S") + f".{ct.microsecond // 1000:03d}"
+            ts = ct.strftime("%Y-%m-%d %H:%M:%S") + f".{ct.microsecond // 1000:03d}"
             return f"{ts} [{record.levelname:<8}] {record.name}: {record.getMessage()}"
 
     handler.setFormatter(_Formatter())
@@ -1431,6 +1431,7 @@ def _run_startup_sequence(
 
     # ── HA Entity Registry Watcher + Lovelace ────────────────────────────────
     registry_watcher = HAEntityRegistryWatcher(entity_manager, publisher)
+    entity_manager.entity_id_resolver = registry_watcher.entity_id_for
     registry_watcher.start()
 
     lovelace_thread = threading.Thread(

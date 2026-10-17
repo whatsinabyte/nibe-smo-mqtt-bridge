@@ -59,6 +59,20 @@ const TYPE_DISPLAY_NAMES = {
   date:          'Date',
 };
 
+// The bridge's `mapping_status` for a point's value labels (MAPPING_STATUS
+// in nibe_entity_detection.py). Inferred and partial ones ask the user to
+// report what their controller shows, through the value-labels template.
+const MAPPING_STATUS_INFO = {
+  confirmed: { label: 'Confirmed', color: '#4caf50',
+               text: 'Every value label was checked against a live controller.' },
+  inferred:  { label: 'Not confirmed', color: '#ff9800',
+               text: 'These value labels have not been confirmed on a controller yet.' },
+  partial:   { label: 'Partly confirmed', color: '#ff9800',
+               text: 'Some values are confirmed; the others are not yet (an unknown one shows as a plain number).' },
+};
+const MAPPING_REPORT_URL =
+  'https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/new?template=value_labels.md';
+
 class NibeEntityManager extends HTMLElement {
   /**
    * Initialise all instance state.  Shadow DOM is attached here so the card
@@ -1525,6 +1539,7 @@ class NibeEntityManager extends HTMLElement {
           unit:               metadata.unit        || '',
           unitOverridden:     Boolean(metadata.unit_overridden),
           unitRaw:            metadata.unit_raw    || '',
+          mappingStatus:      metadata.mapping_status || '',
           shortUnit:          metadata.shortUnit   || '',
           category:           metadata.category    || '',
           description:        metadata.description || '',
@@ -1681,17 +1696,31 @@ class NibeEntityManager extends HTMLElement {
       removed:       Array.isArray(entry.removed)
                        ? entry.removed.filter(NibeEntityManager._isValidChangelogItem)
                        : [],
+      // changed: points whose register description a firmware update
+      // changed, each with a `changes` text such as "min 55 → 550"
+      changed:       Array.isArray(entry.changed)
+                       ? entry.changed.filter(e => NibeEntityManager._isValidChangelogItem(e)
+                                                   && typeof e.changes === 'string')
+                       : [],
       id:            entry.id || `change_${Date.now()}`,
       unread:        Boolean(entry.unread),
-      // source: 'firmware' = dynamic appear/disappear
+      // source: 'firmware' = dynamic appear/disappear (badge "controller")
+      //         'learning' = learned from a write
       //         'ha_disabled' = user disabled via HA cog
+      //         'firmware_change' = a firmware update (badge "firmware update")
       source:        entry.source || 'firmware',
       // triggered_by: {id, title} of the controlling point whose write
       // caused the scan, or null for startup / periodic poll changes
       triggered_by:  entry.triggered_by || null,
+      // note: the versions a firmware update changed, e.g.
+      // "Version (EB100): 4.13 → 4.14"
+      note:          typeof entry.note === 'string' ? entry.note : '',
     };
 
-    return (cleanEntry.added.length > 0 || cleanEntry.removed.length > 0) ? cleanEntry : null;
+    // A firmware update is worth showing even when no point changed.
+    const hasChanges = cleanEntry.added.length > 0 || cleanEntry.removed.length > 0
+                    || cleanEntry.changed.length > 0;
+    return (hasChanges || cleanEntry.source === 'firmware_change') ? cleanEntry : null;
   }
 
   async handleChangelogHistoryMessage(msg) {
@@ -1855,6 +1884,7 @@ class NibeEntityManager extends HTMLElement {
         unit: metadata.unit || '',
         unitOverridden: Boolean(metadata.unit_overridden),
         unitRaw: metadata.unit_raw || '',
+        mappingStatus: metadata.mapping_status || '',
         shortUnit: metadata.shortUnit || '',
         category: metadata.category || '',
         description: metadata.description || '',
@@ -2292,6 +2322,12 @@ class NibeEntityManager extends HTMLElement {
       .find(el => el.dataset.for === value) || null;
   }
 
+  // New-issue link for the value-labels template, titled with the point.
+  _mappingReportUrl(entity) {
+    const title = `[Value labels] Point ${entity.id} — ${entity.title}`;
+    return `${MAPPING_REPORT_URL}&title=${encodeURIComponent(title)}`;
+  }
+
   _esc(str) {
     if (str === null || str === undefined) return '';
     return String(str)
@@ -2305,6 +2341,16 @@ class NibeEntityManager extends HTMLElement {
   // Safe numeric display: only emit the value when it is a finite number,
   // otherwise fall back to the supplied default.  Prevents a non-numeric
   // value received from MQTT being inserted raw into an innerHTML template.
+  // A number setting's step: the firmware's 'change' (one raw unit when it
+  // is 0 or missing) over the divisor, with the unit — what Home Assistant
+  // enforces, and what a phone's arrow-less number field doesn't show.
+  _settingStep(entity) {
+    const change = Number(entity.change) >= 1 ? Number(entity.change) : 1;
+    const divisor = this._num(entity.divisor, 1) || 1;
+    const step = Number((change / divisor).toFixed(10));
+    return entity.unit ? `${step} ${entity.unit}` : String(step);
+  }
+
   _num(value, defaultValue = 'N/A') {
     return (typeof value === 'number' && isFinite(value)) ? value : defaultValue;
   }
@@ -2862,10 +2908,27 @@ class NibeEntityManager extends HTMLElement {
           <div class="detail-label">Decimal Places</div>
           <div class="detail-value">${this._num(entity.decimal, 0)}</div>
         </div>
+        ${entity.type === 'number' ? `
         <div class="detail-row">
-          <div class="detail-label">Change Threshold</div>
-          <div class="detail-value">${displayValue(entity.change, '0 (no threshold)')}</div>
+          <div class="detail-label">Step</div>
+          <div class="detail-value">${displayValue(this._settingStep(entity))}</div>
         </div>
+        ` : ''}
+
+        ${MAPPING_STATUS_INFO[entity.mappingStatus] ? `
+        <div class="detail-row">
+          <div class="detail-label">Value Labels</div>
+          <div class="detail-value">
+            <span class="detail-badge" style="background:${MAPPING_STATUS_INFO[entity.mappingStatus].color};"
+                  title="${this._esc(MAPPING_STATUS_INFO[entity.mappingStatus].text)}">${this._esc(MAPPING_STATUS_INFO[entity.mappingStatus].label)}</span>
+            ${entity.mappingStatus !== 'confirmed' ? `
+            <div class="mapping-report" style="margin-top: 4px;">
+              ${this._esc(MAPPING_STATUS_INFO[entity.mappingStatus].text)}
+              <a href="${this._esc(this._mappingReportUrl(entity))}" target="_blank" rel="noopener noreferrer">Report what your controller shows</a>
+            </div>` : ''}
+          </div>
+        </div>
+        ` : ''}
 
         <div class="detail-row">
           <div class="detail-label">Default Values</div>
@@ -3236,24 +3299,30 @@ class NibeEntityManager extends HTMLElement {
       const content = this.changelog.map(entry => {
         const added     = Array.isArray(entry.added)   ? entry.added   : [];
         const removed   = Array.isArray(entry.removed) ? entry.removed : [];
+        const changed   = Array.isArray(entry.changed) ? entry.changed : [];
         const timestamp = entry.timestamp || Date.now() / 1000;
         const source    = entry.source || 'firmware';
         const trig      = entry.triggered_by || null;  // {id, title} or null
 
-        if (added.length === 0 && removed.length === 0) return '';
-
-        const formattedTime = this.formatDateTimeHA(new Date(timestamp * 1000));
-
         // Visual treatment by source:
-        //   firmware    — blue accent + blue 'firmware' badge
-        //   learning    — green accent + green 'learned' badge
-        //   ha_disabled — amber accent + amber 'HA registry' badge
+        //   firmware        — blue accent + blue 'controller' badge (the
+        //                     controller showed or hid points)
+        //   learning        — green accent + green 'learned' badge
+        //   ha_disabled     — amber accent + amber 'HA registry' badge
+        //   firmware_change — purple accent + purple 'firmware update' badge,
+        //                     shown even when no point changed
         const isHaDisable      = source === 'ha_disabled';
         const isLearned        = source === 'learning';
         const isFirmwareChange = source === 'firmware_change';
+
+        if (added.length === 0 && removed.length === 0 && changed.length === 0
+            && !isFirmwareChange) return '';
+
+        const formattedTime = this.formatDateTimeHA(new Date(timestamp * 1000));
+
         const accentColour = isHaDisable      ? '#f59e0b'
                            : isLearned        ? '#43a047'
-                           : isFirmwareChange ? '#e53935'
+                           : isFirmwareChange ? '#8e24aa'
                            : 'var(--primary-color, #03a9f4)';
         const removeColour = isHaDisable ? '#b45309' : '#db4437';
         const removeBadge  = isHaDisable ? '#f59e0b' : '#9e9e9e';
@@ -3261,7 +3330,7 @@ class NibeEntityManager extends HTMLElement {
         const headerLabel = isHaDisable
           ? '🔒 Disabled via HA'
           : isFirmwareChange
-          ? '⚠️ Firmware change detected'
+          ? '⬆️ Firmware updated'
           : isLearned
           ? `${added.length > 0 ? '🧠 Learned — ' : ''}${removed.length > 0 ? '↩️ Deactivated' : ''}`
           : `${added.length > 0 ? '🔍 Discovered ' : ''}${removed.length > 0 ? '🗑️ Removed' : ''}`;
@@ -3272,15 +3341,15 @@ class NibeEntityManager extends HTMLElement {
              ">HA registry</span>`
           : isFirmwareChange
           ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;
-               font-size:11px;font-weight:600;color:white;background:#e53935;margin-left:8px;
-             ">firmware changed</span>`
+               font-size:11px;font-weight:600;color:white;background:#8e24aa;margin-left:8px;
+             ">firmware update</span>`
           : isLearned
           ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;
                font-size:11px;font-weight:600;color:white;background:#43a047;margin-left:8px;
              ">learned</span>`
           : `<span style="display:inline-block;padding:2px 8px;border-radius:10px;
                font-size:11px;font-weight:600;color:white;background:#1e88e5;margin-left:8px;
-             ">firmware</span>`;
+             ">controller</span>`;
 
         // triggered_by line — shown for any firmware-driven change where the
         // controlling point is known. Shows name first, id in brackets.
@@ -3326,13 +3395,20 @@ class NibeEntityManager extends HTMLElement {
                 ">${this._esc(e.type || 'unknown')}</span>
               </div>
             `).join('')}
+            ${changed.map(e => `
+              <div class="changelog-changed" style="margin-bottom:4px;color:#8e24aa;overflow-wrap:break-word;word-break:break-word;">
+                ✏️ #${this._num(e.id, '?')}: ${this._esc(e.title || 'Unknown')}
+                <span style="font-size:11px;color:var(--ha-color-secondary-text,#888);margin-left:4px;">
+                  ${this._esc(e.changes || '')}</span>
+              </div>
+            `).join('')}
           </div>
           ${trigLine}
           ${entry.note && isFirmwareChange ? `
             <div style="margin-top:8px;padding:8px;border-radius:4px;
-              background:rgba(229,57,53,0.08);font-size:11px;
+              background:rgba(142,36,170,0.08);font-size:11px;
               color:var(--ha-color-secondary-text,#888);
-              border-left:3px solid #e53935;">
+              border-left:3px solid #8e24aa;">
               ℹ️ ${this._esc(entry.note)}
             </div>` : ''}
         </div>
@@ -3341,7 +3417,9 @@ class NibeEntityManager extends HTMLElement {
 
       const entryCount = this.changelog.filter(e =>
         (Array.isArray(e.added) && e.added.length > 0) ||
-        (Array.isArray(e.removed) && e.removed.length > 0)
+        (Array.isArray(e.removed) && e.removed.length > 0) ||
+        (Array.isArray(e.changed) && e.changed.length > 0) ||
+        e.source === 'firmware_change'
       ).length;
       const cap = this.changelogCap !== null ? this.changelogCap : '—';
       const footer = `
@@ -3356,10 +3434,13 @@ class NibeEntityManager extends HTMLElement {
           — history capped at ${cap} entries &nbsp;|
           <span style="display:inline-block;padding:1px 7px;border-radius:8px;
             font-size:11px;font-weight:600;color:white;background:#1e88e5;">
-            firmware</span>
+            controller</span>
           <span style="display:inline-block;padding:1px 7px;border-radius:8px;
             font-size:11px;font-weight:600;color:white;background:#f59e0b;margin-left:4px;">
             HA registry</span>
+          <span style="display:inline-block;padding:1px 7px;border-radius:8px;
+            font-size:11px;font-weight:600;color:white;background:#8e24aa;margin-left:4px;">
+            firmware update</span>
         </p>`;
       this.setModalContent('changelog-modal', 'Discovery Changelog', content + footer);
     }

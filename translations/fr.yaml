@@ -199,6 +199,7 @@ value_mappings:
   Additional heat only: Chauffage d'appoint uniquement
   Auto: Auto
   CO2: CO2
+  Calibration: Calibrage
   Closed: Fermé
   Closed to pool: Fermé vers la piscine
   Closing: Fermeture
@@ -206,6 +207,7 @@ value_mappings:
   Cooling: Refroidissement
   Cut off: Coupure
   Encouraged: Encouragé
+  Ext. hot water: Eau chaude ext.
   Heating: Chauffage
   Hot water: Eau chaude
   Hot water boost: Boost eau chaude
@@ -223,6 +225,7 @@ value_mappings:
   Own setting: Réglage personnalisé
   Passive: Passif
   Pool: Piscine
+  Pool 2: Piscine 2
   Preheating: Préchauffage
   Price per kWh: Prix par kWh
   Radiator: Radiateur
@@ -232,4 +235,5 @@ value_mappings:
   Saving PLUS: Économie PLUS
   Standard: Standard
   Starting: Démarrage
+  Transfer: Transfert
   Underfloor heating: Chauffage au sol

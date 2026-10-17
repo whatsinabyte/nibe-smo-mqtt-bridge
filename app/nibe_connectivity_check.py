@@ -139,15 +139,13 @@ def _run_curl(
 
     tls_verified = bool(ca_cert_path)
     try:
-        result = (
-            subprocess.run(  # cmd is a fixed literal list, not shell/untrusted input  # nosec B603
-                cmd,
-                input=stdin_headers,
-                capture_output=True,
-                text=True,
-                timeout=timeout + 5,
-                check=False,
-            )
+        result = subprocess.run(  # cmd is a fixed literal list, not shell/untrusted input  # nosec B603
+            cmd,
+            input=stdin_headers,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+            check=False,
         )
     except FileNotFoundError:
         return {

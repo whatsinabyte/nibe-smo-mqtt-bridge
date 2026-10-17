@@ -198,6 +198,27 @@ def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
     return defaults
 
 
+def _step_text(point: dict) -> str:
+    """A number setting's step, e.g. "0.5 °C", when it is more than one raw
+    unit: the firmware's 'change' over its divisor, the step Home Assistant
+    enforces. Shown on the dashboard because a phone's number field has no
+    arrows, so nothing else tells the user which values are accepted."""
+    if point.get("entity_type") != "number":
+        return ""
+    meta = point.get("metadata", {})
+    change = meta.get("change")
+    if not isinstance(change, int) or isinstance(change, bool) or change <= 1:
+        return ""
+    divisor = meta.get("divisor", 1) or 1
+    unit = clean_unit(meta.get("unit"))
+    return f"{change / divisor:g}{' ' + unit if unit else ''}"
+
+
+def _build_point_steps(all_points_by_id: dict[int, dict]) -> dict[int, str]:
+    """point_id → _step_text for every number setting that has one."""
+    return {pid: text for pid, point in all_points_by_id.items() if (text := _step_text(point))}
+
+
 def _build_changed_from_default(
     bulk_data: dict[int, dict],
     point_defaults: dict[int, str],
@@ -446,6 +467,18 @@ def _build_view_specs(menu_structure: list) -> list[dict]:
 _MASONRY_COLUMN_CHUNKS = 3
 
 
+def _card_weight(card: dict) -> int:
+    """Approximate rendered height of one card, in entity rows."""
+    kind = card.get("type")
+    if kind == "entities":
+        return len(card.get("entities", []))
+    if kind == "tile":
+        return 2  # name and state, then its control
+    if kind == "vertical-stack":
+        return sum(_card_weight(c) for c in card.get("cards", []))
+    return 1
+
+
 def _group_cards_for_masonry(cards: list) -> list:
     """Regroup a flat markdown/entities card sequence (as returned by
     _build_menu_view) into a handful of large sequential vertical-stacks,
@@ -490,14 +523,10 @@ def _group_cards_for_masonry(cards: list) -> list:
         ]
 
     def _weight(section: list[dict]) -> int:
-        # Approximates rendered height: the markdown card itself, plus one
-        # unit per entity row in its entities card (if any) — so a section
-        # with 40 settings counts for much more than one with 2.
-        w = 1
-        for card in section:
-            if card.get("type") == "entities":
-                w += len(card.get("entities", []))
-        return w
+        # Approximates rendered height: the markdown card itself, plus its
+        # settings (_card_weight) — so a section with 40 settings counts for
+        # much more than one with 2.
+        return 1 + sum(_card_weight(card) for card in section if card.get("type") != "markdown")
 
     weights = [_weight(section) for section in sections]
     chunk_count = min(_MASONRY_COLUMN_CHUNKS, len(sections))
@@ -597,11 +626,56 @@ def _build_direct_dynamic_injection(
                 # convention (about half of all points) — "0 – 0 %" would be
                 # a false range, so none is shown.
                 rng = "" if mn == mx else f"{mn:g} – {mx:g}{' ' + unit if unit else ''}"
+                if rng and (step := _step_text(point)):
+                    rng += f", in steps of {step}"
                 dflt = (point_defaults or {}).get(dyn_pid, "")
                 items.append((dyn_pid, (eid, title, rng, dflt)))
         if items:
             injection[entry.point_id] = items
     return injection
+
+
+# A tile card feature per HA domain a setting can be (dashboards/features):
+# -/+ buttons for a number, which step by the entity's own step (a plain
+# number row is a box, and a phone's box has no arrows); a drop-down for a
+# select; a toggle; a press button. A time setting has none and stays a row.
+_TILE_FEATURES: dict[str, dict] = {
+    "number": {"type": "numeric-input", "style": "buttons"},
+    "select": {"type": "select-options"},
+    "switch": {"type": "toggle"},
+    "button": {"type": "button"},
+}
+
+
+# An empty line below each setting with a tile or callouts, so a menu reads
+# as separate settings rather than one evenly spaced block of cards: a
+# markdown card without its own card frame (text_only), holding a
+# non-breaking space so it keeps a line's height. Inside the setting's own
+# vertical-stack, so _group_cards_for_masonry never takes it for a section.
+_SETTING_SPACER: dict = {"type": "markdown", "text_only": True, "content": "&nbsp;"}
+
+
+def _is_tile_entity(entity_id: str) -> bool:
+    return entity_id.split(".", 1)[0] in _TILE_FEATURES
+
+
+def _setting_tile(entity_id: str, name: str, has_default: bool = False) -> dict:
+    """A tile card for a setting: the menu's own label as its name, its
+    control as a feature, and — for a setting with a factory default — the
+    live default_status attribute ("default", or "✏️ default: 20 °C") next
+    to the state, unlike a section label's ✏️ badge, which is only as fresh
+    as the last dashboard build. Only then: the bridge publishes that
+    attribute for a setting with a meaningful_default alone (the same rule as
+    point_defaults), and a tile asking for an attribute its entity never has
+    is a dead reference (Spook reports them)."""
+    domain = entity_id.split(".", 1)[0]
+    card: dict = {"type": "tile", "entity": entity_id}
+    if name:
+        card["name"] = name
+    if has_default and domain != "button":
+        card["state_content"] = ["state", "default_status"]
+    card["features"] = [_TILE_FEATURES[domain]]
+    return card
 
 
 def _build_menu_view(
@@ -614,6 +688,7 @@ def _build_menu_view(
     changed_from_default: set[int] | None = None,
     render_submenus: bool = True,
     controller_values: dict[int, str] | None = None,
+    point_steps: dict[int, str] | None = None,
 ) -> list:
     """Build a list of Lovelace cards for a single top-level menu.
 
@@ -730,32 +805,68 @@ def _build_menu_view(
                 cards.append({"type": "markdown", "content": "\n".join(md_lines)})
             return
 
-        # Collect per-setting callouts BEFORE appending the markdown card
-        # so they are included in the same card as the section description.
-        for s in m.get("settings", []):
-            label = s.get("label", "")
-            # s_warning/s_note/s_tip's None/dropped defaults are masked —
-            # only ever checked via truthiness (`if`/`elif`), where None
-            # and '' are equally falsy. Verified empirically.
-            s_warning = s.get("warning", "")
-            s_note = s.get("note", "")
-            s_tip = s.get("tip", "")
-            if s_warning:
-                md_lines.append(_alert("warning", label, _linkify(s_warning)))
-                md_lines.append("")
-            elif s_note:
-                md_lines.append(_alert("info", label, _linkify(s_note)))
-                md_lines.append("")
-            elif s_tip:
-                md_lines.append(_alert("success", label, _linkify(s_tip)))
-                md_lines.append("")
+        def _callouts(s: dict) -> list[tuple[str, str]]:
+            """A setting's own note, tip and warning, as (alert type, text),
+            in the order they are shown: what it is, what to do, and the risk
+            right above the control."""
+            # None/dropped defaults are masked — only ever checked via
+            # truthiness, where None and '' are equally falsy.
+            return [
+                (kind, s[key])
+                for key, kind in (("note", "info"), ("tip", "success"), ("warning", "warning"))
+                if s.get(key)
+            ]
 
-        # Render section heading + description + callouts as a markdown card
+        # A dynamic setting is never a row of its own (it is injected below
+        # its controller), so its callouts stay in the section's card.
+        for s in m.get("settings", []):
+            if s.get("point_id") is not None and s["point_id"] in known_dynamic:
+                for kind, text in _callouts(s):
+                    md_lines.append(_alert(kind, s.get("label", ""), _linkify(text)))
+                    md_lines.append("")
+
+        # Render section heading + description as a markdown card
         cards.append({"type": "markdown", "content": "\n".join(md_lines)})
 
-        # Build a single entities card for this section using HA's native
-        # section-divider rows (HA 2024.1+) to label each control.
-        entities_rows = []
+        # Settings with an HA entity a tile can control are a tile, with an
+        # info box above it (range and step as its title, the setting's own
+        # note as its text); the others are rows of an entities card under
+        # an HA section-divider label (HA 2024.1+), with their callout just
+        # above. Info box and setting go into one vertical-stack, so the
+        # masonry layout can never put them in different columns, and the
+        # rows before a tile close their entities card first, so the menu
+        # order is kept.
+        entities_rows: list[dict] = []
+
+        def _flush_rows() -> None:
+            if entities_rows:
+                cards.append({"type": "entities", "entities": list(entities_rows)})  # type: ignore[dict-item]
+                entities_rows.clear()
+
+        def _with_info(card: dict, title: str, callouts: list[tuple[str, str]]) -> dict:
+            """*card* under its callouts and above an empty line, in one
+            vertical-stack. *title* goes on the info box, which is added for
+            it alone when the setting has no note; a callout without one
+            gets no title."""
+            if title and not any(kind == "info" for kind, _ in callouts):
+                callouts = [("info", ""), *callouts]
+            alerts = [
+                _alert(kind, title if kind == "info" else "", _linkify(text) if text else "")
+                for kind, text in callouts
+            ]
+            info = [{"type": "markdown", "content": "\n".join(alerts)}] if alerts else []
+            return {"type": "vertical-stack", "cards": [*info, card, _SETTING_SPACER]}
+
+        def _add_tile(
+            eid: str,
+            name: str,
+            info_title: str,
+            has_default: bool,
+            callouts: list[tuple[str, str]] | None = None,
+        ) -> None:
+            _flush_rows()
+            tile = _setting_tile(eid, name, has_default)
+            cards.append(_with_info(tile, info_title, callouts or []))
 
         for s in m.get("settings", []):
             point_id = s.get("point_id")
@@ -772,63 +883,86 @@ def _build_menu_view(
             if point_id is not None and point_id in known_dynamic:
                 continue
 
-            # Resolved ahead of the section label below so the ✏️ badge can
-            # be gated on it — see the comment there for why.
             entity_id = registry_watcher.entity_id_for(point_id) if point_id is not None else None
+            step = (point_steps or {}).get(point_id) if point_id is not None else None
+            callouts = _callouts(s)
 
-            # Section divider: [🟠 ✏️] label · range · default (where known).
-            # The badge flags a value already changed from its documented
-            # factory default — useful when auditing an unfamiliar
-            # installation to see what's been touched. Only shown when the
-            # point also has a resolved, enabled entity: a not-yet-enabled
-            # entity has no dashboard control to act on, and its bulk-fetch
-            # value is unreliable (the firmware may not be actively
-            # reporting it while disabled) — flagging it as "changed"
-            # produced a wall of false positives on every not-enabled row.
-            # HA's native entities card gives section-divider labels no
-            # custom text color without an extra custom-card dependency
-            # (e.g. card_mod), so the leading colored-dot emoji is what
-            # makes this pop against the surrounding text rather than
-            # relying on the pencil alone.
-            changed_badge = "🟠 ✏️ " if entity_id and point_id in changed_from_default else ""
-            section_label = f"{changed_badge}{label}"
-            if rng:
-                section_label += f"  ·  {rng}"
-            if point_id is not None and point_id in point_defaults:
-                section_label += f"  ·  default: {point_defaults[point_id]}"
-            entities_rows.append(
-                {
-                    "type": "section",
-                    "label": section_label,
-                }
-            )
+            if entity_id and _is_tile_entity(entity_id):
+                # The tile shows the factory default live (default_status),
+                # so neither the default nor a ✏️ badge — only as fresh as
+                # the last build — goes into its info box. A switch's
+                # "off/on" range says nothing its toggle doesn't.
+                if entity_id.startswith(("switch.", "button.")):
+                    rng = ""
+                info_title = "  ·  ".join(
+                    part for part in (rng, f"in steps of {step}" if step else "") if part
+                )
+                _add_tile(entity_id, label, info_title, point_id in point_defaults, callouts)
+            else:
+                # Section divider: [🟠 ✏️] label · range · default (where
+                # known). The badge flags a value already changed from its
+                # documented factory default — useful when auditing an
+                # unfamiliar installation to see what's been touched. Only
+                # shown when the point also has a resolved, enabled entity: a
+                # not-yet-enabled entity has no dashboard control to act on,
+                # and its bulk-fetch value is unreliable (the firmware may not
+                # be actively reporting it while disabled) — flagging it as
+                # "changed" produced a wall of false positives on every
+                # not-enabled row. HA's native entities card gives
+                # section-divider labels no custom text color without an
+                # extra custom-card dependency (e.g. card_mod), so the leading
+                # colored-dot emoji is what makes this pop against the
+                # surrounding text rather than relying on the pencil alone.
+                changed_badge = "🟠 ✏️ " if entity_id and point_id in changed_from_default else ""
+                section_label = f"{changed_badge}{label}"
+                if rng:
+                    section_label += f"  ·  {rng}"
+                if step:
+                    section_label += f"  ·  in steps of {step}"
+                if point_id is not None and point_id in point_defaults:
+                    section_label += f"  ·  default: {point_defaults[point_id]}"
+                rows: list[dict] = [{"type": "section", "label": section_label}]
+                if point_id is not None:
+                    if entity_id:
+                        rows.append({"entity": entity_id})
+                    elif dynamic_injection.get(point_id) and point_id in controller_values:
+                        # A controller the user disabled in HA still has its
+                        # real setting on the device — the bulk fetch reads
+                        # it every poll — so say what it is: it is why the
+                        # rows below exist, and it can only be changed at
+                        # the controller now.
+                        rows.append(
+                            {
+                                "type": "section",
+                                "label": (
+                                    "↳ not enabled in HA  ·  current value: "
+                                    f"{controller_values[point_id]}"
+                                ),
+                            }
+                        )
+                    else:
+                        rows.append({"type": "section", "label": "↳ not enabled"})
+                if callouts:
+                    # Titled by the label, as the row's own divider is
+                    # further down the card.
+                    _flush_rows()
+                    alerts = [
+                        _alert(kind, label if i == 0 else "", _linkify(text))
+                        for i, (kind, text) in enumerate(callouts)
+                    ]
+                    stack: dict[str, Any] = {
+                        "type": "vertical-stack",
+                        "cards": [
+                            {"type": "markdown", "content": "\n".join(alerts)},
+                            {"type": "entities", "entities": rows},
+                            _SETTING_SPACER,
+                        ],
+                    }
+                    cards.append(stack)
+                else:
+                    entities_rows.extend(rows)
 
             if point_id is not None:
-                injected = dynamic_injection.get(point_id, [])
-                if entity_id:
-                    entities_rows.append({"entity": entity_id})
-                elif injected and point_id in controller_values:
-                    # A controller the user disabled in HA still has its
-                    # real setting on the device — the bulk fetch reads it
-                    # every poll — so say what it is: it is why the rows
-                    # below exist, and it can only be changed at the
-                    # controller now.
-                    entities_rows.append(
-                        {
-                            "type": "section",
-                            "label": (
-                                "↳ not enabled in HA  ·  current value: "
-                                f"{controller_values[point_id]}"
-                            ),
-                        }
-                    )
-                else:
-                    entities_rows.append(
-                        {
-                            "type": "section",
-                            "label": "↳ not enabled",
-                        }
-                    )
                 # Injected whether or not the controller has an HA entity:
                 # its dynamic points are live, enabled entities of their own
                 # with current values (the firmware shows them by the
@@ -836,20 +970,19 @@ def _build_menu_view(
                 # enabled in HA), and this is the only place on the dashboard
                 # they appear. Hiding them made working entities vanish from
                 # the dashboard as soon as the user disabled the controller.
-                for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in injected:
+                for dyn_entity_id, dyn_title, dyn_rng, dyn_dflt in dynamic_injection.get(
+                    point_id, []
+                ):
+                    if _is_tile_entity(dyn_entity_id):
+                        _add_tile(dyn_entity_id, f"↳ {dyn_title}", dyn_rng, bool(dyn_dflt))
+                        continue
                     divider = f"↳ {dyn_title}  ·  {dyn_rng}" if dyn_rng else f"↳ {dyn_title}"
                     if dyn_dflt:
                         divider += f"  ·  default: {dyn_dflt}"
                     entities_rows.append({"type": "section", "label": divider})
                     entities_rows.append({"entity": dyn_entity_id})
 
-        if entities_rows:
-            cards.append(
-                {
-                    "type": "entities",
-                    "entities": entities_rows,  # type: ignore[dict-item]
-                }
-            )
+        _flush_rows()
 
         # Recurse into submenus — except one flagged split_submenus itself,
         # which has been pulled out into its own separate view (see
@@ -1040,6 +1173,7 @@ def _build_menu_dashboard_config(
     bulk_data: dict[int, dict] | None = None,
     menu_yaml_points: set[int] | None = None,
     controller_family: str | None = None,
+    point_steps: dict[int, str] | None = None,
 ) -> dict | None:
     """Build the full Lovelace dashboard config for the menu views.
 
@@ -1081,6 +1215,7 @@ def _build_menu_dashboard_config(
             changed_from_default,
             render_submenus=children is None,
             controller_values=controller_values,
+            point_steps=point_steps,
         )
         if children is not None:
             # Header markdown card is always cards[0] — see _render_section.
@@ -1473,6 +1608,7 @@ def _setup_menu_dashboard(
         bulk_data=bulk_data_snapshot,
         menu_yaml_points=all_menu_points,
         controller_family=controller_family,
+        point_steps=_build_point_steps(all_points_snapshot),
     )
     if not dashboard_config or not dashboard_config.get("views"):
         log_startup.warning("Menu dashboard: no views generated — check menu_structure.yaml")

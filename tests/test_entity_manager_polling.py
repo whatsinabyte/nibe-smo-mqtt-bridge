@@ -1137,7 +1137,24 @@ class TestUpdateAllStatesActiveEntitiesLogging(unittest.TestCase):
             patch.object(em, "_update_entity_state"),
         ):
             em.update_all_states()
-        mock_debug.assert_called_once_with("Updating %d active entities", 2)
+        mock_debug.assert_any_call("Updating %d active entities", 2)
+
+    def test_poll_timing_is_logged_per_step(self):
+        """One DEBUG line per poll with each step's duration, to see on the
+        controller's own hardware where a poll's time goes."""
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = {}
+        em.active_entities_by_id[100] = {"point_id": 100, "entity_type": "sensor"}
+        with (
+            patch("nibe_entity_manager.log_entities.debug") as mock_debug,
+            patch.object(em, "_update_entity_state"),
+        ):
+            em.update_all_states()
+        timing = [c for c in mock_debug.call_args_list if c.args[0] == "Poll timing: %s"]
+        self.assertEqual(len(timing), 1)
+        line = timing[0].args[1]
+        for step in ("fetch", "entity id check", "entity updates", "catalog flush"):
+            self.assertIn(f"{step} ", line)
 
 
 class TestFetchBulkDataMetadataUpdate(unittest.TestCase):

@@ -23,6 +23,7 @@ import logging
 
 from nibe_entity_detection import (
     DEVICE_CLASS_OVERRIDES,
+    TOTAL_INCREASING_POINTS,
     get_entity_options,
     map_device_class,
 )
@@ -144,14 +145,20 @@ def build_number_config(
                 range_warnings_issued.add(point_id)
     if unit:
         config["unit_of_measurement"] = unit
-    # step is the minimum increment HA allows in the number input widget.
-    # It must be expressed in display units (post-divisor), so step = 1/divisor.
-    # divisor=1  → step=1   (integer register: only whole numbers valid)
-    # divisor=10 → step=0.1 (one decimal place register)
-    # divisor=100→ step=0.01 (two decimal places)
+    # step is the minimum increment HA allows in the number input widget, in
+    # display units (post-divisor). The firmware's own 'change' metadata is
+    # the setting's step in raw units — 5 for a room setpoint, i.e. 0.5 °C at
+    # divisor 10 — and myUplink's stepValue for the same points is the same
+    # number. Without it, one raw unit: 1/divisor.
     # Using round() with 10 decimal places avoids float representation noise
     # (e.g. 1/10 = 0.1000000000000000055… → round to 0.1).
-    config["step"] = round(1 / divisor, 10)
+    raw_step = metadata.get("change")
+    if not isinstance(raw_step, int) or isinstance(raw_step, bool) or raw_step < 1:
+        raw_step = 1
+    config["step"] = round(raw_step / divisor, 10)
+    # Always a box, never HA's slider ("auto" picks one for small ranges): a
+    # slider is too hard to set to an exact value. On a phone the box is a
+    # free text field, so the step above only guides the arrow keys.
     config["mode"] = "box"
 
 
@@ -200,7 +207,11 @@ def build_sensor_config(
     unit: str,
     title: str,
     metadata: dict,
+    numeric: bool = False,
 ) -> None:
+    """numeric: a unitless quantity (nibe_entity_detection.
+    is_unitless_quantity), graphed as a number in Home Assistant all the
+    same."""
     config["state_topic"] = state_topic
     # Special case: point 2685 is a date sensor (days since 2010-01-01
     # converted to ISO date string). Set device_class and return early.
@@ -223,7 +234,10 @@ def build_sensor_config(
         # If a kWh sensor is wrongly treated as instantaneous, add its point_id
         # to DEVICE_CLASS_OVERRIDES in nibe_entity_detection.py to override.
     )
-    has_numeric_value = bool(unit)
+    # HA treats a sensor as numeric — a graph, not coloured state bars in its
+    # history — only with a unit or a state class. A unitless count (e.g.
+    # compressor starts) used to get neither; unitless codes still don't.
+    has_numeric_value = bool(unit) or numeric
 
     if device_class in _ACCUMULATING_CLASSES and not is_instant:
         config["device_class"] = device_class
@@ -241,6 +255,8 @@ def build_sensor_config(
         config["state_class"] = "measurement"
     elif has_numeric_value:
         config["state_class"] = "measurement"
+    if has_numeric_value and point_id in TOTAL_INCREASING_POINTS:
+        config["state_class"] = "total_increasing"
 
     # suggested_display_precision must ONLY be set for genuinely numeric
     # sensors. HA treats its mere presence as a declaration that the

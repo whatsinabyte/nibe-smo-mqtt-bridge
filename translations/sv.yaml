@@ -186,14 +186,16 @@ value_mappings:
   Additional heat only: Endast tillsatsvärme
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibrering
   Closed: Stängd
   Closed to pool: Stängd mot pool
   Closing: Stänger
   Comfort: Komfort
-  Cooling: Kylning
+  Cooling: Kyla
   Cut off: Avstängd
   Encouraged: Uppmuntrad
-  Heating: Uppvärmning
+  Ext. hot water: Ext. varmvatten
+  Heating: Värme
   Hot water: Varmvatten
   Hot water boost: Varmvatten-boost
   Idle: Vilande
@@ -201,8 +203,8 @@ value_mappings:
   Intermittent: Intermittent
   Manual: Manuell
   No alarm: Inget larm
-  'Off': Av
-  'On': På
+  'Off': Från
+  'On': Till
   Open: Öppen
   Open to pool: Öppen mot pool
   Opening: Öppnar
@@ -210,13 +212,15 @@ value_mappings:
   Own setting: Egen inställning
   Passive: Passiv
   Pool: Pool
-  Preheating: Förvärmning
+  Pool 2: Pool 2
+  Preheating: Förvärmer
   Price per kWh: Pris per kWh
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator och golvvärme
-  Running: Igång
+  Running: Kör
   Saving: Besparing
   Saving PLUS: Besparing PLUS
   Standard: Standard
   Starting: Startar
+  Transfer: Transfer
   Underfloor heating: Golvvärme

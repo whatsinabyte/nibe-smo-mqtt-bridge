@@ -58,12 +58,16 @@ class ValueCache:
     ) -> bool:
         """Return True if the value warrants publishing to MQTT.
 
-        threshold=0 (the default for any point without explicit firmware
-        'change' metadata) deliberately means "never suppress on value" —
-        every poll republishes once min_interval has elapsed, even with an
-        unchanged value. This matches HA's expectation of continuous history
-        for static sensors and is intentional, not a bug: abs(diff) >= 0 is
-        always true by design here, not an oversight.
+        Only a changed value does: by at least threshold when that is set,
+        by anything at all when it is 0 — what EntityManager passes, since
+        the firmware's 'change' metadata is a setting's step, not a publish
+        threshold.
+        An unchanged value is never republished — the state is retained, and
+        Home Assistant keeps it until a new one arrives. It used to be
+        republished every min_interval with threshold 0, which with menus
+        mode's ~900 entities meant hundreds of identical states every poll
+        for HA to process. force (a readback, a republish after a reconnect)
+        always publishes.
         """
         current_time = time.time()
         with self._lock:
@@ -80,7 +84,7 @@ class ValueCache:
                 return False
 
             old_value = self._cache[point_id]
-            if abs(raw_value - old_value) >= threshold:
+            if raw_value != old_value and abs(raw_value - old_value) >= threshold:
                 self._cache[point_id] = raw_value
                 self._last_publish[point_id] = current_time
                 return True

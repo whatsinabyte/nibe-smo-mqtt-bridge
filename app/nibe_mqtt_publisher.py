@@ -35,6 +35,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any
@@ -46,6 +47,8 @@ from nibe_entity_detection import (
     clean_unit,
     create_entity_id,
     get_value_mapping,
+    is_unitless_quantity,
+    mapping_status,
 )
 from nibe_utils import fmt_ts as _fmt_ts
 
@@ -246,6 +249,11 @@ def t_available(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/available"
 
 
+def _default_status_text(changed: bool, default_with_unit: str) -> str:
+    """The default_status attribute's text (see update_default_status)."""
+    return f"✏️ default: {default_with_unit}" if changed else "default"
+
+
 def t_attributes(entity_type: str, entity_id: str) -> str:
     return f"{_HA_BASE}/{entity_type}/{entity_id}/attributes"
 
@@ -389,6 +397,20 @@ class MqttDiscoveryPublisher:
         # default-value change go unpublished indefinitely whenever nothing
         # else about the point changed.
         self._attributes_hashes: dict[int, str] = {}
+        # A number setting's live "changed from default" status, shown on
+        # its Nibe Menus tile (update_default_status), and the last static
+        # attributes per point, so the status can be republished alone.
+        self._default_changed: dict[int, bool] = {}
+        self._default_text: dict[int, str] = {}
+        self._static_attributes: dict[int, tuple[str, dict]] = {}
+
+        # (point_id, old_domain, new_domain, title) for every entity type
+        # change publish_entity_discovery clears an old domain for — a new
+        # domain means a new entity id in Home Assistant. Drained by
+        # EntityManager._report_entity_id_changes, which notifies the user.
+        # A deque: appended on whichever thread publishes, drained on the
+        # poll thread.
+        self.type_changes: deque[tuple[int, str, str, str]] = deque()
 
     # ------------------------------------------------------------------ #
     # Config hash management                                               #
@@ -583,7 +605,13 @@ class MqttDiscoveryPublisher:
             # same arguments and topic — byte-identical config output, just
             # with an extra pragma'd (untested) warning log. Verified empirically.
             discovery_config.build_sensor_config(
-                config, t_state("sensor", entity_id), point_id, unit, title, metadata
+                config,
+                t_state("sensor", entity_id),
+                point_id,
+                unit,
+                title,
+                metadata,
+                numeric=is_unitless_quantity(point_id, point),
             )
         else:
             # Unknown entity type — fall back to sensor so the point is still
@@ -664,6 +692,7 @@ class MqttDiscoveryPublisher:
                     old_topic,
                 )
                 # pragma: no mutate end
+                self.type_changes.append((point_id, stale_domain, entity_type, title))
             # Force a fresh publish below even if the new config's hash
             # happens to collide with whatever was last stored.
             self._config_hashes.pop(point_id, None)
@@ -830,11 +859,71 @@ class MqttDiscoveryPublisher:
             attributes["default_value"] = default_with_unit
         if description:
             attributes["description"] = description
+        status = mapping_status(point_id)
+        if status:
+            attributes["mapping"] = status
+        default_text = self._readable_default(
+            entity_type, point_id, int_default, default_with_unit, description
+        )
+        if default_text is not None:
+            self._default_text[point_id] = default_text
+            changed = self._default_changed.get(point_id)
+            if changed is not None:
+                attributes["default_status"] = _default_status_text(changed, default_text)
+        self._static_attributes[point_id] = (attributes_topic, attributes)
 
         attributes_json = json.dumps(attributes)
         if publish:
             self.mqtt.publish(attributes_topic, attributes_json, retain=True)
         return attributes_topic, attributes_json
+
+    def _readable_default(
+        self,
+        entity_type: str,
+        point_id: int,
+        int_default: int | None,
+        default_with_unit: str | None,
+        description: str,
+    ) -> str | None:
+        """A setting's factory default as the user reads it, for
+        default_status: "20 °C" for a number, on/off for a switch, the
+        option label for a select — translated like their states."""
+        if int_default is None:
+            return None
+        if entity_type == "number":
+            return default_with_unit
+        if entity_type == "switch":
+            word = "On" if int_default else "Off"
+            return self._value_translations.get(word, word)
+        if entity_type == "select":
+            mapping = get_value_mapping(point_id, {"description": description})
+            if mapping and int_default in mapping:
+                label = mapping[int_default]
+                return self._value_translations.get(label, label)
+        return None
+
+    def update_default_status(self, point_id: int, changed: bool) -> None:
+        """Set a setting's default_status attribute: "default", or
+        "✏️ default: 20 °C" once its value differs from the factory default.
+        Republished only when that flips, so the Nibe Menus tile shows it
+        live without a dashboard rebuild."""
+        if self._default_changed.get(point_id) == changed:
+            return
+        self._default_changed[point_id] = changed
+        stored = self._static_attributes.get(point_id)
+        default_text = self._default_text.get(point_id)
+        if stored is None or default_text is None:
+            return
+        topic, attributes = stored
+        attributes = {**attributes, "default_status": _default_status_text(changed, default_text)}
+        self._static_attributes[point_id] = (topic, attributes)
+        attributes_json = json.dumps(attributes)
+        if self.mqtt.publish(topic, attributes_json, retain=True).rc == 0:
+            # pragma: no mutate start
+            self._attributes_hashes[point_id] = hashlib.md5(
+                attributes_json.encode(), usedforsecurity=False
+            ).hexdigest()
+            # pragma: no mutate end
 
     # ------------------------------------------------------------------ #
     # Frontend metadata                                                    #
@@ -891,6 +980,7 @@ class MqttDiscoveryPublisher:
             "divisor": metadata_dict.get("divisor", 1),
             "decimal": metadata_dict.get("decimal", 0),
             "change": metadata_dict.get("change", 0),
+            "mapping_status": mapping_status(point_id),
         }
 
     def publish_all_metadata(self, points: Iterable[dict]) -> None:

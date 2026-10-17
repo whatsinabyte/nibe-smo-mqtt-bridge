@@ -48,7 +48,9 @@ MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
 CLIENT_ID = HA_URL + "/"
 
 
-def _req(method: str, path: str, token: str | None = None, body: dict | None = None) -> tuple[int, dict]:
+def _req(
+    method: str, path: str, token: str | None = None, body: dict | None = None
+) -> tuple[int, dict]:
     url = f"{HA_URL}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
@@ -190,7 +192,9 @@ def _token_request(form: str) -> str:
 
 
 def _exchange_code(auth_code: str) -> str:
-    form = f"grant_type=authorization_code&code={auth_code}&client_id={urllib.parse.quote(CLIENT_ID)}"
+    form = (
+        f"grant_type=authorization_code&code={auth_code}&client_id={urllib.parse.quote(CLIENT_ID)}"
+    )
     return _token_request(form)
 
 
@@ -232,9 +236,7 @@ def _password_login() -> str:
 
 
 def setup_mqtt(token: str) -> None:
-    status, resp = _req(
-        "GET", "/api/config/config_entries/entry", token=token
-    )
+    status, resp = _req("GET", "/api/config/config_entries/entry", token=token)
     if status == 200 and any(e.get("domain") == "mqtt" for e in resp):
         print("seed_ha: mqtt config entry already present, skipping")
         return
@@ -292,9 +294,7 @@ def _long_lived_token(access_token: str) -> str:
     WebSocket API offers this, hence websocket-client in this image."""
     import websocket  # installed in this image's Dockerfile
 
-    ws = websocket.create_connection(
-        HA_URL.replace("http", "ws", 1) + "/api/websocket", timeout=30
-    )
+    ws = websocket.create_connection(HA_URL.replace("http", "ws", 1) + "/api/websocket", timeout=30)
     try:
         json.loads(ws.recv())  # auth_required
         ws.send(json.dumps({"type": "auth", "access_token": access_token}))
@@ -334,7 +334,9 @@ def main() -> None:
     # secrets -- this file exists specifically so the Playwright test
     # (running as a separate host process, same Docker Compose network)
     # can read them back. Never used outside this throwaway local harness.
-    with open(os.path.join(OUT_DIR, "credentials.json"), "w") as f:  # lgtm[py/clear-text-storage-sensitive-data]
+    with open(
+        os.path.join(OUT_DIR, "credentials.json"), "w"
+    ) as f:  # lgtm[py/clear-text-storage-sensitive-data]
         json.dump({"username": USERNAME, "password": PASSWORD, "ha_url": HA_URL}, f)
     with open(os.path.join(OUT_DIR, "token.txt"), "w") as f:
         f.write(token)

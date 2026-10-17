@@ -72,6 +72,59 @@ describe('showEntityDetails() — additional field-rendering branches', () => {
   });
 });
 
+describe('showEntityDetails() — value label status', () => {
+  const details = (entry) => {
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/all_metadata', allMetadataPayload([sampleMetadataEntry(entry)]));
+    el.showEntityDetails(entry.id);
+    return el.shadowRoot.getElementById('details-content');
+  };
+
+  it('asks for a report on partly confirmed labels, linking the value-labels template', () => {
+    const content = details({ id: 56150, title: 'All sub units operating prio', mapping_status: 'partial' });
+    expect(content.innerHTML).toContain('Value Labels');
+    expect(content.innerHTML).toContain('Partly confirmed');
+    const link = content.querySelector('.mapping-report a');
+    expect(link.getAttribute('href')).toContain('template=value_labels.md');
+    expect(decodeURIComponent(link.getAttribute('href'))).toContain('Point 56150 — All sub units operating prio');
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('shows confirmed labels without a report link', () => {
+    const content = details({ id: 7022, mapping_status: 'confirmed' });
+    expect(content.innerHTML).toContain('Confirmed');
+    expect(content.querySelector('.mapping-report')).toBeNull();
+  });
+
+  it('shows no value label row for a point without a status', () => {
+    const content = details({ id: 4 });
+    expect(content.innerHTML).not.toContain('Value Labels');
+  });
+});
+
+describe('showEntityDetails() — setting step', () => {
+  const details = (entry) => {
+    const { el, harness } = createCard();
+    harness.publish('nibe/browser/all_metadata', allMetadataPayload([sampleMetadataEntry(entry)]));
+    el.showEntityDetails(entry.id);
+    return el.shadowRoot.getElementById('details-content').innerHTML;
+  };
+
+  it("shows a number's step: the firmware's change over its divisor", () => {
+    const html = details({ id: 32341, type: 'number', change: 5, divisor: 10, unit: '°C' });
+    expect(html).toContain('Step');
+    expect(html).toContain('0.5 °C');
+  });
+
+  it('falls back to one raw unit without a change', () => {
+    expect(details({ id: 3869, type: 'number', change: 0, divisor: 10, unit: '°C' })).toContain('0.1 °C');
+  });
+
+  it('shows no step for a sensor', () => {
+    expect(details({ id: 4, type: 'sensor', change: 5, divisor: 10, unit: '°C' })).not.toContain('>Step<');
+  });
+});
+
 describe('formatDateTimeHA() fallback chain', () => {
   it('uses window.hassUtil.formatDateTime when available', () => {
     const { el } = createCard();
@@ -160,9 +213,58 @@ describe('_renderChangelogContent() — source variants', () => {
     ];
     el.showChangelog();
     const html = el.shadowRoot.getElementById('changelog-content').innerHTML;
-    expect(html).toContain('Firmware change detected');
-    expect(html).toContain('firmware changed');
+    expect(html).toContain('Firmware updated');
+    expect(html).toContain('firmware update');
     expect(html).toContain('Register type changed unexpectedly');
+  });
+
+  it('keeps a firmware update from MQTT with its note, even without point changes', async () => {
+    // The bridge writes one firmware_change entry per update; the versions
+    // are in `note`, and an update that adds or removes no point is still
+    // worth seeing. The sanitizer used to drop both.
+    const { el, harness } = createCard();
+    await publishAndOpen(el, harness, {
+      source: 'firmware_change',
+      added: [],
+      removed: [],
+      note: 'Version (EB100): 4.13 → 4.14',
+    });
+    const html = el.shadowRoot.getElementById('changelog-content').innerHTML;
+    expect(html).toContain('Firmware updated');
+    expect(html).toContain('Version (EB100): 4.13 → 4.14');
+    expect(html).toContain('Showing 1 event');
+  });
+
+  it('lists points whose register description a firmware update changed', async () => {
+    const { el, harness } = createCard();
+    await publishAndOpen(el, harness, {
+      source: 'firmware_change',
+      added: [],
+      removed: [],
+      changed: [
+        { id: 3702, title: 'Stop temperature', type: 'number', changes: 'min 55 → 550' },
+        { id: 1, title: 'No description given' },
+      ],
+      note: 'Version (EB100): 4.13 → 4.14',
+    });
+    const rows = el.shadowRoot.querySelectorAll('#changelog-content .changelog-changed');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('#3702');
+    expect(rows[0].textContent).toContain('min 55 → 550');
+  });
+
+  it('labels ordinary appear/disappear entries "controller", not "firmware"', async () => {
+    // "firmware" next to "firmware update" read as if every entry were an
+    // update; these are the controller showing or hiding points.
+    const { el, harness } = createCard();
+    await publishAndOpen(el, harness, {
+      source: 'firmware',
+      added: [{ id: 9, title: 'New pt', type: 'sensor' }],
+      removed: [],
+    });
+    const html = el.shadowRoot.getElementById('changelog-content').innerHTML;
+    expect(html).toContain('>controller</span>');
+    expect(html).not.toContain('>firmware</span>');
   });
 
   it('renders the default firmware source with a triggered_by line including a written value', async () => {

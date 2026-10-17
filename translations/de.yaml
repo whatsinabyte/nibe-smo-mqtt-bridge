@@ -203,6 +203,7 @@ value_mappings:
   Additional heat only: Nur Zusatzheizung
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibrierung
   Closed: Geschlossen
   Closed to pool: Geschlossen zum Pool
   Closing: Schließt
@@ -210,8 +211,9 @@ value_mappings:
   Cooling: Kühlung
   Cut off: Abgeschaltet
   Encouraged: Gefördert
+  Ext. hot water: Ext. Brauchw.
   Heating: Heizung
-  Hot water: Warmwasser
+  Hot water: Brauchwasser
   Hot water boost: Warmwasser-Boost
   Idle: Ruhend
   Inactive: Inaktiv
@@ -227,7 +229,8 @@ value_mappings:
   Own setting: Eigene Einstellung
   Passive: Passiv
   Pool: Pool
-  Preheating: Vorwärmen
+  Pool 2: Pool 2
+  Preheating: Vorwärmung
   Price per kWh: Preis pro kWh
   Radiator: Heizkörper
   Radiator & Underfloor heating: Heizkörper & Fußbodenheizung
@@ -236,4 +239,5 @@ value_mappings:
   Saving PLUS: Sparen PLUS
   Standard: Standard
   Starting: Startet
+  Transfer: Transfer
   Underfloor heating: Fußbodenheizung

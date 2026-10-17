@@ -188,15 +188,17 @@ value_mappings:
   Additional heat only: Alleen bijverwarming
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibratie
   Closed: Gesloten
   Closed to pool: Gesloten naar zwembad
   Closing: Sluiten
   Comfort: Comfort
-  Cooling: Koelen
+  Cooling: Koeling
   Cut off: Afgesloten
   Encouraged: Aangemoedigd
-  Heating: Verwarmen
-  Hot water: Warm water
+  Ext. hot water: Ext. warmtapwater
+  Heating: Verwarming
+  Hot water: Warmtapwater
   Hot water boost: Warm water boost
   Idle: In rust
   Inactive: Inactief
@@ -212,6 +214,7 @@ value_mappings:
   Own setting: Eigen instelling
   Passive: Passief
   Pool: Zwembad
+  Pool 2: Zwembad 2
   Preheating: Voorverwarmen
   Price per kWh: Prijs per kWh
   Radiator: Radiator
@@ -220,5 +223,6 @@ value_mappings:
   Saving: Besparen
   Saving PLUS: Besparen PLUS
   Standard: Standaard
-  Starting: Opstarten
+  Starting: Starten
+  Transfer: Overdracht
   Underfloor heating: Vloerverwarming

@@ -72,20 +72,22 @@ Each entry in `settings` represents one firmware data point.
 
 ### Annotation precedence for settings
 
-Only one annotation is shown per setting — the highest-priority one present. Priority: `warning` > `note` > `tip`. If a setting has both a `note` and a `tip`, only the `note` is shown. Put the most important information in the highest-priority field.
+A setting can have all three, and all of them are shown, stacked right above its control in this order: `note` (what the setting is and does), `tip` (what to do with it), `warning` (the risk, closest to the control). Split a text by function rather than putting everything in one field: an explanation is a `note` even when it is important, advice on what to set is a `tip`, and only a real risk — damage, a cold house, a high bill — is a `warning`. Keep developer reasoning (which manual says what, how a value was verified) out of all three: they are read by users.
 
 ---
 
 ## How the dashboard renders a setting
 
-Each setting entry produces two rows in the dashboard entities card:
+A setting whose HA entity is a `number`, `select`, `switch` or `button` is a **tile card** with its control as a tile feature (−/+ buttons, drop-down, toggle, press button), named by its `label` and, for a setting with a factory default, showing the live `default_status` attribute next to its value (the bridge publishes that attribute only for those; a tile asking for it on any other entity would be a dead reference, which Spook reports). Right above it, in one vertical-stack, are its boxes: the blue **info box** with `range  ·  in steps of X` as its title (the step only for a number whose firmware `change` is more than one raw unit; no range for a switch, whose "off/on" says nothing its toggle doesn't) and the setting's `note` as its text, then its `tip` (green) and its `warning` (orange). A setting with a range but no `note` gets an info box with just the title. An empty line (a frameless markdown card) closes every such setting, so a menu reads as separate settings rather than one evenly spaced block of cards.
 
-1. **Section divider** — `label  ·  range  ·  default: X` (default is looked up from live firmware metadata at build time; `default:` is omitted if unavailable)
+Any other setting — a time, a read-only value, one without an enabled entity — produces two rows in an entities card, with its `note`, `tip` and `warning` right above it (the first one titled by its label):
+
+1. **Section divider** — `[🟠 ✏️] label  ·  range  ·  default: X` (the default is looked up from live firmware metadata at build time and omitted if unavailable; the badge marks a value changed from it at that time)
 2. **Entity row** — the HA entity for this point_id, resolved via the entity registry
 
 If the entity is not enabled in the bridge, a `↳ not enabled` placeholder row appears instead of an entity row. If the entity is enabled but not yet in the HA registry (e.g. immediately after a mode change), it is also shown as not enabled — the dashboard will rebuild once the entity registers.
 
-Dynamic points (points that only appear when a controlling switch is active) are never shown as direct setting rows. Instead, they are injected automatically below their controlling switch when active, with a `↳` section divider. Do not add dynamic points as `settings` entries.
+Dynamic points (points that only appear when a controlling switch is active) are never shown as direct setting rows. Instead, they are injected automatically below their controlling switch when active — a tile named `↳ title` (with its range as an info box) when it is a number, select, switch or button, otherwise a `↳` section divider and row. Do not add dynamic points as `settings` entries.
 
 ---
 

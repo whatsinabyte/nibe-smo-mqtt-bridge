@@ -199,6 +199,7 @@ value_mappings:
   Additional heat only: Vain lisälämmitys
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibrointi
   Closed: Suljettu
   Closed to pool: Suljettu altaaseen
   Closing: Sulkeutuu
@@ -206,8 +207,9 @@ value_mappings:
   Cooling: Jäähdytys
   Cut off: Katkaistu
   Encouraged: Kannustettu
+  Ext. hot water: Ulk. lämminvesi
   Heating: Lämmitys
-  Hot water: Lämmin vesi
+  Hot water: Käyttövesi
   Hot water boost: Lämpimän veden tehostus
   Idle: Lepotilassa
   Inactive: Ei aktiivinen
@@ -223,7 +225,8 @@ value_mappings:
   Own setting: Oma asetus
   Passive: Passiivinen
   Pool: Allas
-  Preheating: Esilämmitys
+  Pool 2: Allas 2
+  Preheating: Esilämmittää
   Price per kWh: Hinta / kWh
   Radiator: Lämpöpatteri
   Radiator & Underfloor heating: Lämpöpatteri ja lattialämmitys
@@ -232,4 +235,5 @@ value_mappings:
   Saving PLUS: Säästö PLUS
   Standard: Vakio
   Starting: Käynnistyy
+  Transfer: Siirto
   Underfloor heating: Lattialämmitys

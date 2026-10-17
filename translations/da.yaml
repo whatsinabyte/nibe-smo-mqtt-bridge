@@ -191,6 +191,7 @@ value_mappings:
   Additional heat only: Kun tilskudsvarme
   Auto: Auto
   CO2: CO2
+  Calibration: Kalibrering
   Closed: Lukket
   Closed to pool: Lukket til pool
   Closing: Lukker
@@ -198,8 +199,9 @@ value_mappings:
   Cooling: Køling
   Cut off: Afbrudt
   Encouraged: Opfordret
-  Heating: Opvarmning
-  Hot water: Varmt vand
+  Ext. hot water: Ekst. varmtvand
+  Heating: Varme
+  Hot water: Varmtvand
   Hot water boost: Varmtvandsboost
   Idle: Hvilende
   Inactive: Inaktiv
@@ -215,7 +217,8 @@ value_mappings:
   Own setting: Egen indstilling
   Passive: Passiv
   Pool: Pool
-  Preheating: Forvarmning
+  Pool 2: Pool 2
+  Preheating: Forvarmer
   Price per kWh: Pris pr. kWh
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator og gulvvarme
@@ -224,4 +227,5 @@ value_mappings:
   Saving PLUS: Besparelse PLUS
   Standard: Standard
   Starting: Starter
+  Transfer: Transfer
   Underfloor heating: Gulvvarme

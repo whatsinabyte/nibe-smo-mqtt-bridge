@@ -197,13 +197,15 @@ value_mappings:
   Additional heat only: Solo riscaldamento aggiuntivo
   Auto: Auto
   CO2: CO2
+  Calibration: Calibrazione
   Closed: Chiuso
   Closed to pool: Chiuso verso la piscina
   Closing: Chiusura
   Comfort: Comfort
-  Cooling: Raffreddamento
+  Cooling: Raffrescamento
   Cut off: Interrotto
   Encouraged: Incoraggiato
+  Ext. hot water: Acqua calda est.
   Heating: Riscaldamento
   Hot water: Acqua calda
   Hot water boost: Boost acqua calda
@@ -212,8 +214,8 @@ value_mappings:
   Intermittent: Intermittente
   Manual: Manuale
   No alarm: Nessun allarme
-  'Off': Spento
-  'On': Acceso
+  'Off': 'Off'
+  'On': 'On'
   Open: Aperto
   Open to pool: Aperto verso la piscina
   Opening: Apertura
@@ -221,6 +223,7 @@ value_mappings:
   Own setting: Impostazione personalizzata
   Passive: Passivo
   Pool: Piscina
+  Pool 2: Piscina 2
   Preheating: Preriscaldamento
   Price per kWh: Prezzo per kWh
   Radiator: Radiatore
@@ -230,4 +233,5 @@ value_mappings:
   Saving PLUS: Risparmio PLUS
   Standard: Standard
   Starting: Avvio
+  Transfer: Scambio
   Underfloor heating: Riscaldamento a pavimento

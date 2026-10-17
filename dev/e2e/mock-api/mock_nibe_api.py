@@ -32,7 +32,9 @@ later poll needs to see it report something else). It unconditionally
 overwrites a point's value.integerValue/stringValue, bypassing the
 read-only check this mock's PATCH .../points applies — this simulates the
 device itself changing the value, not an HA-side write.
-Body: {"integerValue": <int>} and/or {"stringValue": <str>}.
+Body: {"integerValue": <int>} and/or {"stringValue": <str>}, and/or
+{"metadata": {...}}, merged into the point's metadata to simulate a firmware
+update changing a register's description (its range or unit, say).
 
 The /mock-control/hidden/{id} endpoint (body {"hidden": true|false}) makes a
 point behave exactly as if the firmware stopped serving it: absent from the
@@ -74,7 +76,9 @@ LAST_REQUEST: dict = {}
 
 DEVICE_ROOT = {
     "product": {
-        "name": "SMO S40",
+        # The model the bridge sees (and classifies air/water or water/water
+        # by): an SMO S40 unless a spec serves another model's dump.
+        "name": os.environ.get("MOCK_PRODUCT_NAME", "SMO S40"),
         "manufacturer": "NIBE",
         "firmwareId": "8310",
         "serialNumber": "0000000000000000",
@@ -268,6 +272,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(201, {"status": "created", "point": POINTS[point_id]})
             return
 
+        if "metadata" in body:
+            # Merged into the point's metadata: a firmware update changing a
+            # register's description (range, unit, ...), as the bridge's
+            # firmware-update changelog entry reports it.
+            point["metadata"].update(body["metadata"])
         if "integerValue" in body:
             point["value"]["integerValue"] = body["integerValue"]
         if "stringValue" in body:

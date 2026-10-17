@@ -504,17 +504,62 @@ class TestDiscoveryConfigSnapshots(unittest.TestCase):
         self.assertIn("identifiers", config["device"])
 
     def test_suggested_display_precision_only_on_numeric_sensors(self):
-        """suggested_display_precision must only appear when unit is set.
-        This was a production bug — presence alone makes HA treat entity as numeric."""
+        """A sensor whose state is text — value labels from the firmware's
+        description or VALUE_MAPPINGS, or a decoded point — must declare
+        neither a precision nor a state class. This was a production bug:
+        either makes HA treat the entity as numeric and reject its states."""
         pub, mqtt = self._pub()
-        # Sensor WITHOUT unit
-        pub.publish_entity_discovery(self._point(100, "sensor"), {})
-        config_no_unit = self._get_config(mqtt, "sensor", 100)
-        self.assertNotIn(
-            "suggested_display_precision",
-            config_no_unit,
-            "suggested_display_precision must not appear when unit is absent",
+        labelled = self._point(100, "sensor")
+        labelled["description"] = "0 = Off, 1 = Active, 2 = Passive"
+        pub.publish_entity_discovery(labelled, {})
+        config = self._get_config(mqtt, "sensor", 100)
+        self.assertNotIn("suggested_display_precision", config)
+        self.assertNotIn("state_class", config)
+        pub.publish_entity_discovery(self._point(2453, "sensor"), {})  # "3.3.1"
+        config = self._get_config(mqtt, "sensor", 2453)
+        self.assertNotIn("state_class", config)
+
+    def test_unitless_quantity_is_graphed(self):
+        """A listed unitless quantity (compressor size) gets a state class,
+        so HA graphs it instead of showing coloured state bars (yozik04/nibe
+        issue #248 describes the same gap there)."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(2472, "sensor"), {})
+        config = self._get_config(mqtt, "sensor", 2472)
+        self.assertEqual(config.get("state_class"), "measurement")
+        self.assertNotIn("unit_of_measurement", config)
+
+    def test_running_totals_are_total_increasing(self):
+        """Running totals — compressor starts (no unit) and operating hours —
+        are total_increasing, so statistics show the increase per period.
+        A countdown in the same unit family (2501 "time to start") is not."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(2505, "sensor"), {})
+        self.assertEqual(
+            self._get_config(mqtt, "sensor", 2505).get("state_class"), "total_increasing"
         )
+        hours = self._point(2506, "sensor")
+        hours["metadata"]["unit"] = "h"
+        pub.publish_entity_discovery(hours, {})
+        config = self._get_config(mqtt, "sensor", 2506)
+        self.assertEqual(config.get("state_class"), "total_increasing")
+        self.assertEqual(config.get("device_class"), "duration")
+        countdown = self._point(2501, "sensor")
+        countdown["metadata"]["unit"] = "min"
+        pub.publish_entity_discovery(countdown, {})
+        self.assertEqual(self._get_config(mqtt, "sensor", 2501).get("state_class"), "measurement")
+
+    def test_unlisted_unitless_sensor_keeps_state_bars(self):
+        """A unitless sensor not in UNITLESS_QUANTITY_POINTS — most are codes,
+        such as 2502 "Relay status" — gets no state class, and neither does
+        a listed one that carries value labels."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(2502, "sensor"), {})
+        self.assertNotIn("state_class", self._get_config(mqtt, "sensor", 2502))
+        labelled = self._point(2505, "sensor")
+        labelled["description"] = "0 = Off, 1 = On, 2 = Fault"
+        pub.publish_entity_discovery(labelled, {})
+        self.assertNotIn("state_class", self._get_config(mqtt, "sensor", 2505))
 
     # ── number config ─────────────────────────────────────────────────────────
 
@@ -532,6 +577,95 @@ class TestDiscoveryConfigSnapshots(unittest.TestCase):
         config = self._get_config(mqtt, "number", 200)
         for field in ("min", "max", "step", "state_topic", "command_topic"):
             self.assertIn(field, config, f"number config missing '{field}'")
+
+    def test_number_default_status_follows_the_value(self):
+        """A number's default_status attribute reads "default" or
+        "✏️ default: 20 °C", and is republished only when that flips — the
+        Nibe Menus tile shows it live."""
+        pub, mqtt = self._pub()
+        p = self._point(200, "number")
+        p["is_writable"] = True
+        p["metadata"].update(
+            {
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "unit": "°C",
+                "minValue": 50,
+                "maxValue": 350,
+                "divisor": 10,
+                "intDefaultValue": 200,
+            }
+        )
+        pub.publish_entity_discovery(p, {})
+        topic = "homeassistant/number/nibe_200/attributes"
+
+        def sent():
+            calls = [c for c in mqtt.publish.call_args_list if c.args[0] == topic]
+            return [json.loads(c.args[1]).get("default_status") for c in calls]
+
+        mqtt.publish.reset_mock()
+        pub.update_default_status(200, True)
+        self.assertEqual(sent(), ["✏️ default: 20 °C"])
+        pub.update_default_status(200, True)
+        self.assertEqual(sent(), ["✏️ default: 20 °C"], "unchanged: not sent again")
+        pub.update_default_status(200, False)
+        self.assertEqual(sent(), ["✏️ default: 20 °C", "default"])
+
+    def test_switch_and_select_defaults_read_as_their_state_does(self):
+        """default_status names a switch's default on/off and a select's by
+        its option label, translated like their states."""
+        pub, mqtt = self._pub()
+        pub._value_translations = {"On": "Aan", "Auto": "Automatisch"}
+        switch = self._point(300, "switch")
+        select = self._point(301, "select")
+        select["description"] = "0 = Auto, 1 = Manual"
+        for p in (switch, select):
+            p["is_writable"] = True
+            p["metadata"].update(
+                {
+                    "isWritable": True,
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "intDefaultValue": 1,
+                }
+            )
+        select["metadata"]["intDefaultValue"] = 0
+        pub.publish_entity_discovery(switch, {})
+        pub.publish_entity_discovery(select, {})
+        mqtt.publish.reset_mock()
+        pub.update_default_status(300, True)
+        pub.update_default_status(301, True)
+        sent = {
+            c.args[0]: json.loads(c.args[1]).get("default_status")
+            for c in mqtt.publish.call_args_list
+            if c.args[0].endswith("/attributes")
+        }
+        self.assertEqual(sent["homeassistant/switch/nibe_300/attributes"], "✏️ default: Aan")
+        self.assertEqual(sent["homeassistant/select/nibe_301/attributes"], "✏️ default: Automatisch")
+
+    def test_number_step_follows_firmware_change(self):
+        """The step is the firmware's 'change' metadata in display units: a
+        room setpoint (change 5, divisor 10) moves by 0.5, as on the
+        controller and in myUplink. Without it, one raw unit."""
+        pub, mqtt = self._pub()
+        for pid, change, divisor, step in (
+            (200, 5, 10, 0.5),
+            (201, 10, 1, 10.0),
+            (202, 0, 10, 0.1),
+        ):
+            p = self._point(pid, "number")
+            p["is_writable"] = True
+            p["metadata"].update(
+                {
+                    "isWritable": True,
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "minValue": 50,
+                    "maxValue": 350,
+                    "divisor": divisor,
+                    "change": change,
+                }
+            )
+            pub.publish_entity_discovery(p, {})
+            self.assertEqual(self._get_config(mqtt, "number", pid)["step"], step, pid)
 
     def test_number_config_min_max_match_metadata(self):
         """number min/max must match the firmware metadata values."""
@@ -2293,6 +2427,7 @@ class TestBuildPointMetadataDictProperties(unittest.TestCase):
             "description",
             "is_dynamic",
             "modbusRegisterID",
+            "mapping_status",
         }
     )
 
@@ -2363,6 +2498,16 @@ class TestBuildPointMetadataDictProperties(unittest.TestCase):
         pub = self._pub()
         result = pub._build_point_metadata_dict(self._point(pid))
         self.assertEqual(result["id"], pid)
+
+    @given(_nibe_point_id)
+    def test_mapping_status_matches_table(self, pid):
+        """The card reads the value-label status from here; None when the
+        point has no MAPPING_STATUS entry."""
+        from nibe_entity_detection import MAPPING_STATUS
+
+        pub = self._pub()
+        result = pub._build_point_metadata_dict(self._point(pid))
+        self.assertEqual(result["mapping_status"], MAPPING_STATUS.get(pid))
 
     @given(_nibe_point_id, st.booleans())
     def test_writable_matches_is_writable(self, pid, writable):
@@ -4385,6 +4530,11 @@ class TestBuildPointMetadataDict(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _point(self, point_id, unit="", entity_type="sensor", writable=False):
@@ -4457,6 +4607,11 @@ class TestPublishPointMetadataConsolidation(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _point(self, point_id, unit=""):
@@ -4634,6 +4789,11 @@ class TestPublishEntityDiscoveryUnitWarningIntegration(unittest.TestCase):
         pub._config_hashes = {}
         pub._point_entity_types = {}
         pub._point_retained_domains = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _point(self, point_id, unit="", entity_type="switch", category="config", writable=True):
@@ -8187,6 +8347,11 @@ class TestBuildPointMetadataDictKeys(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _point(self, point_id=100):
@@ -8597,6 +8762,11 @@ class TestPublishStaticAttributesPayloadKeys(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _metadata(self, register_id=100, divisor=1, default=None):
@@ -8632,6 +8802,14 @@ class TestPublishStaticAttributesPayloadKeys(unittest.TestCase):
         )
         attrs_call = next(c for c in pub.mqtt.publish.call_args_list if "attributes" in c[0][0])
         return json.loads(attrs_call[0][1])
+
+    def test_mapping_status_published_for_classified_mapping(self):
+        """A point with a MAPPING_STATUS entry gets a static 'mapping'
+        attribute (56150's values are only partly confirmed); one without
+        gets none, so unmapped entities' attributes don't change."""
+        self.assertEqual(self._attrs_payload(point_id=56150)["mapping"], "partial")
+        self.assertEqual(self._attrs_payload(point_id=7022)["mapping"], "confirmed")
+        self.assertNotIn("mapping", self._attrs_payload(point_id=4))
 
     def test_point_id_key_name_and_value(self):
         """Key must be 'point_id' (string value of int)."""
@@ -8765,6 +8943,11 @@ class TestBuildSensorConfigPayloadContent(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _build(self, point_id=9999, unit="", title="T", metadata=None, entity_id="sensor_test"):
@@ -8916,6 +9099,11 @@ class TestBuildSelectConfigPayloadKeys(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def test_options_key_name_when_options_present(self):
@@ -9728,6 +9916,11 @@ class TestBuildPointMetadataDictDefaults(unittest.TestCase):
         pub = object.__new__(MqttDiscoveryPublisher)
         pub.mqtt = MagicMock()
         pub.device_info = {}
+        pub._default_changed = {}
+        pub._static_attributes = {}
+        pub._default_text = {}
+        if not hasattr(pub, "_value_translations"):
+            pub._value_translations = {}
         return pub
 
     def _minimal_point(self, point_id=100):

@@ -4469,6 +4469,22 @@ class TestBuildMenuView(unittest.TestCase):
     single 'if point_id' branch. These tests pin down the simplified
     behavior directly."""
 
+    def _flat(self, cards):
+        """Cards with vertical-stacks opened up (an info box and its
+        setting are one stack)."""
+        out = []
+        for c in cards:
+            out.extend(self._flat(c["cards"]) if c.get("type") == "vertical-stack" else [c])
+        return out
+
+    def _md_lines(self, cards):
+        return [
+            line
+            for c in self._flat(cards)
+            if c.get("type") == "markdown"
+            for line in c["content"].splitlines()
+        ]
+
     def _watcher(self, entity_ids: dict):
         watcher = MagicMock()
         watcher.entity_id_for.side_effect = lambda pid: entity_ids.get(pid)
@@ -4588,8 +4604,8 @@ class TestBuildMenuView(unittest.TestCase):
                 {"label": "Risky setting", "point_id": 100, "warning": "This can break things."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
-        md = cards[0]["content"]
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
+        md = "\n".join(self._md_lines(cards))
         self.assertIn('alert-type="warning" title="Risky setting"', md)
         self.assertIn("This can break things.", md)
 
@@ -4604,9 +4620,9 @@ class TestBuildMenuView(unittest.TestCase):
                 {"label": "Noted setting", "point_id": 100, "note": "Some context."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
-        entities_card = next(c for c in cards if c["type"] == "entities")
-        self.assertIn({"entity": "switch.foo"}, entities_card["entities"])
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
+        entities_card = next(c for c in self._flat(cards) if c["type"] == "entities")
+        self.assertIn({"entity": "sensor.foo"}, entities_card["entities"])
 
     def test_section_divider_includes_range(self):
         import nibe_lovelace as nl
@@ -4638,32 +4654,240 @@ class TestBuildMenuView(unittest.TestCase):
         divider = entities_card["entities"][0]
         self.assertEqual(divider["label"], "Some setting  ·  0 – 100 %  ·  default: 50 %")
 
-    def test_section_divider_shows_badge_when_changed_from_default(self):
+    def test_section_divider_includes_step_before_default(self):
+        """A setting whose step is more than one raw unit says so: on a phone
+        the number field has no arrows, and Home Assistant refuses any value
+        between steps."""
         import nibe_lovelace as nl
 
         menu = self._menu(
             settings=[
-                {"label": "Some setting", "point_id": 100, "range": "0 – 100 %"},
+                {"label": "Room setpoint", "point_id": 100, "range": "5.0 – 35.0 °C"},
             ]
         )
         cards = nl._build_menu_view(
             menu,
-            self._watcher({100: "switch.foo"}),
-            point_defaults={100: "50 %"},
-            changed_from_default={100},
+            self._watcher({}),
+            point_defaults={100: "20 °C"},
+            point_steps={100: "0.5 °C"},
         )
         entities_card = next(c for c in cards if c["type"] == "entities")
-        divider = entities_card["entities"][0]
-        self.assertEqual(divider["label"], "🟠 ✏️ Some setting  ·  0 – 100 %  ·  default: 50 %")
+        self.assertEqual(
+            entities_card["entities"][0]["label"],
+            "Room setpoint  ·  5.0 – 35.0 °C  ·  in steps of 0.5 °C  ·  default: 20 °C",
+        )
+
+    def test_step_text_only_for_numbers_with_a_step_above_one_raw_unit(self):
+        """The firmware's 'change' over the divisor, for number settings
+        whose step differs from their resolution — not for sensors, and not
+        for change 0 or 1."""
+        import nibe_lovelace as nl
+
+        def point(entity_type, change, divisor=10, unit="°C"):
+            meta = {"change": change, "divisor": divisor, "unit": unit}
+            return {"entity_type": entity_type, "metadata": meta}
+
+        self.assertEqual(nl._step_text(point("number", 5)), "0.5 °C")
+        self.assertEqual(nl._step_text(point("number", 10, divisor=1, unit="DM")), "10 DM")
+        self.assertEqual(nl._step_text(point("number", 1)), "")
+        self.assertEqual(nl._step_text(point("number", 0)), "")
+        self.assertEqual(nl._step_text(point("sensor", 5)), "")
+        steps = nl._build_point_steps({32341: point("number", 5), 4: point("sensor", 5)})
+        self.assertEqual(steps, {32341: "0.5 °C"})
+
+    def test_settings_become_tiles_with_their_info_box_in_menu_order(self):
+        """A setting HA can control from a tile is one: the menu label as its
+        name, the live default_status next to the state, and its control as
+        a feature (-/+ buttons, drop-down, toggle, press button). Its range,
+        step and own note go into an info box right above it, in one
+        vertical-stack. Other settings stay rows under a section label, with
+        their note just above. Everything keeps the menu's order."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            settings=[
+                {"label": "Start time", "point_id": 1, "range": "00:00 – 23:59"},
+                {"label": "Setpoint", "point_id": 2, "range": "5 – 35 °C", "note": "Zone 1."},
+                {"label": "Mode", "point_id": 3},
+                {"label": "Heating", "point_id": 4, "warning": "Careful."},
+                {"label": "Reset", "point_id": 5},
+                {"label": "Outdoor", "point_id": 6, "note": "Read only."},
+            ]
+        )
+        watcher = self._watcher(
+            {
+                1: "time.start",
+                2: "number.setpoint",
+                3: "select.mode",
+                4: "switch.heating",
+                5: "button.reset",
+                6: "sensor.outdoor",
+            }
+        )
+        cards = nl._build_menu_view(
+            menu, watcher, point_steps={2: "0.5 °C"}, point_defaults={2: "20 °C"}
+        )
+        body = cards[1:-1]  # without the section heading and the footer
+        self.assertEqual(
+            [c["type"] for c in body],
+            ["entities", *["vertical-stack"] * 5],
+        )
+        spacer = {"type": "markdown", "text_only": True, "content": "&nbsp;"}
+        # Every setting ends with an empty line, so a menu reads as separate
+        # settings; the time row has neither tile nor callout, so none.
+        self.assertTrue(all(c["cards"][-1] == spacer for c in body[1:]))
+        self.assertEqual(
+            body[0]["entities"],
+            [
+                {"type": "section", "label": "Start time  ·  00:00 – 23:59"},
+                {"entity": "time.start"},
+            ],
+        )
+        info, tile, _ = body[1]["cards"]
+        self.assertEqual(
+            info["content"],
+            '<ha-alert alert-type="info" title="5 – 35 °C  ·  in steps of 0.5 °C">Zone 1.</ha-alert>',
+        )
+        self.assertEqual(
+            tile,
+            {
+                "type": "tile",
+                "entity": "number.setpoint",
+                "name": "Setpoint",
+                "state_content": ["state", "default_status"],
+                "features": [{"type": "numeric-input", "style": "buttons"}],
+            },
+        )
+        mode = body[2]["cards"][0]
+        self.assertEqual(mode["features"], [{"type": "select-options"}])
+        self.assertEqual(mode["name"], "Mode")
+        # No factory default, so no default_status attribute to show: a tile
+        # asking for one would be a dead reference (Spook reports them).
+        self.assertNotIn("state_content", mode)
+        warning, switch, _ = body[3]["cards"]
+        self.assertEqual(
+            warning["content"], '<ha-alert alert-type="warning" title="">Careful.</ha-alert>'
+        )
+        self.assertEqual(switch["features"], [{"type": "toggle"}])
+        self.assertEqual(
+            body[4]["cards"][0],
+            {
+                "type": "tile",
+                "entity": "button.reset",
+                "name": "Reset",
+                "features": [{"type": "button"}],
+            },
+        )
+        note, rows, _ = body[5]["cards"]
+        self.assertEqual(
+            note["content"], '<ha-alert alert-type="info" title="Outdoor">Read only.</ha-alert>'
+        )
+        self.assertEqual(
+            rows["entities"],
+            [{"type": "section", "label": "Outdoor"}, {"entity": "sensor.outdoor"}],
+        )
+        # The notes left the section's own card.
+        self.assertNotIn("Zone 1.", cards[0]["content"])
+
+    def test_a_setting_shows_all_its_callouts_info_tip_warning(self):
+        """A setting's note, tip and warning are all shown, stacked above its
+        control: what it is, what to do, and the risk right above it. The
+        range goes on the info box (added for it alone without a note); a
+        switch's "off/on" range is left out; a row's first box is titled by
+        its label."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            settings=[
+                {
+                    "label": "Steps",
+                    "point_id": 1,
+                    "range": "0 – 7",
+                    "note": "N.",
+                    "tip": "T.",
+                    "warning": "W.",
+                },
+                {"label": "Max", "point_id": 2, "range": "5 – 80 °C", "warning": "Hot."},
+                {"label": "Permit", "point_id": 3, "range": "off/on", "note": "Override."},
+                {"label": "Clock", "point_id": 4, "note": "When.", "warning": "Careful."},
+            ]
+        )
+        watcher = self._watcher(
+            {1: "number.steps", 2: "number.max", 3: "switch.permit", 4: "time.clock"}
+        )
+        cards = nl._build_menu_view(menu, watcher)
+        stacks = [c for c in cards if c["type"] == "vertical-stack"]
+        boxes = [stack["cards"][0]["content"].splitlines() for stack in stacks]
+        self.assertEqual(
+            boxes[0],
+            [
+                '<ha-alert alert-type="info" title="0 – 7">N.</ha-alert>',
+                '<ha-alert alert-type="success" title="">T.</ha-alert>',
+                '<ha-alert alert-type="warning" title="">W.</ha-alert>',
+            ],
+        )
+        self.assertEqual(
+            boxes[1],
+            [
+                '<ha-alert alert-type="info" title="5 – 80 °C"></ha-alert>',
+                '<ha-alert alert-type="warning" title="">Hot.</ha-alert>',
+            ],
+        )
+        self.assertEqual(boxes[2], ['<ha-alert alert-type="info" title="">Override.</ha-alert>'])
+        self.assertEqual(
+            boxes[3],
+            [
+                '<ha-alert alert-type="info" title="Clock">When.</ha-alert>',
+                '<ha-alert alert-type="warning" title="">Careful.</ha-alert>',
+            ],
+        )
+
+    def test_injected_controllable_point_also_gets_a_tile(self):
+        import nibe_lovelace as nl
+
+        menu = self._menu(settings=[{"label": "Controlling sensor", "point_id": 100}])
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({100: "sensor.controller"}),
+            dynamic_injection={100: [("number.limit", "Limit", "0 – 10 kW", "5 kW")]},
+        )
+        stack = next(c for c in cards if c["type"] == "vertical-stack")
+        info, tile, _ = stack["cards"]
+        self.assertEqual(
+            info["content"], '<ha-alert alert-type="info" title="0 – 10 kW"></ha-alert>'
+        )
+        self.assertEqual(tile["name"], "↳ Limit")
+        self.assertEqual(tile["features"], [{"type": "numeric-input", "style": "buttons"}])
+
+    def test_tile_settings_get_no_stale_badge_rows_keep_it(self):
+        """A tile shows "changed from default" live (default_status), so it
+        gets no ✏️ badge — only as fresh as the last build. A row keeps it."""
+        import nibe_lovelace as nl
+
+        menu = self._menu(
+            settings=[
+                {"label": "Mode", "point_id": 101},
+                {"label": "Clock", "point_id": 102},
+            ]
+        )
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({101: "select.mode", 102: "time.clock"}),
+            point_defaults={101: "Auto", 102: "06:00"},
+            changed_from_default={101, 102},
+        )
+        text = json.dumps(cards, ensure_ascii=False)
+        self.assertNotIn("✏️ Mode", text)
+        self.assertIn("🟠 ✏️ Clock  ·  default: 06:00", text)
 
     def test_section_divider_no_badge_when_not_in_changed_set(self):
         import nibe_lovelace as nl
 
         menu = self._menu(settings=[{"label": "Some setting", "point_id": 100}])
         cards = nl._build_menu_view(
-            menu, self._watcher({100: "switch.foo"}), changed_from_default={999999}
+            menu, self._watcher({100: "sensor.foo"}), changed_from_default={999999}
         )
-        entities_card = next(c for c in cards if c["type"] == "entities")
+        entities_card = next(c for c in self._flat(cards) if c["type"] == "entities")
         divider = entities_card["entities"][0]
         self.assertEqual(divider["label"], "Some setting")
 
@@ -4701,9 +4925,9 @@ class TestBuildMenuView(unittest.TestCase):
         import nibe_lovelace as nl
 
         menu = self._menu(settings=[{"label": "X", "point_id": 100}])
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
-        entities_card = next(c for c in cards if c["type"] == "entities")
-        self.assertIn({"entity": "switch.foo"}, entities_card["entities"])
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
+        entities_card = next(c for c in self._flat(cards) if c["type"] == "entities")
+        self.assertIn({"entity": "sensor.foo"}, entities_card["entities"])
 
     def test_unresolved_static_point_shows_not_enabled(self):
         """A point that isn't dynamic and isn't yet registered in HA shows
@@ -4774,9 +4998,12 @@ class TestBuildMenuView(unittest.TestCase):
             self._watcher({100: "switch.controller"}),
             dynamic_injection={100: [("sensor.humidity", "Humidity", "0 – 100 %", "")]},
         )
-        entities_card = next(c for c in cards if c["type"] == "entities")
-        entities = entities_card["entities"]
-        self.assertIn({"entity": "switch.controller"}, entities)
+        # The controlling switch is a tile; its injected rows follow below it.
+        body = [c for c in self._flat(cards) if c["type"] in ("entities", "tile")]
+        self.assertEqual([c["type"] for c in body], ["tile", "entities"])
+        self.assertEqual(body[0]["entity"], "switch.controller")
+        self.assertEqual(body[0]["name"], "Controlling switch")
+        entities = body[1]["entities"]
         divider_idx = next(
             i for i, e in enumerate(entities) if e.get("label") == "↳ Humidity  ·  0 – 100 %"
         )
@@ -5008,9 +5235,9 @@ class TestBuildMenuView(unittest.TestCase):
         # A second, independent call with no known_dynamic must NOT skip
         # point 100 — if defaults were shared/mutated this would fail.
         menu2 = self._menu(settings=[{"label": "X", "point_id": 100}])
-        cards2 = nl._build_menu_view(menu2, self._watcher({100: "switch.foo"}))
-        entities_card = next(c for c in cards2 if c["type"] == "entities")
-        self.assertIn({"entity": "switch.foo"}, entities_card["entities"])
+        cards2 = nl._build_menu_view(menu2, self._watcher({100: "sensor.foo"}))
+        entities_card = next(c for c in self._flat(cards2) if c["type"] == "entities")
+        self.assertIn({"entity": "sensor.foo"}, entities_card["entities"])
 
     def test_point_id_zero_renders_entity_row_not_dropped(self):
         """Regression: point_id: 0 is a valid (if currently unseen in real
@@ -5121,10 +5348,10 @@ class TestBuildMenuView(unittest.TestCase):
                 {"label": "Risky setting", "point_id": 100, "warning": "This can break things."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
         self.assertIn(
             '<ha-alert alert-type="warning" title="Risky setting">This can break things.</ha-alert>',
-            cards[0]["content"].splitlines(),
+            self._md_lines(cards),
         )
 
     def test_setting_warning_with_missing_label_uses_empty_title_not_none(self):
@@ -5140,10 +5367,10 @@ class TestBuildMenuView(unittest.TestCase):
                 {"point_id": 100, "warning": "This can break things."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
         self.assertIn(
             '<ha-alert alert-type="warning" title="">This can break things.</ha-alert>',
-            cards[0]["content"].splitlines(),
+            self._md_lines(cards),
         )
 
     def test_setting_note_alert_content_is_exact(self):
@@ -5154,10 +5381,10 @@ class TestBuildMenuView(unittest.TestCase):
                 {"label": "Noted setting", "point_id": 100, "note": "Some context."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
         self.assertIn(
             '<ha-alert alert-type="info" title="Noted setting">Some context.</ha-alert>',
-            cards[0]["content"].splitlines(),
+            self._md_lines(cards),
         )
 
     def test_setting_tip_alert_content_is_exact(self):
@@ -5168,10 +5395,10 @@ class TestBuildMenuView(unittest.TestCase):
                 {"label": "Tipped setting", "point_id": 100, "tip": "Try this."},
             ]
         )
-        cards = nl._build_menu_view(menu, self._watcher({100: "switch.foo"}))
+        cards = nl._build_menu_view(menu, self._watcher({100: "sensor.foo"}))
         self.assertIn(
             '<ha-alert alert-type="success" title="Tipped setting">Try this.</ha-alert>',
-            cards[0]["content"].splitlines(),
+            self._md_lines(cards),
         )
 
     def test_missing_settings_key_defaults_to_empty_list_not_none(self):
@@ -5568,6 +5795,7 @@ class TestBuildMenuDashboardConfig(unittest.TestCase):
             changed_from_default,
             render_submenus=True,
             controller_values=None,
+            point_steps=None,
         ):
             captured["controller_values"] = controller_values
             captured["known_dynamic"] = known_dynamic
@@ -6013,9 +6241,11 @@ class TestBuildMenuViewRemainingPaths(unittest.TestCase):
             "submenus": [],
         }
         cards = _build_menu_view(menu, self._watcher(), known_dynamic=set())
-        # Flatten all markdown card content
+        # Flatten all markdown card content, the info boxes above a setting
+        # (a vertical-stack with it) included.
+        flat = [c for card in cards for c in card.get("cards", [card])]
         content = " ".join(
-            card.get("content", "") for card in cards if card.get("type") == "markdown"
+            card.get("content", "") for card in flat if card.get("type") == "markdown"
         )
         self.assertIn("success", content.lower())
 
@@ -10495,3 +10725,31 @@ class TestWaitForRegistryStableDirect(unittest.TestCase):
             nl._wait_for_registry_stable(rw, available, active_dynamic)
 
         self.assertEqual(state["n"], 34)
+
+
+class TestRoomSetpointMenuOrder(unittest.TestCase):
+    """Since firmware 4.3.5 the controller works to one room setpoint per
+    zone (32341 for zone 1, menu 1.1.1 on the controller); 3945 and 5079 still
+    accept writes but are ignored (yozik04/nibe #327, and the reference
+    installation reads 20.0 on 3945 against 21.0 in menu 1.1.1). Menu 1.1, the
+    one most people use to set their temperature, must lead with the zone
+    setpoint and say the old ones do nothing."""
+
+    def _menu_1_1(self):
+        import os
+
+        import yaml
+
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "menu_structure.yaml")
+        with open(path, encoding="utf-8") as f:
+            menus = yaml.safe_load(f)["menus"]
+        menu_1 = next(m for m in menus if m["id"] == "1")
+        return next(m for m in menu_1["submenus"] if m["id"] == "1.1")
+
+    def test_zone_setpoint_comes_first(self):
+        self.assertEqual(self._menu_1_1()["settings"][0]["point_id"], 32341)
+
+    def test_old_setpoints_say_they_have_no_effect(self):
+        settings = {s["point_id"]: s for s in self._menu_1_1()["settings"]}
+        for point_id in (3945, 5079):
+            self.assertIn("has no effect", settings[point_id]["note"], point_id)

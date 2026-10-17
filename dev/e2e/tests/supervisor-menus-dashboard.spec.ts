@@ -2,6 +2,9 @@ import { test, expect, request as pwRequest } from '@playwright/test';
 import { execSync } from 'child_process';
 import * as path from 'path';
 import { readToken } from './support/ha-login';
+// Shared, not copied: the saved dashboard is over 1 MB, Node's default
+// execSync buffer, and a copy without maxBuffer read it as missing.
+import { savedMenuDashboardEntities, savedMenuDashboardMtime } from './support/stack';
 
 /**
  * The menu dashboard against a real entity registry. Everything here runs
@@ -95,44 +98,6 @@ function haNow(): number {
   return Number(execSync(`docker exec ${HA_CONTAINER} date +%s`, { encoding: 'utf-8' }).trim());
 }
 
-function savedMenuDashboardMtime(): number {
-  try {
-    const out = execSync(
-      `docker exec ${HA_CONTAINER} sh -c 'stat -c %Y /config/.storage/lovelace.*menus* 2>/dev/null'`,
-      { encoding: 'utf-8' }
-    );
-    return Number(out.trim().split('\n')[0]) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** All entity_ids referenced by the saved Nibe Menus dashboard, or null if
- * it hasn't been saved yet. */
-function savedMenuDashboardEntities(): Set<string> | null {
-  let raw: string;
-  try {
-    raw = execSync(
-      `docker exec ${HA_CONTAINER} sh -c 'cat /config/.storage/lovelace.*menus* 2>/dev/null'`,
-      { encoding: 'utf-8' }
-    );
-  } catch {
-    return null;
-  }
-  if (!raw.trim()) return null;
-  const entities = new Set<string>();
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      node.forEach(walk);
-    } else if (node && typeof node === 'object') {
-      const obj = node as Record<string, unknown>;
-      if (typeof obj.entity === 'string') entities.add(obj.entity);
-      Object.values(obj).forEach(walk);
-    }
-  };
-  walk(JSON.parse(raw));
-  return entities;
-}
 
 test('the menu dashboard tracks a point being disabled and re-enabled', async () => {
   // A mode change into `menus` (a few hundred entities), the initial

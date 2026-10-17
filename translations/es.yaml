@@ -198,6 +198,7 @@ value_mappings:
   Additional heat only: Solo calefacción adicional
   Auto: Auto
   CO2: CO2
+  Calibration: Calibración
   Closed: Cerrado
   Closed to pool: Cerrado a la piscina
   Closing: Cerrando
@@ -205,8 +206,9 @@ value_mappings:
   Cooling: Refrigeración
   Cut off: Desconectado
   Encouraged: Fomentado
+  Ext. hot water: ACS ext
   Heating: Calefacción
-  Hot water: Agua caliente
+  Hot water: ACS
   Hot water boost: Impulso de agua caliente
   Idle: En reposo
   Inactive: Inactivo
@@ -222,6 +224,7 @@ value_mappings:
   Own setting: Configuración propia
   Passive: Pasivo
   Pool: Piscina
+  Pool 2: Piscina 2
   Preheating: Precalentamiento
   Price per kWh: Precio por kWh
   Radiator: Radiador
@@ -230,5 +233,6 @@ value_mappings:
   Saving: Ahorro
   Saving PLUS: Ahorro PLUS
   Standard: Estándar
-  Starting: Arrancando
+  Starting: Iniciando
+  Transfer: Transfer.
   Underfloor heating: Suelo radiante

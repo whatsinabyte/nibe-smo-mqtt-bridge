@@ -5,6 +5,8 @@
 #                         (default N=3: B and C), each from a clean slate.
 #   ./stacks.sh down      Tear down every extra stack (stack A is left alone).
 #   ./stacks.sh status    Show which stacks are up.
+#   ./stacks.sh up-one I  Bring up only stack I (e.g. 4) from a clean slate.
+#   ./stacks.sh down-one I  Tear down only stack I.
 #
 # Then run the suite on all of them, one Playwright worker per stack:
 #   E2E_STACKS=3 npx playwright test
@@ -115,6 +117,14 @@ case "$cmd" in
                 down_one "$i"
             fi
         done
+        ;;
+    up-one)
+        # One extra stack i from a clean slate, e.g. with another model's
+        # dump: MOCK_DUMP=… MOCK_PRODUCT_NAME=S1155 ./stacks.sh up-one 4
+        up_one "${2:?usage: stacks.sh up-one <index>}"
+        ;;
+    down-one)
+        down_one "${2:?usage: stacks.sh down-one <index>}"
         ;;
     status)
         docker ps --format '{{.Names}}\t{{.Status}}' | grep '^nibe-e2e' | sort

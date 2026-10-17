@@ -99,6 +99,7 @@ copies, on 2026-09-11.
 | Installer manual, S2125 | IHB EN 2525-1 (831880) | 905826 | 11 265 445 |
 | Installer manual, S2125-14 | IHB EN 2525-1 (931059) | 905779 | 7 655 159 |
 | Installer manual, VVM S320 | IHB EN 2327-1 (631794) | — | 5 796 228 |
+| Technical information, Modbus S-Series (added 2026-10-09) | TIF EN 2608 (M12676EN) | 878103 | 1 415 326 |
 
 The SMO S40 manuals held locally were already byte-identical to the published
 editions. The S2125 and VVM S320 manuals were not: the first refresh replaced
@@ -191,15 +192,177 @@ project's own `modbusRegisterID` field (confirmed by exact register-number
 match against `reference-dumps/`), unlike the older `smo40.csv`/`s1156.csv`
 ad-hoc exports used earlier, which turned out to mix in an unrelated absolute
 addressing scheme — see the `verify-cross-source-identity` lesson. Pulled this
-session: `s330_s332.csv`, `s735.csv`, `s1155_s1255.csv`, `vvms320_vvms325.csv`.
-Not yet pulled: `s2125.csv`, plus the F-series exports (out of scope for this
-project).
+session: `s330_s332.csv`, `s735.csv`, `s1155_s1255.csv`, `vvms320_vvms325.csv`;
+the JSON files of all eleven S-series models were pulled for the cross-check
+below. The F-series exports are out of scope for this project.
 
 These exports were useful for two things the manuals don't cover: confirming
 a register is real and stable across multiple independent real installations
 (not just this project's own single reference dump), and revealing structure
 — e.g. that a firmware feature's registers repeat identically across several
 models — that a single manual's prose does not spell out register-by-register.
+
+**Cross-check of the bridge's own tables (2026-10, the JSON files, all eleven
+S-series models).** Reference only: the library is GPL-3.0 and this project
+MIT, so its data is not copied into the bridge. 1,062 of the reference dump's
+1,167 Modbus-numbered points appear in its `smos40` file, with matching
+titles apart from wording. What it showed:
+- It has the firmware's own metadata, errors included: no unit where
+  `UNIT_OVERRIDES` adds one from the installer menus, and 29258's wrong
+  divisor (1) on five models.
+- Point 3702's minimum is `550` there on every model — the value
+  `RANGE_OVERRIDES` sets. The REST API alone declares `55`.
+- 3745 (Language) has maximum `24` there, against the REST API's `25`,
+  matching the controller's drop-down. 3959 ("Output AUX1") and 12463 ("AUX
+  relay (AUX11)") show the same pattern, `32` against `33`; not yet checked
+  on a controller, so the bridge keeps the REST range for these writable
+  settings.
+- It is not authoritative either: 6588 ("Hi press (EB101-BP9)") is `u8`,
+  factor 1, no unit there, while the REST API's `s16`, divisor 10, bar fits
+  the live value (raw 104 = 10.4 bar).
+- Its value labels (eight registers) agree with `VALUE_MAPPINGS`. 1758
+  (Priority) is identical value for value, but `VALUE_MAPPINGS` got it in the
+  initial commit with no recorded source, possibly from here, so it doesn't
+  count as an independent confirmation of the hot water and pool values.
+- Every holding register is writable there and no input register is — the
+  rule `is_writable_point` follows.
+- A REST-only point (`MODBUS_NO_REGISTER`, e.g. 32824) has no counterpart, so
+  it can't be compared by register number.
+
+Its `extensions.json` is the library's hand-maintained correction layer on top
+of the exports (value labels, units, divisors), comparable to this bridge's own
+override tables. Its S-series entries agree with the bridge or with the
+firmware's own descriptions, with one addition: it labels register 1911,
+"Operating mode (SG Ready)" (REST point 3260), as 10 Normal Price / 20 High
+Price / 30 Low Price / 40 Free Electricity. That fits both values measured in
+issue #40, so 3260 now carries those labels, marked partial.
+
+Its open PR #325 (2026-09-29) comes from an SMO S40 owner on firmware 4.13.12,
+the reference installation's own combination. It updates the SMO S40 register
+list to 4.13.12 — after it, only 6 of the reference dump's registers are
+missing from it, against 105 before, and the 99 newly listed ones match the
+REST metadata exactly — and labels the SG Ready family: 3260 and 1021 as 10
+Normal / 20 Block / 30 Low price / 40 Boost, and 10614 as 0 Block / 1 Normal /
+2 Low price / 3 Boost, the order 10614 already had. 1021 now carries those
+labels (it was mapped 10 Off / 40 On only).
+
+## NIBE's Modbus technical information (M12676EN)
+
+<https://assetstore.nibe.se/hcms/v2.3/entity/document/878103/storage/ODc4MTAzLzAvbWFzdGVy>,
+edition TIF EN 2608, published 2026-02-18, 24 pages. Saved locally as
+`reference-pdfs/Modbus_S-Series_TIF_EN_2608_M12676.pdf`. Not the same document
+as the register list above: besides setting up Modbus TCP/IP (menu 7.5.9, at
+most 20 registers per query and 100 per second), it has hand-picked register
+tables per model (S1x55/S1x56, VVM S320/S325/S500/SVM S332, SMO S40,
+S2125/F2120, F2040, S735), common and accessory registers, the "AUX from
+Modbus" function IDs for register 2740, and the external-sensor registers of
+menu 7.5.9.2. Its "ID" column is the same register number as this project's
+`modbusRegisterID`.
+
+**Its value lists are not reliable.** Checked against the reference
+installation (SMO S40 with S2125, firmware 4.13.12), it contradicts the
+controller three times:
+- 4729 "Operating mode circulation pump heating" (register 783): the document
+  gives 0 = auto, 1 = manual; on the controller, 1 shows as Auto.
+- 5482 "Brine pump auto mode" (register 1319): the document gives 0 = auto,
+  1 = manual; the REST range is 0–2, and the controller's three options are
+  Intermittent, Continuous and 10 days cont.
+- 3959 "Output AUX1" and 12463 "AUX relay (AUX11)" (registers 216 and 224):
+  the document gives 0 = alarm output and 5 = not used (marked as the
+  standard setting); on the controller, 0 is no function and 5 alarm output.
+  It does agree that 5 is the factory default.
+
+It also contradicts the firmware's own description of 3173 (QN41, register
+2410): 0 = closed, 1 = open, where the firmware says 10 = shunt off, 20 =
+open, 30 = closed, and the controller reads 20.
+
+Where it agrees with labels the bridge has from other sources — 1758
+(Priority), 1764, 1766, 2701, 2702 and 2703 — that counts as supporting
+evidence only, so their `MAPPING_STATUS` stays as it was. Two registers carry
+other titles than the REST API's: 1029 is "Add. heat steps" there (REST 1760,
+"Operating mode internal add. heat") and 2454 "Step add. heat type" (REST 6717,
+"Ext. add. heat active steps"). The bridge goes by the firmware's titles.
+
+## The myUplink cloud API's option lists
+
+`GET /v2/devices/{deviceId}/points` of the public myUplink API
+(<https://api.myuplink.com/swagger/docs/public-v2/swagger.json>) gives each
+point's options as `enumValues` (`{value, text, icon}`), in the language of
+the request. Harvested 2026-10-09 from the reference installation with a
+personal API app (client-credentials flow, read-only), in all twelve
+languages the bridge translates; the dumps are in the local
+`reference-dumps/` (`myuplink_points_<lang>_*.json`,
+`myuplink_enums_<lang>_*.json`).
+
+- Its point ids are the local REST API's: 4 is BT1, 55000 Priority. No
+  matching by name is needed.
+- It serves only a selection: 67 points for the reference installation,
+  mostly temperatures and energy, against well over a thousand locally.
+- Four points have options. 2500's ("Compressor status") are poorer than the
+  firmware's own description (no text for 100). The other three had no
+  labels in the bridge and now carry the cloud's: 55000 (Priority; 25 Ext.
+  hot water, 41 Pool 2 and 50 Transfer were never seen locally), 10897
+  (charge pump) and 14952 (operating priority, EB101-EP14). 10897 and 14952
+  are not in the reference dump. All three are marked partial.
+- The texts are NIBE's own in every language, so the translations follow
+  them, together with the controller's own value descriptions in the local
+  de, nl and sv dumps (see ARCHITECTURE.md, `VALUE_MAPPINGS` translation).
+- Its `stepValue` is the local metadata's `change` for the same point (5 for
+  the room setpoints, 20 for degree minutes), which the bridge now uses as a
+  setting's step.
+
+Cloudflare in front of the API refuses Python's default User-Agent (HTTP 403,
+"error code: 1010"); any other User-Agent passes.
+
+## A ground-source dump: S1155 (GitHub issue #82)
+
+A user with an S1155 posted its full bulk fetch (firmware 4.13, heat pump
+type 55) in issue #82, in the same shape as `reference-dumps/all_points_en.json`.
+Kept locally as `reference-dumps/all_points_en_s1155_issue82.json`. It is
+the first water/water reference: 145 of its 1,168 points are not in the SMO
+S40 dump (the GP1 and brine pumps, brine alarms, the internal compressor
+module's inverter, and the pump-speed settings), and 146 of the SMO S40's
+are not in it.
+
+Checked against the S1155 installer manual (IHB EN 2425-2, menus 7.1.2.2,
+7.1.2.7 and 7.1.2.8) — title, range and default — twelve of the nineteen
+`family: water_water` settings that had no register now have one:
+- 7.1.2.2 GP1 pump speed: heating, hot water and pool auto (4799, 4798,
+  4800) and manual speed (3961, 3960, 3962; register 218 is "Heating medium
+  pump speed (GP1) at operation mode manual" in M12676 too), minimum
+  permitted speed (8033, 1–50 %), speed in wait mode (3963).
+- 7.1.2.7: Delta-T, fixed delta (5481, 2–10 °C).
+- 7.1.2.8: automatic reset (3928), alarm temperature (3929, −12–15 °C; 5233
+  is the same for module EP15), max brine in (3931, 10–30 °C — the menu file
+  said 10–35).
+
+Still open, as no candidate is conclusive for a writable setting:
+- 7.1.2.2 maximum permitted speed: 4804 "Maximum speed of circulation pump
+  for heating" and 4642 "Max speed, regulator, charge/heating medium pump
+  (EB100)" both declare 50–100 %, the manual 80–100 %.
+- 7.1.2.2 cooling (3): the candidates are titled passive or active cooling
+  and EP14 or EP15 (3964, 6010, 6011), the menu only "cooling".
+- 7.1.2.7 operating mode (Fixed delta / Auto / Manual): the S1155 has two
+  three-valued brine pump registers, 5482 (0–2, Intermittent / Continuous /
+  10 days cont. on a live SMO S40, menu 7.1.2.6) and 3753 (10/20/30, which
+  M12676 also lists as intermittent / continuous / 10 days).
+- 7.1.2.8 LP freeze protection (2): 26369 "Use LP as freeze protection" has
+  unit °C and divisor 10, 26368 "Freeze protection with LP-Dew" neither, and
+  both declare no range — as if the two were swapped.
+- 4.11.6 defrost collector: no register found.
+
+The owner then read his controller (2026-10-13):
+- 7.1.2.8 shows automatic reset off, alarm temperature −8.0 °C and max brine
+  in 30 °C — exactly 3928 = 0, 3929 = −80 and 3931 = 300 in the dump, which
+  confirms those three by value, not only by title and range. The menu has
+  no LP freeze protection settings on his S1155 (firmware 4.13), with or
+  without a cooling accessory selected, although 26368/26369 are in the dump.
+- 7.1.2.6 shows Intermittent and 7.1.2.7 Manual; 5482 is 0 and 3753 is 10,
+  each its register's first value, so neither tells the two apart.
+- 7.1.2.2 maximum permitted speed shows 100 % — as do both 4804 and 4642.
+  The cooling group appears only once the passive/active cooling 4-pipe
+  accessory (ACS 45) is selected in menu 7.2.1, with "auto" and "speed during
+  active cooling".
 
 ## What the internal symbol names revealed
 

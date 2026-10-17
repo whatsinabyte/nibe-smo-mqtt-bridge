@@ -3531,7 +3531,7 @@ class TestUpdateAlarmState(unittest.TestCase):
         update_alarm_state = self._import()
         em = _make_em()
         em._last_alarm_count = 0
-        em._alarm_notification_active = True  # suppress notify_ha; not under test here
+        em._alarm_notification_active = True  # notification not under test
         em._api.fetch_notifications.return_value = [self._alarm(), self._alarm(alarm_id=2)]
         with self.assertLogs("nibe.stats", level="DEBUG") as cm:
             update_alarm_state(em, MagicMock())
@@ -3554,7 +3554,7 @@ class TestUpdateAlarmState(unittest.TestCase):
     def test_clean_alarms_extracts_expected_fields(self):
         update_alarm_state = self._import()
         em = _make_em()
-        em._alarm_notification_active = True  # suppress notify_ha; not under test here
+        em._alarm_notification_active = True  # notification not under test
         em._api.fetch_notifications.return_value = [
             self._alarm(alarm_id=42, header="Sensor fault", severity="Error"),
         ]
@@ -3571,7 +3571,7 @@ class TestUpdateAlarmState(unittest.TestCase):
         must not crash — defaults to empty string, not KeyError."""
         update_alarm_state = self._import()
         em = _make_em()
-        em._alarm_notification_active = True  # suppress notify_ha; not under test here
+        em._alarm_notification_active = True  # notification not under test
         em._api.fetch_notifications.return_value = [{"alarmId": 1, "header": "X"}]
         pub = MagicMock()
         update_alarm_state(em, pub)
@@ -3586,7 +3586,7 @@ class TestUpdateAlarmState(unittest.TestCase):
         default was never exercised."""
         update_alarm_state = self._import()
         em = _make_em()
-        em._alarm_notification_active = True  # suppress notify_ha; not under test here
+        em._alarm_notification_active = True  # notification not under test
         em._api.fetch_notifications.return_value = [{"alarmId": 1}]  # no 'header' key
         pub = MagicMock()
         update_alarm_state(em, pub)

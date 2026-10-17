@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] — 2026-10-17
+
+A release about using the controller from Home Assistant: the Nibe Menus
+dashboard gets real controls, settings say whether they still have their
+factory value, and the first ground-source mappings arrive. Read
+**Changed** before upgrading.
+
+### Added
+
+- **Nibe Menus dashboard: settings are tiles with their control** — −/+
+  buttons for a number, in the setting's own step (0.5 °C for a room
+  setpoint), a drop-down for a select, a toggle for a switch, a press
+  button for a button. Above each, an info box gives its range, step and
+  explanation; tips and warnings are shown too, and an empty line
+  separates the settings. Time settings and read-only values stay rows.
+- **Live "changed from default" status**: a number, select or switch with
+  a factory default gets a `default_status` attribute — `default`, or
+  `✏️ default: 20 °C` once it differs — shown on its tile. It follows the
+  value, unlike the old ✏️ badge, which only updated with the dashboard.
+- **A setting's step comes from the firmware** (`change` metadata) and is
+  shown in the Entity Manager card's details panel.
+- **Graphs and statistics for unitless counts**: compressor starts and
+  sizes, compressor counts, fan speeds and similar get a state class, and
+  running totals (compressor starts, operating hours) count up, so a
+  statistics graph shows them per day, week or month. Codes keep their
+  state bars.
+- **A firmware update gets a changelog entry**, naming the version change
+  and the registers it added, removed or redescribed.
+- **A notification when entity ids change** after an update changed an
+  entity's type, listing old id → new id.
+- **Value label status**: a `mapping` attribute (`confirmed`, `partial`,
+  `inferred`) on labels the bridge supplies itself, with a report link in
+  the card for the unconfirmed ones.
+- **Labels**: Priority (55000), charge pump (10897) and operating priority
+  (14952) from NIBE's own option lists; SG Ready status (3260), PV panels
+  operating mode (1021), frost protection (3097) and all sub units
+  operating prio (56150); heat pump type 55 reads "S1155".
+- **Ground-source (water/water) mappings** from an S1155's own dump (issue
+  #82): GP1 pump speeds (menu 7.1.2.2), the brine pump's fixed delta
+  (7.1.2.7) and the brine alarm settings (7.1.2.8).
+- **Log lines carry the date.**
+- DOCS.md: a section on getting more from the data (COP, energy log).
+
+### Changed
+
+- **Translations follow NIBE's own wording** where NIBE has one (e.g.
+  Dutch "Verwarming", "Koeling", "Warmtapwater").
+- **Menu explanations are split by purpose** — what a setting is, what to
+  do with it, and the risk — for 65 settings, and menu 1.1 now starts with
+  the zone 1 room setpoint (the older room sensor setpoints have no
+  effect, as noted there).
+- **Statistics**: sensors that gain a state class start long-term
+  statistics, and the operating-hour counters change from `measurement`
+  to `total_increasing`; Home Assistant may show a repair notice for the
+  latter's existing statistics.
+- On ground-source models, 4798–4800 (automatic GP1 speed) become
+  switches and 671/2784 (compressor counts) sensors: new entity ids there.
+
+### Fixed
+
+- **CPU spikes every poll**: availability and unchanged states were sent
+  again each poll — about 1,150 messages a poll in menus mode. Now only
+  changes are sent (176 messages in three minutes against 13,859).
+- The built-in test suite no longer sends notifications to Home Assistant
+  or writes the installation's own `/data` files.
+- Max brine in (menu 7.1.2.8) has the documented 10–30 °C range.
+- Dashboard tiles no longer reference a `default_status` attribute their
+  entity doesn't have (reported by Spook).
+
+---
+
 ## [1.3.0] — 2026-10-06
 
 A broad bug-hunting release. Most of it is fixes, but some entities change

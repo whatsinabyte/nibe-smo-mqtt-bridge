@@ -52,7 +52,8 @@ The payload is plain JSON (not compressed).
       "shortUnit": "°C",
       "divisor": 10,
       "decimal": 1,
-      "change": 1
+      "change": 1,
+      "mapping_status": null
     }
   },
   "count": 1158,
@@ -66,8 +67,9 @@ The payload is plain JSON (not compressed).
 - `unit_raw` — the original firmware unit before any override
 - `divisor` — divide raw integer value by this to get the display value; `0` is treated as `1`
 - `decimal` — number of decimal places to display
-- `change` — minimum change in raw value before the firmware considers the value changed
+- `change` — the value's step in raw units: a setting moves by this much (myUplink's `stepValue` for the same point is the same number); the bridge uses it as a setting's step in Home Assistant, and the details panel shows a number's step from it. A measurement's resolution is its `divisor`
 - `modbusRegisterID` — Modbus TCP register address; `null` if not a Modbus point
+- `mapping_status` — how far the bridge's own value labels for this point have been checked: `confirmed`, `partial` or `inferred`; `null` when the point has none, isn't classified, or is a binary sensor (whose labels HA doesn't show). The card shows it in the details panel, with a report link for `inferred` and `partial`
 - `is_dynamic` — `true` for points that only appear when a controlling switch is active
 
 For individual point updates (a dynamic point appearing, a point returning after an absence, or a reclassification), a per-point message is published to `nibe/browser/meta/{point_id}` with the same schema as a single metadata entry (no outer `metadata`/`count` wrapper), plus one extra field not present in the batched form: `last_updated`, a per-point timestamp.
@@ -138,7 +140,7 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 
 ### `nibe/browser/changelog/history`
 
-**Retained.** The full changelog of dynamic point appearances and disappearances. Gzip-compressed JSON, prefixed with the ASCII sentinel `"gzip1:"` followed by base64-encoded gzip bytes (see [Compression](#compression) below). The card decompresses and displays this in the Changelog panel.
+**Retained.** The full changelog of dynamic point appearances and disappearances, and of firmware updates. Gzip-compressed JSON, prefixed with the ASCII sentinel `"gzip1:"` followed by base64-encoded gzip bytes (see [Compression](#compression) below). The card decompresses and displays this in the Changelog panel.
 
 ```json
 {
@@ -146,12 +148,23 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
     {
       "timestamp": 1721825000.0,
       "iso_timestamp": "2025-07-24 14:03:20",
-      "added": [3755, 3756],
+      "added": [{"id": 3755, "title": "Forced control, heating", "type": "switch"}],
       "removed": [],
       "id": "change_1721825000000",
       "unread": true,
       "source": "firmware",
       "triggered_by": {"id": 3754, "title": "Forced control", "value": 1}
+    },
+    {
+      "timestamp": 1721800000.0,
+      "iso_timestamp": "2025-07-24 07:06:40",
+      "added": [],
+      "removed": [],
+      "id": "change_1721800000000",
+      "unread": true,
+      "source": "firmware_change",
+      "triggered_by": null,
+      "note": "Version (EB100): 4.13 → 4.14"
     }
   ],
   "total_entries": 1,
@@ -162,8 +175,9 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 ```
 
 **Field notes:**
-- `added` / `removed` — arrays of point IDs that appeared or disappeared in this event
-- `source` — always `"firmware"` (reserved for future use)
+- `added` / `removed` — the points that appeared or disappeared in this event, each `{id, title, type}`
+- `source` — `"firmware"` when the controller showed or hid points (the card's "controller" badge), or `"firmware_change"` for a firmware update (the "firmware update" badge). A firmware update entry is shown even when it adds or removes no point. The card also has renderers for `"learning"` and `"ha_disabled"`, which the bridge doesn't currently send
+- `note` — only on `"firmware_change"` entries: the version registers that changed, old → new
 - `triggered_by` — an object `{id, title, value?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID (same shape as `nibe/browser/dynamic`'s `triggered_by` above, since this entry is built from that same event)
 - `_seq` — monotonically increasing sequence number; the card uses this to skip stale retained messages after a map flush
 

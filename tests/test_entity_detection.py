@@ -571,6 +571,10 @@ class TestParseDescriptionMappingProperties(unittest.TestCase):
             st.integers(min_value=-1000, max_value=1000), _label, min_size=1, max_size=6
         )
     )
+    # Labels int() would accept but no firmware key looks like — found by
+    # the nightly run: "+5 = 5" used to parse as {5: "5"}.
+    @example({5: "+5"})
+    @example({5: "1_0"})
     def test_roundtrip_label_left_ordering(self, mapping):
         """The other firmware ordering ('Auto = 0, Manual = 1', label
         before the integer) must round-trip identically to the int-left
@@ -4601,6 +4605,114 @@ class TestControllerVerifiedOptionLists(unittest.TestCase):
             self.assertEqual(get_entity_options(pid, ""), options, pid)
 
 
+class TestBinaryRuleCountsColonPairs(unittest.TestCase):
+    """Descriptions use '=' or ':' (22268 mixes both). The binary-sensor
+    rule must count options the same way the option parser does: with only
+    '=' counted, a 0–0 status register described '0: A, 1: B, 2: C' looked
+    like a boolean."""
+
+    def _meta(self):
+        return {
+            "modbusRegisterType": "MODBUS_INPUT_REGISTER",
+            "variableSize": "u8",
+            "minValue": 0,
+            "maxValue": 0,
+            "unit": "",
+        }
+
+    def test_three_colon_options_are_not_binary(self):
+        from nibe_entity_detection import _is_auto_binary_sensor
+
+        point = {"variableId": 99901, "description": "0: Zones, 1: Climate system, 2: Profile"}
+        self.assertFalse(_is_auto_binary_sensor(point, self._meta()))
+
+    def test_mixed_separators_are_all_counted(self):
+        from nibe_entity_detection import _is_auto_binary_sensor
+
+        point = {
+            "variableId": 99902,
+            "description": "0 = Successful, 1: Low supply, 2: Low return",
+        }
+        self.assertFalse(_is_auto_binary_sensor(point, self._meta()))
+
+    def test_two_options_stay_binary(self):
+        from nibe_entity_detection import _is_auto_binary_sensor
+
+        point = {"variableId": 99903, "description": "0: Off, 1: On"}
+        self.assertTrue(_is_auto_binary_sensor(point, self._meta()))
+
+
+class TestFirmwareFingerprint(unittest.TestCase):
+    """The fingerprint describes the firmware's own register, so a firmware
+    update changing it can be reported — including a value an override
+    replaces (3702's minimum, 29258's divisor), which would otherwise hide a
+    NIBE fix behind the bridge's own correction."""
+
+    def test_overridden_values_are_put_back(self):
+        from nibe_entity_detection import apply_metadata_overrides, firmware_fingerprint
+
+        raw = {"minValue": 55, "maxValue": 700, "divisor": 10, "unit": "°C"}
+        patched = apply_metadata_overrides(3702, raw)
+        self.assertEqual(patched["minValue"], 550)
+        self.assertEqual(firmware_fingerprint(patched)["minValue"], 55)
+
+        raw = {"minValue": 0, "maxValue": 65535, "divisor": 1, "unit": "kW"}
+        self.assertEqual(firmware_fingerprint(apply_metadata_overrides(29258, raw))["divisor"], 1)
+
+    def test_reapplying_an_override_keeps_the_firmware_value(self):
+        """_index_point re-applies the overrides to metadata the poll has
+        already patched."""
+        from nibe_entity_detection import apply_metadata_overrides, firmware_fingerprint
+
+        once = apply_metadata_overrides(3702, {"minValue": 55, "maxValue": 700, "divisor": 10})
+        twice = apply_metadata_overrides(3702, once)
+        self.assertEqual(firmware_fingerprint(twice)["minValue"], 55)
+
+    def test_firmware_fixing_a_value_shows_its_new_value(self):
+        """Once NIBE declares 550 itself, nothing is replaced, and the
+        fingerprint carries the firmware's new value."""
+        from nibe_entity_detection import apply_metadata_overrides, firmware_fingerprint
+
+        fixed = apply_metadata_overrides(3702, {"minValue": 550, "maxValue": 700, "divisor": 10})
+        self.assertEqual(firmware_fingerprint(fixed)["minValue"], 550)
+
+    def test_values_and_titles_are_not_part_of_it(self):
+        from nibe_entity_detection import FINGERPRINT_FIELDS, firmware_fingerprint
+
+        fingerprint = firmware_fingerprint({"intDefaultValue": 3, "title": "x", "unit": "h"})
+        self.assertEqual(set(fingerprint), set(FINGERPRINT_FIELDS))
+        self.assertEqual(fingerprint["unit"], "h")
+
+
+class TestMappingStatus(unittest.TestCase):
+    """MAPPING_STATUS records how far each VALUE_MAPPINGS entry has been
+    checked; it is published as the 'mapping' attribute and drives the
+    card's report link."""
+
+    def test_every_entry_has_a_mapping_and_a_known_status(self):
+        from nibe_entity_detection import (
+            MAPPING_STATUS,
+            MAPPING_STATUSES,
+            _lookup_manual_mapping,
+        )
+
+        for pid, status in MAPPING_STATUS.items():
+            self.assertIsNotNone(_lookup_manual_mapping(pid), f"{pid} has no VALUE_MAPPINGS entry")
+            self.assertIn(status, MAPPING_STATUSES, pid)
+
+    def test_lookup(self):
+        from nibe_entity_detection import mapping_status
+
+        self.assertEqual(mapping_status(56150), "partial")
+        self.assertIsNone(mapping_status(4))
+
+    def test_unknown_status_is_not_published(self):
+        from nibe_entity_detection import MAPPING_STATUS, mapping_status
+
+        with patch.dict(MAPPING_STATUS, {56150: "confirmd"}):
+            self.assertIsNone(mapping_status(56150))
+
+
 class TestSafetyReadOnlyPoints(unittest.TestCase):
     """DOCS.md "Intentionally Unexposed Registers": Block new compressor,
     Set point value power and the spot prices are never
@@ -4652,3 +4764,130 @@ class TestSafetyReadOnlyPoints(unittest.TestCase):
         for pid in (26703, 26711, 29971, 33194, 33196):
             self.assertNotIn(pid, SAFETY_READ_ONLY_POINTS)
             self.assertTrue(is_writable_point(self._holding(pid)["metadata"], pid), pid)
+
+
+class TestGroundSourceS1155Points(unittest.TestCase):
+    """Points from an S1155's own dump (GitHub issue #82, metadata copied
+    as the firmware reports it) that the air/water reference dump lacks."""
+
+    def _point(self, pid, title, register, size, lo, hi, unit=""):
+        return {
+            "variableId": pid,
+            "title": title,
+            "description": "",
+            "metadata": {
+                "modbusRegisterType": register,
+                "variableSize": size,
+                "minValue": lo,
+                "maxValue": hi,
+                "unit": unit,
+                "divisor": 1,
+            },
+        }
+
+    def test_automatic_pump_speed_settings_are_switches(self):
+        """Menu 7.1.2.2's "auto" settings are on/off in the S1155 manual, but
+        the firmware declares unit "%" on them — they showed as 0–1 %
+        numbers."""
+        from nibe_entity_detection import detect_entity_type
+
+        for pid in (4798, 4799, 4800):
+            point = self._point(
+                pid,
+                "Automatic speed heating medium pump, heating",
+                "MODBUS_HOLDING_REGISTER",
+                "s8",
+                0,
+                1,
+                unit="%",
+            )
+            self.assertEqual(detect_entity_type(point)[0], "switch", pid)
+
+    def test_external_control_compressor_counts_are_quantities(self):
+        """671/2784 count compressors like 666–670: a sensor graphed as a
+        number, not an on/off binary sensor."""
+        from nibe_entity_detection import UNITLESS_QUANTITY_POINTS, detect_entity_type
+
+        for pid, title in (
+            (671, "Available compressors external control"),
+            (2784, "Docked compressors external control"),
+        ):
+            point = self._point(pid, title, "MODBUS_INPUT_REGISTER", "u8", 0, 0)
+            self.assertEqual(detect_entity_type(point)[0], "sensor", pid)
+            self.assertIn(pid, UNITLESS_QUANTITY_POINTS)
+
+    def test_running_totals_and_heat_pump_type(self):
+        """Compressor starts and run-time counters count up; heat pump type
+        55 is the S1155 itself."""
+        from nibe_entity_detection import (
+            TOTAL_INCREASING_POINTS,
+            UNITLESS_QUANTITY_POINTS,
+            _lookup_manual_mapping,
+        )
+
+        self.assertTrue({1959, 1961, 1963, 1865} <= TOTAL_INCREASING_POINTS)
+        self.assertIn(1959, UNITLESS_QUANTITY_POINTS)  # starts: no unit
+        self.assertEqual(_lookup_manual_mapping(2527)[55], "S1155")
+
+
+class TestMeaningfulDefault(unittest.TestCase):
+    def _meta(self, **kw):
+        m = {
+            "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+            "minValue": 50,
+            "maxValue": 350,
+            "intDefaultValue": 200,
+        }
+        m.update(kw)
+        return m
+
+    def test_rules(self):
+        from nibe_entity_detection import meaningful_default
+
+        self.assertEqual(meaningful_default(self._meta()), 200)
+        self.assertIsNone(
+            meaningful_default(self._meta(modbusRegisterType="MODBUS_INPUT_REGISTER"))
+        )
+        self.assertIsNone(meaningful_default(self._meta(minValue=0, maxValue=0)))
+        self.assertIsNone(meaningful_default(self._meta(intDefaultValue=None)))
+        # 0 at a 0 minimum with a wider range is the firmware's placeholder.
+        self.assertIsNone(meaningful_default(self._meta(minValue=0, intDefaultValue=0)))
+        self.assertEqual(meaningful_default(self._meta(minValue=-10, intDefaultValue=0)), 0)
+        # ...unless it is one of a select's options.
+        placeholder = self._meta(minValue=0, maxValue=2, intDefaultValue=0)
+        self.assertEqual(meaningful_default(placeholder, mapping={0: "Auto", 1: "Manual"}), 0)
+        self.assertIsNone(meaningful_default(placeholder, mapping={1: "Manual"}))
+
+    def test_agrees_with_the_dashboard_defaults_for_every_number(self):
+        """The tile's live status and the dashboard's "default: X" must
+        judge the same settings — numbers, selects and switches — checked
+        on the reference dump."""
+        import json
+        import os
+
+        from nibe_entity_detection import detect_entity_type, meaningful_default
+        from nibe_lovelace import _build_point_defaults
+
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "reference-dumps", "all_points_en.json"
+        )
+        if not os.path.exists(path):
+            self.skipTest("reference dump not available")
+        with open(path, encoding="utf-8") as f:
+            dump = json.load(f)
+        points = {int(k): {**v, "variableId": int(k)} for k, v in dump.items()}
+        from nibe_entity_detection import get_value_mapping
+
+        settings = {
+            pid
+            for pid, p in points.items()
+            if detect_entity_type(p)[0] in ("number", "select", "switch")
+        }
+        dashboard = set(_build_point_defaults(points)) & settings
+        live = {
+            pid
+            for pid in settings
+            if meaningful_default(points[pid]["metadata"], pid, get_value_mapping(pid, points[pid]))
+            is not None
+        }
+        self.assertEqual(live, dashboard)

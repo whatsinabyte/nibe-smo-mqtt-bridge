@@ -90,9 +90,7 @@ def _retry_delay() -> float:
     Uses full jitter: ``random.uniform(0, min(base, cap))``.  This prevents
     correlated retries when multiple callers hit the same transient failure.
     """
-    return random.uniform(
-        0, min(_RETRY_BASE_S, _RETRY_MAX_S)
-    )  # retry jitter, not cryptographic  # nosec B311
+    return random.uniform(0, min(_RETRY_BASE_S, _RETRY_MAX_S))  # retry jitter, not cryptographic  # nosec B311
 
 
 class NibeApiClient:

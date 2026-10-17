@@ -3972,8 +3972,9 @@ class TestGenerateNibeMqttSmallPaths(unittest.TestCase):
                 exc_info=None,
             )
             result = formatter.format(record)
-            # Shape: "HH:MM:SS.mmm [INFO    ] nibe.test: hello world"
-            self.assertRegex(result, r"^\d{2}:\d{2}:\d{2}\.\d{3} \[INFO")
+            # Shape: "YYYY-MM-DD HH:MM:SS.mmm [INFO    ] nibe.test: hello world"
+            # — dated, since an add-on log spans days and restarts.
+            self.assertRegex(result, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[INFO")
             self.assertIn("nibe.test", result)
             self.assertIn("hello world", result)
         finally:
@@ -8633,6 +8634,24 @@ class TestConfigTranslationsParity(unittest.TestCase):
                 missing,
                 f"{path.name} is missing translation entries for: {sorted(missing)}",
             )
+
+    def test_cloud_labels_are_translated_in_every_language(self):
+        """The labels of 55000, 10897 and 14952 (from the myUplink cloud's
+        own option lists) are translated in every language, with NIBE's own
+        wording from the same source."""
+        import yaml as _yaml
+        from nibe_entity_detection import _lookup_manual_mapping
+
+        labels = {
+            label for pid in (55000, 10897, 14952) for label in _lookup_manual_mapping(pid).values()
+        }
+        for path in self.translation_files:
+            if path.stem == "en":
+                continue
+            with open(path) as f:
+                mappings = _yaml.safe_load(f).get("value_mappings") or {}
+            missing = labels - set(mappings)
+            self.assertFalse(missing, f"{path.name} has no translation for: {sorted(missing)}")
 
     def test_value_mappings_translations_are_unique_within_each_language(self):
         """Two English labels must never translate to the same string.

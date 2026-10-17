@@ -107,7 +107,7 @@ These are the only fields you need to get started.
 | `log_level` | Log verbosity. Does not affect which entities are exposed — see `debug_mode` below for diagnostic entities. Restart required. | `info` |
 | `debug_mode` | Unlocks diagnostic entities on the Management device (Flush Dynamic Map, Run Test Suite, Test Suite Result, Test API Connection, Connectivity Check Result) — a separate setting from `log_level`. Restart required. | `false` |
 | `api_failure_threshold` | Consecutive failed polls before an HA notification appears | `3` |
-| `changelog_retention_days` | Days to retain Entity Manager changelog entries. Minimum 50 entries always kept. | `90` |
+| `changelog_retention_days` | Days to retain Entity Manager changelog entries. Minimum 50 entries always kept, and firmware update entries are kept regardless of age. | `90` |
 | `remove_frontend` | Set to `true` before stopping the app to clean up Lovelace resources on shutdown. See [Uninstalling](#uninstalling). | `false` |
 | `mqtt_tls` | Enable TLS for broker traffic. Requires broker to be configured for TLS. | `false` |
 | `mqtt_ca_cert` | Path to PEM CA certificate for the MQTT broker. Only needed for self-signed broker certificates. Example: `/ssl/ca.pem` | — |
@@ -128,6 +128,7 @@ The bridge surfaces important events in the HA notification bell.
 | **Dynamic entity disabled in HA** | User disabled a dynamic entity; bridge re-enabled it | No — replaced on each occurrence |
 | **Entity disabled in HA** | User disabled a static entity via HA settings | No — replaced on each occurrence |
 | **Nibe Menus — Dashboard updated** | Dynamic point appeared/disappeared in `menus` mode | No — dismissed manually |
+| **Entity ids changed** | An entity changed type (after an update, or a binary sensor reclassified to a sensor), so Home Assistant gave it a new entity id; lists old → new | No — dismissed manually, replaced on the next occurrence |
 
 Alarms are polled every 10 seconds, regardless of `poll_interval` — an alarm condition appears in HA within 10 seconds of occurring.
 
@@ -194,7 +195,7 @@ These are the same certificate files used by the HA frontend. Then in the bridge
 
 ### Polling
 
-The bridge fetches all data points from the Nibe controller in a single bulk HTTP request on every poll cycle. The default interval is 30 seconds — every entity updates at most once per cycle.
+The bridge fetches all data points from the Nibe controller in a single bulk HTTP request on every poll cycle. The default interval is 30 seconds — every entity updates at most once per cycle, and only when its value changed: an unchanged value isn't sent again, so a quiet system causes almost no MQTT traffic, even with the 900+ entities of `menus` mode.
 
 This means:
 - **The value you see in HA is always up to one poll interval old.** If the compressor starts, it will appear in HA within 30 seconds (default), not instantly.
@@ -263,6 +264,8 @@ The bridge creates the following HA entity types from the controller's data poin
 
 On a fully equipped S-series installation the bridge typically creates 900–1,200 entities. The `essential` mode enables around 30 of the most useful ones at startup; the rest are available via the Entity Manager card.
 
+Home Assistant draws a sensor's history as a line graph when it has a unit, and as coloured bars, one colour per value, when it has none. Most unitless sensors are codes, such as operating modes, statuses, alarm numbers and relay states, and those keep the bars. A small set of unitless quantities is graphed and kept in long-term statistics: compressor counts and sizes, compressor starts, the number of active heat pumps, fan speeds, the raw pressure sensor readings and the active external additional heat steps. Running totals, such as compressor starts and operating hours, count up, so a statistics graph set to the **change** statistic shows the starts or hours per day, week or month. The bridge picks all of these by point number, so the choice is the same in every language.
+
 Entities fall into two categories:
 - **Diagnostic** — read-only sensors: temperatures, pressures, flow rates, operating states
 - **Config** — writable settings: setpoints, operating modes, schedules
@@ -284,7 +287,11 @@ Some data points only appear when a related feature is active. These **dynamic d
 
 **After learning** — the bridge immediately opens the 90-second scan window when you flip a known controlling switch. Dynamic entities appear within the next bulk poll cycle (up to ~60s). Disappearances are typically faster (~16s observed on S2125).
 
-**Firmware updates** — if a firmware update changes the relationship between a switch and its dynamic points, the bridge detects this automatically on the next flip. The stale relationship is cleared, a `firmware changed` entry appears in the Changelog, and the next flip triggers a new learning scan.
+**Firmware updates** — if a firmware update changes which points a switch shows, the next flip records the new outcome in place of the old one; the points appearing or disappearing show in the Changelog as usual.
+
+A firmware update gets its own Changelog entry, marked **firmware update**: the version that changed (for example `Version (EB100): 4.13 → 4.14`), the points the update added or removed, and the points whose register description it changed, such as a new range or unit (`min 55 → 550`). The bridge recognises an update by a changed version register, and only compares once the controller has served the same point list for five minutes, since a controller restarting after an update briefly serves an incomplete one. Dynamic points are checked each time they appear, against what was recorded when they were last shown: a setting can show or hide them but not change their description, so a difference is reported as a firmware change. Which dynamic points are shown counts at an update too: the update keeps your settings, so one shown before the update but not after was removed by it, and one newly shown was added. Between updates, a dynamic point appearing or disappearing is a setting and not reported as an update. The record is kept in `/data`; after a change of the `language` option it is renewed silently, since units follow the language.
+
+> ℹ️ **This is not watertight.** The controller's version register shows only major and minor (4.13, not 4.13.12), so an update that only raises the patch level isn't recognised; its changes simply become the new reference. In NIBE's version history that was 14 of 69 releases, and the ones since the local REST API exists (4.7.6, 4.8.7 and 4.12.8) changed no registers. Points that appear or change without a version change can't be told apart from a setting or newly connected hardware, so they aren't reported as an update. myUplink shows the full version, but only through NIBE's cloud.
 
 > ⚠️ **Disabling a dynamic entity via HA (cog icon) is not supported.** Dynamic points exist because the firmware exposes them — their lifecycle is firmware-controlled. The bridge re-enables any dynamic entity disabled via HA. To permanently stop seeing a dynamic entity, change the value of the register that controls it.
 
@@ -331,12 +338,16 @@ Every entity exposes static attributes from the firmware metadata, visible in th
 | Attribute | Description |
 |---|---|
 | `default_value` | Factory default value in display units — e.g. `20 °C`. Useful for restoring after experimentation. |
+| `default_status` | Number, select and switch settings with a factory default only: `default` while the value equals it, and once it differs `✏️ default: 20 °C` — on/off for a switch, the option for a select, in your language. Follows the value live; the Nibe Menus tiles show it next to the value. |
 | `point_id` | The numeric register ID used internally by the bridge and the REST API. |
 | `modbus_register` | The Modbus register address — for cross-referencing with installer documentation. |
 | `writable` | `true` if the register accepts write commands. |
 | `description` | The firmware's own description string, where provided. Sometimes contains enum value meanings. |
+| `mapping` | Only on sensors and selects whose value labels come from the bridge rather than the firmware: `confirmed` (checked against a live controller), `partial` (some values confirmed; an unknown value shows as a plain number) or `inferred` (not confirmed on a controller yet). |
 
 Attributes are published once when an entity is enabled and do not change between polls.
+
+> 💡 **Help confirm value labels.** For an entity marked `inferred` or `partial`, the Entity Manager card's details panel has a **Report what your controller shows** link. It opens a GitHub issue asking for what Home Assistant shows and what the controller display or myUplink shows at the same moment. No programming needed, and it's how labels for hardware the project can't test get confirmed.
 
 ```yaml
 # Example: show deviation from factory default
@@ -358,6 +369,10 @@ Aid Mode is readable and writable — you can turn it off from HA if an installe
 The bridge exposes energy and power data points compatible with HA's built-in Energy dashboard under **Settings → Dashboard → Energy**.
 
 > 💡 Search for `kWh` in the Entity Manager card to find all energy registers on your installation. Lifetime accumulator registers (`total_increasing`) are suitable for energy dashboard tracking; instantaneous power registers (`measurement`) for power monitoring.
+
+**Tot. consumption** (28393) is the lifetime electricity use the controller reports and can be added to the Energy dashboard as an individual device. Together with **Tot. production** (28392) it is also the basis for the efficiency (COP) figures in [Getting More from the Data](#getting-more-from-the-data). Both totals have been available through the Local REST API since firmware 4.7.5.
+
+> 💡 If the heat pump already has its own kWh meter, add only one of the two to the Energy dashboard as the heat pump's device, or its use is shown twice. Comparing the two over a few days is worthwhile: NIBE's counter is the controller's own figure, and on an SMO S40 whether the immersion heater is counted can depend on its energy log settings (firmware 2.25.6 added the option).
 
 ---
 
@@ -451,6 +466,71 @@ Every entity exposes `point_id`, `modbus_register`, `writable`, and `default_val
 
 ---
 
+## Getting More from the Data
+
+The bridge publishes what the controller reports. Some of the most useful figures, such as the heat pump's efficiency per day, take a little combining in Home Assistant. Everything below uses HA's own helpers; no extra add-ons or integrations are needed.
+
+The entity ids below are from an installation whose device is named "Nibe SMO S40". Yours may differ: search the Entity Manager card for the point number to find the entity.
+
+### Heat pump efficiency (COP)
+
+The coefficient of performance (COP) is the heat produced divided by the electricity used. A COP of 4 means 4 kWh of heat from 1 kWh of electricity. It can be looked at over three time spans:
+
+| COP over | Built from | Good for |
+|---|---|---|
+| A day, week or month | The lifetime totals, through utility meters | Comparing periods, seeing the effect of cold weather or a changed setting |
+| The heat pump's lifetime | The lifetime totals directly | One overall figure; it barely moves after the first year |
+| The previous hour | The energy log | A rough look at the last hour |
+
+The lifetime totals are **Tot. production** (28392) and **Tot. consumption** (28393), both in kWh.
+
+**COP per day (or week, or month).** Create two **Utility Meter** helpers (Settings → Devices & services → Helpers → Create helper), one with Tot. production and one with Tot. consumption as input sensor, both with a daily reset cycle. Then create a **Template** sensor helper that divides them, with state class *Measurement*. In YAML the same setup is:
+
+```yaml
+utility_meter:
+  nibe_production_daily:
+    source: sensor.nibe_smo_s40_tot_production
+    cycle: daily
+  nibe_consumption_daily:
+    source: sensor.nibe_smo_s40_tot_consumption
+    cycle: daily
+
+template:
+  - sensor:
+      - name: "Nibe COP today"
+        state_class: measurement
+        state: >
+          {% set used = states('sensor.nibe_consumption_daily') | float(0) %}
+          {{ (states('sensor.nibe_production_daily') | float(0) / used) | round(2) if used > 0 else none }}
+```
+
+Add a second pair with `cycle: monthly` for a monthly COP.
+
+**COP over the lifetime.** The same template, using the two totals directly:
+
+```yaml
+{% set used = states('sensor.nibe_smo_s40_tot_consumption') | float(0) %}
+{{ (states('sensor.nibe_smo_s40_tot_production') | float(0) / used) | round(2) if used > 0 else none }}
+```
+
+The `if used > 0` check matters: without it, the template fails with a division by zero whenever consumption reads 0 or is unavailable, for example right after a restart.
+
+**COP for the previous hour.** The energy log reports produced energy for heating (25154) and cooling (25157), and used energy for heating (25158), cooling (25161) and by the additional heater (25162). Divide the produced energy by the used energy. Counting the additional heater gives the efficiency of the whole system, which is what the electricity bill reflects; leaving it out gives the heat pump's own. The values come in steps of 0.01 kWh, and an hour without heating reads 0, so treat this figure as rough.
+
+### Reading the energy log correctly
+
+The energy log points are titled "over the past hour", but each one covers the **previous full clock hour**, not the last 60 minutes: at 14:20 it shows what happened between 13:00 and 14:00. The value changes once an hour, and Home Assistant records it when it arrives, so in a graph every hour appears one hour late.
+
+Don't add up energy log values into daily totals. Home Assistant only records a new state when the value changes, so two hours in a row with the same value (easy at low load, given the 0.01 kWh steps) count as one. For anything longer than an hour, use the lifetime totals with a utility meter, as above.
+
+### Statistics graphs and ratios
+
+A statistics graph shows, for each period, the mean, minimum or maximum of a sensor's values within that period. For a ratio such as the lifetime COP, that is the average of the lifetime figure during the period, not the COP of the period itself. After a few years of history it hardly moves: a week with a COP of 3 can show up as 5.6, the same as every other week.
+
+To see the COP per period in a statistics graph, graph the per-period sensor (such as "Nibe COP today" above), not the lifetime one. A statistics graph set to the **change** statistic shows how much a lifetime total grew per period, so graphing Tot. production and Tot. consumption that way shows the energy produced and used per day, side by side.
+
+---
+
 ## Entity Manager Card
 
 The bridge exposes over a thousand data points. The companion Lovelace card is the practical way to manage which are enabled — without it, the default HA device page is impractical at this scale.
@@ -469,7 +549,7 @@ If you manually delete the Nibe Bridge dashboard, restart the app — it recreat
 - **Enable / disable** — individually or in bulk via checkboxes
 - **Entity details** — full metadata including Modbus register, unit, value range, divisor, factory default, and last metadata update time
 - **Writable badge** — entities that accept write commands are marked; changes go directly to the controller
-- **Changelog** — badge shows unread dynamic entity events; each entry identifies the controlling register that caused the change
+- **Changelog** — badge shows unread events: points the controller showed or hid (each identifying the controlling register that caused the change, where known), and firmware updates
 - **Mobile layout** — card-based view with larger touch targets on small screens
 
 ### Nibe Menus dashboard
@@ -486,6 +566,7 @@ A few things to know about the Nibe Menus dashboard:
 - **Dynamic points slot in automatically** — when a controlling switch exposes new registers, they appear in the correct menu location in the dashboard. Reload the dashboard in your browser when you see the "Nibe Menus — Dashboard updated" notification.
 - **Use Regenerate Dashboard** on the Management device to rebuild it manually without restarting the app — useful after enabling or disabling a batch of entities.
 - **Switching away from `menus` mode** removes the Nibe Menus dashboard automatically on the next restart.
+- **Settings are tiles with their control** — a number has − and + buttons that move the value by the setting's own step, the same step as on the controller (0.5 °C for a room setpoint); a select has a drop-down, a switch a toggle, a button a press button. The tile is named as in the controller's menu and shows next to its value *default*, or *✏️ default: 20 °C* once the value differs from the factory default — live, so it clears as soon as a setting is put back. Right above each tile an info box gives its range, its step when that is more than the smallest unit (*in steps of 0.5 °C*), and the setting's own explanation; a warning shows in orange. Home Assistant refuses a typed value between steps, and the number field on a device's own page has no arrows on a phone, so the dashboard is the easy place to change settings. Time settings and read-only values stay rows under a label with their range and default, with their explanation just above. The Entity Manager card's details panel shows a number's step too.
 
 
 

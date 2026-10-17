@@ -15,8 +15,8 @@ const POINT = 56150;
 const DUMP_VALUE = 2;
 const EXPECTED: [number, string][] = [
   [0, 'In rust'], // Idle
-  [1, 'Verwarmen'], // Heating
-  [2, 'Koelen'], // Cooling
+  [1, 'Verwarming'], // Heating
+  [2, 'Koeling'], // Cooling
 ];
 
 async function mqttPublish(token: string, topic: string, payload: string): Promise<void> {

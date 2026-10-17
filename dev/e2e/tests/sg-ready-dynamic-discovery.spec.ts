@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { loginToHa, readToken, gotoLoggedIn } from './support/ha-login';
-import { haWs } from './support/stack';
+import { haWs, pointEntityId } from './support/stack';
 
 /**
  * Reproduces, against a real Home Assistant instance, the exact real-world
@@ -352,17 +352,24 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // 6. Point 3260 must show up as sensor.*, not binary_sensor.* — u8 INPUT
   // register, no description, reports 10 (not 0/1), the exact shape the
   // dynamic reclassification safety net exists for (see
-  // binary-sensor-reclassification.spec.ts). No translation is expected
-  // here (3260 has no confirmed mapping beyond the "10" case — see GitHub
-  // issue #40) — the raw value is the correct, honest thing to publish.
+  // binary-sensor-reclassification.spec.ts). Its value 10 is labelled
+  // "Normal Price" (VALUE_MAPPINGS, partly confirmed — GitHub issue #40);
+  // the label has no translation, so it stays English in the Dutch harness.
+  let point3260 = '';
+  await expect
+    .poll(
+      async () => {
+        point3260 = (await pointEntityId(token, '3260')) ?? '';
+        const state = point3260 ? await fetchState(token, point3260) : null;
+        return `${point3260} = ${state?.state ?? '(no state)'}`;
+      },
+      {
+        timeout: 30_000,
+        message: 'point 3260 should be a sensor.* entity showing "Normal Price" (raw 10)',
+      }
+    )
+    .toMatch(/^sensor\..* = Normal Price$/);
   const afterDiscovery = await fetchStates(token);
-  const point3260Sensor = afterDiscovery.find(
-    (s) => !beforeWriteIds.has(s.entity_id) && s.entity_id.startsWith('sensor.') && s.state === '10'
-  );
-  expect(
-    point3260Sensor,
-    'point 3260 should have appeared as an available sensor.* entity with raw state "10"'
-  ).toBeTruthy();
 
   const point3260BinarySensor = afterDiscovery.find(
     (s) => !beforeWriteIds.has(s.entity_id) && s.entity_id.startsWith('binary_sensor.')

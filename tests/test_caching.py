@@ -152,10 +152,9 @@ class TestValueCacheHypothesisProperties(unittest.TestCase):
         self.assertTrue(cache.should_publish(point_id, raw_value, threshold=1))
 
     def test_default_min_interval_is_exactly_thirty_seconds(self):
-        """min_interval's default is 30. threshold=0 means every call
-        republishes once min_interval has elapsed, regardless of value —
-        at 29s elapsed a call must still be suppressed (< 30); at 31s
-        elapsed it must not be."""
+        """min_interval's default is 30. A changed value within min_interval
+        of the last publish is suppressed — at 29s elapsed a call must still
+        be suppressed (< 30); at 31s elapsed it must not be."""
         from unittest.mock import patch
 
         from nibe_caching import ValueCache
@@ -164,9 +163,9 @@ class TestValueCacheHypothesisProperties(unittest.TestCase):
         with patch("nibe_caching.time.time", return_value=1000.0):
             cache.should_publish(1, 100, threshold=0)
         with patch("nibe_caching.time.time", return_value=1000.0 + 29):
-            self.assertFalse(cache.should_publish(1, 100, threshold=0))
+            self.assertFalse(cache.should_publish(1, 101, threshold=0))
         with patch("nibe_caching.time.time", return_value=1000.0 + 31):
-            self.assertTrue(cache.should_publish(1, 100, threshold=0))
+            self.assertTrue(cache.should_publish(1, 101, threshold=0))
 
         # Exactly at 30s elapsed (fresh cache, so this check's own call
         # doesn't get skewed by the state left behind above): `< min_interval`
@@ -176,7 +175,7 @@ class TestValueCacheHypothesisProperties(unittest.TestCase):
         with patch("nibe_caching.time.time", return_value=1000.0):
             cache2.should_publish(1, 100, threshold=0)
         with patch("nibe_caching.time.time", return_value=1000.0 + 30):
-            self.assertTrue(cache2.should_publish(1, 100, threshold=0))
+            self.assertTrue(cache2.should_publish(1, 101, threshold=0))
 
     @given(
         _nibe_point_id,
@@ -376,15 +375,16 @@ class TestValueCache(unittest.TestCase):
         self.cache.should_publish(1, 100, threshold=5, min_interval=0)
         self.assertTrue(self.cache.should_publish(1, 106, threshold=5, min_interval=0))
 
-    def test_unchanged_value_still_published_with_zero_threshold(self):
-        """change=0 (the default for any point without explicit firmware
-        'change' metadata) is deliberate 'never suppress' behavior — static
-        sensors must keep publishing every poll for continuous HA history,
-        matching test_zero_change_threshold_always_publishes in
-        test_entity_manager_state.py. Not a bug: do not 'fix' should_publish
-        to suppress unchanged values when threshold=0."""
+    def test_unchanged_value_not_republished_with_zero_threshold(self):
+        """change=0 (no firmware 'change' metadata) means any change counts,
+        not that an unchanged value is sent again. The state is retained and
+        HA keeps it until a new one arrives; republishing it every poll was
+        hundreds of identical messages a poll in menus mode. (This reverses
+        an earlier "never suppress" rule, which assumed HA needed repeats for
+        continuous history — it doesn't.)"""
         self.cache.should_publish(1, 100, threshold=0, min_interval=0)
-        self.assertTrue(self.cache.should_publish(1, 100, threshold=0, min_interval=0))
+        self.assertFalse(self.cache.should_publish(1, 100, threshold=0, min_interval=0))
+        self.assertTrue(self.cache.should_publish(1, 101, threshold=0, min_interval=0))
 
     def test_force_overrides_suppression(self):
         self.cache.should_publish(1, 100, threshold=1, min_interval=30)

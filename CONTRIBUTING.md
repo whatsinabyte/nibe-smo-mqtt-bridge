@@ -236,6 +236,7 @@ module — see their own sections below): `test_api_integration.py`,
 - **`@freeze_time` is forbidden in `test_entity_manager.py`** — it causes xdist worker contamination of iterator-based `time.time` mocks. Use `patch('nibe_entity_manager.time.time', return_value=...)` instead.
 - **All test paths must patch `notify_ha` and `dismiss_ha`** — live calls during test runs create persistent HA notifications. The `_trigger_and_wait` helper patches these by default.
 - **Create fresh `EntityManager` instances inside `@given` tests** — `setUp` runs once per method, not once per Hypothesis example.
+- **A new `/data/…` path must be added to the autouse fixtures in `tests/conftest.py`** — the "Run Test Suite" button runs this suite inside the add-on, where `/data` is the installation's real state. `tests/test_data_isolation.py` fails for any `/data/` path constant the fixtures don't redirect.
 - **`database=None` is required in all Hypothesis profiles** — prevents `FlakyStrategyDefinition` errors from non-deterministic Unicode surrogate hashing on Python 3.12+.
 
 ### MQTT broker integration tests
