@@ -1089,20 +1089,22 @@ menus:
     title: Hot water demand
     description: 'Sets the baseline hot water temperature level. Small: lower temperature, smaller households. Medium: normal
       mode, suitable for most households. Large: higher temperature, immersion heater may be used, hot water prioritised ahead
-      of heating. Smart control: SMO S40 continuously learns previous hot water consumption and adjusts the temperature for
-      minimum energy consumption and maximum comfort.
+      of heating. Smart control: the controller continuously learns previous hot water consumption and adjusts the temperature
+      for minimum energy consumption and maximum comfort.
 
       '
     tip: 'Smart control is the most energy-efficient option for most households. It learns your usage pattern and avoids keeping
       more hot water than needed. Switch to Medium or Large if Smart control leaves you short of hot water.
 
       '
-    note: 'Controlled via the Smart Mode select in the bridge management entities, not via a direct register. Cross-reference:
-      the start/stop temperatures for each demand mode (Small/Medium/Large) are set in menu 7.1.1.1 Temperature setting.
+    note: 'Cross-reference: the start/stop temperatures for each demand mode (Small/Medium/Large) are set in menu 7.1.1.1
+      Temperature setting.
 
       '
-    settings: []
-    local_api: false
+    settings:
+    - label: Hot water demand
+      range: Small / Medium / Large / Smart control
+      point_id: 3697
   - id: '2.3'
     title: External influence
     description: 'Shows information about accessories and functions that are currently affecting hot water operation. Read-only
@@ -3377,8 +3379,8 @@ menus:
       submenus:
       - id: 7.1.1.1
         title: Temperature setting
-        description: 'Advanced hot water temperature settings. Start and stop temperatures for the individual demand modes
-          (Small/Medium/Large) are configured on the controller display only — they are not exposed via the local API.
+        description: 'Advanced hot water temperature settings: the start and stop temperatures for each demand mode
+          (Small/Medium/Large), and the stop temperature of the periodic increase.
 
           '
         tip: 'For energy efficiency, keep the difference between start and stop temperatures at 5–10 °C. Larger differences
@@ -3390,6 +3392,30 @@ menus:
 
           '
         settings:
+        - label: Start temperature, demand mode Small
+          range: 5 – 70 °C
+          point_id: 3701
+          note: Hot water charging starts when the hot water temperature drops below this, in demand mode Small.
+        - label: Start temperature, demand mode Medium
+          range: 5 – 70 °C
+          point_id: 3700
+          note: Hot water charging starts when the hot water temperature drops below this, in demand mode Medium.
+        - label: Start temperature, demand mode Large
+          range: 5 – 70 °C
+          point_id: 3699
+          note: Hot water charging starts when the hot water temperature drops below this, in demand mode Large.
+        - label: Stop temperature, demand mode Small
+          range: 5 – 70 °C
+          point_id: 3705
+          note: Hot water charging stops at this temperature, in demand mode Small.
+        - label: Stop temperature, demand mode Medium
+          range: 5 – 70 °C
+          point_id: 3704
+          note: Hot water charging stops at this temperature, in demand mode Medium.
+        - label: Stop temperature, demand mode Large
+          range: 5 – 70 °C
+          point_id: 3703
+          note: Hot water charging stops at this temperature, in demand mode Large.
         - label: Stop temperature, periodic increase
           range: 55 – 70 °C
           point_id: 3702
@@ -3479,7 +3505,7 @@ menus:
           note: Lower bound for automatic speed control.
         - label: Maximum permitted speed
           range: 80 – 100 %
-          point_id: null
+          point_id: 4642
           note: Upper bound for automatic speed control.
         - label: Speed in wait mode
           range: 1 – 100 %
@@ -3617,23 +3643,20 @@ menus:
       - id: 7.1.2.6
         family: water_water
         title: Operating mode brine pump
-        description: 'How the brine pump runs relative to the compressor, on ground/water installations. Documented in the
-          S1155, S1156 and S1256 installer manuals.
+        description: 'How the brine pump runs relative to the compressor, on ground/water installations.
 
           '
         settings:
         - label: Operating mode
           range: Intermittent / Continuous / 10 days cont.
-          point_id: 5482
+          point_id: 3753
           note: 'Intermittent starts the pump about 20 seconds either side of the compressor -- two minutes either side on
             groundwater systems. Continuous runs it permanently. "10 days cont." runs continuously for ten days and then
-            reverts to intermittent, which the manuals suggest using at start-up to bleed the brine circuit. The three
-            documented alternatives match this register''s 0-2 range; the firmware titles it "Brine pump auto mode".'
+            reverts to intermittent, which the manuals suggest using at start-up to bleed the brine circuit.'
       - id: 7.1.2.7
         family: water_water
         title: Pump speed brine
-        description: 'Brine pump speed settings, present on ground/water installations. Operating mode and Delta-T, fixed
-          delta: the point ids can be filled in from a ground/water installation''s own point list.
+        description: 'Brine pump speed settings, on ground/water installations.
 
           '
         note: 'The ACS 45 accessory manual documents a different set of settings for this same menu number when that
@@ -3646,7 +3669,7 @@ menus:
         settings:
         - label: Operating mode
           range: Fixed delta / Auto / Manual
-          point_id: null
+          point_id: 5482
           note: Whether the brine pump is controlled automatically, manually, or with fixed delta. Fixed delta is
             used e.g. for groundwater systems.
         - label: Delta-T, fixed delta

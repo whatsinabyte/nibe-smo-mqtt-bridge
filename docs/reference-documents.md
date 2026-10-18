@@ -364,6 +364,28 @@ The owner then read his controller (2026-10-13):
   accessory (ACS 45) is selected in menu 7.2.1, with "auto" and "speed during
   active cooling".
 
+And after v1.4.0 (2026-10-17), working through a checklist on his controller:
+- The 7.1.2.2 settings, the hot water start/stop temperatures (3699–3705)
+  and the ground-source readings all match his controller.
+- Menu 2.2 hot water demand is 3697: 0 Small, 1 Medium, 2 Large, 4 Smart
+  control, written from Home Assistant too; the controller offers no 3.
+- 3753 is menu 7.1.2.6 (10 Intermittent, 20 Continuous, 30 10 days cont.,
+  changed on the controller), and 5482 follows menu 7.1.2.7 "Pump speed
+  brine" (Fixed delta / Auto / Manual) — not 7.1.2.6, whose labels it had
+  carried since 1.3.0. 0 = Manual (its value while 7.1.2.7 was Manual), 1 =
+  Auto (the firmware default), 2 = Fixed delta by elimination.
+- Maximum permitted speed is 4642, not 4804.
+
+What the two installations show together: the reference SMO S40 (with an
+S2125-12, no hot water) and this S1155 run the same firmware, 4.13, yet each
+serves points the other doesn't (146 and 145). The point set follows the
+controller model and its configuration, not the firmware version alone —
+and it is not limited to installed hardware either: the SMO S40 serves 3702
+"Stop temperature, periodic increase" (55 °C) without any hot water, and
+5482 without a menu 7.1.2.7 to show it in. That 5482 had been marked
+confirmed in 1.3.0 with 7.1.2.6's labels came from no menu on the reference
+controller; the S1155 owner's reading is the only evidence for it.
+
 ## What the internal symbol names revealed
 
 The official Modbus register list (see above) resolved every open thread

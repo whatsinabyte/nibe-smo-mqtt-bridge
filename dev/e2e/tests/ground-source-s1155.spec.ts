@@ -26,9 +26,10 @@ import {
  * In Home Assistant: the GP1 "auto" settings (declared 0–1 with unit %) are
  * switches, heat pump type 55 reads "S1155", compressor starts count up,
  * and an external-control compressor count is a sensor. On the Nibe Menus
- * dashboard, menus 7.1.2.2, 7.1.2.7 and 7.1.2.8 carry the twelve settings
- * mapped from the dump as tiles with their control, and the browser renders
- * menu 7.1.2.2's toggles and -/+ buttons.
+ * dashboard, menus 7.1.2.2, 7.1.2.6, 7.1.2.7, 7.1.2.8, 2.2 and 7.1.1.1 carry
+ * the settings mapped from the dump and from the owner's own readings as
+ * tiles with their control, and the browser renders menu 7.1.2.2's toggles
+ * and -/+ buttons.
  */
 
 const MAPPED: [number, string][] = [
@@ -44,6 +45,17 @@ const MAPPED: [number, string][] = [
   [3928, 'toggle'], // 7.1.2.8 Automatic reset
   [3929, 'numeric-input'], // Alarm temperature
   [3931, 'numeric-input'], // Max brine in
+  // Settled by the owner on his controller (issue #82, 2026-10-17):
+  [4642, 'numeric-input'], // 7.1.2.2 Maximum permitted speed
+  [3753, 'select-options'], // 7.1.2.6 Operating mode brine pump
+  [5482, 'select-options'], // 7.1.2.7 Operating mode (pump speed brine)
+  [3697, 'select-options'], // 2.2 Hot water demand
+  [3701, 'numeric-input'], // 7.1.1.1 Start temperature, Small
+  [3700, 'numeric-input'], // ... Medium
+  [3699, 'numeric-input'], // ... Large
+  [3705, 'numeric-input'], // Stop temperature, Small
+  [3704, 'numeric-input'], // ... Medium
+  [3703, 'numeric-input'], // ... Large
 ];
 
 async function mqttPublish(token: string, topic: string, payload: string): Promise<void> {

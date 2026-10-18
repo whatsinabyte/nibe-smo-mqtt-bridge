@@ -4595,7 +4595,6 @@ class TestControllerVerifiedOptionLists(unittest.TestCase):
         expected = {
             4692: ["Target temp", "Delta temp"],
             4085: ["Linear", "Binary"],
-            5482: ["Intermittent", "Continuous", "10 days cont."],
             7022: ["Level monitor", "Blocked", "Off"],
             23144: ["Level monitor", "Blocked", "Off"],
         }
@@ -4815,6 +4814,23 @@ class TestGroundSourceS1155Points(unittest.TestCase):
             point = self._point(pid, title, "MODBUS_INPUT_REGISTER", "u8", 0, 0)
             self.assertEqual(detect_entity_type(point)[0], "sensor", pid)
             self.assertIn(pid, UNITLESS_QUANTITY_POINTS)
+
+    def test_brine_pump_and_hot_water_demand_option_lists(self):
+        """Read off an S1155's own menus: 3753 is 7.1.2.6's operating mode,
+        5482 7.1.2.7's (it used to carry 7.1.2.6's labels), and 3697 the hot
+        water demand of menu 2.2, which offers no 3. All three are selects."""
+        from nibe_entity_detection import detect_entity_type, get_entity_options, mapping_status
+
+        cases = {
+            3753: (10, 30, ["Intermittent", "Continuous", "10 days cont."], "confirmed"),
+            5482: (0, 2, ["Manual", "Auto", "Fixed delta"], "partial"),
+            3697: (0, 4, ["Small", "Medium", "Large", "Smart control"], "confirmed"),
+        }
+        for pid, (lo, hi, options, status) in cases.items():
+            point = self._point(pid, "Setting", "MODBUS_HOLDING_REGISTER", "s8", lo, hi)
+            self.assertEqual(detect_entity_type(point)[0], "select", pid)
+            self.assertEqual(get_entity_options(pid, ""), options, pid)
+            self.assertEqual(mapping_status(pid), status, pid)
 
     def test_running_totals_and_heat_pump_type(self):
         """Compressor starts and run-time counters count up; heat pump type

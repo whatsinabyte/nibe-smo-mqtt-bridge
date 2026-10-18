@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.1] — 2026-10-18
+
+Ground-source and hot water follow-up, from an S1155 owner checking the
+1.4.0 mappings on his own controller (issue #82).
+
+### Fixed
+
+- **Brine pump operating mode (5482) had the wrong options.** It is menu
+  7.1.2.7 "Pump speed brine" — Manual / Auto / Fixed delta — not 7.1.2.6,
+  whose Intermittent / Continuous / 10 days labels it carried: choosing
+  "Continuous" in Home Assistant set the pump to Auto. Menu 7.1.2.6 now
+  uses its own register (3753).
+
+### Added
+
+- **Hot water demand** (menu 2.2): Small / Medium / Large / Smart control,
+  read and written from Home Assistant.
+- **Start and stop temperatures per demand mode** (menu 7.1.1.1).
+- **Maximum permitted speed** of the GP1 pump (menu 7.1.2.2).
+
+In `menus` mode, newly mapped settings are not switched on by an update:
+enable them in the Entity Manager card.
+
+---
+
 ## [1.4.0] — 2026-10-17
 
 A release about using the controller from Home Assistant: the Nibe Menus

@@ -306,7 +306,20 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # 0–2 numbers, and 4692/4085 as switches.
         4692: {0: "Target temp", 1: "Delta temp"},  # Charging method
         4085: {0: "Linear", 1: "Binary"},  # Internal additional heat stepping mode
-        5482: {0: "Intermittent", 1: "Continuous", 2: "10 days cont."},  # Operating mode
+        # Brine pump, ground-source models (GitHub issue #82, an S1155):
+        # 5482 is menu 7.1.2.7 "Pump speed brine", not 7.1.2.6 — the owner
+        # saw it follow 7.1.2.7. 0 = Manual (its value while 7.1.2.7 was set
+        # to Manual), 1 = Auto (the firmware default, Auto in the menu), so
+        # 2 = Fixed delta. 3753 is 7.1.2.6, each value read off that menu.
+        5482: {0: "Manual", 1: "Auto", 2: "Fixed delta"},  # Pump speed brine, operating mode
+        3753: {
+            10: "Intermittent",
+            20: "Continuous",
+            30: "10 days cont.",
+        },  # Operating mode brine pump
+        # Hot water demand (menu 2.2): each value read and written on an
+        # S1155 (issue #82); the controller offers no 3.
+        3697: {0: "Small", 1: "Medium", 2: "Large", 4: "Smart control"},
         7022: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 3)
         7023: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 4)
         23141: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 5)
@@ -377,7 +390,6 @@ MAPPING_STATUS: dict[int, str] = {
     3745: "confirmed",
     4085: "confirmed",
     4692: "confirmed",
-    5482: "confirmed",
     7022: "confirmed",
     7023: "confirmed",
     23141: "confirmed",
@@ -392,6 +404,12 @@ MAPPING_STATUS: dict[int, str] = {
     5269: "confirmed",
     # 0/1/2 observed on a live controller; hot water and pool not yet.
     56150: "partial",
+    # Read and written on an S1155's own menus (GitHub issue #82).
+    3697: "confirmed",
+    3753: "confirmed",
+    # Manual (0) seen on an S1155, Auto (1) its firmware default; Fixed
+    # delta (2) by elimination, not yet seen (issue #82).
+    5482: "partial",
     # Labels from the myUplink cloud API (enumValues). Seen on a live
     # controller, in step with 56150 and 1758: 55000 30 (Heating) and 60
     # (Cooling), 14952 1 (Heating), 10897 1 (On, the pump running).
