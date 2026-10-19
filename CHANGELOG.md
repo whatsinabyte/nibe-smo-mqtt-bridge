@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.2] — 2026-10-20
+
+AUX functions by name and SG Ready under NIBE's own names, both from an
+S1155 owner's tests on his controller (issue #82).
+
+### Changed
+
+- **AUX inputs and Output AUX1 become drop-downs naming their function**
+  (menu 7.4): Input AUX1–9 (3958, 3957, 3956, 3955, 3954, 4713,
+  55035–55037), "AUX from Modbus" (22070) and Output AUX1 (3959). As a new
+  entity type they get **new entity ids**: repoint automations that use
+  the old `number.` ids. A function whose name isn't known yet shows as its
+  number, so every value stays selectable. AUX11 (12463) stays a number for
+  now.
+- **SG Ready operating mode (3260) uses NIBE's names** — Normal, Blocking,
+  Low price, Overcapacity — instead of "Normal Price", "High Price", "Low
+  Price" and "Free Electricity". All four states are now confirmed on a
+  controller (issue #40).
+
+### Fixed
+
+- AUX notes in the menus no longer claim 0 = no function and 5 = alarm
+  output for the AUX outputs; on an S1155, 0 is alarm output and 5 "not
+  used". Menu 3.1.14 no longer claims the AUX assignments are unavailable
+  through the local API.
+
+---
+
 ## [1.4.1] — 2026-10-18
 
 Ground-source and hot water follow-up, from an S1155 owner checking the

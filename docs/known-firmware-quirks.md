@@ -114,11 +114,17 @@ Russkiy, Ukrayinska and Bǔlgarski.
 Two writable settings show the same discrepancy between the two NIBE sources:
 3959 ("Output AUX1") and 12463 ("AUX relay (AUX11)"), function assignments
 for the AUX outputs in menu 7.4, declare `0`–`33` in the REST API and
-`0`–`32` in the Modbus register export. They are plain numbers without an
-option list, so here the declared maximum is what Home Assistant enforces.
-Two values are confirmed on a controller: 0 is no function and 5 is alarm
-output (the factory default). Which maximum is right is not yet checked, so
-the bridge keeps the REST range.
+`0`–`32` in the Modbus register export. Which maximum is right is not yet
+checked, so the bridge keeps the REST range. Neither carries an option list:
+the function names come from an S1155's own menu 7.4 (GitHub issue #82), on
+which 0 is alarm output and 5 "not used" — the same numbering as NIBE's
+M12676 lists for the SMO S40's AUX relays. 3959 is a select with those
+names; 12463 stays a number, as the reference SMO S40 reads 5 there and its
+menu hasn't settled which function that is (an earlier note here had 5 as
+alarm output). The AUX inputs (3954–3958, 4713, 55035–55037) and "AUX from
+Modbus" (22070) share one numbering, which matches M12676's "AUX from
+Modbus" function IDs; their selects cover the whole 0–69 range, a function
+not yet named showing as its number.
 
 This convention isn't specific to this bridge's own reference hardware —
 an independent project reading the same local REST API,

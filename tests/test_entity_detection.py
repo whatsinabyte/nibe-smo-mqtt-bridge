@@ -4832,6 +4832,27 @@ class TestGroundSourceS1155Points(unittest.TestCase):
             self.assertEqual(get_entity_options(pid, ""), options, pid)
             self.assertEqual(mapping_status(pid), status, pid)
 
+    def test_aux_functions_are_selects_over_their_whole_range(self):
+        """AUX inputs (and "AUX from Modbus") and Output AUX1 get the
+        function names an S1155 shows in menu 7.4, over their whole range: a
+        function nobody has named yet — and an unassigned input's 0 — stays a
+        choice under its number, instead of the select going unavailable.
+        AUX11 (12463) stays a number until its numbering is settled."""
+        from nibe_entity_detection import detect_entity_type, get_entity_options
+
+        for pid in (3958, 3954, 4713, 55035, 55037, 22070):
+            point = self._point(pid, "Input AUX", "MODBUS_HOLDING_REGISTER", "u8", 0, 69)
+            self.assertEqual(detect_entity_type(point)[0], "select", pid)
+            options = get_entity_options(pid, "")
+            self.assertEqual(len(options), 70, pid)
+            self.assertIn("SG ready A", options)
+            self.assertIn("0", options)
+        output = self._point(3959, "Output AUX1", "MODBUS_HOLDING_REGISTER", "u8", 0, 33)
+        self.assertEqual(detect_entity_type(output)[0], "select")
+        self.assertEqual(get_entity_options(3959, "")[:2], ["Alarm outp.", "Groundwater pump"])
+        aux11 = self._point(12463, "AUX relay (AUX11)", "MODBUS_HOLDING_REGISTER", "u8", 0, 33)
+        self.assertEqual(detect_entity_type(aux11)[0], "number")
+
     def test_running_totals_and_heat_pump_type(self):
         """Compressor starts and run-time counters count up; heat pump type
         55 is the S1155 itself."""
