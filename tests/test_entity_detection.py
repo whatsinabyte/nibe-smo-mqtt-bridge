@@ -4864,7 +4864,7 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         options = get_entity_options(3745, "")
         self.assertEqual(options[24], "Bǔlgarski")
         self.assertEqual(
-            options[25:], ["Srpski", "Ελληνικά", "português", "Føroyskt", "Shqip", "Bosanski"]
+            options[25:], ["Srpski", "Ελληνικά", "Português", "Føroyskt", "Shqip", "Bosanski"]
         )
         self.assertEqual(mapping_status(3745), "confirmed")
 

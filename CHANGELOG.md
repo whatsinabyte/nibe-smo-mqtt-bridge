@@ -27,7 +27,7 @@ S1155 owner's tests on his controller (issue #82).
   controller (issue #40).
 
 - **Language (3745) covers the six languages of firmware 4.14.6**: Srpski,
-  Ελληνικά, português, Føroyskt, Shqip and Bosanski, values 25–30, while
+  Ελληνικά, Português, Føroyskt, Shqip and Bosanski, values 25–30, while
   the metadata still declares 0–25. Before, selecting one made the select
   unavailable, so it could no longer be set back from Home Assistant. Their
   codes (`sr`, `el`, `pt`, `fo`, `sq`, `bs`) added to the `language` option.

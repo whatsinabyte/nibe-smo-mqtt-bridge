@@ -195,7 +195,7 @@ LANGUAGES: dict[int, str] = {
     24: "Bǔlgarski",
     25: "Srpski",
     26: "Ελληνικά",
-    27: "português",
+    27: "Português",
     28: "Føroyskt",
     29: "Shqip",
     30: "Bosanski",
