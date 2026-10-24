@@ -157,8 +157,8 @@ def _numbered(labels: dict[int, str], lo: int, hi: int) -> dict[int, str]:
 # as the controller's own menu shows them (checked on a live controller):
 # Český, Russkiy, Ukrayinska and Bǔlgarski are NIBE's spellings, not the
 # languages' usual self-names. Firmware 4.14.6 added 25–30, read on the
-# controller one by one (Greek reported as an approximation on a keyboard
-# without its letters; Ελληνικά is the language's own name). The REST
+# controller one by one (Greek in its own letters, as the controller shows
+# it). The REST
 # metadata still declares 0–25, so the select's range comes from the values
 # read rather than from the metadata.
 #
