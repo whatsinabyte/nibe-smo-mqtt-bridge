@@ -1,5 +1,5 @@
 name: "Nibe S-Series MQTT Bridge"
-version: "1.4.1"
+version: "1.4.2"
 slug: "nibe_s_series"
 # Prebuilt multi-arch images (built by .github/workflows/publish-image.yml)
 # are not yet published — while still under active local development,
@@ -72,14 +72,14 @@ schema:
   # API's own translations.
   #
   # MULTI-PLACE UPDATE: this list is a hand-maintained BCP-47-code mirror of
-  # VALUE_MAPPINGS[3745] in app/nibe_entity_detection.py — the controller's
+  # LANGUAGES in app/nibe_entity_detection.py — the controller's
   # own hand-verified list of firmware-supported languages (for its
   # "Language" select entity, a separate feature from this REST API
   # setting). config.yaml is static and cannot derive this dropdown from
   # that Python dict at runtime. Adding a language to one list (new Nibe
   # firmware release, user request) means adding it to the other too, by
   # hand, in both directions.
-  language: list(auto|en|sv|de|fr|es|fi|lt|cs|pl|nl|no|da|et|lv|ru|it|hu|sk|tr|hr|ro|is|sl|uk|bg)
+  language: list(auto|en|sv|de|fr|es|fi|lt|cs|pl|nl|no|da|et|lv|ru|it|hu|sk|tr|hr|ro|is|sl|uk|bg|sr|el|pt|fo|sq|bs)
   poll_interval: list(15|30|60|120|300)?
   mode: list(essential|monitoring|advanced|menus|all|none)
   # What happens to already-enabled entities when you switch to a different

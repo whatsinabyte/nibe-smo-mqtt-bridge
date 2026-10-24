@@ -651,22 +651,22 @@ class TestProcessAndPublishState(unittest.TestCase):
         self.assertEqual(mapping_status(3097), "inferred")
 
     def test_point_3260_sg_ready_status_labels(self):
-        """3260 (Operating mode SG Ready) as the yozik04/nibe library maps the
-        same register; 10 and 30 measured in GitHub issue #40."""
+        """3260 (Operating mode SG Ready) under NIBE's own names for the four
+        states, each switched through on an S1155 (GitHub issue #82)."""
         from nibe_entity_detection import detect_entity_type, mapping_status
 
         em = _make_em()
         info = self._entity_info(point_id=3260, entity_type="sensor")
         for raw, shown in (
-            (10, "Normal Price"),
-            (20, "High Price"),
-            (30, "Low Price"),
-            (40, "Free Electricity"),
+            (10, "Normal"),
+            (20, "Blocking"),
+            (30, "Low price"),
+            (40, "Overcapacity"),
         ):
             em.mqtt.publish.reset_mock()
             em._process_and_publish_state(info, raw, "", self._metadata(), force=True)
             em.mqtt.publish.assert_any_call("nibe/state/3260", shown, retain=True)
-        self.assertEqual(mapping_status(3260), "partial")
+        self.assertEqual(mapping_status(3260), "confirmed")
         point = {
             "variableId": 3260,
             "title": "Operating mode (SG Ready)",

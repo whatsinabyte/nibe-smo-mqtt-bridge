@@ -144,6 +144,117 @@ MODES = {
 # STATIC LOOKUP TABLES
 # ============================================================================
 
+
+def _numbered(labels: dict[int, str], lo: int, hi: int) -> dict[int, str]:
+    """Every value lo..hi, with its known label or else the plain number:
+    for a setting whose list of functions is only partly known, so that a
+    value nobody has named yet stays a choice instead of making the select
+    unavailable."""
+    return {value: labels.get(value, str(value)) for value in range(lo, hi + 1)}
+
+
+# Controller display languages (menu 4.9, point 3745), numbered and spelled
+# as the controller's own menu shows them (checked on a live controller):
+# Český, Russkiy, Ukrayinska and Bǔlgarski are NIBE's spellings, not the
+# languages' usual self-names. Firmware 4.14.6 added 25–30, read on the
+# controller one by one (Greek in its own letters, as the controller shows
+# it). The REST
+# metadata still declares 0–25, so the select's range comes from the values
+# read rather than from the metadata.
+#
+# MULTI-PLACE UPDATE: the `language` option in config.yaml's schema (used to
+# set the REST API's Accept-Language header, a separate feature from this
+# select) is a hand-maintained BCP-47-code mirror of this list. Adding a
+# language here means also adding its code there, and the other way round —
+# config.yaml is static and cannot derive its dropdown from this dict.
+LANGUAGES: dict[int, str] = {
+    0: "English",
+    1: "Svenska",
+    2: "Deutsch",
+    3: "Français",
+    4: "Español",
+    5: "Suomi",
+    6: "Lietuvių",
+    7: "Český",
+    8: "Polski",
+    9: "Nederlands",
+    10: "Norsk",
+    11: "Dansk",
+    12: "Eesti",
+    13: "Latviešu",
+    14: "Russkiy",
+    15: "Italiano",
+    16: "Magyar",
+    17: "Slovenčina",
+    18: "Türkçe",
+    19: "Hrvatski",
+    20: "Română",
+    21: "Íslenska",
+    22: "Slovenščina",
+    23: "Ukrayinska",
+    24: "Bǔlgarski",
+    25: "Srpski",
+    26: "Ελληνικά",
+    27: "Português",
+    28: "Føroyskt",
+    29: "Shqip",
+    30: "Bosanski",
+}
+
+
+# AUX input and output functions (menu 7.4), wording and numbers as an S1155
+# shows them (GitHub issue #82). The numbers agree with NIBE's own "AUX from
+# Modbus" function IDs (M12676), and the output's with that document's list
+# for the SMO S40's AUX relays. Which functions a controller offers depends
+# on its accessories and firmware, so the lists aren't complete.
+AUX_INPUT_FUNCTIONS: dict[int, str] = {
+    1: "Temp. more hot water",
+    2: "External adjustment",
+    3: "Block additional heat",
+    4: "Block compressor",
+    6: "Block heating",
+    12: "Hot water top (BT7)",
+    13: "Brine monitor",
+    14: "Activate brine pump",
+    19: "Tariff blocking (NO)",
+    20: "SG ready A",
+    21: "SG ready B",
+    22: "External alarm (NC)",
+    23: "External alarm (NO)",
+    27: "Ret tmp (BT71)",
+    34: "Block hot water",
+    41: "Act. dmnd. mode small",
+    44: "Press. switch climate syst.",
+    48: "Hot water start (BT5)",
+    49: "Ext. temp. sensor (BT37.1)",
+    50: "Ext. temp. sensor (BT37.2)",
+    56: "Level monitor brine NC",
+    57: "Level monitor brine NO",
+    58: "Activate heating",
+    62: "Ext. temp. sensor (BT37.3)",
+    63: "Ext. temp. sensor (BT37.4)",
+    64: "Ext. temp. sensor (BT37.5)",
+    65: "Ext. temp. sensor (BT37.6)",
+    66: "External power limiting",
+    67: "Flow monitor, brine NC",
+    68: "Tariff blocking (NC)",
+}
+AUX_OUTPUT_FUNCTIONS: dict[int, str] = {
+    0: "Alarm outp.",
+    1: "Groundwater pump",
+    3: "HW circulation",
+    4: "Ext. HM pump",
+    5: "Not used",
+    6: "External HW div valve",
+    13: "Holiday",
+    18: "Away mode",
+    20: "Cool. mode ind. w delay",
+    31: "Modbus contr of AUX outp",
+    32: "External dehumidifier",
+}
+# Input AUX1–9 and "AUX from Modbus" (the function its value 2741 switches).
+AUX_INPUT_POINTS = (3958, 3957, 3956, 3955, 3954, 4713, 55035, 55036, 55037, 22070)
+
 VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
     "input": {
         # ── Entries below have NO description field in the firmware ───────────
@@ -206,16 +317,12 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         22077: {0: "Off", 1: "On"},
         # Alarm — no firmware description
         1709: {0: "No alarm", 1: "Active alarm"},
-        # Operating mode SG Ready (register 1911): the read-only counterpart
-        # of 10614, in the multiple-of-ten encoding. Labels as the yozik04/
-        # nibe library maps this register for the S1155/S1255 and
-        # S1156/S1256 (its extensions.json). Two values are measured on
-        # hardware (VVM S320, GitHub issue #40): 10614 = Standard -> 10, and
-        # Encouraged -> 30 — the library's Normal Price and Low Price. High
-        # Price (20) and Free Electricity (40) aren't measured: the library
-        # has them, and so does its open PR #325 from an SMO S40 owner on
-        # 4.13.12 (as Block / Boost) — MAPPING_STATUS marks it partial.
-        3260: {10: "Normal Price", 20: "High Price", 30: "Low Price", 40: "Free Electricity"},
+        # SG Ready operating mode, NIBE's own names for the four states. Each
+        # one confirmed on an S1155 by switching its SG Ready inputs A/B
+        # through open/closed (GitHub issue #82): normal 10, blocking 20,
+        # low price 30, overcapacity 40. The labels used to be the yozik04/
+        # nibe library's (Normal/High Price, Low Price, Free Electricity).
+        3260: {10: "Normal", 20: "Blocking", 30: "Low price", 40: "Overcapacity"},
         # All sub units operating prio (an input register). Values as observed
         # on a live controller, in step with its other status entities;
         # hot water and pool weren't observable there and stay raw numbers.
@@ -246,49 +353,13 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         },  # Operating priority (EB101-EP14)
     },
     "holding": {
-        # Language selection — ordering reflects Nibe's market priority. The
-        # names are spelled as the controller's own menu shows them (checked
-        # on a live controller): Český, Russkiy, Ukrayinska and Bǔlgarski are
-        # NIBE's spellings, not the languages' usual self-names.
-        #
-        # MULTI-PLACE UPDATE: this is the controller's own hand-verified list
-        # of firmware-supported languages (Nibe documents none of this — each
-        # entry was confirmed against a real device's select entity). The
-        # `language` config option's dropdown in config.yaml's schema (used
-        # to set the REST API's Accept-Language header, a separate feature
-        # from this select entity) is a hand-maintained BCP-47-code mirror of
-        # this exact list. Adding a language here (new firmware release, user
-        # request) means also adding its BCP-47 code to config.yaml's
-        # `language` schema line — config.yaml is static and cannot derive
-        # its dropdown from this Python dict at runtime, so the two must be
-        # kept in sync by hand, in both directions.
-        3745: {
-            0: "English",
-            1: "Svenska",
-            2: "Deutsch",
-            3: "Français",
-            4: "Español",
-            5: "Suomi",
-            6: "Lietuvių",
-            7: "Český",
-            8: "Polski",
-            9: "Nederlands",
-            10: "Norsk",
-            11: "Dansk",
-            12: "Eesti",
-            13: "Latviešu",
-            14: "Russkiy",
-            15: "Italiano",
-            16: "Magyar",
-            17: "Slovenčina",
-            18: "Türkçe",
-            19: "Hrvatski",
-            20: "Română",
-            21: "Íslenska",
-            22: "Slovenščina",
-            23: "Ukrayinska",
-            24: "Bǔlgarski",
-        },
+        # AUX functions (menu 7.4) — see AUX_INPUT_FUNCTIONS. 12463 (relay
+        # AUX11) is left a number: the reference SMO S40 reads 5 there, and
+        # whether that is "Not used" as on an S1155 isn't settled yet.
+        **{pid: _numbered(AUX_INPUT_FUNCTIONS, 0, 69) for pid in AUX_INPUT_POINTS},
+        3959: _numbered(AUX_OUTPUT_FUNCTIONS, 0, 33),  # Output AUX1 (relay AUX10)
+        # Language (menu 4.9) — see LANGUAGES.
+        3745: _numbered(LANGUAGES, 0, 30),
         3976: {
             0: "Own setting",
             1: "Radiator",
@@ -387,7 +458,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
 MAPPING_STATUSES = ("confirmed", "inferred", "partial")
 MAPPING_STATUS: dict[int, str] = {
     # Options read off a live controller's own menu (language English).
-    3745: "confirmed",
     4085: "confirmed",
     4692: "confirmed",
     7022: "confirmed",
@@ -419,9 +489,16 @@ MAPPING_STATUS: dict[int, str] = {
     # PV panels operating mode: 10 and 40 observed in issue #29 (ten
     # transitions over six days); 20 and 30 from yozik04/nibe PR #325.
     1021: "partial",
-    # SG Ready status: 10 and 30 measured (issue #40); 20 and 40 from the
-    # yozik04/nibe library's mapping of the same register.
-    3260: "partial",
+    # AUX functions: the values an S1155 offers, read off its menu 7.4
+    # (issue #82); the others stay numbers.
+    **dict.fromkeys(AUX_INPUT_POINTS, "partial"),
+    3959: "partial",
+    # Language: 0-24 read off a live controller's menu, 25-30 (firmware
+    # 4.14.6) by selecting each on the controller.
+    3745: "confirmed",
+    # SG Ready status: all four states switched through on an S1155
+    # (issue #82; issue #40 had measured 10 and 30).
+    3260: "confirmed",
     # Heat pump types: 17 (S2125-12) and 40 (SMO S40) read on a live
     # controller, 55 on an S1155's own module EB100 (GitHub issue #82);
     # the other model codes are best-effort.
