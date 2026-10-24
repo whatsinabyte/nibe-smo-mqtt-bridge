@@ -187,7 +187,7 @@ value_mappings:
   24h: 24t
   Active: Aktiv
   Active alarm: Aktiv alarm
-  Additional heat only: Kun tilleggsvarme
+  Additional heat only: Bare tilleggsvarme
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrering
@@ -204,7 +204,7 @@ value_mappings:
   Hot water boost: Varmtvannsboost
   Idle: Hvilende
   Inactive: Inaktiv
-  Intermittent: Intermitterende
+  Intermittent: Intermittent
   Manual: Manuell
   No alarm: Ingen alarm
   'Off': Av
@@ -228,3 +228,7 @@ value_mappings:
   Starting: Starter
   Transfer: Transfer
   Underfloor heating: Gulvvarme
+  Normal: Normal
+  Blocking: Blokkering
+  Low price: Lavpris
+  Overcapacity: Overkapasitet

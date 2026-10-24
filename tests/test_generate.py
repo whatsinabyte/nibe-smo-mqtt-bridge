@@ -8654,17 +8654,24 @@ class TestConfigTranslationsParity(unittest.TestCase):
             self.assertFalse(missing, f"{path.name} has no translation for: {sorted(missing)}")
 
     def test_sg_ready_status_follows_nibe_wording(self):
-        """3260's states follow NIBE's own manuals where we have them:
-        Dutch from the VVM S320 manual ("Normale stand", "Blokkering",
-        "Stand lage prijs", "Stand overcapaciteit"), German from the SMO S40
-        manual ("Normalbetrieb", "Blockierung", "Niedrigpreismodus",
-        "Überkapazitätsmodus") — not 10614's request labels (issue #40)."""
+        """3260's states follow the SG Ready section of NIBE's installer
+        manual in each language (SMO S40 or VVM S320), with the word for
+        "mode" left out as in English — e.g. Dutch "Stand lage prijs" gives
+        "Lage prijs". Not 10614's request labels (issue #40). Spanish and
+        French have no manual on file and keep the English names."""
         import yaml as _yaml
         from nibe_entity_detection import _lookup_manual_mapping
 
         expected = {
             "nl": ["Normaal", "Blokkering", "Lage prijs", "Overcapaciteit"],
             "de": ["Normalbetrieb", "Blockierung", "Niedrigpreis", "Überkapazität"],
+            "sv": ["Normal", "Blockering", "Lågpris", "Överkapacitet"],
+            "no": ["Normal", "Blokkering", "Lavpris", "Overkapasitet"],
+            "da": ["Normal", "Blokering", "Lavpris", "Overkapacitet"],
+            "fi": ["Normaali", "Esto", "Matalahinta", "Ylikapasiteetti"],
+            "it": ["Normale", "Bloccaggio", "Basso costo", "Massima capacità"],
+            "pl": ["Normalny", "Blokowanie", "Oszczędny", "Nadmiar mocy"],
+            "cs": ["Normální", "Blokování", "Nízká cena", "Nadbytečný výkon"],
         }
         labels = list(_lookup_manual_mapping(3260).values())
         for path in self.translation_files:

@@ -11,11 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **SG Ready operating mode (3260) in Dutch and German**, in NIBE's own
-  wording from its manuals: Normaal / Blokkering / Lage prijs /
-  Overcapaciteit, and Normalbetrieb / Blockierung / Niedrigpreis /
-  Überkapazität. Other languages keep the English names. The mapping is
-  now also confirmed on a VVM S320 (issue #40).
+- **Translations checked against NIBE's installer manuals** (SMO S40 or
+  VVM S320) in Swedish, Norwegian, Danish, Finnish, German, Dutch,
+  Italian, Polish and Czech:
+  - SG Ready operating mode (3260) is now translated in those languages,
+    in the manuals' names for the four states (Dutch Normaal / Blokkering
+    / Lage prijs / Overcapaciteit, German Normalbetrieb / Blockierung /
+    Niedrigpreis / Überkapazität, …). The mapping is now also confirmed on
+    a VVM S320 (issue #40).
+  - "Additional heat only" follows the manuals' operating mode menu
+    (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento
+    supplementare"), and "Intermittent" the pump menus in Dutch,
+    Norwegian and Polish.
+  - Spanish and French had no manual to check against and are unchanged.
 
 ---
 

@@ -196,7 +196,7 @@ value_mappings:
   24h: 24h
   Active: Aktiivinen
   Active alarm: Aktiivinen hälytys
-  Additional heat only: Vain lisälämmitys
+  Additional heat only: Vain lisälämpö
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrointi
@@ -237,3 +237,7 @@ value_mappings:
   Starting: Käynnistyy
   Transfer: Siirto
   Underfloor heating: Lattialämmitys
+  Normal: Normaali
+  Blocking: Esto
+  Low price: Matalahinta
+  Overcapacity: Ylikapasiteetti
