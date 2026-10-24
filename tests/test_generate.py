@@ -8653,6 +8653,27 @@ class TestConfigTranslationsParity(unittest.TestCase):
             missing = labels - set(mappings)
             self.assertFalse(missing, f"{path.name} has no translation for: {sorted(missing)}")
 
+    def test_sg_ready_status_follows_nibe_wording(self):
+        """3260's states follow NIBE's own manuals where we have them:
+        Dutch from the VVM S320 manual ("Normale stand", "Blokkering",
+        "Stand lage prijs", "Stand overcapaciteit"), German from the SMO S40
+        manual ("Normalbetrieb", "Blockierung", "Niedrigpreismodus",
+        "Überkapazitätsmodus") — not 10614's request labels (issue #40)."""
+        import yaml as _yaml
+        from nibe_entity_detection import _lookup_manual_mapping
+
+        expected = {
+            "nl": ["Normaal", "Blokkering", "Lage prijs", "Overcapaciteit"],
+            "de": ["Normalbetrieb", "Blockierung", "Niedrigpreis", "Überkapazität"],
+        }
+        labels = list(_lookup_manual_mapping(3260).values())
+        for path in self.translation_files:
+            if path.stem in expected:
+                with open(path, encoding="utf-8") as f:
+                    mappings = _yaml.safe_load(f)["value_mappings"]
+                got = [mappings.get(label) for label in labels]
+                self.assertEqual(got, expected[path.stem], path.name)
+
     def test_value_mappings_translations_are_unique_within_each_language(self):
         """Two English labels must never translate to the same string.
 

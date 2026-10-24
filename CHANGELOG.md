@@ -7,10 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.4.2] — 2026-10-20
+## [Unreleased]
+
+### Changed
+
+- **SG Ready operating mode (3260) in Dutch and German**, in NIBE's own
+  wording from its manuals: Normaal / Blokkering / Lage prijs /
+  Overcapaciteit, and Normalbetrieb / Blockierung / Niedrigpreis /
+  Überkapazität. Other languages keep the English names. The mapping is
+  now also confirmed on a VVM S320 (issue #40).
+
+---
+
+## [1.4.2] — 2026-10-24
 
 AUX functions by name and SG Ready under NIBE's own names, both from an
-S1155 owner's tests on his controller (issue #82).
+S1155 owner's tests on his controller (issue #82), and the Language
+setting for the six languages NIBE firmware 4.14.6 adds.
 
 ### Changed
 
@@ -25,7 +38,6 @@ S1155 owner's tests on his controller (issue #82).
   Low price, Overcapacity — instead of "Normal Price", "High Price", "Low
   Price" and "Free Electricity". All four states are now confirmed on a
   controller (issue #40).
-
 - **Language (3745) covers the six languages of firmware 4.14.6**: Srpski,
   Ελληνικά, Português, Føroyskt, Shqip and Bosanski, values 25–30, while
   the metadata still declares 0–25. Before, selecting one made the select
