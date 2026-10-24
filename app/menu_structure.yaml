@@ -2080,22 +2080,20 @@ menus:
         for (e.g. SG Ready, hot water circulation, external contact).
 
         '
-      note: 'Most AUX input/output assignments are not exposed as readable registers in the local API. Configure via menu
-        7.4 on the controller display.
+      note: 'The AUX inputs and outputs are assigned their functions in menu 7.4 on the controller.
 
         '
       settings:
       - label: AUX relay (AUX11)
-        range: Function assignment
+        range: 0 – 33
         point_id: 12463
         note: Function assigned to the AUX11 relay output, as a number. The controller shows the same setting as a list of
-          functions in menu 7.4; the numbers behind them differ between models and firmware versions. 0 = no function, 5
-          = alarm output (the factory default).
+          functions in menu 7.4, which names each one.
       - label: AUX from Modbus
-        range: Function assignment
+        range: Function list
         point_id: 22070
-        note: 'AUX output function via Modbus register. Allows external Modbus master to control AUX relay function. 0=not
-          used (default).
+        note: 'The input function a Modbus master switches on (with the AUX from Modbus on/off setting) — the same list
+          of functions as the AUX inputs.
 
           '
       - label: AUX from Modbus (2)
@@ -3116,7 +3114,7 @@ menus:
       '
     settings:
     - label: Language
-      range: 25 language options
+      range: Language list
       point_id: 3745
       note: 'Language selection for controller display. 0=English, 1=Svenska, 2=Deutsch, etc. Does not affect this MQTT bridge
         — entity names are always in English.
@@ -5944,45 +5942,45 @@ menus:
 
           '
       - label: Input AUX1 function
-        range: 0 – 69
+        range: Function list
         point_id: 3958
       - label: Input AUX2 function
-        range: 0 – 69
+        range: Function list
         point_id: 3957
       - label: Input AUX3 function
-        range: 0 – 69
+        range: Function list
         point_id: 3956
       - label: Input AUX4 function
-        range: 0 – 69
+        range: Function list
         point_id: 3955
       - label: Input AUX5 function
-        range: 0 – 69
+        range: Function list
         point_id: 3954
       - label: Input AUX6 function
-        range: 0 – 69
+        range: Function list
         point_id: 4713
         note: The sixth selectable input, on the joint board terminal AA100-X10:7-12. A value of 0 means this AUX input
           is not assigned a function.
       - label: AUX relay (AUX11)
         range: 0 – 33
         point_id: 12463
-        note: Function assigned to the AUX11 relay output, as a number; 0 = no function, 5 = alarm output (the factory
-          default). Choose the function from the list in menu 7.4 on the controller, which names each one.
+        note: Function assigned to the AUX11 relay output, as a number. Menu 7.4 on the controller shows the same setting as
+          a list of functions, which names each one.
       - label: Output AUX1
-        range: 0 – 33
+        range: Function list
         point_id: 3959
-        note: Function assigned to the AUX1 output, as a number; 0 = no function. Choose the function from the list in menu
-          7.4 on the controller, which names each one.
+        note: Function assigned to the AUX1 output. A function whose name isn't known yet shows as its number.
       - label: AUX from Modbus
-        range: Function assignment
+        range: Function list
         point_id: 22070
-        note: AUX output function controlled via Modbus register. 0=not used (default).
+        note: The input function a Modbus master switches on — the same list of functions as the AUX inputs.
       - label: Auxiliary operation on alarm
         range: Status
         point_id: 3937
         note: Whether auxiliary operation continues while an alarm is active.
-      note: 'Register 32825 (power limitation value in kW) requires firmware 4.10.5 or later. For the five "Input AUX" functions
-        above: a value of 0 means that AUX input is not assigned a function.
+      note: 'Register 32825 (power limitation value in kW) requires firmware 4.10.5 or later. For the "Input AUX" functions above:
+        a value of 0 means that AUX input is not assigned a function, and a function whose name is not known yet shows as
+        its number.
 
         '
   - id: '7.5'
