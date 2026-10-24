@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a VVM S320 (issue #40).
   - "Additional heat only" follows the manuals' operating mode menu
     (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento
-    supplementare"), and "Intermittent" the pump menus in Dutch,
-    Norwegian and Polish.
+    supplementare"), "Intermittent" the pump menus in Dutch, Norwegian
+    and Polish, and "Price per kWh" menu 4.6 in Norwegian and Finnish.
   - Spanish and French had no manual to check against and are unchanged.
 
 ---
