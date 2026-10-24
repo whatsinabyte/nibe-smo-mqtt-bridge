@@ -228,3 +228,8 @@ value_mappings:
   Blocking: Blockering
   Low price: Lågpris
   Overcapacity: Överkapacitet
+  Small: Litet
+  Medium: Medel
+  Large: Stort
+  Target temp: Måltemp
+  Delta temp: Deltatemp

@@ -241,3 +241,8 @@ value_mappings:
   Blocking: Esto
   Low price: Matalahinta
   Overcapacity: Ylikapasiteetti
+  Small: Pieni
+  Medium: Keski
+  Large: Suuri
+  Target temp: Tavoitelämpötila
+  Delta temp: Lämpötilaero

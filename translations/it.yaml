@@ -239,3 +239,8 @@ value_mappings:
   Blocking: Bloccaggio
   Low price: Basso costo
   Overcapacity: Massima capacità
+  Small: Piccolo
+  Medium: Medio
+  Large: Grande
+  Target temp: Temp. target
+  Delta temp: Temp. delta

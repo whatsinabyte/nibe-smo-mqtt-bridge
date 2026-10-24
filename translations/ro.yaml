@@ -1,0 +1,204 @@
+configuration:
+  nibe_host:
+    name: Adresa IP a controlerului
+    description: >-
+      Adresa IP sau numele de gazdă al controlerului Nibe din seria S în
+      rețeaua locală. Se recomandă insistent o adresă IP statică, alocată
+      din router.
+  nibe_port:
+    name: Portul API al controlerului
+    description: >-
+      Portul HTTPS al API-ului REST local al controlerului. Valoarea
+      implicită 8443 este corectă pentru toate produsele din seria S și în
+      mod normal nu trebuie modificată.
+  nibe_username:
+    name: Nume de utilizator API al controlerului
+    description: >-
+      Numele de utilizator setat în meniul Service al controlerului (meniul
+      7.5.15). Trebuie să corespundă exact valorii configurate pe controler.
+  nibe_password:
+    name: Parola API a controlerului
+    description: >-
+      Parola setată în meniul Service al controlerului (meniul 7.5.15).
+      Se face distincție între majuscule și minuscule.
+  mqtt_host:
+    name: Numele de gazdă al brokerului MQTT
+    description: >-
+      Numele de gazdă sau adresa IP a brokerului MQTT. Valoarea implicită
+      "core-mosquitto" funcționează cu add-on-ul oficial Mosquitto. Pentru
+      orice alt broker, folosiți o adresă IP sau un nume de gazdă.
+  mqtt_port:
+    name: Portul brokerului MQTT
+    description: >-
+      Portul TCP al brokerului MQTT. Valoarea implicită 1883 este portul
+      MQTT standard necriptat. Dacă activați "MQTT TLS" mai jos, schimbați-l
+      în 8883 (portul MQTT criptat standard folosit de Mosquitto).
+  mqtt_username:
+    name: Nume de utilizator MQTT
+    description: >-
+      Numele de utilizator pentru autentificarea la brokerul MQTT. Lăsați
+      gol dacă brokerul nu necesită autentificare.
+      Cu valoarea implicită "core-mosquitto", Supervisor furnizează contul add-on-ului Mosquitto, care are prioritate față de acest câmp.
+  mqtt_password:
+    name: Parola MQTT
+    description: >-
+      Parola pentru autentificarea la brokerul MQTT. Lăsați gol dacă
+      brokerul nu necesită autentificare.
+      Cu valoarea implicită "core-mosquitto", Supervisor furnizează contul add-on-ului Mosquitto, care are prioritate față de acest câmp.
+  device_name:
+    name: Numele dispozitivului
+    description: >-
+      Cum apare controlerul ca dispozitiv în Home Assistant. Implicit
+      "Nibe SMO S40", dar îl puteți potrivi cu echipamentul real
+      (de ex. "Nibe S1155" sau "Nibe VVM S320").
+  language:
+    name: Limbă
+    description: >-
+      Limba pentru numele și descrierile entităților returnate de API-ul
+      REST al controlerului. "auto" (implicit) urmează limba configurată în
+      Home Assistant; alegeți o limbă anume pentru a o suprascrie. Lista
+      reflectă meniul "Limbă" al controlerului — doar câteva intrări au fost
+      confirmate direct prin API-ul REST, dar alegerea uneia nesuportate nu
+      strică nimic: se revine în tăcere la engleză, fără eroare. Nu traduce
+      tabloul de bord Nibe Menus, al cărui conținut este fix, în engleză.
+      După modificare este necesară o repornire.
+  poll_interval:
+    name: Interval de interogare
+    description: >-
+      Cât de des sunt citite toate punctele de date de la controler, în
+      secunde. Se recomandă 30 de secunde. Controlerul este un dispozitiv
+      încorporat — API-ul său REST este secundar față de sarcina principală
+      de a gestiona pompa de căldură. După modificare este necesară o
+      repornire.
+  mode:
+    name: Modul entităților
+    description: >-
+      Ce set de entități expune bridge-ul: "essential" cuprinde temperaturile
+      de bază, starea apei calde, totalurile de energie și valorile de
+      referință de bază — un bun punct de plecare pentru orice instalație.
+      "monitoring" adaugă turul/returul, starea compresorului și indicatorii
+      de eficiență. "advanced" adaugă întregul circuit frigorific și
+      registrele de reglaj. "menus" expune toate punctele necesare pentru
+      tabloul de bord Nibe Menus și construiește acest tablou. "all" expune
+      toate punctele descoperite; "none" nu expune nimic până nu activați
+      manual entități. Se aplică la pornire — schimbarea necesită o
+      repornire a add-on-ului, iar trecerea la un alt mod dezactivează
+      implicit entitățile care nu fac parte din noul set — entitățile
+      activate manual din cardul Entity Manager sunt și ele eliminate la
+      schimbarea modului, dar se păstrează la reporniri cu același mod.
+      Consultați "Comportament la schimbarea modului" mai jos pentru a
+      modifica acest lucru.
+      "essential" este punctul de plecare recomandat.
+  mode_switch_behavior:
+    name: Comportament la schimbarea modului
+    description: >-
+      Ce se întâmplă cu entitățile deja activate când treceți la un alt mod.
+      "replace" (implicit) aliniază setul activat exact la punctele noului
+      mod — tot ce este activat acum și nu face parte din noul mod, inclusiv
+      entitățile activate manual din cardul Entity Manager, este dezactivat.
+      "merge" doar adaugă punctele noului mod peste cele deja activate —
+      nimic nu este dezactivat vreodată de o schimbare de mod. Se aplică la
+      fiecare schimbare de mod. Nu are efect la o instalare nouă sau la o
+      repornire cu același mod — doar o schimbare efectivă a modului
+      declanșează acest comportament.
+  log_level:
+    name: Nivel de jurnalizare
+    description: >-
+      Cât de detaliat este doar jurnalul add-on-ului — nu influențează ce
+      entități sunt afișate. "info" este recomandat pentru utilizarea
+      normală. Folosiți "debug" pentru a diagnostica probleme de conexiune
+      sau de entități — produce un volum mare de mesaje și trebuie readus la
+      "info" după aceea. Pentru butonul suitei de teste și senzorul de
+      rezultat, folosiți în schimb "Mod depanare" de mai jos.
+  debug_mode:
+    name: Mod depanare
+    description: >-
+      Activează butonul suitei de teste, butonul de golire a hărții dinamice
+      și senzorul de rezultat pe dispozitivul Management. Independent de
+      "Nivel de jurnalizare" de mai sus — aceasta este singura setare care
+      determină dacă aceste entități sunt afișate. Intră în vigoare la
+      următoarea repornire a add-on-ului: dezactivarea elimină și entitățile,
+      nu doar oprește adăugarea altora noi.
+  api_failure_threshold:
+    name: Prag de erori API
+    description: >-
+      Numărul de interogări eșuate consecutiv înainte să apară o notificare
+      persistentă în clopoțelul de notificări HA. Valoarea implicită 3
+      înseamnă trei eșecuri la rând (90 de secunde la intervalul implicit)
+      înainte de alertă. Măriți-l într-o rețea instabilă pentru a evita
+      alarmele false.
+  changelog_retention_days:
+    name: Păstrarea istoricului modificărilor (zile)
+    description: >-
+      Câte zile se păstrează intrările din istoricul modificărilor din Entity
+      Manager înainte de a fi șterse. Intrările mai vechi sunt eliminate la
+      fiecare repornire a bridge-ului. Valoarea implicită de 90 de zile se
+      potrivește majorității instalațiilor.
+  remove_frontend:
+    name: Eliminare frontend la oprire
+    description: >-
+      Setați pe true înainte de a opri add-on-ul pentru a elimina automat, la
+      următoarea oprire curată, tabloul de bord Nibe Bridge, înregistrarea
+      resursei Lovelace, fișierul cardului și toate mesajele MQTT reținute.
+      Folosiți doar la dezinstalare. Repornirile normale nu sunt afectate.
+      Consultați documentația pentru procedura completă de dezinstalare.
+  nibe_ca_cert:
+    name: Calea certificatului CA al controlerului Nibe
+    description: >-
+      Opțional. Calea absolută către un fișier de certificat CA în format PEM
+      folosit pentru verificarea certificatului HTTPS al controlerului Nibe.
+      Când este setată, verificarea completă a lanțului TLS și a numelui de
+      gazdă este activată pentru toate apelurile API către controler. Lăsați
+      gol pentru a accepta fără verificare certificatul autosemnat integrat
+      al controlerului — aceasta este valoarea implicită și este acceptabilă
+      într-o rețea de domiciliu de încredere, dar înseamnă că un atac
+      man-in-the-middle în rețeaua locală ar putea intercepta traficul
+      controlerului.
+      Exemplu: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Activează criptarea TLS pentru tot traficul dintre bridge și brokerul
+      MQTT. Protejează datele de autentificare MQTT și toate comenzile
+      entităților de a fi citite de alte dispozitive din rețeaua locală.
+      Necesită un broker configurat pentru TLS — schimbați "Portul
+      brokerului MQTT" în 8883 dacă folosiți add-on-ul Mosquitto. Dezactivat
+      implicit.
+  mqtt_ca_cert:
+    name: Calea certificatului CA al brokerului MQTT
+    description: >-
+      Opțional. Folosit doar când "MQTT TLS" este activat. Calea absolută
+      către un fișier de certificat CA în format PEM folosit pentru
+      verificarea certificatului TLS al brokerului. Lăsați gol pentru a
+      folosi depozitul CA al sistemului, corect pentru brokerele cu un
+      certificat semnat de o autoritate publică. Setați-l dacă brokerul
+      folosește un certificat autosemnat sau semnat privat.
+      Exemplu: /ssl/mqtt-ca.pem
+# Only labels NIBE's Romanian SMO S40 installer manual (IHB RO 2016-1) names;
+# any other label stays English.
+value_mappings:
+  Additional heat only: Doar încălzire auxiliară
+  Auto: Automat
+  Blocking: Blocare
+  Closed: Închis
+  Cooling: Răcire
+  Delta temp: Temp. delta
+  Heating: Încălzire
+  Hot water: Apă caldă
+  Intermittent: Intermitent
+  Large: Ridicat
+  Low price: Preț scăzut
+  Manual: Manual
+  Medium: Mediu
+  Normal: Normal
+  'Off': Oprit
+  'On': Pornit
+  Open: Deschis
+  Overcapacity: Supracapacitate
+  Own setting: Setări proprii
+  Pool: Piscină
+  Radiator: Radiator
+  Radiator & Underfloor heating: Radiator + încălzire în pardoseală
+  Small: Scăzut
+  Target temp: Temp. dorită
+  Underfloor heating: Încălzire în pardoseală

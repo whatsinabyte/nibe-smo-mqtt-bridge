@@ -233,3 +233,6 @@ value_mappings:
   Blocking: Blokering
   Low price: Lavpris
   Overcapacity: Overkapacitet
+  Small: Lille
+  Medium: Middel
+  Large: Stort

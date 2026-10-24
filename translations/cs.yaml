@@ -229,3 +229,6 @@ value_mappings:
   Blocking: Blokování
   Low price: Nízká cena
   Overcapacity: Nadbytečný výkon
+  Small: Malý
+  Medium: Střední
+  Large: Velký

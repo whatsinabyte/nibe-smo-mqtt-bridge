@@ -245,3 +245,6 @@ value_mappings:
   Low price: Niedrigpreis
   Normal: Normalbetrieb
   Overcapacity: Überkapazität
+  Small: Niedrig
+  Medium: Mittel
+  Large: Hoch

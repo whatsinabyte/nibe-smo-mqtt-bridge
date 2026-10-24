@@ -23,7 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento
     supplementare"), "Intermittent" the pump menus in Dutch, Norwegian
     and Polish, and "Price per kWh" menu 4.6 in Norwegian and Finnish.
+  - Newly translated from the same manuals: hot water demand (Small /
+    Medium / Large) and the hot water charging method (Target temp /
+    Delta temp, where the manual has that menu).
   - Spanish and French had no manual to check against and are unchanged.
+- **Romanian translation** (`language: ro`): the add-on settings screen,
+  and the value labels NIBE's Romanian SMO S40 installer manual names —
+  operating mode, SG Ready, hot water demand, flow setting and the like.
+  Other labels stay English.
 
 ---
 
