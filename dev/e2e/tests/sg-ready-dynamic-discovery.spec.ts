@@ -353,7 +353,8 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // register, no description, reports 10 (not 0/1), the exact shape the
   // dynamic reclassification safety net exists for (see
   // binary-sensor-reclassification.spec.ts). Its value 10 is labelled
-  // "Normal Price" (VALUE_MAPPINGS, partly confirmed — GitHub issue #40);
+  // "Normal" (VALUE_MAPPINGS, NIBE's name for the state, confirmed on an
+  // S1155 — GitHub issue #82);
   // the label has no translation, so it stays English in the Dutch harness.
   let point3260 = '';
   await expect
@@ -365,10 +366,10 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
       },
       {
         timeout: 30_000,
-        message: 'point 3260 should be a sensor.* entity showing "Normal Price" (raw 10)',
+        message: 'point 3260 should be a sensor.* entity showing "Normal" (raw 10)',
       }
     )
-    .toMatch(/^sensor\..* = Normal Price$/);
+    .toMatch(/^sensor\..* = Normal$/);
   const afterDiscovery = await fetchStates(token);
 
   const point3260BinarySensor = afterDiscovery.find(

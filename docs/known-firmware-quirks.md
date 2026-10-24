@@ -36,6 +36,10 @@ confirmed exceptions, corrected via `UNIT_OVERRIDES` /
   to one model. Corrected divisor: 100. See
   [issue #84](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/84),
   fixed in [v1.2.1](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.2.1).
+- **Point 2555 ("Low press (EB100-BP8)") — a pressure sensor declared in
+  °C.** Up to firmware 4.13 its metadata gave `unit: °C`; 4.14.6 changed it
+  to `bar`. No override: the firmware corrected itself, and on the
+  reference SMO S40 the point reads the not-connected sentinel anyway.
 - **Points 25165/25166 ("Energy log — Current power consumption[,
   components]") — used to report the wrong unit entirely.** Firmware
   used to report an energy unit (`kWh`) for what are power points,
@@ -98,27 +102,33 @@ temperature sensor, that still declares `0`/`0`). Point 12387 ("Months")
 is another storage-width case: it declares `0`–`4095` (12 bits), while
 the installer menu range is 1 – 24 months.
 
-A declared maximum can also be off by one. Point 3745 ("Language")
-declares `0`–`25`, i.e. 26 languages, and the installer menu even says
-"26 language options". The controller's own drop-down offers 25, values
-0–24, from English to Bǔlgarski, and nothing beyond. The firmware
-changelog's most recent language addition, Bulgarian and Ukrainian in
-2.26.3 (2024-03-08), is the end of that list, and no later release adds
-one. NIBE's Modbus register export agrees: maximum `24` there, so the extra
-value is the REST API's. The bridge needs no correction here: Language is a
-select whose options come from `VALUE_MAPPINGS`, so 25 is never offered. Its
-labels are spelled as the controller's menu shows them; four are NIBE's own
-transliterations rather than the languages' usual self-names: Český,
-Russkiy, Ukrayinska and Bǔlgarski.
+A declared maximum can also be wrong. Point 3745 ("Language") declares
+`0`–`25`, i.e. 26 languages, and the installer menu even says "26 language
+options". Up to firmware 4.13 the controller's own drop-down offered 25,
+values 0–24, from English to Bǔlgarski, and NIBE's Modbus register export
+gave maximum `24`. Firmware 4.14.6 added six languages (Bosnian, Albanian,
+Faroese, Portuguese, Greek and Serbian, per its changelog) at 25–30 —
+Srpski, Ελληνικά, Português, Føroyskt, Shqip and Bosanski, each read by
+selecting it on the controller — while the REST metadata still declares
+`0`–`25`. The bridge therefore takes the Language select's range, 0–30,
+from the values read, not from the metadata. Its labels are spelled as the controller's
+menu shows them; four are NIBE's own transliterations rather than the
+languages' usual self-names: Český, Russkiy, Ukrayinska and Bǔlgarski.
 
 Two writable settings show the same discrepancy between the two NIBE sources:
 3959 ("Output AUX1") and 12463 ("AUX relay (AUX11)"), function assignments
 for the AUX outputs in menu 7.4, declare `0`–`33` in the REST API and
-`0`–`32` in the Modbus register export. They are plain numbers without an
-option list, so here the declared maximum is what Home Assistant enforces.
-Two values are confirmed on a controller: 0 is no function and 5 is alarm
-output (the factory default). Which maximum is right is not yet checked, so
-the bridge keeps the REST range.
+`0`–`32` in the Modbus register export. Which maximum is right is not yet
+checked, so the bridge keeps the REST range. Neither carries an option list:
+the function names come from an S1155's own menu 7.4 (GitHub issue #82), on
+which 0 is alarm output and 5 "not used" — the same numbering as NIBE's
+M12676 lists for the SMO S40's AUX relays. 3959 is a select with those
+names; 12463 stays a number, as the reference SMO S40 reads 5 there and its
+menu hasn't settled which function that is (an earlier note here had 5 as
+alarm output). The AUX inputs (3954–3958, 4713, 55035–55037) and "AUX from
+Modbus" (22070) share one numbering, which matches M12676's "AUX from
+Modbus" function IDs; their selects cover the whole 0–69 range, a function
+not yet named showing as its number.
 
 This convention isn't specific to this bridge's own reference hardware —
 an independent project reading the same local REST API,
@@ -204,8 +214,9 @@ register numbers appear in both. Modbus 22, for example, is input point 25
 While the controller restarts, its REST API keeps answering but serves only
 part of its points. During a 4.13.12 firmware update one controller served
 1145 of its 1169 points for about a minute, across four polls, before the
-rest returned. A point missing from one bulk response is therefore not
-evidence that the firmware removed it.
+rest returned. During the 4.14.6 update the same controller served 1146 of
+its 1170 points, again for about a minute. A point missing from one bulk
+response is therefore not evidence that the firmware removed it.
 
 **Workaround:** a missing point is published unavailable straight away, and
 disabled only after five continuous minutes of absence (`_ABSENT_GRACE_S`,
@@ -265,6 +276,11 @@ just "we didn't look hard enough."
   sensors BT3/12/14/15/16/17/28/84 and contains no occurrence of `BT39`
   or "liquid line" at all. See `docs/reference-documents.md` for the full
   cross-check.
+- **Point 2499 ("Low pressure (EB101-BP8)"), added in firmware 4.14.6.**
+  Not in that version's release notes. It has the same name as point 3095
+  and, on the reference SMO S40, the same value, changing in the same polls;
+  only the Modbus register differs (1483 against 1802). The Nibe Menus keep
+  3095.
 - More broadly: the 522-point mapping pass in
   [v1.2.0](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.2.0)
   found that installer manuals document only a fraction of what the
