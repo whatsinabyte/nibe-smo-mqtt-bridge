@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - SG Ready operating mode (3260) is now translated in those languages,
     in the manuals' names for the four states (Dutch Normaal / Blokkering
     / Lage prijs / Overcapaciteit, German Normalbetrieb / Blockierung /
-    Niedrigpreis / Überkapazität, …). The mapping is now also confirmed on
+    Niedriger Preis / Überkapazität, …). The mapping is now also confirmed on
     a VVM S320 (issue #40).
   - "Additional heat only" follows the manuals' operating mode menu
     (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento

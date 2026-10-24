@@ -8667,7 +8667,7 @@ class TestConfigTranslationsParity(unittest.TestCase):
 
         expected = {
             "nl": ["Normaal", "Blokkering", "Lage prijs", "Overcapaciteit"],
-            "de": ["Normalbetrieb", "Blockierung", "Niedrigpreis", "Überkapazität"],
+            "de": ["Normalbetrieb", "Blockierung", "Niedriger Preis", "Überkapazität"],
             "sv": ["Normal", "Blockering", "Lågpris", "Överkapacitet"],
             "no": ["Normal", "Blokkering", "Lavpris", "Overkapasitet"],
             "da": ["Normal", "Blokering", "Lavpris", "Overkapacitet"],
