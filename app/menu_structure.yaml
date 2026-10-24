@@ -3114,7 +3114,7 @@ menus:
       '
     settings:
     - label: Language
-      range: 25 language options
+      range: Language list
       point_id: 3745
       note: 'Language selection for controller display. 0=English, 1=Svenska, 2=Deutsch, etc. Does not affect this MQTT bridge
         — entity names are always in English.

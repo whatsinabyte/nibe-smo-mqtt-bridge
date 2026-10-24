@@ -36,6 +36,10 @@ confirmed exceptions, corrected via `UNIT_OVERRIDES` /
   to one model. Corrected divisor: 100. See
   [issue #84](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/issues/84),
   fixed in [v1.2.1](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.2.1).
+- **Point 2555 ("Low press (EB100-BP8)") — a pressure sensor declared in
+  °C.** Up to firmware 4.13 its metadata gave `unit: °C`; 4.14.6 changed it
+  to `bar`. No override: the firmware corrected itself, and on the
+  reference SMO S40 the point reads the not-connected sentinel anyway.
 - **Points 25165/25166 ("Energy log — Current power consumption[,
   components]") — used to report the wrong unit entirely.** Firmware
   used to report an energy unit (`kWh`) for what are power points,
@@ -98,18 +102,18 @@ temperature sensor, that still declares `0`/`0`). Point 12387 ("Months")
 is another storage-width case: it declares `0`–`4095` (12 bits), while
 the installer menu range is 1 – 24 months.
 
-A declared maximum can also be off by one. Point 3745 ("Language")
-declares `0`–`25`, i.e. 26 languages, and the installer menu even says
-"26 language options". The controller's own drop-down offers 25, values
-0–24, from English to Bǔlgarski, and nothing beyond. The firmware
-changelog's most recent language addition, Bulgarian and Ukrainian in
-2.26.3 (2024-03-08), is the end of that list, and no later release adds
-one. NIBE's Modbus register export agrees: maximum `24` there, so the extra
-value is the REST API's. The bridge needs no correction here: Language is a
-select whose options come from `VALUE_MAPPINGS`, so 25 is never offered. Its
-labels are spelled as the controller's menu shows them; four are NIBE's own
-transliterations rather than the languages' usual self-names: Český,
-Russkiy, Ukrayinska and Bǔlgarski.
+A declared maximum can also be wrong. Point 3745 ("Language") declares
+`0`–`25`, i.e. 26 languages, and the installer menu even says "26 language
+options". Up to firmware 4.13 the controller's own drop-down offered 25,
+values 0–24, from English to Bǔlgarski, and NIBE's Modbus register export
+gave maximum `24`. Firmware 4.14.6 added six languages (Bosnian, Albanian,
+Faroese, Portuguese, Greek and Serbian, per its changelog), and with
+Bosanski selected the controller reports 30, while the REST metadata still
+declares `0`–`25`. The bridge therefore takes the Language select's range
+from the highest value seen, 0–30, not from the metadata: values without a
+known name show as their number. Its labels are spelled as the controller's
+menu shows them; four are NIBE's own transliterations rather than the
+languages' usual self-names: Český, Russkiy, Ukrayinska and Bǔlgarski.
 
 Two writable settings show the same discrepancy between the two NIBE sources:
 3959 ("Output AUX1") and 12463 ("AUX relay (AUX11)"), function assignments
@@ -210,8 +214,9 @@ register numbers appear in both. Modbus 22, for example, is input point 25
 While the controller restarts, its REST API keeps answering but serves only
 part of its points. During a 4.13.12 firmware update one controller served
 1145 of its 1169 points for about a minute, across four polls, before the
-rest returned. A point missing from one bulk response is therefore not
-evidence that the firmware removed it.
+rest returned. During the 4.14.6 update the same controller served 1146 of
+its 1170 points, again for about a minute. A point missing from one bulk
+response is therefore not evidence that the firmware removed it.
 
 **Workaround:** a missing point is published unavailable straight away, and
 disabled only after five continuous minutes of absence (`_ABSENT_GRACE_S`,
@@ -271,6 +276,11 @@ just "we didn't look hard enough."
   sensors BT3/12/14/15/16/17/28/84 and contains no occurrence of `BT39`
   or "liquid line" at all. See `docs/reference-documents.md` for the full
   cross-check.
+- **Point 2499 ("Low pressure (EB101-BP8)"), added in firmware 4.14.6.**
+  Not in that version's release notes. It has the same name as point 3095
+  and, on the reference SMO S40, the same value, changing in the same polls;
+  only the Modbus register differs (1483 against 1802). The Nibe Menus keep
+  3095.
 - More broadly: the 522-point mapping pass in
   [v1.2.0](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/releases/tag/v1.2.0)
   found that installer manuals document only a fraction of what the

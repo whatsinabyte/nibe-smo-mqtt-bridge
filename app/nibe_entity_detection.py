@@ -153,6 +153,49 @@ def _numbered(labels: dict[int, str], lo: int, hi: int) -> dict[int, str]:
     return {value: labels.get(value, str(value)) for value in range(lo, hi + 1)}
 
 
+# Controller display languages (menu 4.9, point 3745), numbered and spelled
+# as the controller's own menu shows them (checked on a live controller):
+# Český, Russkiy, Ukrayinska and Bǔlgarski are NIBE's spellings, not the
+# languages' usual self-names. Firmware 4.14.6 added six languages; of
+# those, only Bosanski's number (30) has been read on a controller so far.
+# The REST metadata still declares 0–25, so the select's range comes from
+# the highest value seen rather than from the metadata.
+#
+# MULTI-PLACE UPDATE: the `language` option in config.yaml's schema (used to
+# set the REST API's Accept-Language header, a separate feature from this
+# select) is a hand-maintained BCP-47-code mirror of this list. Adding a
+# language here means also adding its code there, and the other way round —
+# config.yaml is static and cannot derive its dropdown from this dict.
+LANGUAGES: dict[int, str] = {
+    0: "English",
+    1: "Svenska",
+    2: "Deutsch",
+    3: "Français",
+    4: "Español",
+    5: "Suomi",
+    6: "Lietuvių",
+    7: "Český",
+    8: "Polski",
+    9: "Nederlands",
+    10: "Norsk",
+    11: "Dansk",
+    12: "Eesti",
+    13: "Latviešu",
+    14: "Russkiy",
+    15: "Italiano",
+    16: "Magyar",
+    17: "Slovenčina",
+    18: "Türkçe",
+    19: "Hrvatski",
+    20: "Română",
+    21: "Íslenska",
+    22: "Slovenščina",
+    23: "Ukrayinska",
+    24: "Bǔlgarski",
+    30: "Bosanski",
+}
+
+
 # AUX input and output functions (menu 7.4), wording and numbers as an S1155
 # shows them (GitHub issue #82). The numbers agree with NIBE's own "AUX from
 # Modbus" function IDs (M12676), and the output's with that document's list
@@ -309,49 +352,8 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # whether that is "Not used" as on an S1155 isn't settled yet.
         **{pid: _numbered(AUX_INPUT_FUNCTIONS, 0, 69) for pid in AUX_INPUT_POINTS},
         3959: _numbered(AUX_OUTPUT_FUNCTIONS, 0, 33),  # Output AUX1 (relay AUX10)
-        # Language selection — ordering reflects Nibe's market priority. The
-        # names are spelled as the controller's own menu shows them (checked
-        # on a live controller): Český, Russkiy, Ukrayinska and Bǔlgarski are
-        # NIBE's spellings, not the languages' usual self-names.
-        #
-        # MULTI-PLACE UPDATE: this is the controller's own hand-verified list
-        # of firmware-supported languages (Nibe documents none of this — each
-        # entry was confirmed against a real device's select entity). The
-        # `language` config option's dropdown in config.yaml's schema (used
-        # to set the REST API's Accept-Language header, a separate feature
-        # from this select entity) is a hand-maintained BCP-47-code mirror of
-        # this exact list. Adding a language here (new firmware release, user
-        # request) means also adding its BCP-47 code to config.yaml's
-        # `language` schema line — config.yaml is static and cannot derive
-        # its dropdown from this Python dict at runtime, so the two must be
-        # kept in sync by hand, in both directions.
-        3745: {
-            0: "English",
-            1: "Svenska",
-            2: "Deutsch",
-            3: "Français",
-            4: "Español",
-            5: "Suomi",
-            6: "Lietuvių",
-            7: "Český",
-            8: "Polski",
-            9: "Nederlands",
-            10: "Norsk",
-            11: "Dansk",
-            12: "Eesti",
-            13: "Latviešu",
-            14: "Russkiy",
-            15: "Italiano",
-            16: "Magyar",
-            17: "Slovenčina",
-            18: "Türkçe",
-            19: "Hrvatski",
-            20: "Română",
-            21: "Íslenska",
-            22: "Slovenščina",
-            23: "Ukrayinska",
-            24: "Bǔlgarski",
-        },
+        # Language (menu 4.9) — see LANGUAGES.
+        3745: _numbered(LANGUAGES, 0, 30),
         3976: {
             0: "Own setting",
             1: "Radiator",
@@ -450,7 +452,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
 MAPPING_STATUSES = ("confirmed", "inferred", "partial")
 MAPPING_STATUS: dict[int, str] = {
     # Options read off a live controller's own menu (language English).
-    3745: "confirmed",
     4085: "confirmed",
     4692: "confirmed",
     7022: "confirmed",
@@ -486,6 +487,9 @@ MAPPING_STATUS: dict[int, str] = {
     # (issue #82); the others stay numbers.
     **dict.fromkeys(AUX_INPUT_POINTS, "partial"),
     3959: "partial",
+    # Language: 0-24 read off a live controller's menu, Bosanski (30) on
+    # firmware 4.14.6; that release's other new languages stay numbers.
+    3745: "partial",
     # SG Ready status: all four states switched through on an S1155
     # (issue #82; issue #40 had measured 10 and 30).
     3260: "confirmed",

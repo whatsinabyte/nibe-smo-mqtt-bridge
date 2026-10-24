@@ -4245,7 +4245,7 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
         from nibe_entity_detection import get_entity_options
 
         options = get_entity_options(3745, "")
-        self.assertEqual(len(options), 25)
+        self.assertEqual(len(options), 31)
         self.assertEqual(options[0], "English")
 
     def test_get_entity_options_reads_input_table_entry(self):
@@ -4852,6 +4852,20 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         self.assertEqual(get_entity_options(3959, "")[:2], ["Alarm outp.", "Groundwater pump"])
         aux11 = self._point(12463, "AUX relay (AUX11)", "MODBUS_HOLDING_REGISTER", "u8", 0, 33)
         self.assertEqual(detect_entity_type(aux11)[0], "number")
+
+    def test_language_select_covers_firmware_4_14_languages(self):
+        """Firmware 4.14.6 put Bosanski at 30 while its metadata still
+        declares 0-25: the select runs to 30, so a language not yet named
+        shows as its number instead of the select going unavailable (which
+        also left it unusable from Home Assistant)."""
+        from nibe_entity_detection import detect_entity_type, get_entity_options, mapping_status
+
+        point = self._point(3745, "Language", "MODBUS_HOLDING_REGISTER", "u8", 0, 25)
+        self.assertEqual(detect_entity_type(point)[0], "select")
+        options = get_entity_options(3745, "")
+        self.assertEqual(options[24], "Bǔlgarski")
+        self.assertEqual(options[25:], ["25", "26", "27", "28", "29", "Bosanski"])
+        self.assertEqual(mapping_status(3745), "partial")
 
     def test_running_totals_and_heat_pump_type(self):
         """Compressor starts and run-time counters count up; heat pump type
