@@ -156,10 +156,11 @@ def _numbered(labels: dict[int, str], lo: int, hi: int) -> dict[int, str]:
 # Controller display languages (menu 4.9, point 3745), numbered and spelled
 # as the controller's own menu shows them (checked on a live controller):
 # Český, Russkiy, Ukrayinska and Bǔlgarski are NIBE's spellings, not the
-# languages' usual self-names. Firmware 4.14.6 added six languages; of
-# those, only Bosanski's number (30) has been read on a controller so far.
-# The REST metadata still declares 0–25, so the select's range comes from
-# the highest value seen rather than from the metadata.
+# languages' usual self-names. Firmware 4.14.6 added 25–30, read on the
+# controller one by one (Greek reported as an approximation on a keyboard
+# without its letters; Ελληνικά is the language's own name). The REST
+# metadata still declares 0–25, so the select's range comes from the values
+# read rather than from the metadata.
 #
 # MULTI-PLACE UPDATE: the `language` option in config.yaml's schema (used to
 # set the REST API's Accept-Language header, a separate feature from this
@@ -192,6 +193,11 @@ LANGUAGES: dict[int, str] = {
     22: "Slovenščina",
     23: "Ukrayinska",
     24: "Bǔlgarski",
+    25: "Srpski",
+    26: "Ελληνικά",
+    27: "português",
+    28: "Føroyskt",
+    29: "Shqip",
     30: "Bosanski",
 }
 
@@ -487,9 +493,9 @@ MAPPING_STATUS: dict[int, str] = {
     # (issue #82); the others stay numbers.
     **dict.fromkeys(AUX_INPUT_POINTS, "partial"),
     3959: "partial",
-    # Language: 0-24 read off a live controller's menu, Bosanski (30) on
-    # firmware 4.14.6; that release's other new languages stay numbers.
-    3745: "partial",
+    # Language: 0-24 read off a live controller's menu, 25-30 (firmware
+    # 4.14.6) by selecting each on the controller.
+    3745: "confirmed",
     # SG Ready status: all four states switched through on an S1155
     # (issue #82; issue #40 had measured 10 and 30).
     3260: "confirmed",

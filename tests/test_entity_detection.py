@@ -4854,18 +4854,19 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         self.assertEqual(detect_entity_type(aux11)[0], "number")
 
     def test_language_select_covers_firmware_4_14_languages(self):
-        """Firmware 4.14.6 put Bosanski at 30 while its metadata still
-        declares 0-25: the select runs to 30, so a language not yet named
-        shows as its number instead of the select going unavailable (which
-        also left it unusable from Home Assistant)."""
+        """Firmware 4.14.6 added six languages at 25-30 while its metadata
+        still declares 0-25: the select runs to 30, so selecting one no
+        longer makes it unavailable (and unusable from Home Assistant)."""
         from nibe_entity_detection import detect_entity_type, get_entity_options, mapping_status
 
         point = self._point(3745, "Language", "MODBUS_HOLDING_REGISTER", "u8", 0, 25)
         self.assertEqual(detect_entity_type(point)[0], "select")
         options = get_entity_options(3745, "")
         self.assertEqual(options[24], "Bǔlgarski")
-        self.assertEqual(options[25:], ["25", "26", "27", "28", "29", "Bosanski"])
-        self.assertEqual(mapping_status(3745), "partial")
+        self.assertEqual(
+            options[25:], ["Srpski", "Ελληνικά", "português", "Føroyskt", "Shqip", "Bosanski"]
+        )
+        self.assertEqual(mapping_status(3745), "confirmed")
 
     def test_running_totals_and_heat_pump_type(self):
         """Compressor starts and run-time counters count up; heat pump type

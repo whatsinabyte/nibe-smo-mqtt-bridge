@@ -214,7 +214,7 @@ titles apart from wording. What it showed:
   `RANGE_OVERRIDES` sets. The REST API alone declares `55`.
 - 3745 (Language) has maximum `24` there, against the REST API's `25`,
   matching the controller's drop-down up to firmware 4.13 (4.14.6 added
-  six languages; Bosanski reads 30, see known-firmware-quirks.md). 3959 ("Output AUX1") and 12463 ("AUX
+  six languages at 25–30, see known-firmware-quirks.md). 3959 ("Output AUX1") and 12463 ("AUX
   relay (AUX11)") show the same pattern, `32` against `33`; not yet checked
   on a controller, so the bridge keeps the REST range for these writable
   settings.

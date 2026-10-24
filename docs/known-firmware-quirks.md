@@ -107,11 +107,11 @@ A declared maximum can also be wrong. Point 3745 ("Language") declares
 options". Up to firmware 4.13 the controller's own drop-down offered 25,
 values 0–24, from English to Bǔlgarski, and NIBE's Modbus register export
 gave maximum `24`. Firmware 4.14.6 added six languages (Bosnian, Albanian,
-Faroese, Portuguese, Greek and Serbian, per its changelog), and with
-Bosanski selected the controller reports 30, while the REST metadata still
-declares `0`–`25`. The bridge therefore takes the Language select's range
-from the highest value seen, 0–30, not from the metadata: values without a
-known name show as their number. Its labels are spelled as the controller's
+Faroese, Portuguese, Greek and Serbian, per its changelog) at 25–30 —
+Srpski, Ελληνικά, português, Føroyskt, Shqip and Bosanski, each read by
+selecting it on the controller — while the REST metadata still declares
+`0`–`25`. The bridge therefore takes the Language select's range, 0–30,
+from the values read, not from the metadata. Its labels are spelled as the controller's
 menu shows them; four are NIBE's own transliterations rather than the
 languages' usual self-names: Český, Russkiy, Ukrayinska and Bǔlgarski.
 

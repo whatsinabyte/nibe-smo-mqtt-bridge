@@ -79,7 +79,7 @@ schema:
   # that Python dict at runtime. Adding a language to one list (new Nibe
   # firmware release, user request) means adding it to the other too, by
   # hand, in both directions.
-  language: list(auto|en|sv|de|fr|es|fi|lt|cs|pl|nl|no|da|et|lv|ru|it|hu|sk|tr|hr|ro|is|sl|uk|bg|bs)
+  language: list(auto|en|sv|de|fr|es|fi|lt|cs|pl|nl|no|da|et|lv|ru|it|hu|sk|tr|hr|ro|is|sl|uk|bg|sr|el|pt|fo|sq|bs)
   poll_interval: list(15|30|60|120|300)?
   mode: list(essential|monitoring|advanced|menus|all|none)
   # What happens to already-enabled entities when you switch to a different

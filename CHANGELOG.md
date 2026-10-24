@@ -26,12 +26,11 @@ S1155 owner's tests on his controller (issue #82).
   Price" and "Free Electricity". All four states are now confirmed on a
   controller (issue #40).
 
-- **Language (3745) covers the languages of firmware 4.14.6.** The
-  controller reports 30 for Bosanski while its metadata still declares
-  0–25; the select now runs 0–30, with Bosanski named and the other new
-  languages shown as their number until they are confirmed. Before, a new
-  language made the select unavailable, so it could no longer be set back
-  from Home Assistant. `bs` added to the `language` option.
+- **Language (3745) covers the six languages of firmware 4.14.6**: Srpski,
+  Ελληνικά, português, Føroyskt, Shqip and Bosanski, values 25–30, while
+  the metadata still declares 0–25. Before, selecting one made the select
+  unavailable, so it could no longer be set back from Home Assistant. Their
+  codes (`sr`, `el`, `pt`, `fo`, `sq`, `bs`) added to the `language` option.
 
 ### Fixed
 
