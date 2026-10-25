@@ -146,6 +146,7 @@ class NibeEntityManager extends HTMLElement {
 
     this.mqttSetupDone = false;
     this.showMobileFilters = false;
+    this._cardBuild = CARD_BUILD;  // this copy's build, see handleCardVersionMessage
   }
 
   /**
@@ -1548,7 +1549,7 @@ class NibeEntityManager extends HTMLElement {
     } catch {
       // storage unavailable: treat as tried, so no reload loop
     }
-    const action = NibeEntityManager._staleCardAction(CARD_BUILD, current, tried);
+    const action = NibeEntityManager._staleCardAction(this._cardBuild, current, tried);
     if (action === 'reload') {
       try {
         sessionStorage.setItem(key, '1');
@@ -1556,10 +1557,14 @@ class NibeEntityManager extends HTMLElement {
         this._showStaleCardNotice();
         return;
       }
-      window.location.reload();
+      this._reloadPage();
     } else if (action === 'notice') {
       this._showStaleCardNotice();
     }
+  }
+
+  _reloadPage() {
+    window.location.reload();
   }
 
   _showStaleCardNotice() {
