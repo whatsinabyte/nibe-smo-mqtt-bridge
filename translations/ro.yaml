@@ -174,8 +174,8 @@ configuration:
       certificat semnat de o autoritate publică. Setați-l dacă brokerul
       folosește un certificat autosemnat sau semnat privat.
       Exemplu: /ssl/mqtt-ca.pem
-# Only labels NIBE's Romanian SMO S40 installer manual (IHB RO 2016-1) names;
-# any other label stays English.
+# Only labels NIBE's Romanian installer manuals (SMO S40 IHB RO 2016-1,
+# VVM S320 IHB RO 2327-1) name; any other label stays English.
 value_mappings:
   Additional heat only: Doar încălzire auxiliară
   Auto: Automat
@@ -202,3 +202,4 @@ value_mappings:
   Small: Scăzut
   Target temp: Temp. dorită
   Underfloor heating: Încălzire în pardoseală
+  Price per kWh: Preț pe kWh

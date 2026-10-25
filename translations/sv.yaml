@@ -233,3 +233,6 @@ value_mappings:
   Large: Stort
   Target temp: Måltemp
   Delta temp: Deltatemp
+  Continuous: Kontinuerlig
+  10 days cont.: 10 dagar kont.
+  Fixed delta: Fast delta

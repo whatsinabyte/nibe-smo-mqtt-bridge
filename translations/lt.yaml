@@ -1,0 +1,195 @@
+configuration:
+  nibe_host:
+    name: Valdiklio IP adresas
+    description: >-
+      Nibe S serijos valdiklio IP adresas arba pagrindinio kompiuterio vardas
+      vietiniame tinkle. Primygtinai rekomenduojama maršrutizatoriuje
+      priskirti statinį IP adresą.
+  nibe_port:
+    name: Valdiklio API prievadas
+    description: >-
+      Valdiklio vietinės REST API HTTPS prievadas. Numatytoji reikšmė 8443
+      tinka visiems S serijos gaminiams ir paprastai jos keisti nereikia.
+  nibe_username:
+    name: Valdiklio API naudotojo vardas
+    description: >-
+      Valdiklio aptarnavimo meniu (meniu 7.5.15) nustatytas naudotojo vardas.
+      Turi tiksliai sutapti su valdiklyje nustatyta reikšme.
+  nibe_password:
+    name: Valdiklio API slaptažodis
+    description: >-
+      Valdiklio aptarnavimo meniu (meniu 7.5.15) nustatytas slaptažodis.
+      Skiriamos didžiosios ir mažosios raidės.
+  mqtt_host:
+    name: MQTT tarpininko pagrindinio kompiuterio vardas
+    description: >-
+      MQTT tarpininko pagrindinio kompiuterio vardas arba IP adresas.
+      Numatytoji reikšmė "core-mosquitto" veikia su oficialiu Mosquitto
+      priedu. Kitam tarpininkui nurodykite IP adresą arba pagrindinio
+      kompiuterio vardą.
+  mqtt_port:
+    name: MQTT tarpininko prievadas
+    description: >-
+      MQTT tarpininko TCP prievadas. Numatytoji reikšmė 1883 yra standartinis
+      nešifruotas MQTT prievadas. Jei toliau įjungsite "MQTT TLS", pakeiskite
+      jį į 8883 (standartinis šifruotas MQTT prievadas, kurį naudoja
+      Mosquitto).
+  mqtt_username:
+    name: MQTT naudotojo vardas
+    description: >-
+      Naudotojo vardas MQTT tarpininko autentifikavimui. Palikite tuščią, jei
+      tarpininkas autentifikavimo nereikalauja.
+      Esant numatytajai reikšmei "core-mosquitto", Supervisor pateikia Mosquitto priedo paskyrą, kuri turi pirmenybę prieš šį lauką.
+  mqtt_password:
+    name: MQTT slaptažodis
+    description: >-
+      Slaptažodis MQTT tarpininko autentifikavimui. Palikite tuščią, jei
+      tarpininkas autentifikavimo nereikalauja.
+      Esant numatytajai reikšmei "core-mosquitto", Supervisor pateikia Mosquitto priedo paskyrą, kuri turi pirmenybę prieš šį lauką.
+  device_name:
+    name: Įrenginio pavadinimas
+    description: >-
+      Kaip valdiklis rodomas kaip įrenginys Home Assistant. Numatytasis
+      "Nibe SMO S40", bet galite jį pritaikyti savo tikrajai įrangai
+      (pvz., "Nibe S1155" arba "Nibe VVM S320").
+  language:
+    name: Kalba
+    description: >-
+      Valdiklio REST API grąžinamų objektų pavadinimų ir aprašymų kalba.
+      "auto" (numatytoji) atitinka Home Assistant nustatytą kalbą;
+      pasirinkite konkrečią kalbą, kad ją pakeistumėte. Sąrašas atitinka
+      paties valdiklio meniu "Kalba" — per REST API tiesiogiai patvirtinti
+      tik keli įrašai, tačiau nepalaikomos kalbos pasirinkimas nekenksmingas:
+      be klaidos naudojama anglų kalba. Neverčia Nibe Menus valdymo skydelio,
+      kurio turinys fiksuotas ir angliškas. Po pakeitimo reikia paleisti iš
+      naujo.
+  poll_interval:
+    name: Užklausų intervalas
+    description: >-
+      Kaip dažnai iš valdiklio nuskaitomi visi duomenų taškai, sekundėmis.
+      Rekomenduojama 30 sekundžių. Valdiklis yra įterptinis įrenginys — jo
+      REST API yra antraeilė, palyginti su pagrindine užduotimi, šilumos
+      siurblio valdymu. Po pakeitimo reikia paleisti iš naujo.
+  mode:
+    name: Objektų režimas
+    description: >-
+      Kokį objektų rinkinį skelbia tiltas: "essential" apima pagrindines
+      temperatūras, karšto vandens būseną, energijos sumas ir pagrindines
+      nustatytąsias vertes — gera pradžia bet kuriai instaliacijai.
+      "monitoring" prideda tiekimą ir grąžą, kompresoriaus būseną ir
+      efektyvumo rodiklius. "advanced" prideda visą šaldymo agento grandinę
+      ir derinimo registrus. "menus" skelbia visus Nibe Menus valdymo
+      skydeliui reikalingus taškus ir sukuria šį skydelį. "all" skelbia visus
+      rastus taškus; "none" nieko neskelbia, kol objektų neįjungsite
+      rankiniu būdu. Taikoma paleidžiant — pakeitimui reikia iš naujo
+      paleisti priedą, o perjungus į kitą režimą pagal numatytuosius
+      nustatymus išjungiami objektai, nepriklausantys naujam rinkiniui — ir
+      rankiniu būdu per Entity Manager kortelę įjungti objektai pašalinami
+      keičiant režimą, bet išsaugomi paleidžiant iš naujo tuo pačiu režimu.
+      Norėdami tai pakeisti, žr. toliau "Režimo keitimo elgsena".
+      "essential" yra rekomenduojama pradžia.
+  mode_switch_behavior:
+    name: Režimo keitimo elgsena
+    description: >-
+      Kas nutinka jau įjungtiems objektams perjungus į kitą režimą. "replace"
+      (numatytoji) įjungtą rinkinį suderina tiksliai su naujo režimo taškais
+      — viskas, kas dabar įjungta ir nepriklauso naujam režimui, įskaitant
+      rankiniu būdu per Entity Manager kortelę įjungtus objektus, išjungiama.
+      "merge" tik prideda naujo režimo taškus prie jau įjungtų — režimo
+      keitimas niekada nieko neišjungia. Taikoma kiekvienam režimo keitimui.
+      Neturi įtakos naujai instaliacijai ar paleidimui iš naujo tuo pačiu
+      režimu — suveikia tik tikras režimo pakeitimas.
+  log_level:
+    name: Žurnalo lygis
+    description: >-
+      Tik priedo žurnalo detalumas — neturi įtakos, kurie objektai rodomi.
+      Įprastam naudojimui rekomenduojama "info". "debug" naudokite ryšio ar
+      objektų problemoms diagnozuoti — jis sukuria daug išvesties, todėl
+      vėliau jį reikia grąžinti į "info". Testų rinkinio mygtukui ir rezultato
+      jutikliui rodyti naudokite toliau esantį "Derinimo režimas".
+  debug_mode:
+    name: Derinimo režimas
+    description: >-
+      Įjungia testų rinkinio mygtuką, dinaminio žemėlapio išvalymo mygtuką ir
+      rezultato jutiklį Management įrenginyje. Nepriklauso nuo aukščiau
+      esančio "Žurnalo lygio" — tai vienintelis nustatymas, lemiantis, ar šie
+      objektai rodomi. Įsigalioja kitą kartą paleidus priedą iš naujo:
+      išjungus objektai ir pašalinami, o ne tik nustojama pridėti naujus.
+  api_failure_threshold:
+    name: API klaidų slenkstis
+    description: >-
+      Iš eilės nepavykusių užklausų skaičius, po kurio HA pranešimų
+      varpelyje parodomas nuolatinis pranešimas. Numatytoji reikšmė 3 reiškia
+      tris klaidas iš eilės (90 sekundžių esant numatytajam intervalui) prieš
+      įspėjimą. Nestabiliame tinkle padidinkite, kad išvengtumėte klaidingų
+      pavojaus signalų.
+  changelog_retention_days:
+    name: Pakeitimų žurnalo saugojimas (dienos)
+    description: >-
+      Kiek dienų saugomi Entity Manager pakeitimų žurnalo įrašai prieš juos
+      ištrinant. Senesni įrašai pašalinami kiekvieną kartą paleidus tiltą iš
+      naujo. Numatytosios 90 dienų tinka daugumai instaliacijų.
+  remove_frontend:
+    name: Pašalinti sąsają sustabdant
+    description: >-
+      Prieš sustabdydami priedą nustatykite true, kad kito tvarkingo
+      išjungimo metu būtų automatiškai pašalintas Nibe Bridge valdymo
+      skydelis, Lovelace išteklio registracija, kortelės failas ir visi
+      išsaugoti MQTT pranešimai. Naudokite tik šalindami. Įprastiems
+      paleidimams iš naujo tai neturi įtakos. Visą šalinimo procedūrą
+      rasite dokumentacijoje.
+  nibe_ca_cert:
+    name: Nibe valdiklio CA sertifikato kelias
+    description: >-
+      Neprivaloma. Absoliutus kelias iki PEM formato CA sertifikato failo,
+      naudojamo Nibe valdiklio HTTPS sertifikatui patikrinti. Nustačius,
+      visoms API užklausoms į valdiklį įjungiamas visas TLS grandinės ir
+      pagrindinio kompiuterio vardo tikrinimas. Palikite tuščią, kad be
+      patikrinimo būtų priimamas valdiklio įtaisytasis savarankiškai
+      pasirašytas sertifikatas — tai numatytoji reikšmė, priimtina patikimame
+      namų tinkle, tačiau tarpininko ataka vietiniame tinkle galėtų
+      perimti valdiklio srautą.
+      Pavyzdys: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Įjungia TLS šifravimą visam srautui tarp tilto ir MQTT tarpininko.
+      Apsaugo MQTT prisijungimo duomenis ir visas objektų komandas nuo kitų
+      vietinio tinklo įrenginių. Reikia TLS sukonfigūruoto tarpininko —
+      naudodami Mosquitto priedą, pakeiskite "MQTT tarpininko prievadas" į
+      8883. Pagal numatytuosius nustatymus išjungta.
+  mqtt_ca_cert:
+    name: MQTT tarpininko CA sertifikato kelias
+    description: >-
+      Neprivaloma. Naudojama tik įjungus "MQTT TLS". Absoliutus kelias iki
+      PEM formato CA sertifikato failo, naudojamo tarpininko TLS sertifikatui
+      patikrinti. Palikite tuščią, kad būtų naudojama sistemos CA saugykla —
+      tai tinka tarpininkams su viešosios sertifikavimo įstaigos pasirašytu
+      sertifikatu. Nustatykite, jei tarpininkas naudoja savarankiškai arba
+      privačiai pasirašytą sertifikatą.
+      Pavyzdys: /ssl/mqtt-ca.pem
+# Only labels NIBE's Lithuanian installer manual (VVM S320 IHB LT 2327-1)
+# names; any other label stays English.
+value_mappings:
+  Additional heat only: Tik papildoma šilumos sistema
+  Auto: Automatinis
+  Blocking: Blokavimas
+  Closed: Uždaras
+  Cooling: Vėsinimas
+  Heating: Šildymas
+  Hot water: Karštas vanduo
+  Large: Didelis
+  Low price: Maža kaina
+  Manual: Rankinis
+  Medium: Vidutinis
+  Normal: Normalus
+  'Off': Išjungta
+  'On': Įjungta
+  Open: Atviras
+  Overcapacity: Pertekliniai pajėgumai
+  Pool: Baseinas
+  Price per kWh: Kaina už kWh
+  Radiator: Radiatorius
+  Radiator & Underfloor heating: Radiatorius + grindų šildymas
+  Small: Mažas
+  Underfloor heating: Grindų šildymas

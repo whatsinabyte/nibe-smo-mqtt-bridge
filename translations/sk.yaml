@@ -1,0 +1,190 @@
+configuration:
+  nibe_host:
+    name: IP adresa regulátora
+    description: >-
+      IP adresa alebo názov hostiteľa regulátora Nibe série S v lokálnej
+      sieti. Dôrazne sa odporúča nastaviť v smerovači statickú IP adresu.
+  nibe_port:
+    name: Port API regulátora
+    description: >-
+      HTTPS port lokálneho REST API regulátora. Predvolená hodnota 8443 je
+      správna pre všetky produkty série S a za normálnych okolností ju netreba
+      meniť.
+  nibe_username:
+    name: Používateľské meno API regulátora
+    description: >-
+      Používateľské meno nastavené v servisnom menu regulátora (menu 7.5.15).
+      Musí presne zodpovedať hodnote nastavenej v regulátore.
+  nibe_password:
+    name: Heslo API regulátora
+    description: >-
+      Heslo nastavené v servisnom menu regulátora (menu 7.5.15). Rozlišujú sa
+      veľké a malé písmená.
+  mqtt_host:
+    name: Názov hostiteľa MQTT brokera
+    description: >-
+      Názov hostiteľa alebo IP adresa MQTT brokera. Predvolená hodnota
+      "core-mosquitto" funguje s oficiálnym doplnkom Mosquitto. Pre iný
+      broker zadajte IP adresu alebo názov hostiteľa.
+  mqtt_port:
+    name: Port MQTT brokera
+    description: >-
+      TCP port MQTT brokera. Predvolená hodnota 1883 je štandardný
+      nešifrovaný port MQTT. Ak nižšie zapnete "MQTT TLS", zmeňte ho na 8883
+      (štandardný šifrovaný port MQTT, ktorý používa Mosquitto).
+  mqtt_username:
+    name: Používateľské meno MQTT
+    description: >-
+      Používateľské meno na overenie voči MQTT brokeru. Nechajte prázdne, ak
+      broker overenie nevyžaduje.
+      Pri predvolenej hodnote "core-mosquitto" poskytuje Supervisor účet doplnku Mosquitto, ktorý má prednosť pred týmto poľom.
+  mqtt_password:
+    name: Heslo MQTT
+    description: >-
+      Heslo na overenie voči MQTT brokeru. Nechajte prázdne, ak broker
+      overenie nevyžaduje.
+      Pri predvolenej hodnote "core-mosquitto" poskytuje Supervisor účet doplnku Mosquitto, ktorý má prednosť pred týmto poľom.
+  device_name:
+    name: Názov zariadenia
+    description: >-
+      Ako sa regulátor zobrazuje ako zariadenie v Home Assistante. Predvolene
+      "Nibe SMO S40", ale môžete ho prispôsobiť svojmu skutočnému zariadeniu
+      (napr. "Nibe S1155" alebo "Nibe VVM S320").
+  language:
+    name: Jazyk
+    description: >-
+      Jazyk názvov a popisov entít, ktoré vracia REST API regulátora. "auto"
+      (predvolené) sa riadi jazykom nastaveným v Home Assistante; výberom
+      konkrétneho jazyka ho prepíšete. Zoznam zodpovedá vlastnému menu
+      "Jazyk" regulátora — cez REST API je priamo potvrdených len niekoľko
+      položiek, ale výber nepodporovaného jazyka je neškodný: bez chyby sa
+      použije angličtina. Neprekladá ovládací panel Nibe Menus, ktorého obsah
+      je pevný a v angličtine. Po zmene je potrebný reštart.
+  poll_interval:
+    name: Interval dopytovania
+    description: >-
+      Ako často sa z regulátora načítajú všetky dátové body, v sekundách.
+      Odporúča sa 30 sekúnd. Regulátor je vstavané zariadenie — jeho REST API
+      je druhoradé voči jeho hlavnej úlohe, riadeniu tepelného čerpadla. Po
+      zmene je potrebný reštart.
+  mode:
+    name: Režim entít
+    description: >-
+      Akú sadu entít most zverejňuje: "essential" zahŕňa základné teploty,
+      stav teplej vody, súhrny energie a základné požadované hodnoty — dobrý
+      východiskový bod pre každú inštaláciu. "monitoring" pridáva prívod a
+      spiatočku, stav kompresora a ukazovatele účinnosti. "advanced" pridáva
+      celý chladivový okruh a ladiace registre. "menus" zverejňuje všetky
+      body potrebné pre ovládací panel Nibe Menus a tento panel vytvorí.
+      "all" zverejňuje všetky nájdené body; "none" nezverejňuje nič, kým
+      entity nepovolíte ručne. Uplatňuje sa pri spustení — zmena vyžaduje
+      reštart doplnku a prechod na iný režim predvolene zakáže entity, ktoré
+      do novej sady nepatria — aj entity povolené ručne cez kartu Entity
+      Manager sa pri zmene režimu odstránia, ale pri reštartoch s rovnakým
+      režimom sa zachovajú. Ak to chcete zmeniť, pozrite nižšie "Správanie
+      pri zmene režimu".
+      "essential" je odporúčaný východiskový bod.
+  mode_switch_behavior:
+    name: Správanie pri zmene režimu
+    description: >-
+      Čo sa stane s už povolenými entitami pri prechode na iný režim.
+      "replace" (predvolené) zosúladí povolenú sadu presne s bodmi nového
+      režimu — všetko, čo je teraz povolené a nepatrí do nového režimu,
+      vrátane entít povolených ručne cez kartu Entity Manager, sa zakáže.
+      "merge" len pridá body nového režimu k už povoleným — zmena režimu nikdy
+      nič nezakáže. Platí pri každej zmene režimu. Nemá vplyv na novú
+      inštaláciu ani na reštart s rovnakým režimom — spúšťa ho len skutočná
+      zmena režimu.
+  log_level:
+    name: Úroveň protokolovania
+    description: >-
+      Podrobnosť len protokolu doplnku — neovplyvňuje, ktoré entity sa
+      zobrazujú. Na bežné používanie sa odporúča "info". "debug" použite na
+      diagnostiku problémov s pripojením alebo entitami — vytvára veľké
+      množstvo výstupu a potom by sa mal vrátiť na "info". Na zobrazenie
+      tlačidla testovacej sady a snímača výsledku použite namiesto toho
+      nižšie "Režim ladenia".
+  debug_mode:
+    name: Režim ladenia
+    description: >-
+      Povolí na zariadení Management tlačidlo testovacej sady, tlačidlo
+      vyprázdnenia dynamickej mapy a snímač výsledku. Nezávislé od "Úrovne
+      protokolovania" vyššie — je to jediné nastavenie, ktoré určuje, či sa
+      tieto entity zobrazia. Prejaví sa pri ďalšom reštarte doplnku:
+      vypnutie entity aj odstráni, nielen zastaví pridávanie nových.
+  api_failure_threshold:
+    name: Prah chýb API
+    description: >-
+      Počet po sebe idúcich neúspešných dopytov, po ktorom sa v zvončeku
+      upozornení HA zobrazí trvalé upozornenie. Predvolená hodnota 3 znamená
+      tri chyby za sebou (90 sekúnd pri predvolenom intervale) pred
+      upozornením. V nestabilnej sieti ho zvýšte, aby ste predišli falošným
+      poplachom.
+  changelog_retention_days:
+    name: Uchovávanie protokolu zmien (dni)
+    description: >-
+      Koľko dní sa uchovávajú záznamy protokolu zmien Entity Manager pred
+      odstránením. Staršie záznamy sa odstránia pri každom reštarte mosta.
+      Predvolených 90 dní vyhovuje väčšine inštalácií.
+  remove_frontend:
+    name: Odstrániť rozhranie pri zastavení
+    description: >-
+      Pred zastavením doplnku nastavte na true, aby sa pri ďalšom riadnom
+      vypnutí automaticky odstránil ovládací panel Nibe Bridge, registrácia
+      prostriedku Lovelace, súbor karty a všetky uchované správy MQTT.
+      Používajte len pri odinštalovaní. Bežné reštarty to neovplyvní. Úplný
+      postup odinštalovania nájdete v dokumentácii.
+  nibe_ca_cert:
+    name: Cesta k CA certifikátu regulátora Nibe
+    description: >-
+      Voliteľné. Absolútna cesta k súboru CA certifikátu vo formáte PEM,
+      ktorý sa používa na overenie HTTPS certifikátu regulátora Nibe. Ak je
+      nastavená, pre všetky volania API na regulátor sa zapne úplné overenie
+      reťazca TLS a názvu hostiteľa. Nechajte prázdne, ak chcete bez overenia
+      prijať vstavaný samopodpísaný certifikát regulátora — je to predvolené a
+      v dôveryhodnej domácej sieti prijateľné, ale útok typu
+      man-in-the-middle v lokálnej sieti by mohol zachytiť prevádzku
+      regulátora.
+      Príklad: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Zapne šifrovanie TLS pre celú prevádzku medzi mostom a MQTT brokerom.
+      Chráni prihlasovacie údaje MQTT a všetky príkazy entít pred čítaním
+      inými zariadeniami v lokálnej sieti. Vyžaduje broker nastavený pre TLS
+      — ak používate doplnok Mosquitto, zmeňte "Port MQTT brokera" na 8883.
+      Predvolene vypnuté.
+  mqtt_ca_cert:
+    name: Cesta k CA certifikátu MQTT brokera
+    description: >-
+      Voliteľné. Používa sa len pri zapnutom "MQTT TLS". Absolútna cesta k
+      súboru CA certifikátu vo formáte PEM, ktorý sa používa na overenie TLS
+      certifikátu brokera. Nechajte prázdne, ak chcete použiť systémové
+      úložisko CA, čo je správne pre brokery s certifikátom podpísaným
+      verejnou certifikačnou autoritou. Nastavte, ak broker používa
+      samopodpísaný alebo súkromne podpísaný certifikát.
+      Príklad: /ssl/mqtt-ca.pem
+# Only labels NIBE's Slovak installer manual (VVM S320 IHB SK 2327-1)
+# names; any other label stays English.
+value_mappings:
+  Additional heat only: Len prídavný zdroj tepla
+  Auto: Auto
+  Blocking: Blokovanie
+  Cooling: Chladenie
+  Heating: Vykurovanie
+  Hot water: Teplá voda
+  Intermittent: Nepravidelný
+  Large: Veľká
+  Low price: Nízka cena
+  Manual: Manuálne
+  Medium: Stredná
+  Normal: Normálny
+  'Off': Vypnuté
+  'On': Zapnuté
+  Overcapacity: Nadbytočná kapacita
+  Pool: Bazén
+  Price per kWh: Cena za kWh
+  Radiator: Radiátor
+  Radiator & Underfloor heating: Radiátor a podlahové vykurovanie
+  Small: Nízka
+  Underfloor heating: Podlahové vykurovanie

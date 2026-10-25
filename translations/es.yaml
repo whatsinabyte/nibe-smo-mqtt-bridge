@@ -195,7 +195,7 @@ value_mappings:
   24h: 24h
   Active: Activo
   Active alarm: Alarma activa
-  Additional heat only: Solo calefacción adicional
+  Additional heat only: Solo apoyo externo
   Auto: Auto
   CO2: CO2
   Calibration: Calibración
@@ -235,4 +235,11 @@ value_mappings:
   Standard: Estándar
   Starting: Iniciando
   Transfer: Transfer.
-  Underfloor heating: Suelo radiante
+  Underfloor heating: Calefacción por suelo radiante
+  Small: Baja
+  Medium: Media
+  Large: Alta
+  Normal: Normal
+  Blocking: Bloqueo
+  Low price: Bajo coste
+  Overcapacity: Sobrecapacidad

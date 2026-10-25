@@ -248,3 +248,8 @@ value_mappings:
   Small: Niedrig
   Medium: Mittel
   Large: Hoch
+  Continuous: Dauerhaft
+  10 days cont.: 10 Tage dauerhaft
+  Fixed delta: Delta fest
+  Target temp: Zieltemperatur
+  Delta temp: Deltatemperatur

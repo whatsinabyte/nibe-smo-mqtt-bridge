@@ -26,11 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Newly translated from the same manuals: hot water demand (Small /
     Medium / Large) and the hot water charging method (Target temp /
     Delta temp, where the manual has that menu).
-  - Spanish and French had no manual to check against and are unchanged.
-- **Romanian translation** (`language: ro`): the add-on settings screen,
-  and the value labels NIBE's Romanian SMO S40 installer manual names —
-  operating mode, SG Ready, hot water demand, flow setting and the like.
-  Other labels stay English.
+  - French and Spanish now too, from the manuals on NIBE's own French and
+    Spanish product pages: SG Ready, hot water demand, operating mode and
+    flow setting (e.g. French "Appoint unique", "Plancher chauffant").
+  - Brine pump operating modes (Continuous, 10 days cont., Fixed delta)
+    in French, German, Finnish, Swedish and Dutch, from NIBE's S1155
+    manuals.
+- **New translations: Romanian, Estonian, Russian, Hungarian, Slovak and
+  Lithuanian** (`language: ro`, `et`, `ru`, `hu`, `sk`, `lt`): the add-on
+  settings screen, and the value labels NIBE's installer manuals in those
+  languages name — operating mode, SG Ready, hot water demand, flow setting
+  and the like. Other labels stay English.
 
 ### Fixed
 

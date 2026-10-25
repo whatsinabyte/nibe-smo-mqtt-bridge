@@ -233,3 +233,8 @@ value_mappings:
   Small: Klein
   Medium: Gemiddeld
   Large: Groot
+  Continuous: Continu
+  10 days cont.: 10 dagen cont.
+  Fixed delta: Vaste delta
+  Target temp: Doeltemp.
+  Delta temp: Deltatemp.

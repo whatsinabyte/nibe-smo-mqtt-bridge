@@ -246,3 +246,6 @@ value_mappings:
   Large: Suuri
   Target temp: Tavoitelämpötila
   Delta temp: Lämpötilaero
+  Continuous: Jatkuva
+  10 days cont.: 10 pv jatkuva
+  Fixed delta: Kiinteä delta

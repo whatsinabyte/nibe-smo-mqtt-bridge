@@ -1,0 +1,191 @@
+configuration:
+  nibe_host:
+    name: Kontrolleri IP-aadress
+    description: >-
+      Nibe S-seeria kontrolleri IP-aadress või hostinimi kohalikus võrgus.
+      Staatilise IP-aadressi määramine ruuteris on tungivalt soovitatav.
+  nibe_port:
+    name: Kontrolleri API port
+    description: >-
+      Kontrolleri kohaliku REST API HTTPS-port. Vaikeväärtus 8443 sobib
+      kõigile S-seeria toodetele ja seda ei ole tavaliselt vaja muuta.
+  nibe_username:
+    name: Kontrolleri API kasutajanimi
+    description: >-
+      Kontrolleri hooldusmenüüs (menüü 7.5.15) määratud kasutajanimi. Peab
+      täpselt vastama kontrolleris seadistatud väärtusele.
+  nibe_password:
+    name: Kontrolleri API parool
+    description: >-
+      Kontrolleri hooldusmenüüs (menüü 7.5.15) määratud parool. Tõstutundlik.
+  mqtt_host:
+    name: MQTT maakleri hostinimi
+    description: >-
+      MQTT maakleri hostinimi või IP-aadress. Vaikeväärtus "core-mosquitto"
+      töötab ametliku Mosquitto lisandmooduliga. Muu maakleri puhul kasutage
+      IP-aadressi või hostinime.
+  mqtt_port:
+    name: MQTT maakleri port
+    description: >-
+      MQTT maakleri TCP-port. Vaikeväärtus 1883 on standardne krüpteerimata
+      MQTT port. Kui lülitate allpool sisse "MQTT TLS", muutke see väärtuseks
+      8883 (Mosquitto kasutatav standardne krüpteeritud MQTT port).
+  mqtt_username:
+    name: MQTT kasutajanimi
+    description: >-
+      Kasutajanimi MQTT maakleri autentimiseks. Jätke tühjaks, kui maakler
+      autentimist ei nõua.
+      Vaikeväärtusega "core-mosquitto" annab Supervisor Mosquitto lisandmooduli konto, mis on selle välja ees eelisjärjekorras.
+  mqtt_password:
+    name: MQTT parool
+    description: >-
+      Parool MQTT maakleri autentimiseks. Jätke tühjaks, kui maakler
+      autentimist ei nõua.
+      Vaikeväärtusega "core-mosquitto" annab Supervisor Mosquitto lisandmooduli konto, mis on selle välja ees eelisjärjekorras.
+  device_name:
+    name: Seadme nimi
+    description: >-
+      Kuidas kontroller seadmena Home Assistantis kuvatakse. Vaikimisi
+      "Nibe SMO S40", kuid võite selle sobitada oma tegeliku seadmega
+      (nt "Nibe S1155" või "Nibe VVM S320").
+  language:
+    name: Keel
+    description: >-
+      Kontrolleri REST API tagastatavate olemite nimede ja kirjelduste keel.
+      "auto" (vaikimisi) järgib Home Assistanti seadistatud keelt; valige
+      kindel keel selle asendamiseks. Loend järgib kontrolleri enda
+      "Keel"-menüüd — REST API kaudu on otseselt kinnitatud vaid mõned
+      kirjed, kuid toetamata keele valimine on kahjutu: see läheb vaikselt
+      üle inglise keelele, ilma veata. Ei tõlgi Nibe Menus juhtpaneeli,
+      mille sisu on fikseeritud ja ingliskeelne. Pärast muutmist on vaja
+      taaskäivitust.
+  poll_interval:
+    name: Pärimisintervall
+    description: >-
+      Kui sageli kõik andmepunktid kontrollerist loetakse, sekundites.
+      Soovitatav on 30 sekundit. Kontroller on manusseade — selle REST API
+      on teisejärguline selle põhiülesande, soojuspumba juhtimise kõrval.
+      Pärast muutmist on vaja taaskäivitust.
+  mode:
+    name: Olemirežiim
+    description: >-
+      Milliseid olemeid sild avaldab: "essential" hõlmab põhitemperatuure,
+      sooja tarbevee olekut, energia kogusummasid ja põhilisi sättepunkte —
+      hea lähtepunkt igale paigaldusele. "monitoring" lisab peale- ja
+      tagasivoolu, kompressori oleku ja tõhususe näitajad. "advanced" lisab
+      kogu külmaaineahela ja häälestusregistrid. "menus" avaldab kõik Nibe
+      Menus juhtpaneeli jaoks vajalikud punktid ja koostab selle
+      juhtpaneeli. "all" avaldab kõik leitud punktid; "none" ei avalda
+      midagi, kuni lubate olemeid käsitsi. Rakendatakse käivitamisel —
+      muutmine nõuab lisandmooduli taaskäivitust ja teisele režiimile
+      üleminek keelab vaikimisi olemid, mis uude valikusse ei kuulu — ka
+      Entity Manageri kaardi kaudu käsitsi lubatud olemid eemaldatakse
+      režiimi muutmisel, kuid need säilivad sama režiimiga taaskäivitustel.
+      Selle muutmiseks vt allpool "Režiimi vahetamise käitumine".
+      "essential" on soovitatav lähtepunkt.
+  mode_switch_behavior:
+    name: Režiimi vahetamise käitumine
+    description: >-
+      Mis juhtub juba lubatud olemitega, kui lülitute teisele režiimile.
+      "replace" (vaikimisi) viib lubatud olemid täpselt uue režiimi
+      punktideni — kõik praegu lubatud olemid, mis uude režiimi ei kuulu,
+      sealhulgas Entity Manageri kaardi kaudu käsitsi lubatud, keelatakse.
+      "merge" ainult lisab uue režiimi punktid juba lubatutele — režiimi
+      muutmine ei keela kunagi midagi. Kehtib iga režiimi vahetuse korral.
+      Ei mõjuta uut paigaldust ega taaskäivitust sama režiimiga — seda
+      käivitab ainult tegelik režiimi muutmine.
+  log_level:
+    name: Logimistase
+    description: >-
+      Ainult lisandmooduli logi üksikasjalikkus — ei mõjuta, milliseid
+      olemeid kuvatakse. Tavakasutuseks on soovitatav "info". Kasutage
+      ühendus- või olemiprobleemide diagnoosimiseks "debug" — see tekitab
+      suure hulga väljundit ja tuleks seejärel tagasi "info" peale panna.
+      Testikomplekti nupu ja tulemusanduri kuvamiseks kasutage allpool
+      hoopis "Silumisrežiim".
+  debug_mode:
+    name: Silumisrežiim
+    description: >-
+      Lubab Management-seadmel testikomplekti nupu, dünaamilise kaardi
+      tühjendamise nupu ja tulemusanduri. Sõltumatu ülaltoodud
+      "Logimistasemest" — see on ainus säte, mis määrab, kas need olemid
+      kuvatakse. Rakendub lisandmooduli järgmisel taaskäivitusel:
+      väljalülitamine eemaldab ka olemid, mitte ei lõpeta ainult uute
+      lisamist.
+  api_failure_threshold:
+    name: API tõrgete lävi
+    description: >-
+      Järjestikuste ebaõnnestunud päringute arv, enne kui HA teavituste
+      kellas kuvatakse püsiteavitus. Vaikeväärtus 3 tähendab kolme järjestikust
+      tõrget (vaikeintervalliga 90 sekundit) enne hoiatust. Ebastabiilses
+      võrgus suurendage seda valehäirete vältimiseks.
+  changelog_retention_days:
+    name: Muudatuste logi säilitamine (päevad)
+    description: >-
+      Mitu päeva hoitakse Entity Manageri muudatuste logi kirjeid enne
+      nende kustutamist. Vanemad kirjed eemaldatakse silla igal
+      taaskäivitusel. Vaikimisi 90 päeva sobib enamikule paigaldustele.
+  remove_frontend:
+    name: Eemalda kasutajaliides väljalülitamisel
+    description: >-
+      Määrake enne lisandmooduli peatamist väärtuseks true, et järgmisel
+      korrektsel väljalülitamisel eemaldataks automaatselt Nibe Bridge
+      juhtpaneel, Lovelace'i ressursi registreering, kaardifail ja kõik
+      säilitatud MQTT-sõnumid. Kasutage ainult desinstallimisel. Tavalisi
+      taaskäivitusi see ei mõjuta. Täieliku desinstallimise juhised leiate
+      dokumentatsioonist.
+  nibe_ca_cert:
+    name: Nibe kontrolleri CA-sertifikaadi tee
+    description: >-
+      Valikuline. Absoluutne tee PEM-vormingus CA-sertifikaadi failini, mida
+      kasutatakse Nibe kontrolleri HTTPS-sertifikaadi kontrollimiseks.
+      Määramisel lülitatakse kõigi kontrollerile suunatud API-päringute jaoks
+      sisse täielik TLS-ahela ja hostinime kontroll. Jätke tühjaks, et
+      aktsepteerida kontrolleri sisseehitatud iseallkirjastatud sertifikaati
+      ilma kontrollita — see on vaikimisi ja usaldusväärses koduvõrgus
+      vastuvõetav, kuid tähendab, et vahendajarünnak kohtvõrgus võiks
+      kontrolleri liiklust pealt kuulata.
+      Näide: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Lubab TLS-krüpteerimise kogu silla ja MQTT maakleri vahelisele
+      liiklusele. Kaitseb MQTT autentimisandmeid ja kõiki olemite käske
+      kohtvõrgu teiste seadmete eest. Nõuab TLS-i jaoks seadistatud maaklerit
+      — kui kasutate Mosquitto lisandmoodulit, muutke "MQTT maakleri port"
+      väärtuseks 8883. Vaikimisi välja lülitatud.
+  mqtt_ca_cert:
+    name: MQTT maakleri CA-sertifikaadi tee
+    description: >-
+      Valikuline. Kasutatakse ainult siis, kui "MQTT TLS" on sisse lülitatud.
+      Absoluutne tee PEM-vormingus CA-sertifikaadi failini, mida kasutatakse
+      maakleri TLS-sertifikaadi kontrollimiseks. Jätke tühjaks, et kasutada
+      süsteemi CA-hoidlat, mis sobib avaliku sertifitseerimisasutuse
+      allkirjastatud sertifikaadiga maakleritele. Määrake see, kui maakler
+      kasutab iseallkirjastatud või privaatselt allkirjastatud sertifikaati.
+      Näide: /ssl/mqtt-ca.pem
+# Only labels NIBE's Estonian installer manuals (VVM S320 IHB ET 2327-1,
+# SMO S40 IHB ET 2515-3) name; any other label stays English.
+value_mappings:
+  Additional heat only: Ainult lisaküte
+  Auto: Automaatrežiim
+  Blocking: Blokeerida
+  Closed: Suletud
+  Cooling: Jahutus
+  Heating: Küte
+  Hot water: Soe tarbevesi
+  Intermittent: Vahelduv
+  Large: Suur
+  Low price: Madala hinna režiim
+  Manual: Käsirežiim
+  Medium: Keskmine
+  Normal: Tavarežiim
+  'Off': Väljas
+  'On': Sees
+  Open: Avatud
+  Overcapacity: Liigse tootmisvõimsuse režiim
+  Pool: Bassein
+  Price per kWh: Hind kWh kohta
+  Radiator: Radiaator
+  Small: Väike
+  Underfloor heating: Põrandaküte

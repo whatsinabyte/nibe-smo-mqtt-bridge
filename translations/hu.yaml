@@ -1,0 +1,200 @@
+configuration:
+  nibe_host:
+    name: Vezérlő IP-címe
+    description: >-
+      A Nibe S-sorozatú vezérlő IP-címe vagy gépneve a helyi hálózaton.
+      Erősen ajánlott statikus IP-címet beállítani a routerben.
+  nibe_port:
+    name: Vezérlő API-portja
+    description: >-
+      A vezérlő helyi REST API-jának HTTPS-portja. Az alapértelmezett 8443
+      minden S-sorozatú termékhez megfelelő, és általában nem kell módosítani.
+  nibe_username:
+    name: Vezérlő API-felhasználóneve
+    description: >-
+      A vezérlő szervizmenüjében (7.5.15 menü) beállított felhasználónév.
+      Pontosan egyeznie kell a vezérlőn beállított értékkel.
+  nibe_password:
+    name: Vezérlő API-jelszava
+    description: >-
+      A vezérlő szervizmenüjében (7.5.15 menü) beállított jelszó.
+      Kis- és nagybetűérzékeny.
+  mqtt_host:
+    name: MQTT bróker gépneve
+    description: >-
+      Az MQTT bróker gépneve vagy IP-címe. Az alapértelmezett
+      "core-mosquitto" a hivatalos Mosquitto bővítménnyel működik. Más
+      bróker esetén adjon meg IP-címet vagy gépnevet.
+  mqtt_port:
+    name: MQTT bróker portja
+    description: >-
+      Az MQTT bróker TCP-portja. Az alapértelmezett 1883 a szabványos
+      titkosítatlan MQTT-port. Ha lent bekapcsolja az "MQTT TLS" opciót,
+      módosítsa 8883-ra (a Mosquitto által használt szabványos titkosított
+      MQTT-port).
+  mqtt_username:
+    name: MQTT felhasználónév
+    description: >-
+      Felhasználónév az MQTT bróker hitelesítéséhez. Hagyja üresen, ha a
+      bróker nem igényel hitelesítést.
+      Az alapértelmezett "core-mosquitto" esetén a Supervisor a Mosquitto bővítmény fiókját adja meg, amely elsőbbséget élvez ezzel a mezővel szemben.
+  mqtt_password:
+    name: MQTT jelszó
+    description: >-
+      Jelszó az MQTT bróker hitelesítéséhez. Hagyja üresen, ha a bróker nem
+      igényel hitelesítést.
+      Az alapértelmezett "core-mosquitto" esetén a Supervisor a Mosquitto bővítmény fiókját adja meg, amely elsőbbséget élvez ezzel a mezővel szemben.
+  device_name:
+    name: Eszköz neve
+    description: >-
+      Hogyan jelenik meg a vezérlő eszközként a Home Assistantban.
+      Alapértelmezés szerint "Nibe SMO S40", de megadhatja a tényleges
+      berendezése nevét (pl. "Nibe S1155" vagy "Nibe VVM S320").
+  language:
+    name: Nyelv
+    description: >-
+      A vezérlő REST API-ja által visszaadott entitásnevek és leírások
+      nyelve. Az "auto" (alapértelmezett) a Home Assistantban beállított
+      nyelvet követi; egy adott nyelv kiválasztásával felülbírálhatja. A
+      lista a vezérlő saját "Nyelv" menüjét követi — a REST API-n keresztül
+      csak néhány bejegyzés van közvetlenül megerősítve, de egy nem
+      támogatott nyelv választása ártalmatlan: hiba nélkül angolra vált.
+      Nem fordítja le a Nibe Menus irányítópultot, amelynek tartalma
+      rögzített és angol nyelvű. A módosítás után újraindítás szükséges.
+  poll_interval:
+    name: Lekérdezési időköz
+    description: >-
+      Milyen gyakran olvassa be az összes adatpontot a vezérlőből,
+      másodpercben. 30 másodperc ajánlott. A vezérlő beágyazott eszköz — a
+      REST API-ja másodlagos a fő feladatához, a hőszivattyú vezérléséhez
+      képest. A módosítás után újraindítás szükséges.
+  mode:
+    name: Entitás mód
+    description: >-
+      Mely entitásokat teszi közzé a híd: az "essential" az alapvető
+      hőmérsékleteket, a melegvíz állapotát, az energiaösszesítőket és az
+      alapvető alapjelértékeket tartalmazza — jó kiindulópont bármely
+      telepítéshez. A "monitoring" hozzáadja az előremenő/visszatérő ágat, a
+      kompresszor állapotát és a hatékonysági mutatókat. Az "advanced"
+      hozzáadja a teljes hűtőközeg-kört és a hangolási regisztereket. A
+      "menus" minden, a Nibe Menus irányítópulthoz szükséges pontot közzétesz,
+      és felépíti az irányítópultot. Az "all" minden felfedezett pontot
+      közzétesz; a "none" semmit sem tesz közzé, amíg kézzel nem engedélyez
+      entitásokat. Indításkor érvényesül — a módosítás a bővítmény
+      újraindítását igényli, és egy másik módra váltás alapértelmezés
+      szerint letiltja az új készletbe nem tartozó entitásokat — az Entity
+      Manager kártyán kézzel engedélyezett entitások is eltávolításra
+      kerülnek módváltáskor, de azonos móddal újraindítva megmaradnak. Ennek
+      módosításához lásd lent a "Módváltás viselkedése" opciót.
+      Az "essential" az ajánlott kiindulópont.
+  mode_switch_behavior:
+    name: Módváltás viselkedése
+    description: >-
+      Mi történik a már engedélyezett entitásokkal, ha másik módra vált. A
+      "replace" (alapértelmezett) pontosan az új mód pontjaira igazítja az
+      engedélyezett készletet — minden jelenleg engedélyezett, az új módba
+      nem tartozó entitás, beleértve az Entity Manager kártyán kézzel
+      engedélyezetteket is, letiltásra kerül. A "merge" csak hozzáadja az új
+      mód pontjait a már engedélyezettekhez — a módváltás soha nem tilt le
+      semmit. Minden módváltásra vonatkozik. Nincs hatása új telepítésre vagy
+      azonos móddal történő újraindításra — csak a tényleges módváltás
+      váltja ki.
+  log_level:
+    name: Naplózási szint
+    description: >-
+      Csak a bővítmény naplójának részletessége — nem befolyásolja, mely
+      entitások jelennek meg. Normál használatra az "info" ajánlott. A
+      "debug" szintet kapcsolódási vagy entitásproblémák diagnosztizálására
+      használja — nagy mennyiségű kimenetet állít elő, és utána vissza kell
+      állítani "info"-ra. A tesztkészlet gombjának és eredményérzékelőjének
+      megjelenítéséhez inkább a lenti "Hibakereső mód" opciót használja.
+  debug_mode:
+    name: Hibakereső mód
+    description: >-
+      Engedélyezi a tesztkészlet gombját, a dinamikus térkép ürítése gombot
+      és az eredményérzékelőt a Management eszközön. Független a fenti
+      "Naplózási szinttől" — ez az egyetlen beállítás, amely meghatározza,
+      hogy ezek az entitások megjelennek-e. A bővítmény következő
+      újraindításakor lép életbe: kikapcsolásakor az entitások is
+      eltávolításra kerülnek, nem csak újak hozzáadása áll le.
+  api_failure_threshold:
+    name: API-hibaküszöb
+    description: >-
+      Az egymást követő sikertelen lekérdezések száma, amely után tartós
+      értesítés jelenik meg a HA értesítési harangjában. Az alapértelmezett
+      3 három egymást követő hibát jelent (alapértelmezett időköz mellett 90
+      másodperc) a riasztás előtt. Instabil hálózaton növelje a téves
+      riasztások elkerülésére.
+  changelog_retention_days:
+    name: Változásnapló megőrzése (nap)
+    description: >-
+      Hány napig őrzi meg az Entity Manager változásnaplójának bejegyzéseit
+      törlés előtt. A régebbi bejegyzések a híd minden újraindításakor
+      törlődnek. Az alapértelmezett 90 nap a legtöbb telepítéshez megfelel.
+  remove_frontend:
+    name: Felület eltávolítása leállításkor
+    description: >-
+      A bővítmény leállítása előtt állítsa true értékre, hogy a következő
+      szabályos leállításkor automatikusan eltávolításra kerüljön a Nibe
+      Bridge irányítópult, a Lovelace-erőforrás regisztrációja, a kártyafájl
+      és minden megőrzött MQTT-üzenet. Csak eltávolításkor használja. A
+      normál újraindításokat nem érinti. A teljes eltávolítási eljárást lásd
+      a dokumentációban.
+  nibe_ca_cert:
+    name: A Nibe vezérlő CA-tanúsítványának elérési útja
+    description: >-
+      Opcionális. Egy PEM formátumú CA-tanúsítványfájl abszolút elérési
+      útja, amellyel a Nibe vezérlő HTTPS-tanúsítványa ellenőrizhető.
+      Megadása esetén a vezérlő felé irányuló összes API-hívásnál teljes
+      TLS-lánc- és gépnév-ellenőrzés történik. Hagyja üresen, hogy a vezérlő
+      beépített, önaláírt tanúsítványát ellenőrzés nélkül elfogadja — ez az
+      alapértelmezés, és megbízható otthoni hálózaton elfogadható, de egy
+      közbeékelődéses támadás a helyi hálózaton lehallgathatná a vezérlő
+      forgalmát.
+      Példa: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      TLS-titkosítást kapcsol be a híd és az MQTT bróker közötti teljes
+      forgalomra. Megvédi az MQTT hitelesítési adatokat és az entitások
+      összes parancsát attól, hogy a helyi hálózat más eszközei olvassák.
+      TLS-re beállított brókert igényel — a Mosquitto bővítmény használata
+      esetén módosítsa az "MQTT bróker portja" értékét 8883-ra.
+      Alapértelmezés szerint kikapcsolva.
+  mqtt_ca_cert:
+    name: Az MQTT bróker CA-tanúsítványának elérési útja
+    description: >-
+      Opcionális. Csak bekapcsolt "MQTT TLS" esetén használatos. Egy PEM
+      formátumú CA-tanúsítványfájl abszolút elérési útja, amellyel a bróker
+      TLS-tanúsítványa ellenőrizhető. Hagyja üresen a rendszer
+      CA-tárolójának használatához, ami nyilvános hitelesítésszolgáltató
+      által aláírt tanúsítvánnyal rendelkező brókerekhez megfelelő. Adja meg,
+      ha a bróker önaláírt vagy privát módon aláírt tanúsítványt használ.
+      Példa: /ssl/mqtt-ca.pem
+# Only labels NIBE's Hungarian installer manual (VVM S320 IHB HU 2327-1)
+# names; any other label stays English.
+value_mappings:
+  Additional heat only: Csak kiegészítő fűtés
+  Auto: Auto
+  Blocking: Letiltás
+  Closed: Zárt
+  Cooling: Hűtés
+  Heating: Fűtés
+  Hot water: Melegvíz
+  Intermittent: Szakaszos
+  Large: Magas
+  Low price: Olcsó
+  Manual: Manuális
+  Medium: Közepes
+  Normal: Normál
+  'Off': Ki
+  'On': Be
+  Open: Nyitott
+  Overcapacity: Többletkapacitás
+  Own setting: Saját beállítás
+  Pool: Medence
+  Price per kWh: Ár/kWh
+  Radiator: Radiátor
+  Radiator & Underfloor heating: Radiátor + padlófűtés
+  Small: Alacsony
+  Underfloor heating: Padlófűtés
