@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Italian, Polish and Spanish, from NIBE's S1155 manuals.
   - Danish and Norwegian "Manual" as their 2025 manuals word it
     ("Manuelt"); Danish hot water demand "Middelstort".
+  - Output AUX1's "Holiday" and "Away mode" in every language, and its
+    "HW circulation", "Ext. HM pump" and "Cool. mode ind. w delay" where
+    a manual prints the screen label (Danish, Finnish, Estonian, Latvian,
+    Slovenian, Ukrainian, partly Bulgarian). Smart Price Adaption's
+    Comfort / Saving / Saving PLUS in Russian, Ukrainian and Slovenian.
 - **New translations: Romanian, Estonian, Russian, Hungarian, Slovak,
   Lithuanian, Latvian, Slovenian, Bulgarian and Ukrainian** (`language:
   ro`, `et`, `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`, `uk`): the add-on

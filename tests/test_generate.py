@@ -8711,6 +8711,24 @@ class TestConfigTranslationsParity(unittest.TestCase):
                 got = [mappings.get(label) for label in labels]
                 self.assertEqual(got, expected[path.stem], path.name)
 
+    def test_aux_output_holiday_and_away_mode_come_from_every_manual(self):
+        """Output AUX1's "Holiday" and "Away mode" are in every manual's list
+        of AUX output functions, so every language translates them; the
+        abbreviated screen labels (e.g. Finnish "Käyttövesikierto" for HW
+        circulation) only where a manual prints them."""
+        import yaml as _yaml
+
+        for path in self.translation_files:
+            if path.stem == "en":
+                continue
+            with open(path, encoding="utf-8") as f:
+                mappings = _yaml.safe_load(f).get("value_mappings") or {}
+            for label in ("Holiday", "Away mode"):
+                self.assertIn(label, mappings, f"{path.name}: {label}")
+        with open(self.translations_dir / "fi.yaml", encoding="utf-8") as f:
+            fi = _yaml.safe_load(f)["value_mappings"]
+        self.assertEqual(fi["HW circulation"], "Käyttövesikierto")
+
     def test_value_mappings_translations_are_unique_within_each_language(self):
         """Two English labels must never translate to the same string.
 

@@ -247,3 +247,5 @@ value_mappings:
   Continuous: Continuo
   10 days cont.: 10 giorni cont.
   Fixed delta: Delta fisso
+  Holiday: Festivo
+  Away mode: Modalità assenti

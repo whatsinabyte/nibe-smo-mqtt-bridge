@@ -249,3 +249,8 @@ value_mappings:
   Continuous: Jatkuva
   10 days cont.: 10 pv jatkuva
   Fixed delta: Kiinteä delta
+  Holiday: Loma
+  Away mode: Poissaolotila
+  HW circulation: Käyttövesikierto
+  Ext. HM pump: Ulk. kv-pumppu
+  Cool. mode ind. w delay: Jäähd.tilan ilm. viiveellä
