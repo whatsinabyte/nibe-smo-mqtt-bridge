@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.4.3] — 2026-10-25
+
+Translations from NIBE's own installer manuals — French and Spanish
+checked for the first time, ten new languages, every label as the
+controller's menus word it — and two fixes: a firmware update's versions
+now survive a restart, and an outdated Entity Manager card refreshes
+itself.
 
 ### Changed
 
@@ -20,15 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Niedriger Preis / Überkapazität, …). The mapping is now also confirmed on
     a VVM S320 (issue #40).
   - "Additional heat only" follows the manuals' operating mode menu
-    (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento
-    supplementare"), "Intermittent" the pump menus in Dutch, Norwegian
-    and Polish, and "Price per kWh" menu 4.6 in Norwegian and Finnish.
+    (e.g. Swedish "Endast tillsats", Italian "Solo risc. suppl."),
+    "Intermittent" the pump menus in Dutch, Norwegian and Polish, and
+    "Price per kWh" menu 4.6 in Norwegian and Finnish.
   - Newly translated from the same manuals: hot water demand (Small /
     Medium / Large) and the hot water charging method (Target temp /
     Delta temp, where the manual has that menu).
   - French and Spanish now too, from the manuals on NIBE's own French and
     Spanish product pages: SG Ready, hot water demand, operating mode and
-    flow setting (e.g. French "Appoint unique", "Plancher chauffant").
+    flow setting (e.g. French "Appt uniq.", "Planch. ch.").
   - Brine pump operating modes (Continuous, 10 days cont., Fixed delta)
     in French, German, Finnish, Swedish, Dutch, Danish, Norwegian,
     Italian, Polish, Spanish, Czech, Slovak and Romanian, from NIBE's
