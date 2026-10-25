@@ -31,14 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     flow setting (e.g. French "Appoint unique", "Plancher chauffant").
   - Brine pump operating modes (Continuous, 10 days cont., Fixed delta)
     in French, German, Finnish, Swedish, Dutch, Danish, Norwegian,
-    Italian, Polish and Spanish, from NIBE's S1155 manuals.
+    Italian, Polish, Spanish, Czech, Slovak and Romanian, from NIBE's
+    S1155 manuals.
   - Danish and Norwegian "Manual" as their 2025 manuals word it
     ("Manuelt"); Danish hot water demand "Middelstort".
-  - Output AUX1's "Holiday" and "Away mode" in every language, and its
-    "HW circulation", "Ext. HM pump" and "Cool. mode ind. w delay" where
-    a manual prints the screen label (Danish, Finnish, Estonian, Latvian,
-    Slovenian, Ukrainian, partly Bulgarian). Smart Price Adaption's
-    Comfort / Saving / Saving PLUS in Russian, Ukrainian and Slovenian.
+  - Output AUX1's "Holiday", "Away mode", "HW circulation", "Ext. HM
+    pump" and "Cool. mode ind. w delay" as the 2025 manuals print their
+    screen labels — in most languages; Holiday and Away mode in every one.
+  - Smart Price Adaption's Comfort / Saving / Saving PLUS as the 2025
+    manuals word them, now also in Russian, Ukrainian, Slovenian,
+    Romanian, Slovak and Estonian; German "Einsparung", Norwegian
+    "Besparelse" and Dutch "Opslaan" as NIBE's screens say.
 - **New translations: Romanian, Estonian, Russian, Hungarian, Slovak,
   Lithuanian, Latvian, Slovenian, Bulgarian and Ukrainian** (`language:
   ro`, `et`, `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`, `uk`): the add-on

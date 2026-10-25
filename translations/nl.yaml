@@ -224,8 +224,8 @@ value_mappings:
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator en vloerverwarming
   Running: Draait
-  Saving: Besparen
-  Saving PLUS: Besparen PLUS
+  Saving: Opslaan
+  Saving PLUS: Opslaan PLUS
   Standard: Standaard
   Starting: Starten
   Transfer: Overdracht
@@ -240,3 +240,6 @@ value_mappings:
   Delta temp: Deltatemp.
   Holiday: Vakantie
   Away mode: Weg-modus
+  Cool. mode ind. w delay: Koelmodus ind. met vertr.
+  HW circulation: WW-circulatie
+  Ext. HM pump: Ext. cv-pomp

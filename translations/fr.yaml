@@ -250,4 +250,7 @@ value_mappings:
   Target temp: Temp. cible
   Delta temp: Temp. delta
   Holiday: Vacances
-  Away mode: Mode absence
+  Away mode: Mode Absence
+  Cool. mode ind. w delay: Ind. mode raf. avec délai
+  HW circulation: Circulation ECS
+  Ext. HM pump: Ppe chauff. ext.

@@ -235,8 +235,8 @@ value_mappings:
   Radiator: Heizkörper
   Radiator & Underfloor heating: Heizkörper & Fußbodenheizung
   Running: Läuft
-  Saving: Sparen
-  Saving PLUS: Sparen PLUS
+  Saving: Einsparung
+  Saving PLUS: Einsparung PLUS
   Standard: Standard
   Starting: Startet
   Transfer: Transfer
@@ -254,4 +254,7 @@ value_mappings:
   Target temp: Zieltemperatur
   Delta temp: Deltatemperatur
   Holiday: Urlaub
-  Away mode: Abwesenheitsmodus
+  Away mode: AbwesenhModus
+  Cool. mode ind. w delay: Kühlmodusanz. m Verzög.
+  HW circulation: BW-Zirkulation
+  Ext. HM pump: Ext. HU-Pumpe

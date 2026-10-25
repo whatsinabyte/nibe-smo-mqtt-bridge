@@ -222,7 +222,7 @@ value_mappings:
   Radiator: Radiator
   Radiator & Underfloor heating: Radiator og gulvvarme
   Running: Kjører
-  Saving: Sparing
+  Saving: Besparelse
   Saving PLUS: Sparing PLUS
   Standard: Standard
   Starting: Starter
@@ -242,3 +242,6 @@ value_mappings:
   Fixed delta: Fast delta
   Holiday: Ferie
   Away mode: Bortemodus
+  Cool. mode ind. w delay: Kjølepos.ind. med forsink.
+  HW circulation: VV-sirkulasjon
+  Ext. HM pump: Ekst. VB-pumpe

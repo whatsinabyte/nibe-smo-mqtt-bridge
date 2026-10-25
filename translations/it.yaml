@@ -247,5 +247,8 @@ value_mappings:
   Continuous: Continuo
   10 days cont.: 10 giorni cont.
   Fixed delta: Delta fisso
-  Holiday: Festivo
-  Away mode: Modalità assenti
+  Holiday: Vacanza
+  Away mode: Mod. assenti
+  Cool. mode ind. w delay: Mod. raff. ind. con ritardo
+  HW circulation: Circ. acq. calda
+  Ext. HM pump: Pom. imp. est.
