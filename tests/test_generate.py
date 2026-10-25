@@ -8701,6 +8701,7 @@ class TestConfigTranslationsParity(unittest.TestCase):
             ],
             "sl": ["Normalni", "Blokada", "Nizkocenovni", "Presežna zmogljivost"],
             "bg": ["Нормален", "Блокиране", "Ниска цена", "Свръхкапацитет"],
+            "uk": ["Нормальний", "Блокування", "Низька ціна", "Надлишкова потужність"],
         }
         labels = list(_lookup_manual_mapping(3260).values())
         for path in self.translation_files:

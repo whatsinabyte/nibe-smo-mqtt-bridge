@@ -35,8 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Danish and Norwegian "Manual" as their 2025 manuals word it
     ("Manuelt"); Danish hot water demand "Middelstort".
 - **New translations: Romanian, Estonian, Russian, Hungarian, Slovak,
-  Lithuanian, Latvian, Slovenian and Bulgarian** (`language: ro`, `et`,
-  `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`): the add-on
+  Lithuanian, Latvian, Slovenian, Bulgarian and Ukrainian** (`language:
+  ro`, `et`, `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`, `uk`): the add-on
   settings screen, and the value labels NIBE's installer manuals in those
   languages name — operating mode, SG Ready, hot water demand, flow setting
   and the like. Other labels stay English.
