@@ -189,7 +189,7 @@ value_mappings:
   24h: 24h
   Active: Aktywny
   Active alarm: Aktywny alarm
-  Additional heat only: Tylko ogrzewanie dodatkowe
+  Additional heat only: Tylko podgrzewacz pomocniczy
   Auto: Auto
   CO2: CO2
   Calibration: Kalibracja
@@ -206,7 +206,7 @@ value_mappings:
   Hot water boost: Podbicie ciepłej wody
   Idle: W spoczynku
   Inactive: Nieaktywny
-  Intermittent: Przerywany
+  Intermittent: Przerywana
   Manual: Ręczny
   No alarm: Brak alarmu
   'Off': Wyłączone
@@ -230,3 +230,12 @@ value_mappings:
   Starting: Uruchamianie
   Transfer: Wymiana
   Underfloor heating: Ogrzewanie podłogowe
+  Normal: Normalny
+  Blocking: Blokowanie
+  Low price: Oszczędny
+  Overcapacity: Nadmiar mocy
+  Small: Niskie
+  Medium: Średnie
+  Large: Wysokie
+  Target temp: Temp. docelowa
+  Delta temp: Różnica temp.

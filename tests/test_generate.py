@@ -6771,7 +6771,12 @@ class TestRunStartupSequence(unittest.TestCase):
             thread_kwargs["args"],
             (BRIDGE_VERSION, cfg.device_name, MockWatcher.return_value, False),
         )
-        self.assertEqual(thread_kwargs["kwargs"], {"mode": "essential"})
+        self.assertEqual(thread_kwargs["kwargs"]["mode"], "essential")
+        # The card version callback publishes retained on its browser topic.
+        thread_kwargs["kwargs"]["on_card_version"]("abc123")
+        from nibe_mqtt_publisher import BrowserTopic
+
+        mc.publish.assert_any_call(BrowserTopic.CARD_VERSION, "abc123", retain=True)
         self.assertTrue(thread_kwargs["daemon"])
 
         # ManagementCommandHandler wired with mqtt_client/entity_manager/publisher
@@ -8637,21 +8642,53 @@ class TestConfigTranslationsParity(unittest.TestCase):
 
     def test_cloud_labels_are_translated_in_every_language(self):
         """The labels of 55000, 10897 and 14952 (from the myUplink cloud's
-        own option lists) are translated in every language, with NIBE's own
-        wording from the same source."""
+        own option lists) are translated in every language the cloud was
+        harvested in, with NIBE's own wording from the same source. A
+        language added later from another source (Romanian, from its
+        installer manual) leaves them English."""
         import yaml as _yaml
         from nibe_entity_detection import _lookup_manual_mapping
 
         labels = {
             label for pid in (55000, 10897, 14952) for label in _lookup_manual_mapping(pid).values()
         }
+        cloud_languages = {"cs", "da", "de", "es", "fi", "fr", "it", "nl", "no", "pl", "sv"}
         for path in self.translation_files:
-            if path.stem == "en":
+            if path.stem not in cloud_languages:
                 continue
             with open(path) as f:
                 mappings = _yaml.safe_load(f).get("value_mappings") or {}
             missing = labels - set(mappings)
             self.assertFalse(missing, f"{path.name} has no translation for: {sorted(missing)}")
+
+    def test_sg_ready_status_follows_nibe_wording(self):
+        """3260's states follow the SG Ready section of NIBE's installer
+        manual in each language (SMO S40 or VVM S320), with the word for
+        "mode" left out as in English — e.g. Dutch "Stand lage prijs" gives
+        "Lage prijs". Not 10614's request labels (issue #40). Spanish and
+        French have no manual on file and keep the English names."""
+        import yaml as _yaml
+        from nibe_entity_detection import _lookup_manual_mapping
+
+        expected = {
+            "nl": ["Normaal", "Blokkering", "Lage prijs", "Overcapaciteit"],
+            "de": ["Normalbetrieb", "Blockierung", "Niedriger Preis", "Überkapazität"],
+            "sv": ["Normal", "Blockering", "Lågpris", "Överkapacitet"],
+            "no": ["Normal", "Blokkering", "Lavpris", "Overkapasitet"],
+            "da": ["Normal", "Blokering", "Lavpris", "Overkapacitet"],
+            "fi": ["Normaali", "Esto", "Matalahinta", "Ylikapasiteetti"],
+            "it": ["Normale", "Bloccaggio", "Basso costo", "Massima capacità"],
+            "pl": ["Normalny", "Blokowanie", "Oszczędny", "Nadmiar mocy"],
+            "cs": ["Normální", "Blokování", "Nízká cena", "Nadbytečný výkon"],
+            "ro": ["Normal", "Blocare", "Preț scăzut", "Supracapacitate"],
+        }
+        labels = list(_lookup_manual_mapping(3260).values())
+        for path in self.translation_files:
+            if path.stem in expected:
+                with open(path, encoding="utf-8") as f:
+                    mappings = _yaml.safe_load(f)["value_mappings"]
+                got = [mappings.get(label) for label in labels]
+                self.assertEqual(got, expected[path.stem], path.name)
 
     def test_value_mappings_translations_are_unique_within_each_language(self):
         """Two English labels must never translate to the same string.

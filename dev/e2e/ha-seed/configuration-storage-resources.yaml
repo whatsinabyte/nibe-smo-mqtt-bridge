@@ -1,0 +1,17 @@
+# Like configuration.yaml, but with Lovelace resources in storage mode, so the
+# bridge registers the card resource itself (with its ?v= cache key) through
+# the fake Supervisor, as it does in production. Used by
+# tests/card-self-refresh.spec.ts only; the Nibe Bridge dashboard stays YAML.
+default_config:
+
+logger:
+  default: warning
+
+lovelace:
+  dashboards:
+    nibe-bridge:
+      mode: yaml
+      filename: nibe-bridge.yaml
+      title: Nibe Bridge
+      icon: mdi:heat-pump
+      show_in_sidebar: true

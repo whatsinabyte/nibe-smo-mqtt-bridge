@@ -45,6 +45,14 @@
 // hash of this file and appends it as a query parameter when registering the
 // Lovelace resource (e.g. ?v=c4faeaad815f). The browser loads a fresh copy
 // whenever the file changes, without any manual version number maintenance.
+//
+// The Companion app can keep an old copy anyway: a page left open for days
+// never re-reads the resource list. So the bridge also publishes the current
+// hash (nibe/browser/card_version), and a card whose own build differs
+// reloads the page once — see handleCardVersionMessage. The bridge writes
+// the build into the copy it serves (nibe_lovelace._copy_card_file); left
+// as the placeholder, as in the repository and its tests, it is unknown.
+const CARD_BUILD = ((build) => (build.startsWith('__') ? null : build))('__NIBE_CARD_BUILD__');
 
 const TYPE_DISPLAY_NAMES = {
   binary_sensor: 'Binary Sensor',
@@ -138,6 +146,7 @@ class NibeEntityManager extends HTMLElement {
 
     this.mqttSetupDone = false;
     this.showMobileFilters = false;
+    this._cardBuild = CARD_BUILD;  // this copy's build, see handleCardVersionMessage
   }
 
   /**
@@ -649,6 +658,20 @@ class NibeEntityManager extends HTMLElement {
           max-width: 300px;
         }
 
+        .stale-card-notice {
+          margin-bottom: 12px;
+          padding: 10px 14px;
+          border-radius: 8px;
+          border-left: 4px solid var(--warning-color, #ffa600);
+          background: rgba(255, 166, 0, 0.12);
+          color: var(--primary-text-color);
+          font-size: 14px;
+        }
+
+        .stale-card-notice[hidden] {
+          display: none;
+        }
+
         .toast {
           padding: 12px 16px;
           margin-bottom: 8px;
@@ -887,6 +910,11 @@ class NibeEntityManager extends HTMLElement {
 
       <div class="container">
         <div class="toast-container"></div>
+        <div class="stale-card-notice" id="stale-card-notice"${this._staleCard ? '' : ' hidden'}>
+          A newer version of this card is available. Reload the page — in the
+          Home Assistant app: Settings → Companion app → Debugging → Reset
+          frontend cache.
+        </div>
 
         <div class="header">
           ${this.config.title ? `<h1 class="title">${this._esc(this.config.title)}</h1>` : ''}
@@ -1480,12 +1508,69 @@ class NibeEntityManager extends HTMLElement {
         this._hass.connection.subscribeMessage(
           (msg) => this.handlePointListMessage(msg),
           { type: 'mqtt/subscribe', topic: 'nibe/browser/point_list' }
+        ),
+        this._hass.connection.subscribeMessage(
+          (msg) => this.handleCardVersionMessage(msg),
+          { type: 'mqtt/subscribe', topic: 'nibe/browser/card_version' }
         )
       );
 
     } catch (error) {
       console.error('MQTT setup failed:', error);
     }
+  }
+
+  /**
+   * What a card should do about the bridge's current card version.
+   *
+   * 'reload' when this copy's build differs and no reload towards that
+   * version was tried yet in this session, 'notice' when one was (the page
+   * came back stale, so a reload alone doesn't help), else 'none' — also
+   * when either version is unknown, e.g. the repository's file loaded by
+   * hand, its placeholder never filled in.
+   */
+  static _staleCardAction(own, current, alreadyTried) {
+    if (!own || !current || own === current) return 'none';
+    return alreadyTried ? 'notice' : 'reload';
+  }
+
+  /**
+   * Handle the retained nibe/browser/card_version message: reload a stale
+   * copy of this card once per new version. The attempt is remembered in
+   * sessionStorage; where that can't be written, the notice is shown
+   * instead, since a reload that can't be remembered could repeat forever.
+   */
+  handleCardVersionMessage(msg) {
+    const current = typeof msg?.payload === 'string' ? msg.payload.trim() : '';
+    const key = `nibe-card-reload:${current}`;
+    let tried = true;
+    try {
+      tried = sessionStorage.getItem(key) !== null;
+    } catch {
+      // storage unavailable: treat as tried, so no reload loop
+    }
+    const action = NibeEntityManager._staleCardAction(this._cardBuild, current, tried);
+    if (action === 'reload') {
+      try {
+        sessionStorage.setItem(key, '1');
+      } catch {
+        this._showStaleCardNotice();
+        return;
+      }
+      this._reloadPage();
+    } else if (action === 'notice') {
+      this._showStaleCardNotice();
+    }
+  }
+
+  _reloadPage() {
+    window.location.reload();
+  }
+
+  _showStaleCardNotice() {
+    this._staleCard = true;
+    const notice = this.shadowRoot?.getElementById('stale-card-notice');
+    if (notice) notice.hidden = false;
   }
 
   /**

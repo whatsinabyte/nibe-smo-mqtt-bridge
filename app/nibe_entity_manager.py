@@ -448,11 +448,11 @@ def _load_value_mapping_translations(language: str | None) -> dict[str, str]:
     _process_and_publish_state uses to translate a resolved VALUE_MAPPINGS
     label before publishing it as an entity's state.
 
-    Scoped to Nibe's actual main markets — the 12 languages this repo
-    already ships a translations/*.yaml for (cs/da/de/en/es/fi/fr/it/nl/
-    no/pl/sv) — not the full ~25 language codes config.yaml's schema
-    accepts; 13 of those have no translations file of any kind yet, config
-    UI included, a pre-existing gap unrelated to this.
+    Scoped to the 13 languages this repo ships a translations/*.yaml for
+    (cs/da/de/en/es/fi/fr/it/nl/no/pl/ro/sv) — not every language code
+    config.yaml's schema accepts; a file is only added for a language with
+    a NIBE source for its labels, so the others have none, config UI
+    included.
 
     Returns {} (meaning: no translation, callers fall back to the English
     label unchanged) for language None/""/"en", for any language outside

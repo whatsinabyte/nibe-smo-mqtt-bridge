@@ -188,7 +188,7 @@ value_mappings:
   24h: 24t
   Active: Aktiv
   Active alarm: Aktiv alarm
-  Additional heat only: Kun tilskudsvarme
+  Additional heat only: Kun tilskud
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrering
@@ -229,3 +229,10 @@ value_mappings:
   Starting: Starter
   Transfer: Transfer
   Underfloor heating: Gulvvarme
+  Normal: Normal
+  Blocking: Blokering
+  Low price: Lavpris
+  Overcapacity: Overkapacitet
+  Small: Lille
+  Medium: Middel
+  Large: Stort

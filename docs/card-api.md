@@ -138,6 +138,18 @@ Valid values: `essential`, `monitoring`, `advanced`, `menus`, `all`, `none`.
 
 ---
 
+### `nibe/browser/card_version`
+
+**Retained.** The cache key of the card file Lovelace currently serves: the `?v=` of the registered resource URL, the first 12 hex digits of the file's SHA-256. Plain string — not JSON. Published at startup once the resource registration confirms that URL.
+
+```
+c4faeaad815f
+```
+
+The card compares it with its own build, which the bridge writes into the copy of the card it serves (the same cache key, in place of a placeholder). A different value means the page still runs an older copy — the Home Assistant Companion app can keep one for days, since a page left open never re-reads the resource list. The card then reloads the page once per new value, remembering the attempt in `sessionStorage`; if the page comes back stale anyway, or the attempt can't be remembered, it shows a notice instead of reloading again. A copy that still holds the placeholder (the repository's file, loaded by hand) never acts on this topic.
+
+---
+
 ### `nibe/browser/changelog/history`
 
 **Retained.** The full changelog of dynamic point appearances and disappearances, and of firmware updates. Gzip-compressed JSON, prefixed with the ASCII sentinel `"gzip1:"` followed by base64-encoded gzip bytes (see [Compression](#compression) below). The card decompresses and displays this in the Changelog panel.

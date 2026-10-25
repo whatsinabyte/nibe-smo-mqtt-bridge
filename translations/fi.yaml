@@ -196,7 +196,7 @@ value_mappings:
   24h: 24h
   Active: Aktiivinen
   Active alarm: Aktiivinen hälytys
-  Additional heat only: Vain lisälämmitys
+  Additional heat only: Vain lisälämpö
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrointi
@@ -227,7 +227,7 @@ value_mappings:
   Pool: Allas
   Pool 2: Allas 2
   Preheating: Esilämmittää
-  Price per kWh: Hinta / kWh
+  Price per kWh: Hinta per kWh
   Radiator: Lämpöpatteri
   Radiator & Underfloor heating: Lämpöpatteri ja lattialämmitys
   Running: Käynnissä
@@ -237,3 +237,12 @@ value_mappings:
   Starting: Käynnistyy
   Transfer: Siirto
   Underfloor heating: Lattialämmitys
+  Normal: Normaali
+  Blocking: Esto
+  Low price: Matalahinta
+  Overcapacity: Ylikapasiteetti
+  Small: Pieni
+  Medium: Keski
+  Large: Suuri
+  Target temp: Tavoitelämpötila
+  Delta temp: Lämpötilaero

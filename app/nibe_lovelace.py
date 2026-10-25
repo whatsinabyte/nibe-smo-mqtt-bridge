@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -72,14 +71,30 @@ def _load_menu_structure_yaml(yaml_path: str) -> list:
         return _menu_structure_cache[yaml_path]
 
 
+_CARD_SRC = "/app/nibe-entity-manager-card.js"
+_CARD_WWW_DIR = "/homeassistant/www"
+# Replaced in the copy served to Home Assistant by the card's cache key, so
+# the card knows its own version however the file is loaded (a classic
+# script has no import.meta) — see BrowserTopic.CARD_VERSION.
+_CARD_BUILD_PLACEHOLDER = b"__NIBE_CARD_BUILD__"
+
+
+def _card_cache_key(data: bytes) -> str:
+    """The card's cache key: the resource URL's ?v=, the first 12 hex
+    digits of the SHA-256 of the card file as shipped."""
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
 def _copy_card_file() -> bool:
-    """Copy the Lovelace card JS file to the HA www directory."""
-    src = "/app/nibe-entity-manager-card.js"
-    dst_dir = "/homeassistant/www"
-    dst = os.path.join(dst_dir, "nibe-entity-manager-card.js")
+    """Copy the Lovelace card JS file to the HA www directory, with its
+    cache key written into it (_CARD_BUILD_PLACEHOLDER)."""
+    dst = os.path.join(_CARD_WWW_DIR, "nibe-entity-manager-card.js")
     try:
-        os.makedirs(dst_dir, exist_ok=True)
-        shutil.copy2(src, dst)
+        os.makedirs(_CARD_WWW_DIR, exist_ok=True)
+        with open(_CARD_SRC, "rb") as f:
+            data = f.read()
+        with open(dst, "wb") as f:
+            f.write(data.replace(_CARD_BUILD_PLACEHOLDER, _card_cache_key(data).encode()))
         log_startup.info("Card file copied to %s", dst)
         return True
     except OSError as e:
@@ -1799,6 +1814,7 @@ def _setup_lovelace(
     registry_watcher: "HAEntityRegistryWatcher | None" = None,
     debug_mode: bool = False,
     mode: str = "menus",
+    on_card_version: Callable[[str], None] | None = None,
 ) -> None:
     """Register the card JS resource and provision the Nibe Bridge dashboard.
 
@@ -1820,6 +1836,10 @@ def _setup_lovelace(
     are the management surface and remain the only way to enable entities
     in "none" mode.
 
+    Once Lovelace serves the current card URL, on_card_version (if given)
+    is called with its cache key, the URL's ?v= — the caller publishes it
+    so an open card can tell it is a stale copy (BrowserTopic.CARD_VERSION).
+
     Safe to call on every startup — all operations are idempotent.
     No-op when running outside the HA add-on environment (no SUPERVISOR_TOKEN).
 
@@ -1836,10 +1856,9 @@ def _setup_lovelace(
         return
 
     # ── Build versioned resource URL ──────────────────────────────────────────
-    card_path = "/app/nibe-entity-manager-card.js"
     try:
-        with open(card_path, "rb") as f:
-            cache_key = hashlib.sha256(f.read()).hexdigest()[:12]
+        with open(_CARD_SRC, "rb") as f:
+            cache_key = _card_cache_key(f.read())
     except OSError:
         cache_key = version
     versioned_url = f"/local/nibe-entity-manager-card.js?v={cache_key}"
@@ -1856,7 +1875,8 @@ def _setup_lovelace(
 
     try:
         # ── Step 1: Resource registration ─────────────────────────────────────
-        _setup_lovelace_resource(ws, _next_id, versioned_url)
+        if _setup_lovelace_resource(ws, _next_id, versioned_url) and on_card_version:
+            on_card_version(cache_key)
 
         # ── Step 2: Dashboard provisioning ────────────────────────────────────
         _setup_lovelace_dashboard(ws, _next_id, device_name, _FLAG_FILE)
@@ -1883,10 +1903,11 @@ def _setup_lovelace(
             pass
 
 
-def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url: str) -> None:
+def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url: str) -> bool:
     """Register or update the card JS file as a Lovelace module resource.
 
     Called from _setup_lovelace with an already-authenticated WebSocket.
+    Returns whether Lovelace now serves versioned_url.
     """
     # ws/next_id/result-default mutations throughout this function are
     # unobservable — this function's own test suite's fake_ws_call never
@@ -1921,7 +1942,7 @@ def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url:
             log_startup.debug(
                 "Lovelace resource already current (%s) — no update needed", versioned_url
             )
-            return
+            return True
         resp = _ws_call(
             ws,
             next_id(),
@@ -1947,8 +1968,9 @@ def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url:
 
     if resp.get("success"):
         log_startup.info("%s Lovelace resource: %s", action, versioned_url)
-    else:
-        log_startup.warning("Lovelace resource %s failed: %s", action.lower(), resp)
+        return True
+    log_startup.warning("Lovelace resource %s failed: %s", action.lower(), resp)
+    return False
 
 
 def _setup_lovelace_dashboard(
@@ -2630,6 +2652,7 @@ def provision_lovelace_ui(
     registry_watcher: "HAEntityRegistryWatcher",
     debug_mode: bool = False,
     mode: str = "menus",
+    on_card_version: Callable[[str], None] | None = None,
 ) -> None:
     """Open a WebSocket, register the card resource, and create/update dashboards.
 
@@ -2640,7 +2663,14 @@ def provision_lovelace_ui(
 
     Safe to call on every startup — all steps are idempotent.
     """
-    _setup_lovelace(version, device_name, registry_watcher, debug_mode, mode=mode)
+    _setup_lovelace(
+        version,
+        device_name,
+        registry_watcher,
+        debug_mode,
+        mode=mode,
+        on_card_version=on_card_version,
+    )
 
 
 def schedule_menu_dashboard_regen(

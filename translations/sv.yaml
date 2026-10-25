@@ -183,7 +183,7 @@ value_mappings:
   24h: 24h
   Active: Aktiv
   Active alarm: Aktivt larm
-  Additional heat only: Endast tillsatsvärme
+  Additional heat only: Endast tillsats
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrering
@@ -224,3 +224,12 @@ value_mappings:
   Starting: Startar
   Transfer: Transfer
   Underfloor heating: Golvvärme
+  Normal: Normal
+  Blocking: Blockering
+  Low price: Lågpris
+  Overcapacity: Överkapacitet
+  Small: Litet
+  Medium: Medel
+  Large: Stort
+  Target temp: Måltemp
+  Delta temp: Deltatemp

@@ -7,10 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.4.2] — 2026-10-20
+## [Unreleased]
+
+### Changed
+
+- **Translations checked against NIBE's installer manuals** (SMO S40 or
+  VVM S320) in Swedish, Norwegian, Danish, Finnish, German, Dutch,
+  Italian, Polish and Czech:
+  - SG Ready operating mode (3260) is now translated in those languages,
+    in the manuals' names for the four states (Dutch Normaal / Blokkering
+    / Lage prijs / Overcapaciteit, German Normalbetrieb / Blockierung /
+    Niedriger Preis / Überkapazität, …). The mapping is now also confirmed on
+    a VVM S320 (issue #40).
+  - "Additional heat only" follows the manuals' operating mode menu
+    (e.g. Swedish "Endast tillsats", Italian "Solo riscaldamento
+    supplementare"), "Intermittent" the pump menus in Dutch, Norwegian
+    and Polish, and "Price per kWh" menu 4.6 in Norwegian and Finnish.
+  - Newly translated from the same manuals: hot water demand (Small /
+    Medium / Large) and the hot water charging method (Target temp /
+    Delta temp, where the manual has that menu).
+  - Spanish and French had no manual to check against and are unchanged.
+- **Romanian translation** (`language: ro`): the add-on settings screen,
+  and the value labels NIBE's Romanian SMO S40 installer manual names —
+  operating mode, SG Ready, hot water demand, flow setting and the like.
+  Other labels stay English.
+
+### Fixed
+
+- **An outdated Entity Manager card now refreshes itself.** The Home
+  Assistant Companion app could keep running an older copy of the card
+  after an update — for example one whose changelog left out the firmware
+  versions of an update. The bridge now publishes the current card version,
+  and a card that finds itself outdated reloads the page once; if that
+  doesn't help, it shows how to reset the app's frontend cache.
+
+---
+
+## [1.4.2] — 2026-10-24
 
 AUX functions by name and SG Ready under NIBE's own names, both from an
-S1155 owner's tests on his controller (issue #82).
+S1155 owner's tests on his controller (issue #82), and the Language
+setting for the six languages NIBE firmware 4.14.6 adds.
 
 ### Changed
 
@@ -25,7 +62,6 @@ S1155 owner's tests on his controller (issue #82).
   Low price, Overcapacity — instead of "Normal Price", "High Price", "Low
   Price" and "Free Electricity". All four states are now confirmed on a
   controller (issue #40).
-
 - **Language (3745) covers the six languages of firmware 4.14.6**: Srpski,
   Ελληνικά, Português, Føroyskt, Shqip and Bosanski, values 25–30, while
   the metadata still declares 0–25. Before, selecting one made the select

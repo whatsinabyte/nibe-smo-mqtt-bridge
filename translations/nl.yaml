@@ -187,6 +187,7 @@ value_mappings:
   Active alarm: Actief alarm
   Additional heat only: Alleen bijverwarming
   Auto: Auto
+  Blocking: Blokkering
   CO2: CO2
   Calibration: Kalibratie
   Closed: Gesloten
@@ -202,15 +203,18 @@ value_mappings:
   Hot water boost: Warm water boost
   Idle: In rust
   Inactive: Inactief
-  Intermittent: Onderbroken
+  Intermittent: Intermitterend
+  Low price: Lage prijs
   Manual: Handmatig
   No alarm: Geen alarm
+  Normal: Normaal
   'Off': Uit
   'On': Aan
   Open: Open
   Open to pool: Open naar zwembad
   Opening: Openen
   Ordered: Opgedragen
+  Overcapacity: Overcapaciteit
   Own setting: Eigen instelling
   Passive: Passief
   Pool: Zwembad
@@ -226,3 +230,6 @@ value_mappings:
   Starting: Starten
   Transfer: Overdracht
   Underfloor heating: Vloerverwarming
+  Small: Klein
+  Medium: Gemiddeld
+  Large: Groot

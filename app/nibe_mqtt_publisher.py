@@ -193,6 +193,10 @@ class BrowserTopic(StrEnum):
     SNAPSHOTS_CMD = f"{MQTT_PREFIX}/snapshots/cmd"  # command topic (card → bridge)
     # not retained: outcome of each snapshot command (bridge → card)
     SNAPSHOTS_RESULT = f"{MQTT_PREFIX}/snapshots/result"
+    # retained: content hash of the card file Lovelace currently loads (the
+    # resource URL's ?v=); a card whose own ?v= differs is a stale copy and
+    # reloads the page once
+    CARD_VERSION = f"{MQTT_PREFIX}/card_version"
 
     # ── Observability topics ───────────────────────────────────────────────
     # BRIDGE_ALERT: non-retained, published when an alertable condition is

@@ -194,7 +194,7 @@ value_mappings:
   24h: 24h
   Active: Attivo
   Active alarm: Allarme attivo
-  Additional heat only: Solo riscaldamento aggiuntivo
+  Additional heat only: Solo riscaldamento supplementare
   Auto: Auto
   CO2: CO2
   Calibration: Calibrazione
@@ -235,3 +235,12 @@ value_mappings:
   Starting: Avvio
   Transfer: Scambio
   Underfloor heating: Riscaldamento a pavimento
+  Normal: Normale
+  Blocking: Bloccaggio
+  Low price: Basso costo
+  Overcapacity: Massima capacità
+  Small: Piccolo
+  Medium: Medio
+  Large: Grande
+  Target temp: Temp. target
+  Delta temp: Temp. delta

@@ -184,7 +184,7 @@ value_mappings:
   24h: 24h
   Active: Aktivní
   Active alarm: Aktivní alarm
-  Additional heat only: Pouze přídavné topení
+  Additional heat only: Pouze přídavný zdroj tepla
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrace
@@ -225,3 +225,10 @@ value_mappings:
   Starting: Spouštění
   Transfer: Přenos
   Underfloor heating: Podlahové topení
+  Normal: Normální
+  Blocking: Blokování
+  Low price: Nízká cena
+  Overcapacity: Nadbytečný výkon
+  Small: Malý
+  Medium: Střední
+  Large: Velký

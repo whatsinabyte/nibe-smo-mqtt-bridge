@@ -217,7 +217,7 @@ value_mappings:
   Hot water boost: Warmwasser-Boost
   Idle: Ruhend
   Inactive: Inaktiv
-  Intermittent: Intermittierend
+  Intermittent: Periodisch
   Manual: Manuell
   No alarm: Kein Alarm
   'Off': Aus
@@ -241,3 +241,10 @@ value_mappings:
   Starting: Startet
   Transfer: Transfer
   Underfloor heating: Fußbodenheizung
+  Blocking: Blockierung
+  Low price: Niedriger Preis
+  Normal: Normalbetrieb
+  Overcapacity: Überkapazität
+  Small: Niedrig
+  Medium: Mittel
+  Large: Hoch
