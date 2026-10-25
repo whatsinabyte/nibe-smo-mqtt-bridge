@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A firmware update's versions survive a bridge restart.** The changelog
+  entry of a firmware update lost its versions ("Version (EB100): 4.13 →
+  4.14") and its list of changed points at the next restart: reading the
+  saved changelog back left both out. An entry already stripped this way
+  stays without them.
 - **An outdated Entity Manager card now refreshes itself.** The Home
   Assistant Companion app could keep running an older copy of the card
   after an update — for example one whose changelog left out the firmware

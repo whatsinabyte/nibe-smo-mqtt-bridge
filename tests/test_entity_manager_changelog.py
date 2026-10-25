@@ -639,6 +639,50 @@ class TestChangelogConsistency(unittest.TestCase):
 
         self.assertEqual(len(self.em.change_history), 1)
 
+    def test_restart_keeps_a_firmware_update_s_versions_and_changed_points(self):
+        """A firmware update entry read back from the retained history after
+        a restart keeps its note (the versions) and its changed points.
+        Loading used to rebuild each entry from a fixed list of fields that
+        left both out, so the next restart wiped the versions from the
+        changelog for good."""
+        from nibe_entity_manager import EntityManager, _decompress_payload
+
+        changed = [{"id": 3745, "title": "Language", "changes": "max 25 → 30"}]
+        note = "Version (EB100): 4.13 → 4.14"
+        self.em._update_changelog_history(
+            {
+                "added": [{"id": 2499, "title": "Low pressure (EB101-BP8)", "type": "sensor"}],
+                "removed": [],
+                "changed": changed,
+                "source": "firmware_change",
+                "note": note,
+            }
+        )
+        published = [
+            c.args[1] for c in self.em.mqtt.publish.call_args_list if c.args[0].endswith("history")
+        ][-1]
+
+        # The restart: a fresh process reads the retained copy back.
+        self.em._last_published_seq = 0
+        self.em.change_history.clear()
+        EntityManager._setup_history_loading(self.em)
+        msg = MagicMock()
+        msg.payload = published.encode("utf-8")
+        self.em._on_history_message(None, None, msg)
+
+        entry = self.em.change_history[0]
+        self.assertEqual(entry["source"], "firmware_change")
+        self.assertEqual(entry.get("note"), note)
+        self.assertEqual(entry.get("changed"), changed)
+        # ... and the history it republishes still carries them.
+        self.em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
+        republished = [
+            c.args[1] for c in self.em.mqtt.publish.call_args_list if c.args[0].endswith("history")
+        ][-1]
+        restored = json.loads(_decompress_payload(republished))["history"][-1]
+        self.assertEqual(restored.get("note"), note)
+        self.assertEqual(restored.get("changed"), changed)
+
     def test_restart_continues_the_restored_seq(self):
         """The card discards a history whose _seq isn't above the last one it
         saw. Restarting the sequence at 1 on every bridge restart left an

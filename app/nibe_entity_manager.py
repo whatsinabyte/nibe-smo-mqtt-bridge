@@ -4826,6 +4826,14 @@ class EntityManager:
                                     "source": entry.get("source", "firmware"),
                                     "triggered_by": entry.get("triggered_by"),
                                 }
+                                # A firmware update's versions and changed
+                                # points: optional, as _update_changelog_history
+                                # writes them. Left out here, a restart wiped
+                                # them from the changelog for good.
+                                if isinstance(entry.get("note"), str) and entry["note"]:
+                                    cleaned["note"] = entry["note"]
+                                if isinstance(entry.get("changed"), list) and entry["changed"]:
+                                    cleaned["changed"] = entry["changed"]
                                 if isinstance(cleaned["added"], list) and isinstance(
                                     cleaned["removed"], list
                                 ):
