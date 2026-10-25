@@ -171,7 +171,7 @@ configuration:
 # Only labels NIBE's Lithuanian installer manual (VVM S320 IHB LT 2327-1)
 # names; any other label stays English.
 value_mappings:
-  Additional heat only: Tik papildoma šilumos sistema
+  Additional heat only: Tik pap. šil. sist.
   Auto: Automatinis
   Blocking: Blokavimas
   Closed: Uždaras
@@ -190,9 +190,9 @@ value_mappings:
   Pool: Baseinas
   Price per kWh: Kaina už kWh
   Radiator: Radiatorius
-  Radiator & Underfloor heating: Radiatorius + grindų šildymas
+  Radiator & Underfloor heating: Rad. + grind. šild.
   Small: Mažas
-  Underfloor heating: Grindų šildymas
+  Underfloor heating: Grind. šildymas
   Holiday: Atostogos
   Away mode: Išvykimo rež.
   Cool. mode ind. w delay: Vės. rež. ind. su atid.

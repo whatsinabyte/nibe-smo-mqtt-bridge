@@ -169,7 +169,7 @@ configuration:
 # Only labels NIBE's Ukrainian installer manual (SMO S40 IHB UK 2515-2)
 # names; any other label stays English.
 value_mappings:
-  Additional heat only: Тільки додаткове джерело нагрівання
+  Additional heat only: Дод. тіль. теп.
   Auto: Авто
   Blocking: Блокування
   Closed: Закритий
@@ -201,3 +201,4 @@ value_mappings:
   Price per kWh: Ці. за кВт·год
   Own setting: Вла.
   Radiator & Underfloor heating: Ра. + теп. пі.
+  Smart control: Розумний

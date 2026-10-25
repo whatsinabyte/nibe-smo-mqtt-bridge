@@ -193,10 +193,13 @@ value_mappings:
   Pool: Басейн
   Price per kWh: Цена за kWh
   Saving: Икономия
-  Saving PLUS: Икономия ПЛЮС
+  Saving PLUS: Икон. ПЛЮС
   Small: Малък
   Holiday: Ваканция
   Away mode: Рж Изв дом
   HW circulation: Циркул ТВ
   Ext. HM pump: Външ. п HM
   Additional heat only: Само д т
+  Underfloor heating: Подово отопл
+  Radiator & Underfloor heating: Рад. + под. от
+  Own setting: Собств

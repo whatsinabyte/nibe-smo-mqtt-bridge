@@ -196,7 +196,7 @@ value_mappings:
   24h: 24h
   Active: Actif
   Active alarm: Alarme active
-  Additional heat only: Appoint unique
+  Additional heat only: Appt uniq.
   Auto: Auto
   CO2: CO2
   Calibration: Calibrage
@@ -229,14 +229,14 @@ value_mappings:
   Preheating: Préchauffage
   Price per kWh: Tarif au kWh
   Radiator: Radiateur
-  Radiator & Underfloor heating: Radiateur et plancher chauffant
+  Radiator & Underfloor heating: Rad. + pl. chauff.
   Running: En marche
-  Saving: Économie
-  Saving PLUS: Économie PLUS
+  Saving: Éco.
+  Saving PLUS: Éco. PLUS
   Standard: Standard
   Starting: Démarrage
   Transfer: Transfert
-  Underfloor heating: Plancher chauffant
+  Underfloor heating: Planch. ch.
   Small: Faible
   Medium: Moyenne
   Large: Élevée
@@ -254,3 +254,4 @@ value_mappings:
   Cool. mode ind. w delay: Ind. mode raf. avec délai
   HW circulation: Circulation ECS
   Ext. HM pump: Ppe chauff. ext.
+  Smart control: Commande intelligente

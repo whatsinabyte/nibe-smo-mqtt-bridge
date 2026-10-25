@@ -185,7 +185,7 @@ value_mappings:
   24h: 24u
   Active: Actief
   Active alarm: Actief alarm
-  Additional heat only: Alleen bijverwarming
+  Additional heat only: Alleen bijverw
   Auto: Auto
   Blocking: Blokkering
   CO2: CO2
@@ -222,14 +222,14 @@ value_mappings:
   Preheating: Voorverwarmen
   Price per kWh: Prijs per kWh
   Radiator: Radiator
-  Radiator & Underfloor heating: Radiator en vloerverwarming
+  Radiator & Underfloor heating: Rad. + vloerverw.
   Running: Draait
   Saving: Opslaan
   Saving PLUS: Opslaan PLUS
   Standard: Standaard
   Starting: Starten
   Transfer: Overdracht
-  Underfloor heating: Vloerverwarming
+  Underfloor heating: Vloerverwarm.
   Small: Klein
   Medium: Gemiddeld
   Large: Groot
@@ -243,3 +243,4 @@ value_mappings:
   Cool. mode ind. w delay: Koelmodus ind. met vertr.
   HW circulation: WW-circulatie
   Ext. HM pump: Ext. cv-pomp
+  Smart control: Smart Control

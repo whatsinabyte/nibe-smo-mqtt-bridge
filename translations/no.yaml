@@ -187,7 +187,7 @@ value_mappings:
   24h: 24t
   Active: Aktiv
   Active alarm: Aktiv alarm
-  Additional heat only: Bare tilleggsvarme
+  Additional heat only: Bare till.varme
   Auto: Auto
   CO2: CO2
   Calibration: Kalibrering
@@ -220,7 +220,7 @@ value_mappings:
   Preheating: Forvarmer
   Price per kWh: Pris per kWh
   Radiator: Radiator
-  Radiator & Underfloor heating: Radiator og gulvvarme
+  Radiator & Underfloor heating: Rad + gulvvarme
   Running: Kjører
   Saving: Besparelse
   Saving PLUS: Sparing PLUS

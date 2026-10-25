@@ -167,7 +167,7 @@ configuration:
 # Only labels NIBE's Slovak installer manual (VVM S320 IHB SK 2327-1)
 # names; any other label stays English.
 value_mappings:
-  Additional heat only: Len prídavný zdroj tepla
+  Additional heat only: Len príd zdr tep
   Auto: Auto
   Blocking: Blokovanie
   Cooling: Chladenie
@@ -185,9 +185,9 @@ value_mappings:
   Pool: Bazén
   Price per kWh: Cena za kWh
   Radiator: Radiátor
-  Radiator & Underfloor heating: Radiátor a podlahové vykurovanie
+  Radiator & Underfloor heating: Rad. a pod. vyk.
   Small: Nízka
-  Underfloor heating: Podlahové vykurovanie
+  Underfloor heating: Podlah. kúrenie
   Holiday: Dovolenka
   Away mode: Rež. v Neprít.
   Cool. mode ind. w delay: Ind. rež. chlad. s oneskor.

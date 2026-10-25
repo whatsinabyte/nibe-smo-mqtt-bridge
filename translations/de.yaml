@@ -231,9 +231,9 @@ value_mappings:
   Pool: Pool
   Pool 2: Pool 2
   Preheating: Vorwärmung
-  Price per kWh: Preis pro kWh
+  Price per kWh: Preis/kWh
   Radiator: Heizkörper
-  Radiator & Underfloor heating: Heizkörper & Fußbodenheizung
+  Radiator & Underfloor heating: Hzk.+Fußbhzg.
   Running: Läuft
   Saving: Einsparung
   Saving PLUS: Einsparung PLUS
@@ -258,3 +258,4 @@ value_mappings:
   Cool. mode ind. w delay: Kühlmodusanz. m Verzög.
   HW circulation: BW-Zirkulation
   Ext. HM pump: Ext. HU-Pumpe
+  Smart control: Smart Control

@@ -184,8 +184,8 @@ value_mappings:
   24h: 24h
   Active: Aktivní
   Active alarm: Aktivní alarm
-  Additional heat only: Pouze přídavný zdroj tepla
-  Auto: Auto
+  Additional heat only: Pouze příd. zdr.
+  Auto: Automat.
   CO2: CO2
   Calibration: Kalibrace
   Closed: Zavřeno
@@ -240,3 +240,4 @@ value_mappings:
   Continuous: Nepřetržitý
   10 days cont.: 10 dnů nepřetrž.
   Fixed delta: Pevná delta
+  Smart control: Režim Smart

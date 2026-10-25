@@ -189,7 +189,7 @@ value_mappings:
   24h: 24h
   Active: Aktywny
   Active alarm: Aktywny alarm
-  Additional heat only: Tylko podgrzewacz pomocniczy
+  Additional heat only: Tylko pod. pom.
   Auto: Auto
   CO2: CO2
   Calibration: Kalibracja
@@ -222,14 +222,14 @@ value_mappings:
   Preheating: Podgrzewanie
   Price per kWh: Cena za kWh
   Radiator: Grzejnik
-  Radiator & Underfloor heating: Grzejnik i ogrzewanie podłogowe
+  Radiator & Underfloor heating: Grzej.+ogrz.pod.
   Running: Pracuje
   Saving: Oszczędzanie
   Saving PLUS: Oszczędzanie PLUS
   Standard: Standardowy
   Starting: Uruchamianie
   Transfer: Wymiana
-  Underfloor heating: Ogrzewanie podłogowe
+  Underfloor heating: Ogrzew. podłog.
   Normal: Normalny
   Blocking: Blokowanie
   Low price: Oszczędny

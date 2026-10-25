@@ -201,7 +201,7 @@ value_mappings:
   Idle: Vilande
   Inactive: Inaktiv
   Intermittent: Intermittent
-  Manual: Manuell
+  Manual: Manuellt
   No alarm: Inget larm
   'Off': Från
   'On': Till
@@ -216,7 +216,7 @@ value_mappings:
   Preheating: Förvärmer
   Price per kWh: Pris per kWh
   Radiator: Radiator
-  Radiator & Underfloor heating: Radiator och golvvärme
+  Radiator & Underfloor heating: Rad + golvvärme
   Running: Kör
   Saving: Besparing
   Saving PLUS: Besparing PLUS

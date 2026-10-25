@@ -177,12 +177,12 @@ configuration:
 # Only labels NIBE's Romanian installer manuals (SMO S40 IHB RO 2016-1,
 # VVM S320 IHB RO 2327-1) name; any other label stays English.
 value_mappings:
-  Additional heat only: Doar încălzire auxiliară
+  Additional heat only: Doar înc. aux.
   Auto: Automat
   Blocking: Blocare
   Closed: Închis
   Cooling: Răcire
-  Delta temp: Temp. delta
+  Delta temp: Delta Temp.
   Heating: Încălzire
   Hot water: Apă caldă
   Intermittent: Intermitent
@@ -198,10 +198,10 @@ value_mappings:
   Own setting: Setări proprii
   Pool: Piscină
   Radiator: Radiator
-  Radiator & Underfloor heating: Radiator + încălzire în pardoseală
+  Radiator & Underfloor heating: Rad + înc.pard.
   Small: Scăzut
   Target temp: Temp. dorită
-  Underfloor heating: Încălzire în pardoseală
+  Underfloor heating: Încălz. pardos.
   Price per kWh: Preț pe kWh
   Holiday: Vacanță
   Away mode: Mod absență
@@ -213,4 +213,5 @@ value_mappings:
   Fixed delta: Delta fix
   Comfort: Confort
   Saving: Economisire
-  Saving PLUS: Economisire PLUS
+  Saving PLUS: Econ. PLUS
+  Smart control: Control inteligent

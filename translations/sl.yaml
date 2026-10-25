@@ -169,7 +169,7 @@ configuration:
 # Only labels NIBE's Slovenian installer manual (SMO S40 IHB SL 2515-3)
 # names; any other label stays English.
 value_mappings:
-  Auto: Samodejno
+  Auto: Samod.
   Blocking: Blokada
   Cooling: Hlajenje
   Heating: Ogrevanje
@@ -195,3 +195,7 @@ value_mappings:
   Saving: Varčevanje
   Saving PLUS: Varčevanje PLUS
   Additional heat only: Le dodat. grelnik
+  Smart control: Pametno krmiljenje
+  Radiator: Radiator
+  Underfloor heating: Talno ogrevanje
+  Radiator & Underfloor heating: Rad. in talno ogr.

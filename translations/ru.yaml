@@ -170,7 +170,7 @@ configuration:
 # Only labels NIBE's Russian installer manuals (VVM S320 IHB RU 2327-1,
 # SMO S40 IHB RU 2515-3) name; any other label stays English.
 value_mappings:
-  Additional heat only: Только дополнительный источник тепла
+  Additional heat only: Тол. доп. от.
   Auto: Авто
   Blocking: Блокировка
   Closed: Закрыт
@@ -191,7 +191,7 @@ value_mappings:
   Price per kWh: Цена за кВт·ч
   Radiator: Радиатор
   Small: Малая
-  Underfloor heating: Подогрев пола
+  Underfloor heating: Подогр. пола
   Holiday: Отпуск
   Away mode: Реж. отсут.
   Comfort: Комфорт

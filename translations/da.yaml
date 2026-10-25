@@ -221,7 +221,7 @@ value_mappings:
   Preheating: Forvarmer
   Price per kWh: Pris pr. kWh
   Radiator: Radiator
-  Radiator & Underfloor heating: Radiator og gulvvarme
+  Radiator & Underfloor heating: Rad. + gulvvarm
   Running: Kører
   Saving: Besparelse
   Saving PLUS: Besparelse PLUS
@@ -244,3 +244,5 @@ value_mappings:
   HW circulation: VV-cirkulation
   Ext. HM pump: Ekst. VB-pumpe
   Cool. mode ind. w delay: Køledriftindik. m. forsink.
+  Target temp: Måletemp
+  Delta temp: Deltatemp

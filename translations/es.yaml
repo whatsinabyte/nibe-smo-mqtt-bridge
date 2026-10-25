@@ -195,7 +195,7 @@ value_mappings:
   24h: 24h
   Active: Activo
   Active alarm: Alarma activa
-  Additional heat only: Solo apoyo externo
+  Additional heat only: Solo apoyo ext.
   Auto: Auto
   CO2: CO2
   Calibration: Calibración
@@ -221,21 +221,21 @@ value_mappings:
   Open to pool: Abierto a la piscina
   Opening: Abriendo
   Ordered: Ordenado
-  Own setting: Configuración propia
+  Own setting: Conf. propia
   Passive: Pasivo
   Pool: Piscina
   Pool 2: Piscina 2
   Preheating: Precalentamiento
-  Price per kWh: Precio por kWh
+  Price per kWh: Prec por kWh
   Radiator: Radiador
-  Radiator & Underfloor heating: Radiador y suelo radiante
+  Radiator & Underfloor heating: Rad + suelo rad.
   Running: En funcionamiento
   Saving: Ahorro
   Saving PLUS: Ahorro PLUS
   Standard: Estándar
   Starting: Iniciando
   Transfer: Transfer.
-  Underfloor heating: Calefacción por suelo radiante
+  Underfloor heating: Cal. suelo rad.
   Small: Baja
   Medium: Media
   Large: Alta
@@ -251,3 +251,4 @@ value_mappings:
   Holiday: Vacaciones
   Away mode: Modo Fuera
   Cool. mode ind. w delay: Ind. modo refr. con retraso
+  Smart control: Control inteligente

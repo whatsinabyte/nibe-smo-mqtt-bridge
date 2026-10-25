@@ -174,7 +174,7 @@ configuration:
 # Only labels NIBE's Hungarian installer manual (VVM S320 IHB HU 2327-1)
 # names; any other label stays English.
 value_mappings:
-  Additional heat only: Csak kiegészítő fűtés
+  Additional heat only: Csak kieg. fűtés
   Auto: Auto
   Blocking: Letiltás
   Closed: Zárt
@@ -195,8 +195,8 @@ value_mappings:
   Pool: Medence
   Price per kWh: Ár/kWh
   Radiator: Radiátor
-  Radiator & Underfloor heating: Radiátor + padlófűtés
+  Radiator & Underfloor heating: Rad + padlóf.
   Small: Alacsony
-  Underfloor heating: Padlófűtés
+  Underfloor heating: Padlóf.
   Holiday: Vakáció
   Away mode: Távol mód
