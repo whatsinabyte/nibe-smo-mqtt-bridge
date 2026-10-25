@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operating mode, SG Ready, hot water demand, flow setting and the like.
   Other labels stay English.
 
+### Fixed
+
+- **An outdated Entity Manager card now refreshes itself.** The Home
+  Assistant Companion app could keep running an older copy of the card
+  after an update — for example one whose changelog left out the firmware
+  versions of an update. The bridge now publishes the current card version,
+  and a card that finds itself outdated reloads the page once; if that
+  doesn't help, it shows how to reset the app's frontend cache.
+
 ---
 
 ## [1.4.2] — 2026-10-24

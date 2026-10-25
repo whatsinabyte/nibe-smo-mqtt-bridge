@@ -6771,7 +6771,12 @@ class TestRunStartupSequence(unittest.TestCase):
             thread_kwargs["args"],
             (BRIDGE_VERSION, cfg.device_name, MockWatcher.return_value, False),
         )
-        self.assertEqual(thread_kwargs["kwargs"], {"mode": "essential"})
+        self.assertEqual(thread_kwargs["kwargs"]["mode"], "essential")
+        # The card version callback publishes retained on its browser topic.
+        thread_kwargs["kwargs"]["on_card_version"]("abc123")
+        from nibe_mqtt_publisher import BrowserTopic
+
+        mc.publish.assert_any_call(BrowserTopic.CARD_VERSION, "abc123", retain=True)
         self.assertTrue(thread_kwargs["daemon"])
 
         # ManagementCommandHandler wired with mqtt_client/entity_manager/publisher

@@ -8,6 +8,9 @@ Shared fixtures are in conftest.py.
 
 import contextlib
 import json
+import os
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -6305,7 +6308,9 @@ class TestNibeLovelacePublicWrappers(unittest.TestCase):
         rw = MagicMock()
         with patch("nibe_lovelace._setup_lovelace") as mock:
             provision_lovelace_ui("1.0.0", "Test Device", rw, debug_mode=True)
-        mock.assert_called_once_with("1.0.0", "Test Device", rw, True, mode="menus")
+        mock.assert_called_once_with(
+            "1.0.0", "Test Device", rw, True, mode="menus", on_card_version=None
+        )
 
     def test_provision_lovelace_ui_debug_mode_defaults_to_false(self):
         from nibe_lovelace import provision_lovelace_ui
@@ -6313,7 +6318,9 @@ class TestNibeLovelacePublicWrappers(unittest.TestCase):
         rw = MagicMock()
         with patch("nibe_lovelace._setup_lovelace") as mock:
             provision_lovelace_ui("1.0.0", "Test Device", rw)  # debug_mode omitted
-        mock.assert_called_once_with("1.0.0", "Test Device", rw, False, mode="menus")
+        mock.assert_called_once_with(
+            "1.0.0", "Test Device", rw, False, mode="menus", on_card_version=None
+        )
 
     def test_provision_lovelace_ui_passes_through_explicit_mode(self):
         """mode threads through to _setup_lovelace unchanged — this is what
@@ -6323,7 +6330,9 @@ class TestNibeLovelacePublicWrappers(unittest.TestCase):
         rw = MagicMock()
         with patch("nibe_lovelace._setup_lovelace") as mock:
             provision_lovelace_ui("1.0.0", "Test Device", rw, debug_mode=False, mode="essential")
-        mock.assert_called_once_with("1.0.0", "Test Device", rw, False, mode="essential")
+        mock.assert_called_once_with(
+            "1.0.0", "Test Device", rw, False, mode="essential", on_card_version=None
+        )
 
     def test_schedule_menu_dashboard_regen_delegates(self):
         from nibe_lovelace import schedule_menu_dashboard_regen
@@ -6406,29 +6415,58 @@ class TestEntityDetectionFinalGaps(unittest.TestCase):
 
 
 class TestCopyCardFile(unittest.TestCase):
-    """_copy_card_file: makedirs+copy2 happy path, and exception path."""
+    """_copy_card_file: copies the card into the www directory with its
+    cache key written in place of the build placeholder, and the exception
+    path."""
 
-    def test_success_returns_true(self):
+    def _copy(self, source: bytes):
         import nibe_lovelace as nl
 
-        with patch("nibe_lovelace.os.makedirs") as mk, patch("nibe_lovelace.shutil.copy2") as cp:
-            result = nl._copy_card_file()
-        self.assertTrue(result)
-        mk.assert_called_once()
-        cp.assert_called_once()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        src = os.path.join(tmp, "card.js")
+        www = os.path.join(tmp, "www")
+        with open(src, "wb") as f:
+            f.write(source)
+        with (
+            patch("nibe_lovelace._CARD_SRC", src),
+            patch("nibe_lovelace._CARD_WWW_DIR", www),
+            patch("nibe_lovelace.log_startup") as log,
+        ):
+            ok = nl._copy_card_file()
+        dst = os.path.join(www, "nibe-entity-manager-card.js")
+        with open(dst, "rb") as f:
+            return ok, f.read(), dst, log
 
-    def test_success_uses_real_source_and_destination_paths(self):
-        """makedirs/copy2 must receive the real source/destination paths —
-        not just be called with *some* arguments."""
+    def test_copy_carries_the_cache_key_of_the_shipped_file(self):
+        """The placeholder becomes the key of the file as shipped — the same
+        ?v= the resource URL gets — and nothing else changes."""
         import nibe_lovelace as nl
 
-        with patch("nibe_lovelace.os.makedirs") as mk, patch("nibe_lovelace.shutil.copy2") as cp:
-            nl._copy_card_file()
-        mk.assert_called_once_with("/homeassistant/www", exist_ok=True)
-        cp.assert_called_once_with(
-            "/app/nibe-entity-manager-card.js",
-            "/homeassistant/www/nibe-entity-manager-card.js",
-        )
+        source = b"const CARD_BUILD = f('__NIBE_CARD_BUILD__');\n// other code\n"
+        ok, copied, _, _ = self._copy(source)
+        self.assertTrue(ok)
+        key = nl._card_cache_key(source)
+        self.assertRegex(key, r"^[0-9a-f]{12}$")
+        self.assertEqual(copied, source.replace(b"__NIBE_CARD_BUILD__", key.encode()))
+
+    def test_shipped_card_holds_the_placeholder(self):
+        """The real card file carries the placeholder the copy fills in."""
+        import nibe_lovelace as nl
+
+        card = os.path.join(os.path.dirname(__file__), "..", "app", "nibe-entity-manager-card.js")
+        with open(card, "rb") as f:
+            self.assertIn(nl._CARD_BUILD_PLACEHOLDER, f.read())
+
+    def test_success_logs_exact_text_and_real_dst(self):
+        _, _, dst, log = self._copy(b"x")
+        log.info.assert_called_once_with("Card file copied to %s", dst)
+
+    def test_real_destination_path(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._CARD_SRC, "/app/nibe-entity-manager-card.js")
+        self.assertEqual(nl._CARD_WWW_DIR, "/homeassistant/www")
 
     def test_exception_returns_false(self):
         import nibe_lovelace as nl
@@ -6436,20 +6474,6 @@ class TestCopyCardFile(unittest.TestCase):
         with patch("nibe_lovelace.os.makedirs", side_effect=OSError("permission denied")):
             result = nl._copy_card_file()
         self.assertFalse(result)
-
-    def test_success_logs_exact_text_and_real_dst(self):
-        import nibe_lovelace as nl
-
-        with (
-            patch("nibe_lovelace.os.makedirs"),
-            patch("nibe_lovelace.shutil.copy2"),
-            patch("nibe_lovelace.log_startup") as mock_log,
-        ):
-            nl._copy_card_file()
-        mock_log.info.assert_called_once_with(
-            "Card file copied to %s",
-            "/homeassistant/www/nibe-entity-manager-card.js",
-        )
 
     def test_exception_logs_exact_text_and_real_dst_and_error(self):
         import nibe_lovelace as nl
@@ -7078,6 +7102,25 @@ class TestSetupLovelace(unittest.TestCase):
         mock_dash.assert_called_once()
         mock_menu.assert_not_called()
         ws.close.assert_called()
+
+    def test_card_version_reported_once_lovelace_serves_the_url(self):
+        """on_card_version gets the resource URL's ?v= only when the resource
+        step confirms Lovelace serves that URL — a card must never be told
+        to reload towards a version HA isn't serving."""
+        import nibe_lovelace as nl
+
+        for registered, expected in ((True, [("1.0",)]), (False, [])):
+            report = MagicMock()
+            with (
+                patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+                patch("nibe_lovelace._open_ha_websocket", return_value=(MagicMock(), MagicMock())),
+                patch("nibe_lovelace.open", MagicMock(side_effect=OSError), create=True),
+                patch("nibe_lovelace._setup_lovelace_resource", return_value=registered),
+                patch("nibe_lovelace._setup_lovelace_dashboard"),
+            ):
+                nl._setup_lovelace("1.0", "Nibe", on_card_version=report)
+            # The card file can't be read here, so the cache key is the version.
+            self.assertEqual([c.args for c in report.call_args_list], expected, registered)
 
     def test_resource_and_dashboard_called_with_exact_positional_args(self):
         """_setup_lovelace_resource must receive (ws, next_id, versioned_url)

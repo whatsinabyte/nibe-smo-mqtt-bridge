@@ -1437,7 +1437,13 @@ def _run_startup_sequence(
     lovelace_thread = threading.Thread(
         target=provision_lovelace_ui,
         args=(BRIDGE_VERSION, cfg.device_name, registry_watcher, debug_mode),
-        kwargs={"mode": initial_mode},
+        kwargs={
+            "mode": initial_mode,
+            # Retained, so a card opened later still compares its own ?v=.
+            "on_card_version": lambda key: mqtt_client.publish(
+                BrowserTopic.CARD_VERSION, key, retain=True
+            ),
+        },
         name="nibe_lovelace_setup",
         daemon=True,
     )

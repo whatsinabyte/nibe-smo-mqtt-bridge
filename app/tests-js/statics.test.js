@@ -105,3 +105,21 @@ describe('NibeEntityManager._formatBulkOutcomeToast', () => {
     });
   });
 });
+
+describe('NibeEntityManager._staleCardAction', () => {
+  it('reloads a copy whose build differs from the current card, once', () => {
+    expect(NibeEntityManager._staleCardAction('aaa111', 'bbb222', false)).toBe('reload');
+  });
+
+  it('shows the notice when a reload towards that version already ran', () => {
+    expect(NibeEntityManager._staleCardAction('aaa111', 'bbb222', true)).toBe('notice');
+  });
+
+  it.each([
+    ['current copy', 'aaa111', 'aaa111'],
+    ['own build unknown (placeholder left in)', null, 'aaa111'],
+    ['current version unknown', 'aaa111', ''],
+  ])('does nothing for a %s', (_case, own, current) => {
+    expect(NibeEntityManager._staleCardAction(own, current, false)).toBe('none');
+  });
+});
