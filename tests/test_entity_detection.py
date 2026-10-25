@@ -4837,7 +4837,8 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         function names an S1155 shows in menu 7.4, over their whole range: a
         function nobody has named yet — and an unassigned input's 0 — stays a
         choice under its number, instead of the select going unavailable.
-        AUX11 (12463) stays a number until its numbering is settled."""
+        AUX11 (12463) shares Output AUX1's list: the reference SMO S40 reads
+        5 there, which its menu 7.4 shows as "not used"."""
         from nibe_entity_detection import detect_entity_type, get_entity_options
 
         for pid in (3958, 3954, 4713, 55035, 55037, 22070):
@@ -4851,7 +4852,9 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         self.assertEqual(detect_entity_type(output)[0], "select")
         self.assertEqual(get_entity_options(3959, "")[:2], ["Alarm outp.", "Groundwater pump"])
         aux11 = self._point(12463, "AUX relay (AUX11)", "MODBUS_HOLDING_REGISTER", "u8", 0, 33)
-        self.assertEqual(detect_entity_type(aux11)[0], "number")
+        self.assertEqual(detect_entity_type(aux11)[0], "select")
+        self.assertEqual(get_entity_options(12463, "")[5], "Not used")
+        self.assertEqual(len(get_entity_options(12463, "")), 34)
 
     def test_language_select_covers_firmware_4_14_languages(self):
         """Firmware 4.14.6 added six languages at 25-30 while its metadata

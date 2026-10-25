@@ -122,10 +122,10 @@ for the AUX outputs in menu 7.4, declare `0`–`33` in the REST API and
 checked, so the bridge keeps the REST range. Neither carries an option list:
 the function names come from an S1155's own menu 7.4 (GitHub issue #82), on
 which 0 is alarm output and 5 "not used" — the same numbering as NIBE's
-M12676 lists for the SMO S40's AUX relays. 3959 is a select with those
-names; 12463 stays a number, as the reference SMO S40 reads 5 there and its
-menu hasn't settled which function that is (an earlier note here had 5 as
-alarm output). The AUX inputs (3954–3958, 4713, 55035–55037) and "AUX from
+M12676 lists for the SMO S40's AUX relays. The reference SMO S40 confirms
+it: its AUX11 (12463) reads 5, which its menu 7.4 shows as "Niet gebruikt"
+(an earlier note here had 5 as alarm output). Both 3959 and 12463 are selects
+with those names. The AUX inputs (3954–3958, 4713, 55035–55037) and "AUX from
 Modbus" (22070) share one numbering, which matches M12676's "AUX from
 Modbus" function IDs; their selects cover the whole 0–69 range, a function
 not yet named showing as its number.
