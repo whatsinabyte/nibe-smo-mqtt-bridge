@@ -244,3 +244,6 @@ value_mappings:
   Large: Grande
   Target temp: Temp. target
   Delta temp: Temp. delta
+  Continuous: Continuo
+  10 days cont.: 10 giorni cont.
+  Fixed delta: Delta fisso

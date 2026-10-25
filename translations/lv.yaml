@@ -1,0 +1,190 @@
+configuration:
+  nibe_host:
+    name: Kontroliera IP adrese
+    description: >-
+      Nibe S sērijas kontroliera IP adrese vai resursdatora nosaukums
+      lokālajā tīklā. Ļoti ieteicams maršrutētājā piešķirt statisku IP
+      adresi.
+  nibe_port:
+    name: Kontroliera API ports
+    description: >-
+      Kontroliera lokālās REST API HTTPS ports. Noklusējuma vērtība 8443 der
+      visiem S sērijas produktiem, un parasti tā nav jāmaina.
+  nibe_username:
+    name: Kontroliera API lietotājvārds
+    description: >-
+      Kontroliera servisa izvēlnē (izvēlne 7.5.15) iestatītais lietotājvārds.
+      Tam precīzi jāsakrīt ar kontrolierī iestatīto vērtību.
+  nibe_password:
+    name: Kontroliera API parole
+    description: >-
+      Kontroliera servisa izvēlnē (izvēlne 7.5.15) iestatītā parole. Tiek
+      ņemti vērā lielie un mazie burti.
+  mqtt_host:
+    name: MQTT brokera resursdatora nosaukums
+    description: >-
+      MQTT brokera resursdatora nosaukums vai IP adrese. Noklusējuma vērtība
+      "core-mosquitto" darbojas ar oficiālo Mosquitto papildinājumu. Citam
+      brokerim norādiet IP adresi vai resursdatora nosaukumu.
+  mqtt_port:
+    name: MQTT brokera ports
+    description: >-
+      MQTT brokera TCP ports. Noklusējuma vērtība 1883 ir standarta
+      nešifrētais MQTT ports. Ja tālāk ieslēdzat "MQTT TLS", nomainiet to uz
+      8883 (standarta šifrētais MQTT ports, ko izmanto Mosquitto).
+  mqtt_username:
+    name: MQTT lietotājvārds
+    description: >-
+      Lietotājvārds autentifikācijai MQTT brokerī. Atstājiet tukšu, ja
+      brokeris autentifikāciju neprasa.
+      Ar noklusējuma vērtību "core-mosquitto" Supervisor nodrošina Mosquitto papildinājuma kontu, kam ir prioritāte pār šo lauku.
+  mqtt_password:
+    name: MQTT parole
+    description: >-
+      Parole autentifikācijai MQTT brokerī. Atstājiet tukšu, ja brokeris
+      autentifikāciju neprasa.
+      Ar noklusējuma vērtību "core-mosquitto" Supervisor nodrošina Mosquitto papildinājuma kontu, kam ir prioritāte pār šo lauku.
+  device_name:
+    name: Ierīces nosaukums
+    description: >-
+      Kā kontrolieris tiek parādīts kā ierīce Home Assistant. Pēc noklusējuma
+      "Nibe SMO S40", bet varat to pielāgot savai faktiskajai iekārtai
+      (piem., "Nibe S1155" vai "Nibe VVM S320").
+  language:
+    name: Valoda
+    description: >-
+      Kontroliera REST API atgriezto entītiju nosaukumu un aprakstu valoda.
+      "auto" (noklusējums) seko Home Assistant iestatītajai valodai;
+      izvēlieties konkrētu valodu, lai to aizstātu. Saraksts atbilst paša
+      kontroliera izvēlnei "Valoda" — caur REST API tieši apstiprināti ir
+      tikai daži ieraksti, taču neatbalstītas valodas izvēle ir nekaitīga:
+      bez kļūdas tiek izmantota angļu valoda. Netulko Nibe Menus vadības
+      paneli, kura saturs ir fiksēts un angļu valodā. Pēc izmaiņām
+      nepieciešama restartēšana.
+  poll_interval:
+    name: Vaicājumu intervāls
+    description: >-
+      Cik bieži no kontroliera tiek nolasīti visi datu punkti, sekundēs.
+      Ieteicamas 30 sekundes. Kontrolieris ir iegulta ierīce — tā REST API
+      ir otršķirīga salīdzinājumā ar tā galveno uzdevumu, siltumsūkņa
+      vadību. Pēc izmaiņām nepieciešama restartēšana.
+  mode:
+    name: Entītiju režīms
+    description: >-
+      Kādu entītiju kopu publicē tilts: "essential" ietver galvenās
+      temperatūras, karstā ūdens stāvokli, enerģijas kopsummas un
+      galvenās iestatītās vērtības — labs sākumpunkts jebkurai iekārtai.
+      "monitoring" pievieno turpgaitu un atgaitu, kompresora stāvokli un
+      efektivitātes rādītājus. "advanced" pievieno visu aukstumaģenta
+      kontūru un regulēšanas reģistrus. "menus" publicē visus Nibe Menus
+      vadības panelim vajadzīgos punktus un izveido šo paneli. "all"
+      publicē visus atrastos punktus; "none" neko nepublicē, kamēr
+      entītijas neieslēdzat manuāli. Tiek piemērots startēšanas laikā —
+      izmaiņām nepieciešama papildinājuma restartēšana, un pāreja uz citu
+      režīmu pēc noklusējuma atspējo entītijas, kas neietilpst jaunajā
+      kopā — arī manuāli caur Entity Manager karti ieslēgtās entītijas tiek
+      noņemtas, mainot režīmu, taču saglabājas, restartējot ar to pašu
+      režīmu. Lai to mainītu, skatiet tālāk "Režīma maiņas uzvedība".
+      "essential" ir ieteicamais sākumpunkts.
+  mode_switch_behavior:
+    name: Režīma maiņas uzvedība
+    description: >-
+      Kas notiek ar jau ieslēgtajām entītijām, pārejot uz citu režīmu.
+      "replace" (noklusējums) saskaņo ieslēgto kopu tieši ar jaunā režīma
+      punktiem — viss, kas pašlaik ieslēgts un neietilpst jaunajā režīmā,
+      ieskaitot manuāli caur Entity Manager karti ieslēgtās entītijas, tiek
+      atspējots. "merge" tikai pievieno jaunā režīma punktus jau
+      ieslēgtajiem — režīma maiņa nekad neko neatspējo. Attiecas uz katru
+      režīma maiņu. Neietekmē jaunu instalāciju vai restartēšanu ar to pašu
+      režīmu — to izraisa tikai faktiska režīma maiņa.
+  log_level:
+    name: Žurnāla līmenis
+    description: >-
+      Tikai papildinājuma žurnāla detalizācija — neietekmē, kuras entītijas
+      tiek rādītas. Parastai lietošanai ieteicams "info". Izmantojiet
+      "debug" savienojuma vai entītiju problēmu diagnosticēšanai — tas
+      rada lielu izvades apjomu, un pēc tam tas jāatjauno uz "info". Testu
+      komplekta pogas un rezultāta sensora rādīšanai izmantojiet tālāk
+      "Atkļūdošanas režīms".
+  debug_mode:
+    name: Atkļūdošanas režīms
+    description: >-
+      Ieslēdz testu komplekta pogu, dinamiskās kartes notīrīšanas pogu un
+      rezultāta sensoru ierīcē Management. Neatkarīgs no augstāk esošā
+      "Žurnāla līmeņa" — tas ir vienīgais iestatījums, kas nosaka, vai šīs
+      entītijas tiek rādītas. Stājas spēkā nākamajā papildinājuma
+      restartēšanā: izslēdzot entītijas arī tiek noņemtas, nevis tikai
+      pārtraukta jaunu pievienošana.
+  api_failure_threshold:
+    name: API kļūdu slieksnis
+    description: >-
+      Pēc kārtas neizdevušos vaicājumu skaits, pēc kura HA paziņojumu zvanā
+      parādās pastāvīgs paziņojums. Noklusējuma vērtība 3 nozīmē trīs kļūdas
+      pēc kārtas (90 sekundes pie noklusējuma intervāla) pirms brīdinājuma.
+      Nestabilā tīklā palieliniet to, lai izvairītos no viltus trauksmēm.
+  changelog_retention_days:
+    name: Izmaiņu žurnāla glabāšana (dienas)
+    description: >-
+      Cik dienas Entity Manager izmaiņu žurnāla ieraksti tiek glabāti pirms
+      dzēšanas. Vecāki ieraksti tiek noņemti katrā tilta restartēšanā.
+      Noklusējuma 90 dienas der lielākajai daļai iekārtu.
+  remove_frontend:
+    name: Noņemt saskarni apturēšanas laikā
+    description: >-
+      Pirms papildinājuma apturēšanas iestatiet true, lai nākamajā kārtīgajā
+      izslēgšanā automātiski tiktu noņemts Nibe Bridge vadības panelis,
+      Lovelace resursa reģistrācija, kartes fails un visi saglabātie MQTT
+      ziņojumi. Izmantojiet tikai atinstalējot. Parastās restartēšanas tas
+      neietekmē. Pilnu atinstalēšanas procedūru skatiet dokumentācijā.
+  nibe_ca_cert:
+    name: Nibe kontroliera CA sertifikāta ceļš
+    description: >-
+      Nav obligāti. Absolūtais ceļš uz PEM formāta CA sertifikāta failu, ko
+      izmanto Nibe kontroliera HTTPS sertifikāta pārbaudei. Ja iestatīts,
+      visiem API izsaukumiem uz kontrolieri tiek ieslēgta pilna TLS ķēdes un
+      resursdatora nosaukuma pārbaude. Atstājiet tukšu, lai bez pārbaudes
+      pieņemtu kontroliera iebūvēto pašparakstīto sertifikātu — tas ir
+      noklusējums un pieņemams uzticamā mājas tīklā, taču starpnieka uzbrukums
+      lokālajā tīklā varētu pārtvert kontroliera datplūsmu.
+      Piemērs: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Ieslēdz TLS šifrēšanu visai datplūsmai starp tiltu un MQTT brokeri.
+      Aizsargā MQTT akreditācijas datus un visas entītiju komandas no citām
+      lokālā tīkla ierīcēm. Nepieciešams TLS konfigurēts brokeris — ja
+      izmantojat Mosquitto papildinājumu, nomainiet "MQTT brokera ports" uz
+      8883. Pēc noklusējuma izslēgts.
+  mqtt_ca_cert:
+    name: MQTT brokera CA sertifikāta ceļš
+    description: >-
+      Nav obligāti. Tiek izmantots tikai tad, ja ieslēgts "MQTT TLS".
+      Absolūtais ceļš uz PEM formāta CA sertifikāta failu, ko izmanto brokera
+      TLS sertifikāta pārbaudei. Atstājiet tukšu, lai izmantotu sistēmas CA
+      krātuvi, kas der brokeriem ar publiskas sertifikācijas iestādes
+      parakstītu sertifikātu. Iestatiet to, ja brokeris izmanto pašparakstītu
+      vai privāti parakstītu sertifikātu.
+      Piemērs: /ssl/mqtt-ca.pem
+# Only labels NIBE's Latvian installer manual (SMO S40 IHB LV 2515-3) names;
+# any other label stays English.
+value_mappings:
+  Blocking: Bloķēšana
+  Closed: Aizvērts
+  Comfort: Komforts
+  Cooling: Dzesēšana
+  Heating: Apkure
+  Hot water: Karstais ūdens
+  Large: Liels
+  Low price: Zemu izmaksu režīms
+  Manual: Manuāls
+  Medium: Vidējs
+  Normal: Standarta režīms
+  'Off': Izslēgts
+  'On': Ieslēgts
+  Open: Atvērts
+  Overcapacity: Jaudas pārpalikuma režīms
+  Pool: Baseins
+  Price per kWh: Cena par kWh
+  Saving: Saglabā
+  Saving PLUS: Saglabā PLUS
+  Small: Mazs

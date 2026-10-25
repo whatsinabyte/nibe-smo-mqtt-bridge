@@ -205,7 +205,7 @@ value_mappings:
   Idle: Hvilende
   Inactive: Inaktiv
   Intermittent: Intermittent
-  Manual: Manuell
+  Manual: Manuelt
   No alarm: Ingen alarm
   'Off': Av
   'On': På
@@ -237,3 +237,6 @@ value_mappings:
   Large: Stort
   Target temp: Måltemp
   Delta temp: Deltatemp
+  Continuous: Kontinuerlig
+  10 days cont.: 10 dager kont.
+  Fixed delta: Fast delta

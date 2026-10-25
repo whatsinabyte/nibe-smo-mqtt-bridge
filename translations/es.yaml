@@ -243,3 +243,8 @@ value_mappings:
   Blocking: Bloqueo
   Low price: Bajo coste
   Overcapacity: Sobrecapacidad
+  Continuous: Continuo
+  10 days cont.: 10 días cont.
+  Fixed delta: Delta fijo
+  Target temp: T objetivo
+  Delta temp: Delta T

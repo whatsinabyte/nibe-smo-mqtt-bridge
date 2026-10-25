@@ -206,7 +206,7 @@ value_mappings:
   Idle: Hvilende
   Inactive: Inaktiv
   Intermittent: Intermitterende
-  Manual: Manuel
+  Manual: Manuelt
   No alarm: Ingen alarm
   'Off': Fra
   'On': Til
@@ -234,5 +234,8 @@ value_mappings:
   Low price: Lavpris
   Overcapacity: Overkapacitet
   Small: Lille
-  Medium: Middel
+  Medium: Middelstort
   Large: Stort
+  Continuous: Kontinuerlig
+  10 days cont.: 10 dage kont.
+  Fixed delta: Fast delta

@@ -8665,8 +8665,8 @@ class TestConfigTranslationsParity(unittest.TestCase):
         """3260's states follow the SG Ready section of NIBE's installer
         manual in each language (SMO S40 or VVM S320), with the word for
         "mode" left out as in English — e.g. Dutch "Stand lage prijs" gives
-        "Lage prijs" — except in Estonian, whose compounds ("Tavarežiim")
-        don't split. Not 10614's request labels (issue #40)."""
+        "Lage prijs" — except in Estonian and Latvian, where it doesn't
+        split off ("Tavarežiim", "Zemu izmaksu režīms"). Not 10614's request labels (issue #40)."""
         import yaml as _yaml
         from nibe_entity_detection import _lookup_manual_mapping
 
@@ -8693,6 +8693,14 @@ class TestConfigTranslationsParity(unittest.TestCase):
             "hu": ["Normál", "Letiltás", "Olcsó", "Többletkapacitás"],
             "sk": ["Normálny", "Blokovanie", "Nízka cena", "Nadbytočná kapacita"],
             "lt": ["Normalus", "Blokavimas", "Maža kaina", "Pertekliniai pajėgumai"],
+            "lv": [
+                "Standarta režīms",
+                "Bloķēšana",
+                "Zemu izmaksu režīms",
+                "Jaudas pārpalikuma režīms",
+            ],
+            "sl": ["Normalni", "Blokada", "Nizkocenovni", "Presežna zmogljivost"],
+            "bg": ["Нормален", "Блокиране", "Ниска цена", "Свръхкапацитет"],
         }
         labels = list(_lookup_manual_mapping(3260).values())
         for path in self.translation_files:

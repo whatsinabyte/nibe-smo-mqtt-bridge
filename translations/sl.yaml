@@ -1,0 +1,188 @@
+configuration:
+  nibe_host:
+    name: IP-naslov krmilnika
+    description: >-
+      IP-naslov ali ime gostitelja krmilnika Nibe serije S v lokalnem
+      omrežju. Močno priporočamo, da v usmerjevalniku dodelite statični
+      IP-naslov.
+  nibe_port:
+    name: Vrata API krmilnika
+    description: >-
+      Vrata HTTPS lokalnega REST API krmilnika. Privzeta vrednost 8443 je
+      pravilna za vse izdelke serije S in je običajno ni treba spreminjati.
+  nibe_username:
+    name: Uporabniško ime API krmilnika
+    description: >-
+      Uporabniško ime, nastavljeno v servisnem meniju krmilnika (meni
+      7.5.15). Mora se natančno ujemati z vrednostjo, nastavljeno v
+      krmilniku.
+  nibe_password:
+    name: Geslo API krmilnika
+    description: >-
+      Geslo, nastavljeno v servisnem meniju krmilnika (meni 7.5.15).
+      Razlikuje med velikimi in malimi črkami.
+  mqtt_host:
+    name: Ime gostitelja posrednika MQTT
+    description: >-
+      Ime gostitelja ali IP-naslov posrednika MQTT. Privzeta vrednost
+      "core-mosquitto" deluje z uradnim dodatkom Mosquitto. Za drug
+      posrednik navedite IP-naslov ali ime gostitelja.
+  mqtt_port:
+    name: Vrata posrednika MQTT
+    description: >-
+      Vrata TCP posrednika MQTT. Privzeta vrednost 1883 so standardna
+      nešifrirana vrata MQTT. Če spodaj vklopite "MQTT TLS", jih spremenite
+      na 8883 (standardna šifrirana vrata MQTT, ki jih uporablja Mosquitto).
+  mqtt_username:
+    name: Uporabniško ime MQTT
+    description: >-
+      Uporabniško ime za preverjanje pristnosti pri posredniku MQTT. Pustite
+      prazno, če posrednik preverjanja pristnosti ne zahteva.
+      Pri privzeti vrednosti "core-mosquitto" Supervisor zagotovi račun dodatka Mosquitto, ki ima prednost pred tem poljem.
+  mqtt_password:
+    name: Geslo MQTT
+    description: >-
+      Geslo za preverjanje pristnosti pri posredniku MQTT. Pustite prazno, če
+      posrednik preverjanja pristnosti ne zahteva.
+      Pri privzeti vrednosti "core-mosquitto" Supervisor zagotovi račun dodatka Mosquitto, ki ima prednost pred tem poljem.
+  device_name:
+    name: Ime naprave
+    description: >-
+      Kako je krmilnik prikazan kot naprava v Home Assistantu. Privzeto
+      "Nibe SMO S40", vendar ga lahko prilagodite svoji dejanski opremi
+      (npr. "Nibe S1155" ali "Nibe VVM S320").
+  language:
+    name: Jezik
+    description: >-
+      Jezik imen in opisov entitet, ki jih vrne REST API krmilnika. "auto"
+      (privzeto) sledi jeziku, nastavljenemu v Home Assistantu; z izbiro
+      določenega jezika ga preglasite. Seznam sledi krmilnikovemu meniju
+      "Jezik" — prek REST API je neposredno potrjenih le nekaj vnosov, vendar
+      je izbira nepodprtega jezika neškodljiva: brez napake se uporabi
+      angleščina. Ne prevaja nadzorne plošče Nibe Menus, katere vsebina je
+      nespremenljiva in v angleščini. Po spremembi je potreben ponovni
+      zagon.
+  poll_interval:
+    name: Interval poizvedovanja
+    description: >-
+      Kako pogosto se iz krmilnika preberejo vse podatkovne točke, v
+      sekundah. Priporočeno je 30 sekund. Krmilnik je vgrajena naprava —
+      njegov REST API je drugotnega pomena ob njegovi glavni nalogi,
+      krmiljenju toplotne črpalke. Po spremembi je potreben ponovni zagon.
+  mode:
+    name: Način entitet
+    description: >-
+      Kateri nabor entitet objavlja most: "essential" zajema osnovne
+      temperature, stanje tople vode, skupne vrednosti energije in osnovne
+      nastavljene vrednosti — dobro izhodišče za vsako namestitev.
+      "monitoring" doda dvižni in povratni vod, stanje kompresorja in
+      kazalnike učinkovitosti. "advanced" doda celoten hladilni krog in
+      registre za nastavljanje. "menus" objavi vse točke, potrebne za
+      nadzorno ploščo Nibe Menus, in to ploščo sestavi. "all" objavi vse
+      najdene točke; "none" ne objavi ničesar, dokler entitet ne omogočite
+      ročno. Uporabi se ob zagonu — sprememba zahteva ponovni zagon dodatka,
+      prehod na drug način pa privzeto onemogoči entitete, ki ne spadajo v
+      novi nabor — tudi entitete, ročno omogočene prek kartice Entity
+      Manager, so ob spremembi načina odstranjene, ob ponovnih zagonih z
+      istim načinom pa ohranjene. Če želite to spremeniti, glejte spodaj
+      "Vedenje ob menjavi načina".
+      "essential" je priporočeno izhodišče.
+  mode_switch_behavior:
+    name: Vedenje ob menjavi načina
+    description: >-
+      Kaj se zgodi z že omogočenimi entitetami ob prehodu na drug način.
+      "replace" (privzeto) uskladi omogočeni nabor natančno s točkami novega
+      načina — vse, kar je zdaj omogočeno in ne spada v novi način,
+      vključno z entitetami, ročno omogočenimi prek kartice Entity Manager,
+      se onemogoči. "merge" le doda točke novega načina k že omogočenim —
+      menjava načina nikoli ničesar ne onemogoči. Velja ob vsaki menjavi
+      načina. Ne vpliva na novo namestitev ali ponovni zagon z istim načinom
+      — sproži ga le dejanska menjava načina.
+  log_level:
+    name: Raven dnevnika
+    description: >-
+      Podrobnost le dnevnika dodatka — ne vpliva na to, katere entitete so
+      prikazane. Za običajno uporabo je priporočen "info". "debug"
+      uporabite za diagnosticiranje težav s povezavo ali entitetami —
+      ustvari veliko izpisa, zato ga pozneje vrnite na "info". Za prikaz
+      gumba za nabor preizkusov in senzorja rezultata uporabite spodnji
+      "Način razhroščevanja".
+  debug_mode:
+    name: Način razhroščevanja
+    description: >-
+      Omogoči gumb za nabor preizkusov, gumb za praznjenje dinamičnega
+      zemljevida in senzor rezultata na napravi Management. Neodvisen od
+      zgornje "Ravni dnevnika" — to je edina nastavitev, ki določa, ali so te
+      entitete prikazane. Začne veljati ob naslednjem ponovnem zagonu
+      dodatka: izklop entitete tudi odstrani, ne le ustavi dodajanja novih.
+  api_failure_threshold:
+    name: Prag napak API
+    description: >-
+      Število zaporednih neuspelih poizvedb, po katerem se v zvončku
+      obvestil HA prikaže trajno obvestilo. Privzeta vrednost 3 pomeni tri
+      zaporedne napake (90 sekund pri privzetem intervalu) pred opozorilom.
+      V nestabilnem omrežju jo povečajte, da se izognete lažnim alarmom.
+  changelog_retention_days:
+    name: Hramba dnevnika sprememb (dnevi)
+    description: >-
+      Koliko dni se hranijo vnosi dnevnika sprememb Entity Manager, preden so
+      izbrisani. Starejši vnosi so odstranjeni ob vsakem ponovnem zagonu
+      mostu. Privzetih 90 dni ustreza večini namestitev.
+  remove_frontend:
+    name: Odstrani vmesnik ob zaustavitvi
+    description: >-
+      Pred zaustavitvijo dodatka nastavite na true, da se ob naslednji
+      pravilni zaustavitvi samodejno odstranijo nadzorna plošča Nibe Bridge,
+      registracija vira Lovelace, datoteka kartice in vsa shranjena
+      sporočila MQTT. Uporabljajte le pri odstranjevanju. Običajni ponovni
+      zagoni niso prizadeti. Celoten postopek odstranitve najdete v
+      dokumentaciji.
+  nibe_ca_cert:
+    name: Pot do potrdila CA krmilnika Nibe
+    description: >-
+      Neobvezno. Absolutna pot do datoteke potrdila CA v obliki PEM, s
+      katero se preveri potrdilo HTTPS krmilnika Nibe. Če je nastavljena, se
+      za vse klice API na krmilnik vklopi popolno preverjanje verige TLS in
+      imena gostitelja. Pustite prazno, da se vgrajeno samopodpisano potrdilo
+      krmilnika sprejme brez preverjanja — to je privzeto in sprejemljivo v
+      zaupanja vrednem domačem omrežju, vendar bi lahko napad s posrednikom v
+      lokalnem omrežju prestregel promet krmilnika.
+      Primer: /ssl/nibe-ca.pem
+  mqtt_tls:
+    name: MQTT TLS
+    description: >-
+      Vklopi šifriranje TLS za ves promet med mostom in posrednikom MQTT.
+      Ščiti poverilnice MQTT in vse ukaze entitet pred drugimi napravami v
+      lokalnem omrežju. Zahteva posrednika, nastavljenega za TLS — če
+      uporabljate dodatek Mosquitto, spremenite "Vrata posrednika MQTT" na
+      8883. Privzeto izklopljeno.
+  mqtt_ca_cert:
+    name: Pot do potrdila CA posrednika MQTT
+    description: >-
+      Neobvezno. Uporablja se le, ko je vklopljen "MQTT TLS". Absolutna pot do
+      datoteke potrdila CA v obliki PEM, s katero se preveri potrdilo TLS
+      posrednika. Pustite prazno za uporabo sistemske shrambe CA, kar je
+      pravilno za posrednike s potrdilom, ki ga je podpisal javni overitelj.
+      Nastavite jo, če posrednik uporablja samopodpisano ali zasebno
+      podpisano potrdilo.
+      Primer: /ssl/mqtt-ca.pem
+# Only labels NIBE's Slovenian installer manual (SMO S40 IHB SL 2515-3)
+# names; any other label stays English.
+value_mappings:
+  Auto: Samodejno
+  Blocking: Blokada
+  Cooling: Hlajenje
+  Heating: Ogrevanje
+  Hot water: Topla voda
+  Intermittent: Občasno
+  Large: Velika
+  Low price: Nizkocenovni
+  Manual: Ročno
+  Medium: Srednja
+  Normal: Normalni
+  'Off': Izklop
+  'On': Vklop
+  Overcapacity: Presežna zmogljivost
+  Pool: Bazen
+  Price per kWh: Cena na kWh
+  Small: Majhna

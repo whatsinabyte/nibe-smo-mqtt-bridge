@@ -30,10 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Spanish product pages: SG Ready, hot water demand, operating mode and
     flow setting (e.g. French "Appoint unique", "Plancher chauffant").
   - Brine pump operating modes (Continuous, 10 days cont., Fixed delta)
-    in French, German, Finnish, Swedish and Dutch, from NIBE's S1155
-    manuals.
-- **New translations: Romanian, Estonian, Russian, Hungarian, Slovak and
-  Lithuanian** (`language: ro`, `et`, `ru`, `hu`, `sk`, `lt`): the add-on
+    in French, German, Finnish, Swedish, Dutch, Danish, Norwegian,
+    Italian, Polish and Spanish, from NIBE's S1155 manuals.
+  - Danish and Norwegian "Manual" as their 2025 manuals word it
+    ("Manuelt"); Danish hot water demand "Middelstort".
+- **New translations: Romanian, Estonian, Russian, Hungarian, Slovak,
+  Lithuanian, Latvian, Slovenian and Bulgarian** (`language: ro`, `et`,
+  `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`): the add-on
   settings screen, and the value labels NIBE's installer manuals in those
   languages name — operating mode, SG Ready, hot water demand, flow setting
   and the like. Other labels stay English.

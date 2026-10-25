@@ -448,8 +448,8 @@ def _load_value_mapping_translations(language: str | None) -> dict[str, str]:
     _process_and_publish_state uses to translate a resolved VALUE_MAPPINGS
     label before publishing it as an entity's state.
 
-    Scoped to the 18 languages this repo ships a translations/*.yaml for
-    (cs/da/de/en/es/et/fi/fr/hu/it/lt/nl/no/pl/ro/ru/sk/sv) — not every language code
+    Scoped to the 21 languages this repo ships a translations/*.yaml for
+    (bg/cs/da/de/en/es/et/fi/fr/hu/it/lt/lv/nl/no/pl/ro/ru/sk/sl/sv) — not every language code
     config.yaml's schema accepts; a file is only added for a language with
     a NIBE source for its labels, so the others have none, config UI
     included.
