@@ -47,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ro`, `et`, `ru`, `hu`, `sk`, `lt`, `lv`, `sl`, `bg`, `uk`): the add-on
   settings screen, and the value labels NIBE's installer manuals in those
   languages name — operating mode, SG Ready, hot water demand, flow setting
-  and the like. Other labels stay English.
+  and the like, abbreviated where the manual only gives the screen's
+  abbreviation. Other labels stay English.
 
 ### Fixed
 
