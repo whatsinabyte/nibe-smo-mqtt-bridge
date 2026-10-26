@@ -398,7 +398,7 @@ The bridge keeps both by point number in `nibe_entity_detection.py`:
 `UNITLESS_QUANTITY_POINTS` (graphed, state class `measurement`) and
 `TOTAL_INCREASING_POINTS`. Any other unitless sensor stays without a state
 class, shown as state bars, and any other sensor with a unit stays a
-`measurement`. The hourly spot prices (26817–26840) are kept out: their
+`measurement`. The manual hourly prices (26817–26840) are kept out: their
 format is undocumented, and "no price" is the register maximum.
 
 ## `firmwareId` isn't a firmware version
