@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **AUX11 (12463) becomes a drop-down naming its function**, like Output
+  AUX1: the reference SMO S40 reads 5 there, which its menu 7.4 shows as
+  "Niet gebruikt" — the same numbering as on an S1155. As a new entity
+  type it gets a **new entity id**: repoint automations that use the old
+  `number.` id. Dutch shows "Not used" as the controller does ("Niet
+  gebruikt").
+
+---
+
 ## [1.4.3] — 2026-10-25
 
 Translations from NIBE's own installer manuals — French and Spanish

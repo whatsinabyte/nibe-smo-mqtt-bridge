@@ -2085,10 +2085,9 @@ menus:
         '
       settings:
       - label: AUX relay (AUX11)
-        range: 0 – 33
+        range: Function list
         point_id: 12463
-        note: Function assigned to the AUX11 relay output, as a number. The controller shows the same setting as a list of
-          functions in menu 7.4, which names each one.
+        note: Function assigned to the AUX11 relay output. A function whose name isn't known yet shows as its number.
       - label: AUX from Modbus
         range: Function list
         point_id: 22070
@@ -5962,10 +5961,9 @@ menus:
         note: The sixth selectable input, on the joint board terminal AA100-X10:7-12. A value of 0 means this AUX input
           is not assigned a function.
       - label: AUX relay (AUX11)
-        range: 0 – 33
+        range: Function list
         point_id: 12463
-        note: Function assigned to the AUX11 relay output, as a number. Menu 7.4 on the controller shows the same setting as
-          a list of functions, which names each one.
+        note: Function assigned to the AUX11 relay output. A function whose name isn't known yet shows as its number.
       - label: Output AUX1
         range: Function list
         point_id: 3959
