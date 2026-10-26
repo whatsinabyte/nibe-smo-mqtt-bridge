@@ -4871,6 +4871,16 @@ class TestGroundSourceS1155Points(unittest.TestCase):
         )
         self.assertEqual(mapping_status(3745), "confirmed")
 
+    def test_sg_ready_request_uses_the_status_names(self):
+        """10614 requests one of the four states the SG Ready contacts
+        select and 3260 reports; both carry the manual's names for them,
+        request value n giving status 10/20/30/40 as tested in issue #40."""
+        from nibe_entity_detection import _lookup_manual_mapping
+
+        request, status = _lookup_manual_mapping(10614), _lookup_manual_mapping(3260)
+        self.assertEqual(request, {0: "Blocking", 1: "Normal", 2: "Low price", 3: "Overcapacity"})
+        self.assertEqual([status[v] for v in (20, 10, 30, 40)], [request[n] for n in (0, 1, 2, 3)])
+
     def test_running_totals_and_heat_pump_type(self):
         """Compressor starts and run-time counters count up; heat pump type
         55 is the S1155 itself."""

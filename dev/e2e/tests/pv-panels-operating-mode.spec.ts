@@ -8,16 +8,17 @@ import { HA_URL, pointEntityId, setMockValue } from './support/stack';
  * It used to be mapped as 10 = Off and 40 = On only (both seen on hardware,
  * GitHub issue #29), so 20 and 30 showed as bare numbers. It now carries the
  * labels yozik04/nibe PR #325 gives the register for an SMO S40 on 4.13.12.
- * None of them has a translation yet, so they stay English in the Dutch
- * harness.
+ * Normal and Low price share SG Ready's labels, so the Dutch harness shows
+ * the Dutch manual's "Normaal" and "Lage prijs"; Block and Boost have no
+ * translation and stay English.
  */
 
 const POINT = 1021;
 const DUMP_VALUE = 0;
 const EXPECTED: [number, string][] = [
-  [10, 'Normal'],
+  [10, 'Normaal'],
   [20, 'Block'],
-  [30, 'Low price'],
+  [30, 'Lage prijs'],
   [40, 'Boost'],
 ];
 

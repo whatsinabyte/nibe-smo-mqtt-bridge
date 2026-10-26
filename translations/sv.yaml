@@ -192,8 +192,6 @@ value_mappings:
   Closing: Stänger
   Comfort: Komfort
   Cooling: Kyla
-  Cut off: Avstängd
-  Encouraged: Uppmuntrad
   Ext. hot water: Ext. varmvatten
   Heating: Värme
   Hot water: Varmvatten
@@ -208,7 +206,6 @@ value_mappings:
   Open: Öppen
   Open to pool: Öppen mot pool
   Opening: Öppnar
-  Ordered: Beordrad
   Own setting: Egen inställning
   Passive: Passiv
   Pool: Pool
@@ -220,7 +217,6 @@ value_mappings:
   Running: Kör
   Saving: Besparing
   Saving PLUS: Besparing PLUS
-  Standard: Standard
   Starting: Startar
   Transfer: Transfer
   Underfloor heating: Golvvärme

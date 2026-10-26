@@ -196,8 +196,6 @@ value_mappings:
   Closing: Lukker
   Comfort: Komfort
   Cooling: Kjøling
-  Cut off: Avbrutt
-  Encouraged: Oppfordret
   Ext. hot water: Ekst. varmtvann
   Heating: Varme
   Hot water: Varmtvann
@@ -212,7 +210,6 @@ value_mappings:
   Open: Åpen
   Open to pool: Åpen til basseng
   Opening: Åpner
-  Ordered: Beordret
   Own setting: Egen innstilling
   Passive: Passiv
   Pool: Basseng
@@ -224,7 +221,6 @@ value_mappings:
   Running: Kjører
   Saving: Besparelse
   Saving PLUS: Sparing PLUS
-  Standard: Standard
   Starting: Starter
   Transfer: Transfer
   Underfloor heating: Gulvvarme

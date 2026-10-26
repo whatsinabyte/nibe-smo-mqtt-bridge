@@ -193,8 +193,6 @@ value_mappings:
   Closing: Zavírání
   Comfort: Komfort
   Cooling: Chlazení
-  Cut off: Odpojeno
-  Encouraged: Podporováno
   Ext. hot water: Ext. teplá voda
   Heating: Vytápění
   Hot water: Teplá voda
@@ -209,7 +207,6 @@ value_mappings:
   Open: Otevřeno
   Open to pool: Otevřeno do bazénu
   Opening: Otevírání
-  Ordered: Nařízeno
   Own setting: Vlastní nastavení
   Passive: Pasivní
   Pool: Bazén
@@ -221,7 +218,6 @@ value_mappings:
   Running: Běží
   Saving: Úspora
   Saving PLUS: Úspora PLUS
-  Standard: Standardní
   Starting: Spouštění
   Transfer: Přenos
   Underfloor heating: Podlahové topení

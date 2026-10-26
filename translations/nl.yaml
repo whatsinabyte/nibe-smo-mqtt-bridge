@@ -195,8 +195,6 @@ value_mappings:
   Closing: Sluiten
   Comfort: Comfort
   Cooling: Koeling
-  Cut off: Afgesloten
-  Encouraged: Aangemoedigd
   Ext. hot water: Ext. warmtapwater
   Heating: Verwarming
   Hot water: Warmtapwater
@@ -214,7 +212,6 @@ value_mappings:
   Open: Open
   Open to pool: Open naar zwembad
   Opening: Openen
-  Ordered: Opgedragen
   Overcapacity: Overcapaciteit
   Own setting: Eigen instelling
   Passive: Passief
@@ -227,7 +224,6 @@ value_mappings:
   Running: Draait
   Saving: Opslaan
   Saving PLUS: Opslaan PLUS
-  Standard: Standaard
   Starting: Starten
   Transfer: Overdracht
   Underfloor heating: Vloerverwarm.

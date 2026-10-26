@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The SG Ready request (10614) uses the same names as the SG Ready
+  status (3260)**: Blocking / Normal / Low price / Overcapacity, the
+  installer manual's names for the four states — in Dutch Blokkering /
+  Normaal / Lage prijs / Overcapaciteit — instead of Cut off / Standard /
+  Encouraged / Ordered. 10614 has no firmware description and no menu of
+  its own; it requests exactly those states (issue #40). Automations that
+  select an option by its text need the new names.
 - **AUX11 (12463) becomes a drop-down naming its function**, like Output
   AUX1: the reference SMO S40 reads 5 there, which its menu 7.4 shows as
   "Niet gebruikt" — the same numbering as on an S1155. As a new entity

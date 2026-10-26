@@ -205,8 +205,6 @@ value_mappings:
   Closing: Sulkeutuu
   Comfort: Mukavuus
   Cooling: Jäähdytys
-  Cut off: Katkaistu
-  Encouraged: Kannustettu
   Ext. hot water: Ulk. lämminvesi
   Heating: Lämmitys
   Hot water: Käyttövesi
@@ -221,7 +219,6 @@ value_mappings:
   Open: Auki
   Open to pool: Auki altaaseen
   Opening: Avautuu
-  Ordered: Määrätty
   Own setting: Oma asetus
   Passive: Passiivinen
   Pool: Allas
@@ -233,7 +230,6 @@ value_mappings:
   Running: Käynnissä
   Saving: Säästö
   Saving PLUS: Säästö PLUS
-  Standard: Vakio
   Starting: Käynnistyy
   Transfer: Siirto
   Underfloor heating: Lattialämmitys

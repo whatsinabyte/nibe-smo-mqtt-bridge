@@ -17,8 +17,8 @@ import { haWs, pointEntityId } from './support/stack';
  *     also fires correctly for this specific, real point, not just a
  *     synthetic one.
  *   - 10614 is this session's actual motivating case for both the SG
- *     Ready VALUE_MAPPINGS entry (0=Cut off/1=Standard/2=Encouraged/
- *     3=Ordered — see GitHub issue #40) and the translation feature
+ *     Ready VALUE_MAPPINGS entry (0=Blocking/1=Normal/2=Low price/
+ *     3=Overcapacity — see GitHub issue #40) and the translation feature
  *     (issue #39) — translation.spec.ts already covers the translation
  *     mechanism generically via a different, always-present point (3751,
  *     since 10614 doesn't exist in the static reference dump at all); this
@@ -290,7 +290,7 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
         const candidate = newIds.find(
           (s) =>
             s.entity_id.startsWith('select.') &&
-            ['Afgesloten', 'Standaard', 'Aangemoedigd', 'Opgedragen'].includes(s.state)
+            ['Blokkering', 'Normaal', 'Lage prijs', 'Overcapaciteit'].includes(s.state)
         );
         if (candidate) {
           point10614EntityId = candidate.entity_id;
@@ -307,11 +307,11 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
     .toBeTruthy();
   expect(point10614EntityId).not.toBeNull();
 
-  // 5. Point 10614's default raw value in this dump is 1 ("Standard"),
-  // translated to Dutch "Standaard" — confirm the exact expected label,
+  // 5. Point 10614's default raw value in this dump is 1 ("Normal"),
+  // translated to Dutch "Normaal" — confirm the exact expected label,
   // not just "some select appeared".
   const state10614 = (await fetchStates(token)).find((s) => s.entity_id === point10614EntityId);
-  expect(state10614?.state).toBe('Standaard');
+  expect(state10614?.state).toBe('Normaal');
 
   // 5a. The full published options list must be every translated SG Ready
   // label, in the right order — not just that the current state happens
@@ -320,31 +320,31 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // check for the real point this feature was motivated by.
   const attrs10614 = await fetchState(token, point10614EntityId!);
   expect(attrs10614?.attributes?.options).toEqual([
-    'Afgesloten',
-    'Standaard',
-    'Aangemoedigd',
-    'Opgedragen',
+    'Blokkering',
+    'Normaal',
+    'Lage prijs',
+    'Overcapaciteit',
   ]);
 
   // 5b. Write back through 10614 itself (translation.spec.ts's select test
   // already proves this mechanism generically via point 3751 — this
-  // confirms it for the actual point, not just a stand-in). "Aangemoedigd"
+  // confirms it for the actual point, not just a stand-in). "Lage prijs"
   // is not in the untranslated English VALUE_MAPPINGS at all, so this only
   // succeeds if the translated_reverse_map path in _parse_command_payload
   // is genuinely being reached for this point.
   await callService(token, 'select', 'select_option', {
     entity_id: point10614EntityId,
-    option: 'Aangemoedigd',
+    option: 'Lage prijs',
   });
   await expect
     .poll(
       async () => {
         const state = await fetchState(token, point10614EntityId!);
-        return state?.state === 'Aangemoedigd';
+        return state?.state === 'Lage prijs';
       },
       {
         timeout: 30_000,
-        message: `${point10614EntityId} never reached state "Aangemoedigd" after selecting it`,
+        message: `${point10614EntityId} never reached state "Lage prijs" after selecting it`,
       }
     )
     .toBeTruthy();
@@ -354,8 +354,8 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // dynamic reclassification safety net exists for (see
   // binary-sensor-reclassification.spec.ts). Its value 10 is labelled
   // "Normal" (VALUE_MAPPINGS, NIBE's name for the state, confirmed on an
-  // S1155 — GitHub issue #82);
-  // the label has no translation, so it stays English in the Dutch harness.
+  // S1155 — GitHub issue #82), which the Dutch harness shows as the Dutch
+  // manual's "Normaal" — the same label as 10614's request.
   let point3260 = '';
   await expect
     .poll(
@@ -366,10 +366,10 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
       },
       {
         timeout: 30_000,
-        message: 'point 3260 should be a sensor.* entity showing "Normal" (raw 10)',
+        message: 'point 3260 should be a sensor.* entity showing "Normaal" (raw 10)',
       }
     )
-    .toMatch(/^sensor\..* = Normal$/);
+    .toMatch(/^sensor\..* = Normaal$/);
   const afterDiscovery = await fetchStates(token);
 
   const point3260BinarySensor = afterDiscovery.find(
