@@ -183,8 +183,6 @@ configuration:
 # not sourced from native speakers — please open a PR to fix any wrong
 # wording, especially technical HVAC terms.
 value_mappings:
-  12h: 12t
-  24h: 24t
   Active: Aktiv
   Active alarm: Aktiv alarm
   Additional heat only: Bare till.varme

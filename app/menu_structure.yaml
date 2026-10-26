@@ -3102,10 +3102,10 @@ menus:
 
       '
     settings:
-    - label: Time format
-      range: 12h / 24h
+    - label: 24-hour format
+      range: off/on
       point_id: 3933
-      note: 0 = 12-hour format, 1 = 24-hour format.
+      note: On shows the time in 24-hour format, off in 12-hour format.
   - id: '4.9'
     title: Language
     description: 'Choose the display language for the controller UI.
@@ -3936,11 +3936,11 @@ menus:
           range: 0 – 7
           point_id: 14968
           note: Maximum number of permitted additional heat steps.
-        - label: Internal additional heat stepping mode
-          range: Linear / Binary
+        - label: Binary stepping
+          range: off/on
           point_id: 4085
-          note: Whether internal additional heat steps use linear (one relay per step) or binary (relays combined in on/off
-            patterns for more effective steps from the same relay count) stepping — see the description above.
+          note: On steps the internal additional heat binary (relays combined in on/off patterns for more effective steps
+            from the same relay count), off linear (one relay per step) — see the description above.
         - label: Additional heat after diverter valve
           range: off/on
           point_id: 4690

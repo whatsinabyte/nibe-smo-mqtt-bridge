@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Encouraged / Ordered. 10614 has no firmware description and no menu of
   its own; it requests exactly those states (issue #40). Automations that
   select an option by its text need the new names.
+- **Time format (3933) and the internal additional heat's stepping mode
+  (4085) are switches again**, as the controller's menus show them:
+  "24-hour format" (on = 24-hour clock, off = 12-hour) and "Binary step"
+  (on = binary, off = linear). They had been drop-downs ("12h/24h",
+  "Linear/Binary"). As a new entity type they get **new entity ids**.
 - **AUX11 (12463) becomes a drop-down naming its function**, like Output
   AUX1: the reference SMO S40 reads 5 there, which its menu 7.4 shows as
   "Niet gebruikt" — the same numbering as on an S1155. As a new entity

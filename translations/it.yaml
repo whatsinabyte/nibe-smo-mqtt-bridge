@@ -190,8 +190,6 @@ configuration:
 # not sourced from native speakers — please open a PR to fix any wrong
 # wording, especially technical HVAC terms.
 value_mappings:
-  12h: 12h
-  24h: 24h
   Active: Attivo
   Active alarm: Allarme attivo
   Additional heat only: Solo risc. suppl.

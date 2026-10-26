@@ -373,9 +373,10 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # No firmware description for these either: options as the
         # controller's own menu lists them (language English), in that order,
         # verified on a live controller. Without a mapping they showed as bare
-        # 0–2 numbers, and 4692/4085 as switches.
+        # 0–2 numbers, and 4692 as a switch. (4085, the stepping mode, is
+        # left a switch: the controller's menu shows it as one, "Binary
+        # step", on meaning binary and off linear.)
         4692: {0: "Target temp", 1: "Delta temp"},  # Charging method
-        4085: {0: "Linear", 1: "Binary"},  # Internal additional heat stepping mode
         # Brine pump, ground-source models (GitHub issue #82, an S1155):
         # 5482 is menu 7.1.2.7 "Pump speed brine", not 7.1.2.6 — the owner
         # saw it follow 7.1.2.7. 0 = Manual (its value while 7.1.2.7 was set
@@ -432,7 +433,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         # Smart Energy Source control method
         5269: {0: "Price per kWh", 1: "CO2"},
         # Time format
-        3933: {0: "12h", 1: "24h"},
     },
 }
 
@@ -451,7 +451,6 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
 MAPPING_STATUSES = ("confirmed", "inferred", "partial")
 MAPPING_STATUS: dict[int, str] = {
     # Options read off a live controller's own menu (language English).
-    4085: "confirmed",
     4692: "confirmed",
     7022: "confirmed",
     7023: "confirmed",
@@ -521,10 +520,9 @@ MAPPING_STATUS: dict[int, str] = {
     # Settings read on a live controller, HA and the controller's menu
     # agreeing. Two-option ones are confirmed by one value: 4651 = 1 = Auto
     # and 4821 = 0 = Intermittent, the same Intermittent/Auto mapping as
-    # 4729/4778, and 3933 = 1 = 24h. The manual lists "Auto, Intermittent",
+    # 4729/4778. The manual lists "Auto, Intermittent",
     # the reverse of the values — a manual's listing order is not the
     # value order.
-    3933: "confirmed",
     4651: "confirmed",
     4729: "confirmed",
     4778: "confirmed",
