@@ -696,9 +696,9 @@ Nibe divides register access into two tiers. The local REST API (which this brid
 
 Accepts a direct compressor power request in kW, bypassing the normal degree-minute algorithm. There is no firmware-side timeout — a value written here persists indefinitely, including across power cycles, until explicitly cleared. If the bridge crashes while a non-zero value is active, the compressor runs at that commanded level with no automatic recovery. Safe only within a system that implements its own watchdog process.
 
-### Spot price registers 26817–26840
+### Manual electricity price registers 26817–26840
 
-24 registers for hourly electricity price signals intended for local injection of spot price data. The write path is Modbus TCP only. Nibe does not document the expected value format in any publicly available manual — the exact scaling and interaction with the controller's SPA logic are unconfirmed.
+24 registers holding the hourly electricity prices of menu 4.2.5.1, *Manual electricity price input*: prices entered by hand **instead of** downloaded through myUplink, for Smart Price Adaption and Smart Energy Source. They are not where the myUplink spot prices go — with SPA on myUplink prices they keep whatever was entered by hand, often nothing (an hour never set reads 2147483647, the register maximum, or 0), so they don't show the price SPA is acting on. The firmware 3.5.5 release notes say the input "can also be configured via Modbus TCP"; that is the only write path. Nibe does not document the expected value format in any publicly available manual — the exact scaling and interaction with the controller's SPA logic are unconfirmed.
 
 ### Register 55749 — Block new compressor (Modbus 5551)
 

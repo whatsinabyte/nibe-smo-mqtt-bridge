@@ -559,7 +559,7 @@ MAPPING_STATUS: dict[int, str] = {
 # An allow-list, kept by id so it holds in every firmware language: the other
 # unitless sensors are mostly codes (operating modes, statuses, alarm numbers,
 # relay bitmasks), which read better as coloured state bars, and an unknown
-# point keeps the bars too. The spot prices (26817–26840) are left out: their
+# point keeps the bars too. The manual hourly prices (26817–26840) are left out: their
 # format is undocumented and "no price" is the register maximum.
 UNITLESS_QUANTITY_POINTS: frozenset[int] = frozenset(
     {
@@ -1343,7 +1343,7 @@ def get_entity_options(
 # "Intentionally Unexposed Registers" explains each group. Exposed as
 # read-only sensors. This used to rest on the firmware's isWritable flag,
 # which is not relied on (see is_writable_point) and never covered 55884 or
-# the spot prices at all.
+# the manual hourly prices at all.
 SAFETY_READ_ONLY_POINTS: frozenset[int] = frozenset(
     {
         # Block new compressor — responds only during an active system event.
@@ -1351,7 +1351,8 @@ SAFETY_READ_ONLY_POINTS: frozenset[int] = frozenset(
         # Set point value power — a direct compressor power request with no
         # firmware timeout, kept across power cycles.
         55884,
-        # Spot price per hour, 00:00–24:00 — value format undocumented.
+        # Manual electricity price per hour, 00:00–24:00 (menu 4.2.5.1) — value
+        # format undocumented.
         *range(26817, 26841),
     }
 )
