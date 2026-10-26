@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Points a switch shows are learned even when they come late.** After a
+  switch is changed through Home Assistant the bridge watches 90 seconds for
+  the points it shows. When the controller took longer, the switch was taken
+  for one that shows nothing and never looked at again, and its points were
+  added as ordinary entities whenever they came. Points that arrive in the
+  few minutes after those 90 seconds are now still linked to the switch, and
+  a switch learned wrongly this way before is corrected the next time it is
+  switched and its points come — unless the controller restarts or updates
+  its firmware meanwhile, whose new points are its own.
 - **The Nibe Menus dashboard follows an entity whose type changed.** When a
   point changes entity type — a drop-down becoming a switch, as time format
   and binary stepping do in this release — Home Assistant gives it a new
