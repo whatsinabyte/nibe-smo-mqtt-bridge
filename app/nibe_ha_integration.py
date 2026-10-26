@@ -494,14 +494,22 @@ class HAEntityRegistryWatcher:
                 with self._registry_map_lock:
                     if not self._newer_than_applied(seq):
                         return
+                    # A point whose entity_id is new or different: the saved
+                    # menu dashboard still names its old one. A changed entity
+                    # type does this — select to switch keeps the unique_id
+                    # but HA gives the entity a new id — and it leaves the
+                    # enabled set, which is what otherwise rebuilds the
+                    # dashboard, unchanged.
+                    moved = any(self._unique_id_map.get(uid) != eid for uid, eid in fresh.items())
                     for uid in [k for k in self._unique_id_map if k.startswith("nibe_")]:
                         if uid not in fresh:
                             del self._unique_id_map[uid]
                     self._unique_id_map.update(fresh)
                 log_registry.debug("Registry refresh: updated %d nibe entries", len(fresh))
-                if self._regen_after_refresh:
-                    # A rename that arrived before the entity was mapped
-                    # (_apply_entity_id_rename): the map now has its new id.
+                if moved or self._regen_after_refresh:
+                    # _regen_after_refresh: a rename that arrived before the
+                    # entity was mapped (_apply_entity_id_rename) — the map
+                    # now has its new id.
                     self._regen_after_refresh = False
                     regen = self._em._on_enabled_state_change
                     if regen is not None:
