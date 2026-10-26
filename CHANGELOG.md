@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Points a switch shows are also learned when the switch is changed on the
+  controller itself.** Until now only a change made through Home Assistant
+  taught the bridge which points a switch or drop-down shows; changed on the
+  controller's display, those points were added as ordinary entities, not
+  tied to the switch, and became unavailable when it was switched off again.
+  The bridge now notices such a change and learns the points the same way.
+  It only watches: nothing is written to the heat pump. The changelog shows
+  these as "set on the controller to".
+
 ### Fixed
 
 - **The Nibe Menus dashboard follows an entity whose type changed.** When a

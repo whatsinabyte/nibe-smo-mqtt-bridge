@@ -736,6 +736,14 @@ class EntityManager:
         self.post_write_interval: int = 5
         self._post_write_duration: int = _POST_WRITE_SCAN_S
         self._post_write_controlling_point: int | None = None
+        # Learning from a switch changed on the controller itself — see
+        # _controller_side_change. The point whose controller-side change
+        # opened the current scan window (None when an HA write opened it, or
+        # none is open), and every (point, value) that has opened one in this
+        # run: each opens a window at most once, so a switch the controller
+        # flips by itself can't keep the poll loop at 5 s.
+        self._controller_side_point: int | None = None
+        self._controller_side_tried: set[tuple[int, int]] = set()
         # Points confirmed present by _resolve_dynamic_points_fast, keyed to
         # expiry time.  The firmware bulk API has a ~60s cache, so the next
         # bulk fetch may return stale data that omits the newly-activated point.
@@ -1794,6 +1802,7 @@ class EntityManager:
                 self.post_write_active = False
                 ended_point = self._post_write_controlling_point
                 self._post_write_controlling_point = None
+                self._controller_side_point = None
                 log_commands.info(
                     "Post-write scan window ended for point %s", ended_point
                 )  # pragma: no mutate
@@ -2516,6 +2525,70 @@ class EntityManager:
     # Bulk data fetch                                                      #
     # ------------------------------------------------------------------ #
 
+    def _controller_side_change(self, response: dict) -> tuple[int, int, int] | None:
+        """The one switch or select changed on the controller itself since the
+        previous poll, as ``(point_id, old_value, new_value)``, when that
+        change should open a scan window — else None.
+
+        Points a switch shows are learned from the scan window an HA write to
+        it opens. A switch flipped on the display opened none, so the first
+        time the firmware served the points it shows they were indexed as
+        static. ``response`` is the new bulk response; ``bulk_data`` still
+        holds the previous poll's values when this runs. The guards keep a
+        wrong link out — a point wrongly recorded as dynamic is disabled the
+        moment it is briefly absent, losing its history:
+
+        - any HA write pending or queued: its own change, whose window it
+          opens itself;
+        - not after initial discovery, or a previously served point missing
+          other than a known dynamic one: a controller restarting serves a
+          partial list, with odd values;
+        - more than one candidate changed: which one shows what can't be told;
+        - the new value already learned (the known-dynamic path handles it),
+          or this (point, value) already opened a window in this run.
+        """
+        if not self.initial_discovery_complete or not self.published_configs:
+            return None
+        with self._pending_writes_lock:
+            if self.pending_writes:
+                return None
+        with self._write_queue_lock:
+            if self._write_queue_depth:
+                return None
+        served: set[int] = set()
+        for key in response:
+            try:
+                served.add(int(key))
+            except (TypeError, ValueError):
+                continue
+        with self._em_lock:
+            known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
+            entries = list(self.dynamic_point_map.items())
+        if self.published_configs - served - known_dynamic:
+            return None
+        changed: list[tuple[int, int, int, DynamicPointEntry]] = []
+        for pid, entry in entries:
+            if entry.firmware_removed:
+                continue
+            previous = self.bulk_data.get(pid)
+            point = response.get(str(pid))
+            if previous is None or not isinstance(point, dict):
+                continue
+            new_value = (point.get("value") or {}).get("integerValue")
+            old_value = previous.get("raw_value")
+            if new_value is None or old_value is None or new_value == old_value:
+                continue
+            changed.append((pid, int(old_value), int(new_value), entry))
+        if len(changed) != 1:
+            return None
+        pid, old_value, new_value, entry = changed[0]
+        if new_value not in entry.unprocessed_values:
+            return None
+        if (pid, new_value) in self._controller_side_tried:
+            return None
+        self._controller_side_tried.add((pid, new_value))
+        return pid, old_value, new_value
+
     def _fetch_bulk_data(
         self,
         detect_changes: bool = True,
@@ -2589,6 +2662,38 @@ class EntityManager:
             with self._post_write_lock:
                 post_write_snapshot = self.post_write_active
                 controlling_point_snapshot = self._post_write_controlling_point
+            if not post_write_snapshot:
+                # A switch or select changed on the controller itself: open the
+                # same scan window an HA write would, so the points it shows —
+                # which the firmware serves about a minute later — are learned
+                # as its dynamic points instead of indexed as static ones.
+                # Decided before the point loop below, which would otherwise
+                # classify points arriving in this same poll first.
+                changed = self._controller_side_change(response)
+                if changed is not None:
+                    pid, old_value, new_value = changed
+                    with self._post_write_lock:
+                        # An HA write may have opened a window meanwhile; it
+                        # keeps it. Same field order as _open_post_write_scan.
+                        if not self.post_write_active:
+                            self._post_write_controlling_point = pid
+                            self.post_write_active = True
+                            self._post_write_until = time.time() + self._post_write_duration
+                            self._controller_side_point = pid
+                            post_write_snapshot = True
+                            controlling_point_snapshot = pid
+                    if post_write_snapshot:
+                        detect_changes = True
+                        # pragma: no mutate start
+                        log_discovery.info(
+                            "Point %d changed on the controller (%s -> %s) — scan window "
+                            "opened for up to %ds to learn the points it shows",
+                            pid,
+                            old_value,
+                            new_value,
+                            self._post_write_duration,
+                        )
+                        # pragma: no mutate end
             # scan_type/known_count are only ever read by the debug log
             # below, and that entire log call is itself unobservable —
             # nothing captures/formats this log record in tests, so even a
@@ -3346,6 +3451,12 @@ class EntityManager:
                 "id": controlling,
                 "title": ctrl_title,
                 **(({"value": ctrl_value}) if ctrl_value is not None else {}),
+                # Changed on the controller's own display, not written here.
+                **(
+                    {"changed_on": "controller"}
+                    if controlling == self._controller_side_point
+                    else {}
+                ),
             }
 
         self._update_changelog_history(change_event)
