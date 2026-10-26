@@ -3939,8 +3939,10 @@ menus:
         - label: Binary stepping
           range: off/on
           point_id: 4085
-          note: On steps the internal additional heat binary (relays combined in on/off patterns for more effective steps
-            from the same relay count), off linear (one relay per step) — see the description above.
+          note: Off (the factory setting) means linear stepping, one relay per step, so "Max step" allows up to three steps.
+            On means binary stepping, the relays combined in on/off patterns, so the same relays give up to seven steps.
+            With the additional heat placed after the hot water diverter valve (QN10), linear allows two steps and binary
+            three.
         - label: Additional heat after diverter valve
           range: off/on
           point_id: 4690
