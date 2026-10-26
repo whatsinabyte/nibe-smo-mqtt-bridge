@@ -2667,6 +2667,55 @@ class TestRegistryWatcherEventHandling(unittest.TestCase):
             w._handle_event(self._rename_event("number.nibe_6983_power", "number.my_power"))
         self.assertEqual(w.entity_id_for(6983), "number.my_power")
 
+    def _refresh_with(self, w, entries):
+        """Run refresh_registry against a fake registry listing *entries*
+        (unique_id, entity_id)."""
+        w._map_seq_issued = 0
+        w._map_seq_applied = 0
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps(
+            {
+                "id": 1,
+                "type": "result",
+                "success": True,
+                "result": [{"unique_id": u, "entity_id": e} for u, e in entries],
+            }
+        )
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+        ):
+            w.refresh_registry()
+
+    def test_a_changed_entity_type_regenerates_the_dashboard(self):
+        """A select becoming a switch keeps its unique_id but gets a new
+        entity_id; the enabled set doesn't change, so nothing else rebuilt
+        the menu dashboard, which kept the deleted select."""
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._unique_id_map["nibe_3933"] = "select.nibe_smo_s40_time_format"
+        self._refresh_with(w, [("nibe_3933", "switch.nibe_smo_s40_time_format")])
+        self.assertEqual(w.entity_id_for(3933), "switch.nibe_smo_s40_time_format")
+        w._em._on_enabled_state_change.assert_called_once_with()
+
+    def test_a_newly_mapped_entity_regenerates_the_dashboard(self):
+        """The usual shape of a type change: HA's remove event already
+        dropped the old id, so the point comes back with its new one."""
+        w = self._make_watcher()
+        w._em = MagicMock()
+        self._refresh_with(w, [("nibe_3933", "switch.nibe_smo_s40_time_format")])
+        w._em._on_enabled_state_change.assert_called_once_with()
+
+    def test_an_unchanged_registry_does_not_regenerate(self):
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._unique_id_map["nibe_3933"] = "switch.nibe_smo_s40_time_format"
+        self._refresh_with(w, [("nibe_3933", "switch.nibe_smo_s40_time_format")])
+        w._em._on_enabled_state_change.assert_not_called()
+
     def test_remove_event_clears_entry(self):
         w = self._make_watcher()
         w._unique_id_map["nibe_6983"] = "number.nibe_6983_power"

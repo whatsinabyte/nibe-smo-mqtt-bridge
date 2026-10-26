@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Nibe Menus dashboard follows an entity whose type changed.** When a
+  point changes entity type — a drop-down becoming a switch, as time format
+  and binary stepping do in this release — Home Assistant gives it a new
+  entity id, and the dashboard kept showing the old, deleted one until
+  "Regenerate Dashboard" was pressed. It now rebuilds itself as soon as Home
+  Assistant registers the new id.
+
 ### Changed
 
 - **The SG Ready request (10614) uses the same names as the SG Ready
