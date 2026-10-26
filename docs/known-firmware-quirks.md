@@ -246,8 +246,10 @@ from real-world log evidence, one raw value at a time.
   (and `1766` additionally `40/50`) mapped to
   Off/Opening/Closing/Active/Passive variants.
 - **Point 10614 ("Req. op. mode, SG Ready")** breaks the pattern — it
-  uses a plain `0-3` range, confirmed on real hardware (firmware 4.12.8,
-  S1256) to mean Cut off/Standard/Encouraged/Ordered. Two earlier guesses
+  uses a plain `0-3` range for the four states the SG Ready contacts
+  select, 0 = Blocking, 1 = Normal, 2 = Low price, 3 = Overcapacity
+  (requested through the API, then read back on 3260; tested on a VVM
+  S320, issue #40). Two earlier guesses
   at this same point's encoding (a derived bit-encoding, and the removed
   3292 mapping applied here by mistake) were both wrong before real
   hardware testing settled it — see
@@ -255,12 +257,10 @@ from real-world log evidence, one raw value at a time.
   Worth remembering: a derived guess is not a substitute for someone
   testing the real value, even when the guess looks internally consistent.
 - **Point 3260 ("Operating mode SG Ready")** — the read-only counterpart
-  to 10614, and *does* follow the multiple-of-ten family: `10` is
-  confirmed (cross-checked against 10614's own confirmed default) to be
-  the "no active grid signal" state equivalent to 10614's `1 = Standard`.
-  The other three values (Encouraged/Ordered/Cut off) remain unconfirmed
-  — still open in issue #40, needs a real installation with SG Ready
-  actively triggered by a grid signal to observe them.
+  to 10614, and *does* follow the multiple-of-ten family: `10` Normal,
+  `20` Blocking, `30` Low price, `40` Overcapacity, all four confirmed on
+  an S1155 by switching the SG Ready contacts (issue #82) and on a VVM S320
+  through 10614 (issue #40).
 
 ## Registers that exist but appear nowhere in NIBE's own documentation
 

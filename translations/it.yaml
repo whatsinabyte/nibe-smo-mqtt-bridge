@@ -203,8 +203,6 @@ value_mappings:
   Closing: Chiusura
   Comfort: Comfort
   Cooling: Raffrescamento
-  Cut off: Interrotto
-  Encouraged: Incoraggiato
   Ext. hot water: Acqua calda est.
   Heating: Riscaldamento
   Hot water: Acqua calda
@@ -219,7 +217,6 @@ value_mappings:
   Open: Aperto
   Open to pool: Aperto verso la piscina
   Opening: Apertura
-  Ordered: Ordinato
   Own setting: Imp. personal.
   Passive: Passivo
   Pool: Piscina
@@ -231,7 +228,6 @@ value_mappings:
   Running: In funzione
   Saving: Risparmio
   Saving PLUS: Risparmio PLUS
-  Standard: Standard
   Starting: Avvio
   Transfer: Scambio
   Underfloor heating: Risc. pavim.

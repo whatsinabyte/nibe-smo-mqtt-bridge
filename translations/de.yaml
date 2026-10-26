@@ -209,8 +209,6 @@ value_mappings:
   Closing: Schließt
   Comfort: Komfort
   Cooling: Kühlung
-  Cut off: Abgeschaltet
-  Encouraged: Gefördert
   Ext. hot water: Ext. Brauchw.
   Heating: Heizung
   Hot water: Brauchwasser
@@ -225,7 +223,6 @@ value_mappings:
   Open: Offen
   Open to pool: Offen zum Pool
   Opening: Öffnet
-  Ordered: Angefordert
   Own setting: Eigene Einstellung
   Passive: Passiv
   Pool: Pool
@@ -237,7 +234,6 @@ value_mappings:
   Running: Läuft
   Saving: Einsparung
   Saving PLUS: Einsparung PLUS
-  Standard: Standard
   Starting: Startet
   Transfer: Transfer
   Underfloor heating: Fußbodenheizung

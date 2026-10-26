@@ -204,8 +204,6 @@ value_mappings:
   Closing: Cerrando
   Comfort: Confort
   Cooling: Refrigeración
-  Cut off: Desconectado
-  Encouraged: Fomentado
   Ext. hot water: ACS ext
   Heating: Calefacción
   Hot water: ACS
@@ -220,7 +218,6 @@ value_mappings:
   Open: Abierto
   Open to pool: Abierto a la piscina
   Opening: Abriendo
-  Ordered: Ordenado
   Own setting: Conf. propia
   Passive: Pasivo
   Pool: Piscina
@@ -232,7 +229,6 @@ value_mappings:
   Running: En funcionamiento
   Saving: Ahorro
   Saving PLUS: Ahorro PLUS
-  Standard: Estándar
   Starting: Iniciando
   Transfer: Transfer.
   Underfloor heating: Cal. suelo rad.

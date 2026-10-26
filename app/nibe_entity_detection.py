@@ -396,21 +396,15 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         23142: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 6)
         23143: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 7)
         23144: {0: "Level monitor", 1: "Blocked", 2: "Off"},  # Blocking actions (ERS 8)
-        # Requested operating mode (SG Ready) — no firmware description.
-        # Numeric order confirmed tested on real hardware (firmware 4.12.8,
-        # S1256) via the Home Assistant community: "You set that to 0-3 for
-        # high price/normal/low price/free electricity modes." Labels here
-        # use NIBE's own official SG Ready terminology (product page: the
-        # four states are Standard/Encouraged/Ordered/Cut off) rather than
-        # that informal phrasing — 0=high price maps to Cut off (reduce
-        # usage, discouraged), 1=normal maps to Standard, 2=low price maps
-        # to Encouraged, 3=free electricity maps to Ordered (full power).
-        # A previous VALUE_MAPPINGS entry for this same 4-state SG Ready
-        # concept was mistakenly filed under point 3292 (Smart Price
-        # Adaption, a different feature) with this exact domain rotated by
-        # one position — removed in the same release this entry was added.
-        # See GitHub issue #35.
-        10614: {0: "Cut off", 1: "Standard", 2: "Encouraged", 3: "Ordered"},
+        # Requested operating mode (SG Ready) — no firmware description; it
+        # exists only while "Activate SG Ready via API" (10613) is on. It
+        # requests one of the four states the SG Ready A/B contacts select,
+        # so it carries their names as the installer manual's SG Ready
+        # section gives them, the same labels as the status 3260. The order
+        # was tested on a VVM S320 (issue #40): 0 gives status 20 (Blocking),
+        # 1 gives 10 (Normal), 2 gives 30 (Low price), 3 gives 40
+        # (Overcapacity).
+        10614: {0: "Blocking", 1: "Normal", 2: "Low price", 3: "Overcapacity"},
         # Point 3260, the read-only SG Ready status: see the "input" table.
         # Heat pump type codes (best-effort, not officially documented)
         2471: {

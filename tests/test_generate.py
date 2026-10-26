@@ -8666,7 +8666,7 @@ class TestConfigTranslationsParity(unittest.TestCase):
         manual in each language (SMO S40 or VVM S320), with the word for
         "mode" left out as in English — e.g. Dutch "Stand lage prijs" gives
         "Lage prijs" — except in Estonian and Latvian, where it doesn't
-        split off ("Tavarežiim", "Zemu izmaksu režīms"). Not 10614's request labels (issue #40)."""
+        split off ("Tavarežiim", "Zemu izmaksu režīms"). 10614's request select uses the same labels (issue #40)."""
         import yaml as _yaml
         from nibe_entity_detection import _lookup_manual_mapping
 
