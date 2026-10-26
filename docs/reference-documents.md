@@ -266,12 +266,13 @@ controller three times:
 - 4729 "Operating mode circulation pump heating" (register 783): the document
   gives 0 = auto, 1 = manual; on the controller, 1 shows as Auto.
 - 5482 "Brine pump auto mode" (register 1319): the document gives 0 = auto,
-  1 = manual; the REST range is 0–2, and the controller's three options are
-  Intermittent, Continuous and 10 days cont.
+  1 = manual; the REST range is 0–2, and an S1155's menu 7.1.2.7 offers
+  three options: Manual, Auto and Fixed delta.
 - 3959 "Output AUX1" and 12463 "AUX relay (AUX11)" (registers 216 and 224):
   the document gives 0 = alarm output and 5 = not used (marked as the
-  standard setting); on the controller, 0 is no function and 5 alarm output.
-  It does agree that 5 is the factory default.
+  standard setting) — which the controllers bear out: an S1155's menu 7.4
+  (issue #82) has 0 = alarm output and 5 "not used", and the reference SMO
+  S40's AUX11 reads 5, shown as "Niet gebruikt".
 
 It also contradicts the firmware's own description of 3173 (QN41, register
 2410): 0 = closed, 1 = open, where the firmware says 10 = shunt off, 20 =

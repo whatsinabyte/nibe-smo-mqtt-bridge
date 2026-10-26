@@ -353,11 +353,10 @@ VALUE_MAPPINGS: dict[str, dict[int, dict]] = {
         },  # Operating priority (EB101-EP14)
     },
     "holding": {
-        # AUX functions (menu 7.4) — see AUX_INPUT_FUNCTIONS. 12463 (relay
-        # AUX11) is left a number: the reference SMO S40 reads 5 there, and
-        # whether that is "Not used" as on an S1155 isn't settled yet.
+        # AUX functions (menu 7.4) — see AUX_INPUT_FUNCTIONS.
         **{pid: _numbered(AUX_INPUT_FUNCTIONS, 0, 69) for pid in AUX_INPUT_POINTS},
         3959: _numbered(AUX_OUTPUT_FUNCTIONS, 0, 33),  # Output AUX1 (relay AUX10)
+        12463: _numbered(AUX_OUTPUT_FUNCTIONS, 0, 33),  # AUX relay (AUX11)
         # Language (menu 4.9) — see LANGUAGES.
         3745: _numbered(LANGUAGES, 0, 30),
         3976: {
@@ -493,6 +492,9 @@ MAPPING_STATUS: dict[int, str] = {
     # (issue #82); the others stay numbers.
     **dict.fromkeys(AUX_INPUT_POINTS, "partial"),
     3959: "partial",
+    # The reference SMO S40's AUX11 reads 5, which its menu 7.4 shows as
+    # "Niet gebruikt" — the S1155's numbering holds for this relay too.
+    12463: "partial",
     # Language: 0-24 read off a live controller's menu, 25-30 (firmware
     # 4.14.6) by selecting each on the controller.
     3745: "confirmed",
