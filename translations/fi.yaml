@@ -192,8 +192,6 @@ configuration:
 # not sourced from native speakers — please open a PR to fix any wrong
 # wording, especially technical HVAC terms.
 value_mappings:
-  12h: 12h
-  24h: 24h
   Active: Aktiivinen
   Active alarm: Aktiivinen hälytys
   Additional heat only: Vain lisälämpö

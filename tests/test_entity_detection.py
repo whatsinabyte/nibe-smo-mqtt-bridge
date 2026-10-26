@@ -4589,12 +4589,21 @@ class TestControllerVerifiedOptionLists(unittest.TestCase):
             },
         }
 
+    def test_time_format_and_binary_stepping_are_switches(self):
+        """3933 and 4085 are on/off switches on the controller ("24-hour
+        format", "Binary step"), so they stay switches here, not selects."""
+        from nibe_entity_detection import detect_entity_type, get_value_mapping
+
+        for pid in (3933, 4085):
+            point = self._point(pid, "HOLDING", 1)
+            self.assertEqual(detect_entity_type(point)[0], "switch", pid)
+            self.assertIsNone(get_value_mapping(pid, {"description": ""}), pid)
+
     def test_writable_option_lists_are_selects_with_those_options(self):
         from nibe_entity_detection import detect_entity_type, get_entity_options
 
         expected = {
             4692: ["Target temp", "Delta temp"],
-            4085: ["Linear", "Binary"],
             7022: ["Level monitor", "Blocked", "Off"],
             23144: ["Level monitor", "Blocked", "Off"],
         }
