@@ -172,6 +172,10 @@ _WANTED_POINTS_FILE = "/data/wanted_points.json"
 _RECLASSIFIED_POINTS_FILE = "/data/reclassified_points.json"
 _SNAPSHOTS_FILE = "/data/snapshots.json"
 _FIRMWARE_RECORD_FILE = "/data/firmware_record.json"
+# Running totals (total_increasing) — see _running_total_dropped.
+_RUNNING_TOTALS_FILE = "/data/running_totals.json"
+_RUNNING_TOTAL_RESET_S = 900  # a lower value lasting this long is a real reset
+_RUNNING_TOTALS_SAVE_S = 3600  # how often the last values are written to disk
 # Version registers whose change marks a firmware update: the controller
 # (2509, EB100), the outdoor unit (2453, EB101), its inverter (14987) and an
 # S135 (802). See _check_firmware_update.
@@ -565,6 +569,13 @@ class EntityManager:
         # static metadata (which says binary_sensor again) every time. Also
         # gates the loud warning log to the reclassifying transition itself.
         self._binary_sensor_reclassified: set[int] = set()
+
+        # Running totals: the last value published per point (divisor
+        # applied), when a lower one was first seen, and when the values were
+        # last written to _RUNNING_TOTALS_FILE — see _running_total_dropped.
+        self._running_totals: dict[int, float] = {}
+        self._running_total_low_since: dict[int, float] = {}
+        self._running_totals_saved_at: float = 0.0
 
         # ── Point registry ────────────────────────────────────────────────────
         # Single source of truth: dict keyed by variableId.
@@ -1018,6 +1029,10 @@ class EntityManager:
                     self._binary_sensor_reclassified = {int(pid) for pid in loaded}
             except (OSError, ValueError):
                 pass
+
+        # Before the first publish: a controller that restarts along with the
+        # bridge (a power cut) can serve a placeholder 0 straight away.
+        self._load_running_totals()
 
         if not self._fetch_bulk_data(detect_changes=False):
             log_discovery.error("Initial discovery failed")  # pragma: no mutate
@@ -1892,6 +1907,8 @@ class EntityManager:
         for entity_info in snapshot:
             self._update_entity_state(entity_info)
         timing["entity updates"] = time.perf_counter() - started
+        if time.time() - self._running_totals_saved_at >= _RUNNING_TOTALS_SAVE_S:
+            self._save_running_totals()
         # Once per poll, after the bulk fetch and every entity update — the
         # two places that change the card's points.
         started = time.perf_counter()
@@ -2104,6 +2121,77 @@ class EntityManager:
 
         self._process_and_publish_state(entity_info, raw_value, string_value, metadata)
 
+    def _running_total_dropped(self, entity_info: dict, raw_value: int, metadata: dict) -> bool:
+        """Whether a running total (published total_increasing: energy,
+        operating hours, compressor starts) is lower than its last published
+        value, and should be published unavailable instead.
+
+        A restarting controller can serve 0 for a lifetime counter for about
+        a minute (GitHub issue #132); Home Assistant took the return to the
+        real value for consumption of the whole total. Countdowns are
+        measurements, never running totals, and don't pass here. A lower
+        value lasting _RUNNING_TOTAL_RESET_S is accepted as a real reset.
+        Compared with the divisor applied, so a firmware update that only
+        changes a counter's divisor isn't a drop.
+        """
+        point_id = entity_info["point_id"]
+        value = raw_value / (metadata.get("divisor") or 1)
+        last = self._running_totals.get(point_id)
+        if last is None or value >= last:
+            self._running_totals[point_id] = value
+            self._running_total_low_since.pop(point_id, None)
+            return False
+        now = time.time()
+        since = self._running_total_low_since.setdefault(point_id, now)
+        if now - since < _RUNNING_TOTAL_RESET_S:
+            if since == now:
+                log_entities.info(
+                    "Point %d (%s): running total %s is below its last value %s — "
+                    "unavailable until it is back (accepted as a reset after %d min)",
+                    point_id,
+                    entity_info.get("point_data", {}).get("display_title", ""),
+                    value,
+                    last,
+                    _RUNNING_TOTAL_RESET_S // 60,
+                )  # pragma: no mutate
+            return True
+        log_entities.info(
+            "Point %d (%s): running total stayed at %s, below %s, for %d min — accepted as a reset",
+            point_id,
+            entity_info.get("point_data", {}).get("display_title", ""),
+            value,
+            last,
+            _RUNNING_TOTAL_RESET_S // 60,
+        )  # pragma: no mutate
+        self._running_totals[point_id] = value
+        del self._running_total_low_since[point_id]
+        # Now, not within the hour: a restart would hold the reset again.
+        self._save_running_totals()
+        return False
+
+    def _load_running_totals(self, path: str | None = None) -> None:
+        """Load the last published running totals (_RUNNING_TOTALS_FILE)."""
+        try:
+            with open(path or _RUNNING_TOTALS_FILE, encoding="utf-8") as f:
+                loaded = json.loads(f.read())
+            if isinstance(loaded, dict):
+                self._running_totals = {int(pid): float(v) for pid, v in loaded.items()}
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_running_totals(self, path: str | None = None) -> None:
+        """Write the last published running totals to disk, at most every
+        _RUNNING_TOTALS_SAVE_S: they only go up, so an older copy is still a
+        safe reference for a drop to 0, and the flash isn't written each poll."""
+        self._running_totals_saved_at = time.time()
+        if not self._running_totals:
+            return
+        payload = json.dumps({str(pid): v for pid, v in sorted(self._running_totals.items())})
+        try:
+            _atomic_write_text(path or _RUNNING_TOTALS_FILE, payload)
+        except OSError as e:
+            log_entities.warning("Could not write running totals file: %s", e)  # pragma: no mutate
+
     def _publish_availability(self, entity_info: dict, payload: str) -> None:
         """Send an entity's availability (retained) unless it is what was
         last sent on that topic (_availability_sent)."""
@@ -2244,6 +2332,15 @@ class EntityManager:
                 # though the bridge stopped publishing it long ago.
                 self._clear_state_once(entity_info)
                 return
+
+        if entity_info.get("is_running_total") and self._running_total_dropped(
+            entity_info, raw_value, metadata
+        ):
+            # Home Assistant takes any decrease of a total_increasing sensor
+            # for a counter reset and counts the whole total again; it skips
+            # an unavailable one. The retained state keeps the last value.
+            self._publish_availability(entity_info, "offline")
+            return
 
         if entity_type == "binary_sensor" and raw_value not in (0, 1):
             # Static firmware metadata cannot distinguish a genuine boolean

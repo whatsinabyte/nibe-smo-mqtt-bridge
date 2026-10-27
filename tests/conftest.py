@@ -382,6 +382,7 @@ def _isolate_data_file_persistence(tmp_path):
         nem._RECLASSIFIED_POINTS_FILE,
         nem._SNAPSHOTS_FILE,
         nem._FIRMWARE_RECORD_FILE,
+        nem._RUNNING_TOTALS_FILE,
         ndm._FILE_FALLBACK,
         nl._LOVELACE_FLAG,
         nl._MENU_DASHBOARD_FLAG,
@@ -391,6 +392,7 @@ def _isolate_data_file_persistence(tmp_path):
     nem._RECLASSIFIED_POINTS_FILE = str(tmp_path / "reclassified_points.json")
     nem._SNAPSHOTS_FILE = str(tmp_path / "snapshots.json")
     nem._FIRMWARE_RECORD_FILE = str(tmp_path / "firmware_record.json")
+    nem._RUNNING_TOTALS_FILE = str(tmp_path / "running_totals.json")
     ndm._FILE_FALLBACK = str(tmp_path / "dynamic_point_map.json")
     nl._LOVELACE_FLAG = str(tmp_path / "lovelace_provisioned")
     nl._MENU_DASHBOARD_FLAG = str(tmp_path / "lovelace_menus_provisioned")
@@ -401,6 +403,7 @@ def _isolate_data_file_persistence(tmp_path):
         nem._RECLASSIFIED_POINTS_FILE,
         nem._SNAPSHOTS_FILE,
         nem._FIRMWARE_RECORD_FILE,
+        nem._RUNNING_TOTALS_FILE,
         ndm._FILE_FALLBACK,
         nl._LOVELACE_FLAG,
         nl._MENU_DASHBOARD_FLAG,
