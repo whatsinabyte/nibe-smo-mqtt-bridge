@@ -2201,6 +2201,96 @@ class TestDetectEntityTypeWarningLogging(unittest.TestCase):
             ned._entity_type_override_warnings_issued.clear()
 
 
+class TestPowerLimitationValue(unittest.TestCase):
+    """32825, the limit power limitation (32824) applies: a REST-only point
+    shown while 32824 is on, settable 1.1–100.0 kW (firmware 4.10.5, menu
+    7.4.2). Its raw definition as an S1155 serves it (GitHub issue #82)."""
+
+    RAW: ClassVar[dict] = {
+        "title": "Power limita­tion value",
+        "description": "",
+        "metadata": {
+            "type": "metadata",
+            "variableId": 32825,
+            "variableType": "integer",
+            "variableSize": "u16",
+            "unit": "kW",
+            "modbusRegisterType": "MODBUS_NO_REGISTER",
+            "shortUnit": "kW",
+            "isWritable": True,
+            "divisor": 10,
+            "decimal": 1,
+            "modbusRegisterID": 0,
+            "minValue": 11,
+            "maxValue": 1000,
+            "intDefaultValue": 42,
+            "change": 1,
+            "stringDefaultValue": "",
+        },
+        "value": {
+            "type": "datavalue",
+            "isOk": True,
+            "variableId": 32825,
+            "integerValue": 60,
+            "stringValue": "",
+        },
+    }
+
+    def setUp(self):
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
+        self.mqtt = MagicMock()
+        self.mqtt.publish.return_value = MagicMock(rc=0)
+        self.em = _make_em()
+        self.em._pub = MqttDiscoveryPublisher(
+            mqtt_client=self.mqtt,
+            device_info={"identifiers": ["nibe_test"], "name": "Test"},
+            device_id="nibe_test",
+            device_name="Test Device",
+        )
+        self.em._api.fetch_bulk_points.return_value = {"32825": self.RAW}
+        self.assertTrue(self.em._fetch_bulk_data(detect_changes=False))
+        self.info = self.em._pub.publish_entity_discovery(
+            self.em.all_points_by_id[32825], self.em.bulk_data
+        )
+        config_call = next(
+            c for c in self.mqtt.publish.call_args_list if c.args[0].endswith("/config")
+        )
+        self.config = json.loads(config_call.args[1])
+
+    def test_a_writable_number_not_a_diagnostic_sensor(self):
+        self.assertEqual(self.info["entity_type"], "number")
+        self.assertTrue(self.info["is_writable"])
+        self.assertIn("command_topic", self.config)
+        self.assertEqual(self.config["entity_category"], "config")
+
+    def test_its_range_and_step_as_on_the_controller(self):
+        self.assertEqual(
+            (self.config["min"], self.config["max"], self.config["step"]), (1.1, 100.0, 0.1)
+        )
+        self.assertEqual(self.config["unit_of_measurement"], "kW")
+
+    def test_a_value_set_in_home_assistant_is_written_in_tenths(self):
+        import ssl
+
+        from nibe_api import NibeApiClient
+
+        self.assertEqual(self.em._parse_command_payload("5.0", self.info, "t"), 50)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        client = NibeApiClient("https://192.0.2.1:8443/api/v1/devices/0", "Basic dGVzdA==", ctx)
+        response = MagicMock()
+        response.read.return_value = json.dumps({"32825": "modified"}).encode()
+        response.__enter__ = lambda s: s
+        response.__exit__ = lambda *a: False
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            self.assertTrue(client.write_point(32825, 50, self.info))
+        sent = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(sent[0]["variableId"], 32825)
+        self.assertEqual(sent[0]["integerValue"], 50)
+
+
 class TestDetectTypeWithoutOverride(unittest.TestCase):
     """_detect_type_without_override is the dispatch logic extracted out of
     detect_entity_type during this refactor — confirms it alone reproduces

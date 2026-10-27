@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unavailable until it is back; a lower value that lasts 15 minutes is
   accepted as a real reset. Countdowns, such as time to defrosting, are not
   affected.
+- **The power limitation value (32825) can be set from Home Assistant.**
+  Shown while power limitation (32824) is on, it is the fixed limit for the
+  compressor and immersion heater, 1.1–100.0 kW (menu 7.4.2). It was a
+  read-only diagnostic sensor; it is now a number in 0.1 kW steps (issue
+  #82, confirmed on an S1155). As a new entity type it gets a **new entity
+  id**.
 - **The Nibe Menus dashboard follows an entity whose type changed.** When a
   point changes entity type — a drop-down becoming a switch, as time format
   and binary stepping do in this release — Home Assistant gives it a new

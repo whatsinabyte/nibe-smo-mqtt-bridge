@@ -182,12 +182,13 @@ read-only values:
 - Eleven "External reading of value BT1 / BT25 / BT71 / BT5 / BT6 / BT7 /
   BT52 / BT50 / BT68" registers (26703–26711, 29971, 33194, 33196).
 
-The one REST-only point, 32824 "Power limitation activation"
-(`MODBUS_NO_REGISTER`), is flagged `true`.
+The two REST-only points (`MODBUS_NO_REGISTER`), 32824 "Power limitation
+activation" and 32825 "Power limitation value", the limit it applies, are
+flagged `true`. 32825 is only served while 32824 is on.
 
 **Workaround:** the bridge doesn't read `isWritable` at all
 (`is_writable_point()` in `nibe_entity_detection.py`). A holding register,
-or the REST-only point, is writable. An input register, or a point without
+or a REST-only point, is writable. An input register, or a point without
 a register type, is not. The exception is `SAFETY_READ_ONLY_POINTS`, the
 registers DOCS.md lists as intentionally unexposed. These are never written
 and are shown as read-only sensors, whatever their register type: 55749

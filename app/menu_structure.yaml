@@ -5939,7 +5939,8 @@ menus:
       - label: Power limitation activation
         range: off/on
         point_id: 32824
-        note: 'Activates external power limitation. The fixed power limit value is set on the controller display.
+        note: 'Activates external power limitation. While it is on, Power limitation value appears below it: the fixed value,
+          1.1–100.0 kW, to which the compressor''s and the immersion heater''s operating power is limited.
 
           '
       - label: Input AUX1 function
