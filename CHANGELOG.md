@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.4.4] — 2026-10-27
+
+Points a switch shows are now learned when it is changed on the
+controller itself or when they arrive late, lifetime counters no longer
+count double after a controller restart, and the power limitation value
+can be set. SG Ready request, time format, binary stepping, AUX11 and the
+power limitation value now match the controller's own menus — the last
+four as a new entity type, with **new entity ids**.
 
 ### Added
 
