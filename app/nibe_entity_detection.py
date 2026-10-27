@@ -724,6 +724,7 @@ ENTITY_TYPE_OVERRIDES: dict[int, str] = {
     4800: "switch",  # ... pool
     # ── MODBUS_NO_REGISTER — would fall through to sensor/diagnostic without override ──
     32824: "switch",  # Power limitation activation
+    32825: "number",  # Power limitation value — shown while 32824 is on
     # ── THS-10 accessory — auto-detects as number without override ────────────
     5110: "switch",  # Prevent condensation climate system 1
     5214: "switch",  # Limit humidity in the room, cooling climate system 1
@@ -1363,8 +1364,9 @@ def is_writable_point(metadata: dict, point_id: int | None = None) -> bool:
     Input registers are read-only by definition; a holding register is
     writable, and the controller's own per-point write verdict ("modified"
     / "error: read only value", see write_point) has the final word. The
-    one REST-only point (MODBUS_NO_REGISTER: 32824, an on/off switch) is
-    treated as writable too; a point without a register type is not. Judged
+    REST-only points (MODBUS_NO_REGISTER: 32824, power limitation on/off,
+    and 32825, its limit) are treated as writable too; a point without a
+    register type is not. Judged
     per REST point: an input and a holding register can share a Modbus
     register number.
     """
