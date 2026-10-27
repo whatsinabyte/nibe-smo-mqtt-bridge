@@ -15,6 +15,10 @@ import { BRIDGE_CONTAINER, readRetained, setMockValue } from './support/stack';
  * entry must list it as changed. Points added or removed by an update are
  * covered by the unit tests: withholding one here would restart the 5-minute
  * wait.
+ *
+ * The record existing doesn't mean the point set is stable now: a spec run
+ * just before may have withheld a point and served it again, which restarts
+ * the 5-minute wait. The entry is therefore awaited for that long too.
  */
 
 const HISTORY_TOPIC = 'nibe/browser/changelog/history';
@@ -54,7 +58,7 @@ function firmwareEntries(): { note?: string; changed?: { id: number; changes: st
 
 // @slow: the bridge only records once the point set has been stable for 5 minutes.
 test('a firmware update is recorded in the changelog', { tag: '@slow' }, async () => {
-  test.setTimeout(600_000);
+  test.setTimeout(900_000);
 
   let original: number | undefined;
   await expect
@@ -78,7 +82,8 @@ test('a firmware update is recorded in the changelog', { tag: '@slow' }, async (
     await setMockValue(VERSION_POINT, updated);
     await expect
       .poll(() => newEntry() !== undefined, {
-        timeout: 120_000,
+        timeout: 420_000,
+        intervals: [15_000],
         message: `no firmware_change changelog entry noting ${expectedNote}`,
       })
       .toBe(true);
