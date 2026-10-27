@@ -124,6 +124,9 @@ _DISCOVERY_DOMAINS = (
 _POST_WRITE_SCAN_S = 90  # seconds to keep accelerated bulk polling
 # Nibe firmware has ~60s internal cache refresh
 # cycle; 90s gives comfortable margin.
+_LATE_ARRIVAL_S = 180  # after a scan window, new points are still linked to
+# its switch for this long (plus one poll interval) at the normal poll
+# rate — see _late_arrival.
 
 # Pending-write staleness: a write that has been *executing* this long is
 # treated as timed-out. Measured from the moment the write executor picked
@@ -744,6 +747,13 @@ class EntityManager:
         # flips by itself can't keep the poll loop at 5 s.
         self._controller_side_point: int | None = None
         self._controller_side_tried: set[tuple[int, int]] = set()
+        # Points a switch shows that arrive after its scan window — see
+        # _late_arrival. (point, value, until, changed on the controller), or
+        # None. Neither this nor a controller-side window is used until
+        # _attribution_blocked_until after a failed poll, a partial point list
+        # or a firmware version change.
+        self._late_tail: tuple[int, int, float, bool] | None = None
+        self._attribution_blocked_until: float = 0.0
         # Points confirmed present by _resolve_dynamic_points_fast, keyed to
         # expiry time.  The firmware bulk API has a ~60s cache, so the next
         # bulk fetch may return stale data that omits the newly-activated point.
@@ -1802,6 +1812,15 @@ class EntityManager:
                 self.post_write_active = False
                 ended_point = self._post_write_controlling_point
                 self._post_write_controlling_point = None
+                if ended_point is not None:
+                    ended_value = (self.bulk_data.get(ended_point) or {}).get("raw_value")
+                    if ended_value is not None:
+                        self._start_late_tail(
+                            ended_point,
+                            int(ended_value),
+                            ended_point == self._controller_side_point,
+                            after=0,
+                        )
                 self._controller_side_point = None
                 log_commands.info(
                     "Post-write scan window ended for point %s", ended_point
@@ -2525,32 +2544,26 @@ class EntityManager:
     # Bulk data fetch                                                      #
     # ------------------------------------------------------------------ #
 
-    def _controller_side_change(self, response: dict) -> tuple[int, int, int] | None:
-        """The one switch or select changed on the controller itself since the
-        previous poll, as ``(point_id, old_value, new_value)``, when that
-        change should open a scan window — else None.
+    def _attributable_poll(self, response: dict, own_point: int | None = None) -> set[int] | None:
+        """The point ids ``response`` serves, when the points appearing in it
+        may be linked to a switch changed before it — else None.
 
-        Points a switch shows are learned from the scan window an HA write to
-        it opens. A switch flipped on the display opened none, so the first
-        time the firmware served the points it shows they were indexed as
-        static. ``response`` is the new bulk response; ``bulk_data`` still
-        holds the previous poll's values when this runs. The guards keep a
-        wrong link out — a point wrongly recorded as dynamic is disabled the
-        moment it is briefly absent, losing its history:
-
-        - any HA write pending or queued: its own change, whose window it
-          opens itself;
-        - not after initial discovery, or a previously served point missing
-          other than a known dynamic one: a controller restarting serves a
-          partial list, with odd values;
-        - more than one candidate changed: which one shows what can't be told;
-        - the new value already learned (the known-dynamic path handles it),
-          or this (point, value) already opened a window in this run.
+        ``bulk_data`` and ``published_configs`` still hold the previous poll
+        when this runs. Not before initial discovery, nor with an HA write
+        pending or queued (other than one to ``own_point``): that write opens
+        its own window. A previously served point missing — other than a known
+        dynamic one — or a changed firmware version register means a
+        restarting or updating controller, whose new points are the
+        firmware's: no point is linked for _ABSENT_GRACE_S, and a late-arrival
+        period is dropped. A failed poll does the same (_handle_api_failure).
         """
         if not self.initial_discovery_complete or not self.published_configs:
             return None
+        now = time.time()
+        if now < self._attribution_blocked_until:
+            return None
         with self._pending_writes_lock:
-            if self.pending_writes:
+            if set(self.pending_writes) - {own_point}:
                 return None
         with self._write_queue_lock:
             if self._write_queue_depth:
@@ -2563,9 +2576,24 @@ class EntityManager:
                 continue
         with self._em_lock:
             known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
-            entries = list(self.dynamic_point_map.items())
-        if self.published_configs - served - known_dynamic:
+        version_changed = any(
+            ((response.get(str(pid)) or {}).get("value") or {}).get("integerValue")
+            != self.bulk_data[pid].get("raw_value")
+            for pid in _FIRMWARE_VERSION_POINTS
+            if pid in self.bulk_data
+        )
+        if self.published_configs - served - known_dynamic or version_changed:
+            self._attribution_blocked_until = now + _ABSENT_GRACE_S
+            self._late_tail = None
             return None
+        return served
+
+    def _changed_candidates(self, response: dict) -> list[tuple[int, int, int, DynamicPointEntry]]:
+        """The candidate switches and selects whose value differs between the
+        previous poll (``bulk_data``) and ``response``, as
+        ``(point_id, old_value, new_value, entry)``."""
+        with self._em_lock:
+            entries = list(self.dynamic_point_map.items())
         changed: list[tuple[int, int, int, DynamicPointEntry]] = []
         for pid, entry in entries:
             if entry.firmware_removed:
@@ -2579,15 +2607,106 @@ class EntityManager:
             if new_value is None or old_value is None or new_value == old_value:
                 continue
             changed.append((pid, int(old_value), int(new_value), entry))
+        return changed
+
+    def _controller_side_change(self, response: dict) -> tuple[int, int, int] | None:
+        """The one switch or select changed on the controller itself since the
+        previous poll, as ``(point_id, old_value, new_value)``, when that
+        change should open a scan window — else None.
+
+        Points a switch shows are learned from the scan window an HA write to
+        it opens. A switch flipped on the display opened none, so the first
+        time the firmware served the points it shows they were indexed as
+        static. ``response`` is the new bulk response; ``bulk_data`` still
+        holds the previous poll's values when this runs. The guards keep a
+        wrong link out — a point wrongly recorded as dynamic is disabled the
+        moment it is briefly absent, losing its history:
+
+        - the poll must be attributable (_attributable_poll): no HA write
+          pending or queued, and no sign of a restarting or updating
+          controller;
+        - more than one candidate changed: which one shows what can't be told;
+        - the new value already learned (the known-dynamic path handles it),
+          or this (point, value) already opened a window in this run. Points
+          such a change shows that weren't known yet are still linked to it
+          when they arrive (_late_arrival).
+        """
+        if self._attributable_poll(response) is None:
+            return None
+        changed = self._changed_candidates(response)
         if len(changed) != 1:
             return None
         pid, old_value, new_value, entry = changed[0]
-        if new_value not in entry.unprocessed_values:
+        if (
+            new_value in entry.unprocessed_values
+            and (pid, new_value) not in self._controller_side_tried
+        ):
+            self._controller_side_tried.add((pid, new_value))
+            return pid, old_value, new_value
+        self._start_late_tail(pid, new_value, True, after=_POST_WRITE_SCAN_S)
+        return None
+
+    def _start_late_tail(
+        self, point_id: int, value: int, controller_side: bool, after: float
+    ) -> None:
+        """Link new points to ``point_id`` at ``value`` for ``after`` seconds
+        plus the late-arrival period (_late_arrival)."""
+        until = time.time() + after + _LATE_ARRIVAL_S + self.bulk_interval
+        self._late_tail = (point_id, value, until, controller_side)
+
+    def _late_arrival(self, response: dict) -> tuple[int, int, bool, list[int]] | None:
+        """New points that arrive after a switch's scan window ended, as
+        ``(point_id, value, changed_on_controller, new_point_ids)`` — else None.
+
+        The firmware serves the points a switch shows about a minute after it
+        changes, but not always within the 90 s window: an HA write to a
+        switch not learned yet then recorded "shows nothing" for both its
+        values, after which it was never scanned again, and its points were
+        indexed as static whenever they came. So a window that ends leaves a
+        late-arrival period (_start_late_tail): points that are new — not
+        served before, not indexed, not known dynamic — in an attributable
+        poll during it are linked to that switch. A write to a switch learned
+        as showing nothing, or a learned value set on the controller, opens no
+        window but leaves the same period, so a switch learned wrongly before
+        is corrected the next time its points arrive. The period ends at its
+        first use, when the switch no longer has that value, or when another
+        switch or select changes.
+        """
+        tail = self._late_tail
+        if tail is None:
             return None
-        if (pid, new_value) in self._controller_side_tried:
+        point_id, value, until, controller_side = tail
+        if time.time() > until:
+            self._late_tail = None
             return None
-        self._controller_side_tried.add((pid, new_value))
-        return pid, old_value, new_value
+        served = self._attributable_poll(response, own_point=point_id)
+        if served is None:
+            return None
+        current = ((response.get(str(point_id)) or {}).get("value") or {}).get("integerValue")
+        others = [c for c in self._changed_candidates(response) if c[0] != point_id]
+        if current != value or others:
+            self._late_tail = None
+            return None
+        with self._em_lock:
+            known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
+        new = sorted(served - self.published_configs - self.baseline_point_ids - known_dynamic)
+        if not new:
+            return None
+        self._late_tail = None
+        return point_id, value, controller_side, new
+
+    def _open_learning_window(self, point_id: int, controller_side: bool) -> bool:
+        """Open a scan window for ``point_id`` from the poll loop, unless one
+        is open — an HA write's window keeps its own point. Same field order
+        as _open_post_write_scan."""
+        with self._post_write_lock:
+            if self.post_write_active:
+                return False
+            self._post_write_controlling_point = point_id
+            self.post_write_active = True
+            self._post_write_until = time.time() + self._post_write_duration
+            self._controller_side_point = point_id if controller_side else None
+        return True
 
     def _fetch_bulk_data(
         self,
@@ -2669,31 +2788,37 @@ class EntityManager:
                 # as its dynamic points instead of indexed as static ones.
                 # Decided before the point loop below, which would otherwise
                 # classify points arriving in this same poll first.
+                # Points arriving after a window ended are linked the same
+                # way (_late_arrival).
                 changed = self._controller_side_change(response)
-                if changed is not None:
-                    pid, old_value, new_value = changed
-                    with self._post_write_lock:
-                        # An HA write may have opened a window meanwhile; it
-                        # keeps it. Same field order as _open_post_write_scan.
-                        if not self.post_write_active:
-                            self._post_write_controlling_point = pid
-                            self.post_write_active = True
-                            self._post_write_until = time.time() + self._post_write_duration
-                            self._controller_side_point = pid
-                            post_write_snapshot = True
-                            controlling_point_snapshot = pid
-                    if post_write_snapshot:
-                        detect_changes = True
-                        # pragma: no mutate start
-                        log_discovery.info(
-                            "Point %d changed on the controller (%s -> %s) — scan window "
-                            "opened for up to %ds to learn the points it shows",
-                            pid,
-                            old_value,
-                            new_value,
-                            self._post_write_duration,
-                        )
-                        # pragma: no mutate end
+                late = self._late_arrival(response) if changed is None else None
+                if changed is not None and self._open_learning_window(changed[0], True):
+                    post_write_snapshot = True
+                    controlling_point_snapshot = changed[0]
+                    detect_changes = True
+                    # pragma: no mutate start
+                    log_discovery.info(
+                        "Point %d changed on the controller (%s -> %s) — scan window "
+                        "opened for up to %ds to learn the points it shows",
+                        changed[0],
+                        changed[1],
+                        changed[2],
+                        self._post_write_duration,
+                    )
+                    # pragma: no mutate end
+                elif late is not None and self._open_learning_window(late[0], late[2]):
+                    post_write_snapshot = True
+                    controlling_point_snapshot = late[0]
+                    detect_changes = True
+                    # pragma: no mutate start
+                    log_discovery.info(
+                        "New point(s) %s arrived after the scan window for point %d "
+                        "(value %d) — learning them as points it shows",
+                        late[3],
+                        late[0],
+                        late[1],
+                    )
+                    # pragma: no mutate end
             # scan_type/known_count are only ever read by the debug log
             # below, and that entire log call is itself unobservable —
             # nothing captures/formats this log record in tests, so even a
@@ -3136,6 +3261,10 @@ class EntityManager:
         back to reading it fresh, for callers with no closer capture point.
         """
         self.api_consecutive_failures += 1
+        # A controller that doesn't answer may be restarting or updating:
+        # points it serves next are its own, not a switch's (_attributable_poll).
+        self._attribution_blocked_until = time.time() + _ABSENT_GRACE_S
+        self._late_tail = None
         if last_error is None:
             # pragma: no mutate start — self._api is always a NibeAPI
             # instance, whose __init__ unconditionally sets last_error;
@@ -4194,7 +4323,9 @@ class EntityManager:
                 entry = self.dynamic_point_map.get(point_id)
 
                 if entry is not None and entry.is_fully_processed() and not entry.is_controlling:
-                    # Case A1: non-controlling — no scan needed.
+                    # Case A1: non-controlling — no scan needed. Points it
+                    # does show after all (learned from a window they came
+                    # too late for) are still linked when they arrive.
                     # pragma: no mutate start
                     log_commands.debug(
                         "%sPoint %d is non-controlling — no dynamic scan needed",
@@ -4202,6 +4333,8 @@ class EntityManager:
                         point_id,
                     )
                     # pragma: no mutate end
+                    if int_value is not None:
+                        self._start_late_tail(point_id, int_value, False, after=_POST_WRITE_SCAN_S)
 
                 elif (
                     entry is not None

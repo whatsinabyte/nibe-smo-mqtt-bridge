@@ -1,9 +1,10 @@
 """
 test_entity_manager_controller_side.py
 ======================================
-Learning the points a switch shows when it is changed on the controller
-itself, not through Home Assistant (EntityManager._controller_side_change and
-its use in _fetch_bulk_data).
+Learning the points a switch shows outside the scan window of an HA write:
+when it is changed on the controller itself (_controller_side_change), and
+when its points arrive after the window ended (_late_arrival), and the
+guards both share (_attributable_poll).
 Part of the Nibe S-Series MQTT Bridge test suite.
 Shared fixtures are in conftest.py.
 """
@@ -11,6 +12,7 @@ Shared fixtures are in conftest.py.
 import unittest
 from unittest.mock import patch
 
+import nibe_entity_manager
 from conftest import _make_em
 
 SWITCH = 1001  # a candidate controlling switch
@@ -89,11 +91,14 @@ class TestControllerSideChange(_Base):
         self.assertIsNone(self.em._controller_side_change(self._response(switch=1, other=1)))
 
     def test_learned_value(self):
-        """A learned pair takes the known-dynamic path; no window needed."""
+        """A learned pair takes the known-dynamic path; no window needed —
+        only a late-arrival period, for points it shows that aren't known."""
         entry = self.em.dynamic_point_map._table[SWITCH]
         entry.unprocessed_values.discard(1)
         entry.processed_values.add(1)
         self.assertIsNone(self.em._controller_side_change(self._response(switch=1)))
+        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
+        self.assertTrue(self.em._late_tail[3])
 
     def test_pending_ha_write(self):
         """An HA write shows its own change in the next poll and opens its
@@ -204,6 +209,172 @@ class TestChangelogMarksAControllerSideChange(_Base):
 
     def test_an_ha_write_window_does_not(self):
         self.assertNotIn("changed_on", self._triggered_by())
+
+
+class TestLateArrival(_Base):
+    """Points a switch shows that arrive after its scan window ended."""
+
+    def setUp(self):
+        super().setUp()
+        self.em.bulk_data[SWITCH]["raw_value"] = 1
+        self.em._start_late_tail(SWITCH, 1, False, after=0)
+
+    def test_new_points_are_the_switchs(self):
+        self.assertEqual(
+            self.em._late_arrival(self._response(switch=1, new=True)), (SWITCH, 1, False, [NEW])
+        )
+        self.assertIsNone(self.em._late_tail)
+
+    def test_nothing_new_keeps_the_period(self):
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1)))
+        self.assertIsNotNone(self.em._late_tail)
+
+    def test_the_period_ends(self):
+        with patch("nibe_entity_manager.time.time", return_value=self.em._late_tail[2] + 1):
+            self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
+        self.assertIsNone(self.em._late_tail)
+
+    def test_lasts_the_late_arrival_time_plus_a_poll(self):
+        with patch("nibe_entity_manager.time.time", return_value=1000.0):
+            self.em._start_late_tail(SWITCH, 1, False, after=90)
+        self.assertEqual(
+            self.em._late_tail[2], 1000 + 90 + nibe_entity_manager._LATE_ARRIVAL_S + 30
+        )
+
+    def test_the_switch_set_back(self):
+        self.assertIsNone(self.em._late_arrival(self._response(switch=0, new=True)))
+        self.assertIsNone(self.em._late_tail)
+
+    def test_another_switch_changed(self):
+        """Which one shows the new point can't be told any more."""
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, other=1, new=True)))
+        self.assertIsNone(self.em._late_tail)
+
+    def test_a_known_dynamic_point_is_not_new(self):
+        from nibe_dynamic_map import DynamicPointEntry
+
+        self.em.dynamic_point_map._table[4001] = DynamicPointEntry(
+            point_id=4001,
+            title="Switch 4001",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=True,
+            dynamic_points_by_value={0: [], 1: [NEW]},
+        )
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
+
+    def test_an_indexed_point_is_not_new(self):
+        self.em.baseline_point_ids.add(NEW)
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
+
+    def test_a_write_to_another_point_pending(self):
+        self.em.pending_writes[OTHER] = {"value": 1}
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
+        self.assertIsNotNone(self.em._late_tail)
+
+    def test_the_switchs_own_write_pending(self):
+        self.em.pending_writes[SWITCH] = {"value": 1}
+        self.assertIsNotNone(self.em._late_arrival(self._response(switch=1, new=True)))
+
+    def test_a_partial_point_list(self):
+        """A restarting controller: whatever it serves next is its own."""
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, static=False, new=True)))
+        self.assertIsNone(self.em._late_tail)
+        self.assertGreater(self.em._attribution_blocked_until, 0)
+
+    def test_a_firmware_version_change(self):
+        """New points that come with a firmware update are the firmware's."""
+        self.em.bulk_data[2509] = {"raw_value": 1038, "metadata": {}}
+        self.em.published_configs.add(2509)
+        response = self._response(switch=1, new=True)
+        response["2509"] = _point(1039, writable=False)
+        self.assertIsNone(self.em._late_arrival(response))
+        self.assertIsNone(self.em._late_tail)
+
+    def test_a_failed_poll(self):
+        self.em._handle_api_failure("timeout")
+        self.assertIsNone(self.em._late_tail)
+        self.em._start_late_tail(SWITCH, 1, False, after=0)
+        self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
+        with patch(
+            "nibe_entity_manager.time.time",
+            return_value=self.em._attribution_blocked_until + 1,
+        ):
+            self.em._start_late_tail(SWITCH, 1, False, after=0)
+            self.assertIsNotNone(self.em._late_arrival(self._response(switch=1, new=True)))
+
+    def test_no_controller_side_window_while_blocked(self):
+        self.em._attribution_blocked_until = 1e12
+        self.assertIsNone(self.em._controller_side_change(self._response(switch=0, other=1)))
+
+
+class TestLatePeriodStarts(_Base):
+    def test_when_a_scan_window_ends(self):
+        self.em.bulk_data[SWITCH]["raw_value"] = 1
+        self.em.post_write_active = True
+        self.em._post_write_controlling_point = SWITCH
+        self.em._post_write_until = 1.0
+        with patch.object(self.em, "_fetch_bulk_data", return_value=True):
+            self.em.update_all_states()
+        self.assertFalse(self.em.post_write_active)
+        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
+        self.assertFalse(self.em._late_tail[3])
+
+    def test_when_a_controller_side_window_ends(self):
+        self.em.bulk_data[SWITCH]["raw_value"] = 1
+        self.em.post_write_active = True
+        self.em._post_write_controlling_point = SWITCH
+        self.em._controller_side_point = SWITCH
+        self.em._post_write_until = 1.0
+        with patch.object(self.em, "_fetch_bulk_data", return_value=True):
+            self.em.update_all_states()
+        self.assertTrue(self.em._late_tail[3])
+
+    def test_when_a_switch_learned_as_showing_nothing_is_written(self):
+        """It opens no window, but points it does show after all are still
+        linked when they come."""
+        from nibe_dynamic_map import DynamicPointEntry
+
+        self.em.dynamic_point_map._table[SWITCH] = DynamicPointEntry(
+            point_id=SWITCH,
+            title="Switch",
+            entity_type="switch",
+            processed_values={0, 1},
+            unprocessed_values=set(),
+            is_controlling=False,
+            dynamic_points_by_value={0: [], 1: []},
+        )
+        self.em._api.write_point.return_value = True
+        info = {
+            "point_id": SWITCH,
+            "entity_type": "switch",
+            "metadata": {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"},
+            "point_data": {},
+            "is_degenerate_range": False,
+            "state_topic": f"nibe/state/{SWITCH}",
+        }
+        with patch.object(self.em, "_open_post_write_scan") as scan:
+            self.em._handle_command_worker(info, 1, "1", "cmd-id")
+        scan.assert_not_called()
+        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
+
+
+class TestFetchBulkDataLinksLatePoints(_Base):
+    def test_a_switch_learned_as_showing_nothing_is_corrected(self):
+        """The trap this exists for: a window that ended before the points
+        came recorded "shows nothing" for both values of a switch."""
+        self.em.dynamic_point_map.record_outcome(SWITCH, 1, [])
+        entry = self.em.dynamic_point_map._table[SWITCH]
+        self.assertFalse(entry.is_controlling)
+        self.em.bulk_data[SWITCH]["raw_value"] = 1
+        self.em._start_late_tail(SWITCH, 1, False, after=0)
+        self.em._api.fetch_bulk_points.return_value = self._response(switch=1, new=True)
+        with patch.object(self.em, "_update_changelog_history"):
+            self.em._fetch_bulk_data(detect_changes=False)
+        self.assertEqual(entry.dynamic_points_by_value[1], [NEW])
+        self.assertTrue(entry.is_controlling)
+        self.assertIn(NEW, self.em.active_dynamic_points)
+        self.assertEqual(self.em._post_write_controlling_point, SWITCH)
 
 
 if __name__ == "__main__":
