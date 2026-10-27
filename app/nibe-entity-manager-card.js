@@ -3442,7 +3442,9 @@ class NibeEntityManager extends HTMLElement {
           ? `<div style="margin-top:6px;font-size:11px;color:var(--ha-color-secondary-text,#888);">
                ↳ Triggered by: <strong>${trig.title && trig.title !== `Point ${trig.id}` ? this._esc(trig.title) : `Point ${this._num(trig.id)}`}</strong>
                <span style="opacity:0.6;">(#${this._num(trig.id)})</span>${
-                 trig.value !== undefined ? ` — value written: <strong>${this._esc(String(trig.value))}</strong>` : ''
+                 trig.value !== undefined
+                   ? ` — ${trig.changed_on === 'controller' ? 'set on the controller to' : 'value written'}: <strong>${this._esc(String(trig.value))}</strong>`
+                   : ''
                }
              </div>`
           : '';

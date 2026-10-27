@@ -120,7 +120,7 @@ For individual point updates (a dynamic point appearing, a point returning after
 
 **Field notes:**
 - `added` / `removed` — arrays of point IDs that appeared or disappeared in this event
-- `triggered_by` — an object `{id, title, value?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID
+- `triggered_by` — an object `{id, title, value?, changed_on?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID. `changed_on: "controller"` is present when the switch was changed on the controller itself rather than written through Home Assistant
 
 This same `change_event` object (including `triggered_by`'s object shape) is what gets appended, unmodified, into `nibe/browser/changelog/history` below.
 
@@ -190,7 +190,7 @@ The card compares it with its own build, which the bridge writes into the copy o
 - `added` / `removed` — the points that appeared or disappeared in this event, each `{id, title, type}`
 - `source` — `"firmware"` when the controller showed or hid points (the card's "controller" badge), or `"firmware_change"` for a firmware update (the "firmware update" badge). A firmware update entry is shown even when it adds or removes no point. The card also has renderers for `"learning"` and `"ha_disabled"`, which the bridge doesn't currently send
 - `note` — only on `"firmware_change"` entries: the version registers that changed, old → new
-- `triggered_by` — an object `{id, title, value?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID (same shape as `nibe/browser/dynamic`'s `triggered_by` above, since this entry is built from that same event)
+- `triggered_by` — an object `{id, title, value?, changed_on?}` describing the controlling switch/select that caused the change, or `null` if unknown — **not** a bare point ID (same shape as `nibe/browser/dynamic`'s `triggered_by` above, since this entry is built from that same event)
 - `_seq` — monotonically increasing sequence number; the card uses this to skip stale retained messages after a map flush
 
 ---

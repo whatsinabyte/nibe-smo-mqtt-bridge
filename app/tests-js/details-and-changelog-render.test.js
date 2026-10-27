@@ -283,6 +283,19 @@ describe('_renderChangelogContent() — source variants', () => {
     expect(html).toContain('value written');
   });
 
+  it('says a value changed on the controller was set there, not written', async () => {
+    const { el, harness } = createCard();
+    await publishAndOpen(el, harness, {
+      source: 'firmware',
+      added: [{ id: 9, title: 'New pt', type: 'sensor' }],
+      removed: [],
+      triggered_by: { id: 5, title: 'Mode switch', value: 1, changed_on: 'controller' },
+    });
+    const html = el.shadowRoot.getElementById('changelog-content').innerHTML;
+    expect(html).toContain('set on the controller to');
+    expect(html).not.toContain('value written');
+  });
+
   it('renders a triggered_by point with no distinct title using the "Point {id}" fallback', async () => {
     const { el, harness } = createCard();
     await publishAndOpen(el, harness, {
