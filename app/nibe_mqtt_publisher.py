@@ -788,6 +788,9 @@ class MqttDiscoveryPublisher:
             "is_writable": is_writable,
             "point_data": point,
             "is_degenerate_range": config.get("_degenerate_range", False),
+            # A drop below its last value is published unavailable — see
+            # EntityManager._running_total_dropped.
+            "is_running_total": config.get("state_class") == "total_increasing",
             # Resolved once at discovery time — avoids repeated get_value_mapping()
             # calls on every poll for select/sensor entities with enum descriptions.
             # The register_type argument (metadata.get('modbusRegisterType'))

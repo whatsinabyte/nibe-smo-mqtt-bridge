@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a switch learned wrongly this way before is corrected the next time it is
   switched and its points come — unless the controller restarts or updates
   its firmware meanwhile, whose new points are its own.
+- **Energy totals, operating hours and compressor starts no longer count
+  double after a controller restart** (issue #132). A restarting controller
+  can report 0 for a lifetime counter for a moment; Home Assistant took the
+  return to the real value for a counter reset and counted the whole
+  lifetime total again — in the Energy dashboard, utility meters and
+  statistics. A running total lower than its last value is now shown as
+  unavailable until it is back; a lower value that lasts 15 minutes is
+  accepted as a real reset. Countdowns, such as time to defrosting, are not
+  affected.
 - **The Nibe Menus dashboard follows an entity whose type changed.** When a
   point changes entity type — a drop-down becoming a switch, as time format
   and binary stepping do in this release — Home Assistant gives it a new

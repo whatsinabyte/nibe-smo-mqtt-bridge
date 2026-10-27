@@ -227,6 +227,29 @@ and disabled at once, deleting its Home Assistant entity and history. Now
 only a point already known to be dynamic is treated that way. Any other
 point gets the same grace period as at any other time.
 
+## A restarting controller can serve 0 for a lifetime counter
+
+During the 4.14.6 firmware update's restart, a VVM S320 served 0 for its
+lifetime energy counters (total consumption, total production), then their
+real values again (GitHub issue #132). Other points showed out-of-range
+values at the same moment. The 0 reached Home Assistant as a valid value.
+Home Assistant takes any decrease of a `total_increasing` sensor for a
+counter reset, so it counted the whole lifetime total again as new
+consumption, in its long-term statistics, utility meters and Energy
+dashboard.
+
+**Workaround:** a running total — a point published as `total_increasing`:
+energy totals, operating hours, compressor starts — that is lower than its
+last published value is published unavailable instead, until it is back at
+or above that value. Home Assistant skips an unavailable sensor in its
+statistics. A lower value that lasts 15 minutes is accepted as a real reset.
+Values are compared with the divisor applied, and the last ones are kept in
+`/data/running_totals.json`, so a drop right after the bridge restarts (a
+power cut restarting both) is caught too. Countdowns such as time to
+defrosting are measurements, not running totals, and every value of theirs
+is passed on. Only drops are caught: a value too high can't be told from
+real consumption.
+
 ## Undocumented "multiple-of-ten" enum encoding
 
 A recurring, entirely undocumented convention across several unrelated
