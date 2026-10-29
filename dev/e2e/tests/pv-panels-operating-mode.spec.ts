@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, pointEntityId, setMockValue, bridgeEnabled } from './support/stack';
 
 /**
  * "Operating mode PV panels" (1021) uses the SG Ready four-state encoding.
@@ -45,7 +45,7 @@ async function haState(token: string, entityId: string): Promise<string> {
 test('PV panels operating mode (1021) shows Normal / Block / Low price / Boost', async () => {
   test.setTimeout(300_000);
   const token = readToken();
-  const enabledHere = !(await pointEntityId(token, POINT));
+  const enabledHere = !bridgeEnabled(POINT);
   try {
     if (enabledHere) {
       await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(POINT));

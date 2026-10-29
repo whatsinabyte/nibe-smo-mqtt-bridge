@@ -48,6 +48,12 @@ log_startup = logging.getLogger("nibe.startup")
 _menu_structure_cache: dict[str, list] = {}
 _menu_structure_cache_lock = threading.Lock()
 
+# One menu dashboard build at a time (_setup_menu_dashboard), and the
+# fingerprint of the config it last saved (_setup_menu_dashboard_lovelace),
+# read and written under that lock.
+_menu_dashboard_lock = threading.Lock()
+_last_saved_menu_fingerprint: str | None = None
+
 
 def _reset_menu_structure_cache() -> None:
     """Clear the cached parsed menu_structure.yaml. Test-only hook."""
@@ -1501,10 +1507,27 @@ def _setup_menu_dashboard(
 ) -> bool:
     """Build and save the Nibe Menus Lovelace dashboard config.
 
-    Always rebuilds and saves the full config on every call — ensures
-    state values are always current after any startup or restart.
-    Only skips the dashboard creation call if the dashboard already
-    exists in HA (creation is a one-time WebSocket operation).
+    One build at a time: a change can schedule a second build while the
+    first is still waiting for the registry (a registry refresh, or a
+    switch turned off right after it was turned on). Run side by side,
+    the older build could save after the newer one; queued, each reads
+    the latest state. See _setup_menu_dashboard_build for the build.
+    """
+    with _menu_dashboard_lock:
+        return _setup_menu_dashboard_build(open_ws_fn, registry_watcher, debug_mode)
+
+
+def _setup_menu_dashboard_build(
+    open_ws_fn: Callable, registry_watcher: "HAEntityRegistryWatcher", debug_mode: bool = False
+) -> bool:
+    """Build the Nibe Menus Lovelace dashboard config and save it.
+
+    Always rebuilds the full config — ensures state values are always
+    current after any startup or restart. It is saved unless it is the
+    same as the config this process last saved (see
+    _setup_menu_dashboard_lovelace). Only skips the dashboard creation
+    call if the dashboard already exists in HA (creation is a one-time
+    WebSocket operation).
 
     Takes open_ws_fn (callable → (ws, next_id) | None) rather than a
     pre-opened ws, because the registry wait below can take up to 60s.
@@ -1673,7 +1696,17 @@ def _setup_menu_dashboard_lovelace(
 
     Returns True if a retry is needed, False if the dashboard was saved
     successfully (or failed fatally and should not be retried).
+
+    A config identical to the one this process last saved isn't saved
+    again when the dashboard already exists. Each save fires
+    lovelace_updated, which reloads the dashboard in every open browser,
+    and one change used to save the same config twice: the build it
+    scheduled, then the one the registry watcher schedules when its
+    refresh maps the new entities. The first save after a start always
+    happens, and so does any save that creates the dashboard.
     """
+    global _last_saved_menu_fingerprint
+    existed = False
     dashboards = _ws_call(ws, next_id(), {"type": "lovelace/dashboards/list"})
     if _should_attempt_dashboard_create(dashboards, _MENU_DASHBOARD_SLUG):
         resp = _ws_call(
@@ -1702,7 +1735,15 @@ def _setup_menu_dashboard_lovelace(
         log_startup.warning("lovelace/dashboards/list call returned no result — will retry.")
         return True
     else:
+        existed = True
         log_startup.debug("Nibe Menus dashboard already exists — skipping create")
+
+    fingerprint = hashlib.sha256(
+        json.dumps(dashboard_config, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if existed and fingerprint == _last_saved_menu_fingerprint:
+        log_startup.debug("Nibe Menus dashboard unchanged — not saved again")
+        return _menu_dashboard_needs_retry(entity_manager, registry_watcher, available_menu_points)
 
     # Save the dashboard config (views + cards)
     resp = _ws_call(
@@ -1717,6 +1758,7 @@ def _setup_menu_dashboard_lovelace(
 
     log_startup.debug("lovelace/config/save response: %s", resp)
     if resp.get("success"):
+        _last_saved_menu_fingerprint = fingerprint
         view_count = len(dashboard_config["views"])
         log_startup.info(
             "Nibe Menus dashboard provisioned with %d menu view(s). "
@@ -1735,27 +1777,35 @@ def _setup_menu_dashboard_lovelace(
             },
         )
 
-        # Verify all active dynamic points are in the registry.
-        # Only retry if menu entities resolved correctly (registry is up)
-        # but dynamic point(s) still missing.
-        # menu_resolved is only ever compared against 0 below, so the
-        # per-point weight (1) is unobservable — any positive constant
-        # would behave identically.
-        menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
-        missing_dynamic = [
-            p for p in entity_manager.active_dynamic_points if not registry_watcher.entity_id_for(p)
-        ]
-        if missing_dynamic and menu_resolved > 0:
-            log_startup.debug(
-                "Dashboard saved but %d dynamic point(s) not yet in registry — retry needed: %s",
-                len(missing_dynamic),
-                missing_dynamic,
-            )
-            return True  # needs retry
-        return False  # all good
+        return _menu_dashboard_needs_retry(entity_manager, registry_watcher, available_menu_points)
     else:
         log_startup.warning("Menu dashboard config save failed: %s", resp)
         return False
+
+
+def _menu_dashboard_needs_retry(
+    entity_manager: "EntityManager",
+    registry_watcher: "HAEntityRegistryWatcher",
+    available_menu_points: set,
+) -> bool:
+    """Whether the dashboard just saved (or found unchanged) needs another
+    build: active dynamic points still missing from the registry while menu
+    entities did resolve (so the registry is up)."""
+    # menu_resolved is only ever compared against 0 below, so the
+    # per-point weight (1) is unobservable — any positive constant
+    # would behave identically.
+    menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
+    missing_dynamic = [
+        p for p in entity_manager.active_dynamic_points if not registry_watcher.entity_id_for(p)
+    ]
+    if missing_dynamic and menu_resolved > 0:
+        log_startup.debug(
+            "Dashboard saved but %d dynamic point(s) not yet in registry — retry needed: %s",
+            len(missing_dynamic),
+            missing_dynamic,
+        )
+        return True  # needs retry
+    return False  # all good
 
 
 def _open_ha_websocket() -> tuple[Any, Callable[[], int]] | None:

@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Setpoints and buttons no longer wait while a switch is being learned.**
+  After a switch or drop-down is changed for the first time, the bridge
+  spends up to a minute and a half learning which settings it shows. Every
+  write sent in that time used to wait for it, including setpoints and
+  button presses, which can't show anything. Now only a write to another
+  switch or drop-down waits, and only until the controller has shown the
+  first one's effect.
+
+### Fixed
+
+- **The Nibe Menus dashboard reloads once after a setting appears or goes
+  away, not twice.** Each save of the dashboard reloads it in every open
+  browser, and one change used to save the same dashboard two or three
+  times within seconds. The bridge now skips a save when nothing in the
+  dashboard changed.
+
+- **Settings that went away no longer stay in Home Assistant when it was
+  reconnecting at that moment.** When a switch is turned off, the bridge
+  removes the settings it showed. If Home Assistant's connection to the MQTT
+  broker was down just then, it never heard of the removal and kept those
+  entities until it restarted. The bridge now sends the removal again when
+  Home Assistant comes back online and when the bridge starts.
+
+- **A switch changed on the controller while the bridge learns another no
+  longer gets its settings credited to that other switch.** If, during the
+  minute and a half the bridge watches a switch it has just changed,
+  another switch was changed on the controller's display, the settings that
+  one showed were recorded as shown by the first. Nothing is recorded from
+  such a window now; both switches are learned on a later change.
+
+- **Switches no longer jump back and forth after being switched.** Home
+  Assistant flips a switch back when its state hasn't followed within two
+  seconds, and the controller sometimes takes longer than that to accept a
+  write, so a switch could go on, off and on again. The bridge now shows the
+  requested state at once, and puts the controller's own value back if the
+  write fails. The same goes for drop-downs and numbers.
+
+- **Two switches changed shortly after each other each get their own
+  "Dashboard updated" notification.** Both used to share one notification,
+  so the second replaced the first and the settings the first switch showed
+  went unmentioned. Changing the same switch again still replaces its own
+  notification, so it always shows that switch's latest state.
+
+- **Switching a setting on and straight off again no longer teaches the
+  bridge that "off" shows the settings "on" does.** Home Assistant gets the
+  new value of a switch within seconds, but the list of settings the
+  controller offers takes up to a minute to follow. Settings shown by "on"
+  could therefore first turn up when the switch already read "off", and were
+  recorded as shown by "off" too. They then stayed on the dashboard under
+  "off" and were expected back after a restart. Now nothing is recorded when
+  a switch was set to two different values within the same minute and a half,
+  or when it no longer reads the value it was set to.
+
+- **A controller restart while the bridge is learning a switch no longer
+  teaches it that the switch shows nothing.** The bridge learns which points
+  a switch or drop-down shows by watching what appears after it is changed.
+  If the controller restarted or stopped answering during that minute and a
+  half, the bridge could conclude that the switch shows nothing — and, for an
+  on/off switch, that its other position shows nothing either — so the points
+  it does show were later added as ordinary entities. Such a window now
+  teaches nothing, and the switch is learned the next time it is changed.
+
 ## [1.4.4] — 2026-10-27
 
 Points a switch shows are now learned when it is changed on the

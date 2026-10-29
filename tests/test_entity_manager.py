@@ -2118,17 +2118,13 @@ class TestInitAttributeDefaults(unittest.TestCase):
         em = _make_em()
         self.assertIs(em.post_write_active, False)
 
-    def test_post_write_until_starts_at_exactly_zero(self):
+    def test_no_post_write_window_at_start(self):
         em = _make_em()
-        self.assertEqual(em._post_write_until, 0.0)
+        self.assertIsNone(em._window)
 
     def test_post_write_interval_is_five(self):
         em = _make_em()
         self.assertEqual(em.post_write_interval, 5)
-
-    def test_post_write_controlling_point_starts_none(self):
-        em = _make_em()
-        self.assertIsNone(em._post_write_controlling_point)
 
     def test_api_failure_threshold_is_three(self):
         em = _make_em()

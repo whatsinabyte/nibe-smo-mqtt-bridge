@@ -1020,6 +1020,6 @@ class TestOpenPostWriteScan(unittest.TestCase):
         em = _make_em()
         with patch("nibe_entity_manager.time.time", return_value=1_000_000.0):
             em._open_post_write_scan(42)
-        self.assertEqual(em._post_write_controlling_point, 42)
+        self.assertEqual(em._window.point, 42)
         self.assertIs(em.post_write_active, True)
-        self.assertEqual(em._post_write_until, 1_000_000.0 + em._post_write_duration)
+        self.assertEqual(em._window.until, 1_000_000.0 + em._post_write_duration)

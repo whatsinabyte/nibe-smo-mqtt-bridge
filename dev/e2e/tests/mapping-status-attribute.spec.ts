@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId } from './support/stack';
+import { HA_URL, pointEntityId, bridgeEnabled } from './support/stack';
 
 /**
  * Entities whose value labels come from the bridge say how far those labels
@@ -43,7 +43,7 @@ test('value label status reaches Home Assistant as the mapping attribute', async
   const enabledHere: number[] = [];
   try {
     for (const [pointId] of CASES) {
-      if (!(await pointEntityId(token, pointId))) {
+      if (!bridgeEnabled(pointId)) {
         await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(pointId));
         enabledHere.push(pointId);
       }

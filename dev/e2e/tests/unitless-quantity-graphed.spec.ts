@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId } from './support/stack';
+import { HA_URL, pointEntityId, bridgeEnabled } from './support/stack';
 
 /**
  * A unitless quantity is graphed, a running total counts up, and a unitless
@@ -48,7 +48,7 @@ test('unitless quantities and running totals get the right state class', async (
   const enabledHere: number[] = [];
   try {
     for (const [pointId] of EXPECTED) {
-      if (!(await pointEntityId(token, pointId))) {
+      if (!bridgeEnabled(pointId)) {
         await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(pointId));
         enabledHere.push(pointId);
       }

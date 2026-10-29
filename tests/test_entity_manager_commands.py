@@ -7,6 +7,7 @@ for file-size/maintainability. Shared fixtures are in conftest.py.
 
 import json
 import os
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock, patch
 _UNSET = object()
 
 from conftest import (
+    _learning_value,
     _make_em,
 )
 from hypothesis import example, given
@@ -889,7 +891,7 @@ class TestPendingWriteGuard(unittest.TestCase):
         is destructive and a brief gap is normal after a controller reboot or
         firmware update."""
         del self.em.bulk_data[self.point_id]
-        self.em.post_write_active = False
+        self.em._window = None
         self.em._update_entity_state(self.entity_info)
         self.em.mqtt.publish.assert_called_with(
             self.entity_info["availability_topic"], "offline", retain=True
@@ -902,7 +904,7 @@ class TestPendingWriteGuard(unittest.TestCase):
         import nibe_entity_manager as nem
 
         del self.em.bulk_data[self.point_id]
-        self.em.post_write_active = False
+        self.em._window = None
         t0 = 1_700_000_000.0
         with patch("nibe_entity_manager.time.time", return_value=t0):
             self.em._update_entity_state(self.entity_info)
@@ -1787,7 +1789,7 @@ class TestHandleCommandWorkerWriteSuccessTime(unittest.TestCase):
         }
         em._api.write_point.return_value = True
         # value=25200 (seconds), payload='07:00:00' (raw MQTT string)
-        em._handle_command_worker(entity_info, 25200, "07:00:00", "test-cmd")
+        em._publish_requested_state(entity_info, 25200, "07:00:00")
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/300"]
         self.assertTrue(state_calls)
         self.assertEqual(state_calls[-1].args[1], "07:00:00")
@@ -1841,7 +1843,7 @@ class TestHandleCommandWorkerWriteSuccessTime(unittest.TestCase):
         (25200s) never reaches."""
         em, entity_info = self._time_entity_setup(point_id=301)
         # 86400 % 86400 == 0  vs  86400 % 86401 == 86400 (-> 24:00:00)
-        em._handle_command_worker(entity_info, 86400, "24:00:00", "test-cmd")
+        em._publish_requested_state(entity_info, 86400, "24:00:00")
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/301"]
         self.assertEqual(state_calls[-1].args[1], "00:00:00")
 
@@ -1853,7 +1855,7 @@ class TestHandleCommandWorkerWriteSuccessTime(unittest.TestCase):
         is an exact hour boundary and can't distinguish the two divisors)."""
         em, entity_info = self._time_entity_setup(point_id=302)
         # 3660s = 1h 1m 0s. //60 -> minute=1 ("01:01:00"); //61 -> minute=0 ("01:00:00").
-        em._handle_command_worker(entity_info, 3660, "01:01:00", "test-cmd")
+        em._publish_requested_state(entity_info, 3660, "01:01:00")
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/302"]
         self.assertEqual(state_calls[-1].args[1], "01:01:00")
 
@@ -1895,7 +1897,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(406, "switch")
-        em._handle_command_worker(info, True, "1", "cmd-id")
+        em._publish_requested_state(info, True, "1")
         em.mqtt.publish.assert_any_call("nibe/state/406", "1", retain=True)
 
     def test_select_optimistic_state_uses_the_raw_payload(self):
@@ -1904,8 +1906,16 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(400, "select")
-        em._handle_command_worker(info, 3, "Heating", "cmd-id")
+        em._publish_requested_state(info, 3, "Heating")
         em.mqtt.publish.assert_any_call("nibe/state/400", "Heating", retain=True)
+
+    def test_command_shows_the_payload_as_requested_state(self):
+        em = _make_em()
+        info = self._entity_info(407, "number")
+        message = MagicMock(payload=b"42", topic="nibe/cmd/407")
+        with patch.object(em, "_submit_write"):
+            em._handle_command(info, message)
+        em.mqtt.publish.assert_any_call("nibe/state/407", "42", retain=True)
 
     def test_number_optimistic_state_uses_the_raw_payload(self):
         """For 'number' entities the optimistic state must be the raw MQTT
@@ -1915,7 +1925,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(405, "number")
-        em._handle_command_worker(info, 23.5, "23.50", "cmd-id")
+        em._publish_requested_state(info, 23.5, "23.50")
         em.mqtt.publish.assert_any_call("nibe/state/405", "23.50", retain=True)
 
     def test_else_branch_optimistic_state_is_str_of_value(self):
@@ -1925,7 +1935,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(401, "button")
-        em._handle_command_worker(info, 7, "7", "cmd-id")
+        em._publish_requested_state(info, 7, "7")
         em.mqtt.publish.assert_any_call("nibe/state/401", "7", retain=True)
 
     def test_main_optimistic_publish_uses_retain_true(self):
@@ -1935,7 +1945,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(402, "button")
-        em._handle_command_worker(info, 7, "7", "cmd-id")
+        em._publish_requested_state(info, 7, "7")
         em.mqtt.publish.assert_any_call("nibe/state/402", "7", retain=True)
 
     def test_last_states_updated_with_the_actual_published_state_value(self):
@@ -1945,7 +1955,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         info = self._entity_info(403, "select")
-        em._handle_command_worker(info, 3, "Heating", "cmd-id")
+        em._publish_requested_state(info, 3, "Heating")
         self.assertEqual(em.last_states[403], "Heating")
 
     def test_dynamic_point_scan_opened_for_switch(self):
@@ -1958,7 +1968,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         info = self._entity_info(404, "switch")
         with patch.object(em, "_open_post_write_scan") as mock_scan:
             em._handle_command_worker(info, 1, "1", "cmd-id")
-        mock_scan.assert_called_once_with(404)
+        mock_scan.assert_called_once_with(404, None, value=1)
 
     def test_dynamic_point_scan_opened_for_select(self):
         em = _make_em()
@@ -1966,7 +1976,7 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         info = self._entity_info(405, "select")
         with patch.object(em, "_open_post_write_scan") as mock_scan:
             em._handle_command_worker(info, 3, "Heating", "cmd-id")
-        mock_scan.assert_called_once_with(405)
+        mock_scan.assert_called_once_with(405, None, value=3)
 
     def test_case_a1_non_controlling_fully_processed_opens_no_scan(self):
         """Case A1: a fully-processed, non-controlling entry needs no
@@ -1986,13 +1996,9 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
             is_controlling=False,
         )
         info = self._entity_info(409, "switch")
-        with (
-            patch.object(em, "_open_post_write_scan") as mock_scan,
-            patch.object(em, "_run_learning_detection") as mock_detect,
-        ):
+        with patch.object(em, "_open_post_write_scan") as mock_scan:
             em._handle_command_worker(info, 1, "1", "cmd-id")
         mock_scan.assert_not_called()
-        mock_detect.assert_not_called()
 
     def test_case_a2_controlling_fully_processed_not_removed_opens_scan(self):
         """Case A2: a fully-processed, controlling entry that hasn't been
@@ -2002,11 +2008,10 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         =False) into the fallthrough Case A3/B 'else' branch instead.
 
         The original version of this test asserted only mock_scan.assert_
-        called_once_with(410) and mock_detect.assert_not_called() — but
-        Case A3/B ALSO calls _open_post_write_scan(point_id) unconditionally
-        and, with unprocessed_values=set() as configured here, ALSO never
-        calls _run_learning_detection (int_value can't be "in" an empty
-        set). So both assertions passed identically whether Case A2 or the
+        called_once_with(410) and that no learning started — but Case A3/B
+        ALSO calls _open_post_write_scan(point_id) unconditionally and, with
+        unprocessed_values=set() as configured here, ALSO starts no learning
+        (int_value can't be "in" an empty set). So both assertions passed identically whether Case A2 or the
         mutant's Case A3/B fallthrough actually ran — the two branches were
         never actually distinguished. Case A2 and Case A3/B log different,
         specific debug messages; asserting on that message is what actually
@@ -2027,12 +2032,10 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
         info = self._entity_info(410, "switch")
         with (
             patch.object(em, "_open_post_write_scan") as mock_scan,
-            patch.object(em, "_run_learning_detection") as mock_detect,
             self.assertLogs("nibe.commands", level="DEBUG") as cm,
         ):
             em._handle_command_worker(info, 1, "1", "cmd-id")
-        mock_scan.assert_called_once_with(410)
-        mock_detect.assert_not_called()
+        mock_scan.assert_called_once_with(410, value=1)
         joined = "\n".join(cm.output)
         self.assertIn(
             "fully-processed controlling",
@@ -2043,8 +2046,8 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
 
     def test_learning_detection_started_when_written_value_is_unprocessed(self):
         """When the point has a DynamicPointMap entry whose unprocessed_values
-        contains the just-written integer value, _run_learning_detection must
-        fire. A mutation setting int_value=None unconditionally would make
+        contains the just-written integer value, its window must learn that
+        value. A mutation setting int_value=None unconditionally would make
         `int_value is not None` always False, silently disabling learning
         detection for every unprocessed write."""
         from nibe_dynamic_map import DynamicPointEntry
@@ -2058,9 +2061,8 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
             unprocessed_values={1, 2, 3},
         )
         info = self._entity_info(407, "switch")
-        with patch.object(em, "_run_learning_detection") as mock_detect:
-            em._handle_command_worker(info, 2, "1", "cmd-id")
-        mock_detect.assert_called_once_with(407, 2, "cmd-id")
+        em._handle_command_worker(info, 2, "1", "cmd-id")
+        self.assertEqual((em._window.point, _learning_value(em)), (407, 2))
 
     def test_dynamic_point_map_looked_up_by_the_written_point_id(self):
         """The DynamicPointMap lookup must use this write's actual point_id
@@ -2080,9 +2082,8 @@ class TestHandleCommandWorkerOptimisticStateBranches(unittest.TestCase):
             unprocessed_values={9},
         )
         info = self._entity_info(408, "switch")
-        with patch.object(em, "_run_learning_detection") as mock_detect:
-            em._handle_command_worker(info, 9, "1", "cmd-id")
-        mock_detect.assert_called_once_with(408, 9, "cmd-id")
+        em._handle_command_worker(info, 9, "1", "cmd-id")
+        self.assertEqual((em._window.point, _learning_value(em)), (408, 9))
 
     def test_dynamic_point_scan_not_opened_for_number(self):
         """'number' is not a controlling-point-eligible type — a mutation
@@ -2227,7 +2228,7 @@ class TestHandleCommandWriteSuccessClears_WriteNotification(unittest.TestCase):
         payload_on/payload_off, not just truthiness."""
         em, entity_info = self._write_restored_setup()
         em._write_notification_active = False  # isolate from the restore branch
-        em._handle_command_worker(entity_info, 1, "1", "cmd-id")
+        em._publish_requested_state(entity_info, 1, "1")
         em.mqtt.publish.assert_any_call("nibe/state/100", "1", retain=True)
 
     def test_switch_optimistic_state_published_as_0_for_falsy_value(self):
@@ -2236,7 +2237,7 @@ class TestHandleCommandWriteSuccessClears_WriteNotification(unittest.TestCase):
         introduce for the else branch."""
         em, entity_info = self._write_restored_setup()
         em._write_notification_active = False
-        em._handle_command_worker(entity_info, 0, "0", "cmd-id")
+        em._publish_requested_state(entity_info, 0, "0")
         em.mqtt.publish.assert_any_call("nibe/state/100", "0", retain=True)
 
     def test_write_restored_bridge_alert_fields(self):
@@ -2397,62 +2398,142 @@ class TestCardCommandToRealApiWriteFullChain(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
 
-class TestRunLearningDetectionActivatesPostWriteScan(unittest.TestCase):
-    """_run_learning_detection must actually activate post-write scan mode
-    before entering its wait loop — the loop itself is made to exit
-    immediately by having the mocked interval wait add a point to bulk_data,
-    triggering the 'size changed' early-exit on the first iteration.
+class TestWaitForLearningWindow(unittest.TestCase):
+    """A write that opens a scan window waits while another value is being
+    learned: it would take that window over, and the points still to come
+    would be linked to it. Writes that open no window go straight through."""
 
-    The loop waits on _shutdown_event rather than time.sleep() so a
-    shutdown can interrupt it, so that wait is what these tests patch."""
+    def _entry(self, em, point_id, **kw):
+        from nibe_dynamic_map import DynamicPointEntry
 
-    def test_post_write_active_set_true_before_loop(self):
+        em.dynamic_point_map._table[point_id] = DynamicPointEntry(
+            point_id=point_id, title="Switch", entity_type="switch", **kw
+        )
+
+    def _info(self, point_id, entity_type):
+        return {
+            "point_id": point_id,
+            "entity_type": entity_type,
+            "point_data": {"display_title": f"P{point_id}"},
+        }
+
+    def _write(self, em, point_id, entity_type, value=1):
+        em._api.write_point.return_value = True
+        with patch.object(em._learning_window_ended, "wait") as mock_wait:
+            em._handle_command_worker(self._info(point_id, entity_type), value, str(value), "c")
+        return mock_wait
+
+    def _learning_in_progress(self, em):
+        em._open_post_write_scan(700, learning_value=1)
+
+    def test_switch_write_waits_while_another_value_is_learned(self):
         em = _make_em()
-        point_id = 700
-        em.bulk_data = {point_id: {"raw_value": 1}}
+        self._learning_in_progress(em)
+        mock_wait = self._write(em, 701, "switch")
+        mock_wait.assert_called_once_with(em._post_write_duration + 5)
 
-        def fake_wait(_timeout):
-            # Simulate the bulk fetch picking up a new dynamic point.
-            em.bulk_data[999999] = {"raw_value": 0}
-            return False  # not shutting down
-
-        with patch.object(em._shutdown_event, "wait", side_effect=fake_wait):
-            em._run_learning_detection(point_id, 1, "cmd1")
-        self.assertIs(em.post_write_active, True)
-
-
-class TestRunLearningDetectionShutdownAbort(unittest.TestCase):
-    """The detection loop runs on the single write-executor worker and can
-    hold it for a full 90s window — longer than the entire shutdown budget
-    that all three executors share. begin_shutdown() breaks that wait so the
-    drain can complete instead of the container being SIGKILLed mid-exit."""
-
-    def test_loop_exits_immediately_when_shutdown_is_signalled(self):
+    def test_select_write_waits_too(self):
         em = _make_em()
-        em.bulk_data = {700: {"raw_value": 1}}
+        self._learning_in_progress(em)
+        self._write(em, 701, "select").assert_called_once()
+
+    def test_write_to_the_switch_being_learned_does_not_wait(self):
+        """Switched straight back: holding the write back would protect
+        nothing, since the window turns ambiguous and records nothing."""
+        em = _make_em()
+        self._entry(em, 700, unprocessed_values={0, 1})
+        self._learning_in_progress(em)
+        mock_wait = self._write(em, 700, "switch", value=0)
+        mock_wait.assert_not_called()
+        em._api.write_point.assert_called_once()
+        self.assertIsNone(em._window.value, "the window records nothing")
+        self.assertIsNone(_learning_value(em))
+        self.assertTrue(em._learning_window_ended.is_set(), "other writes go ahead too")
+
+    def test_number_write_does_not_wait(self):
+        em = _make_em()
+        self._learning_in_progress(em)
+        self._write(em, 701, "number", value=5).assert_not_called()
+
+    def test_switch_learned_as_showing_nothing_does_not_wait(self):
+        em = _make_em()
+        self._entry(em, 701, processed_values={0, 1}, is_controlling=False)
+        self._learning_in_progress(em)
+        self._write(em, 701, "switch").assert_not_called()
+
+    def test_nothing_waits_when_no_value_is_being_learned(self):
+        em = _make_em()
+        self._write(em, 701, "switch").assert_not_called()
+
+    def test_learning_write_does_not_wait_for_its_own_window(self):
+        """The worker is free right after the write that starts learning."""
+        em = _make_em()
+        self._entry(em, 700, unprocessed_values={0, 1})
+        mock_wait = self._write(em, 700, "switch")
+        mock_wait.assert_not_called()
+        self.assertEqual(_learning_value(em), 1)
+        self.assertFalse(em._learning_window_ended.is_set())
+
+    def test_write_proceeds_once_the_poll_loop_ends_the_window(self):
+        em = _make_em()
+        self._learning_in_progress(em)
+        em._api.write_point.return_value = True
+        writer = threading.Thread(
+            target=em._handle_command_worker, args=(self._info(701, "switch"), 1, "1", "c")
+        )
+        writer.start()
+        writer.join(timeout=0.3)
+        self.assertTrue(writer.is_alive(), "the write must wait for the learning window")
+        em._api.write_point.assert_not_called()
+        em._finish_learning_window(700, 1, saw_points=False)
+        writer.join(timeout=5)
+        self.assertFalse(writer.is_alive())
+        em._api.write_point.assert_called_once()
+
+    def test_start_time_is_taken_after_the_wait(self):
+        """Time spent waiting is queue time: the stale-write check must not
+        count it (_STALE_WRITE_AGE_S)."""
+        em = _make_em()
+        self._learning_in_progress(em)
+        em.pending_writes[701] = {"cmd_id": "c"}
+        stamps = []
+
+        def wait(_timeout):
+            stamps.append(em.pending_writes[701].get("started_at"))
+            return True
+
+        em._api.write_point.return_value = True
+        with patch.object(em._learning_window_ended, "wait", side_effect=wait):
+            em._handle_command_worker(self._info(701, "switch"), 1, "1", "c")
+        self.assertEqual(stamps, [None])
+
+
+class TestLearningWindowShutdownAbort(unittest.TestCase):
+    """A write waiting for a learning window can hold the single write worker
+    for a full 90s window — longer than the entire shutdown budget that all
+    three executors share. begin_shutdown() breaks that wait so the drain can
+    complete instead of the container being SIGKILLed mid-exit."""
+
+    def test_wait_ends_immediately_when_shutdown_is_signalled(self):
+        em = _make_em()
+        em._open_post_write_scan(700, learning_value=1)
         em.begin_shutdown()
-        with patch.object(em, "_persist_dynamic_map") as mock_persist:
-            em._run_learning_detection(700, 1, "cmd1")
-        mock_persist.assert_not_called()
+        self.assertTrue(em._learning_window_ended.is_set())
 
-    def test_aborted_detection_records_no_outcome(self):
+    def test_window_cut_short_by_shutdown_records_no_outcome(self):
         """A window cut short by shutdown proves nothing about this value.
         Recording "no dynamic points appeared" would persist a false negative
         that survives the restart and stops the point ever being learned."""
+        from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
-        em.bulk_data = {700: {"raw_value": 1}}
+        em.dynamic_point_map._table[700] = DynamicPointEntry(
+            point_id=700, title="Switch", entity_type="switch", unprocessed_values={0, 1}
+        )
         em.begin_shutdown()
         with patch.object(em.dynamic_point_map, "record_outcome") as mock_record:
-            em._run_learning_detection(700, 1, "cmd1")
+            em._finish_learning_window(700, 1, saw_points=False)
         mock_record.assert_not_called()
-
-    def test_aborted_detection_is_logged(self):
-        em = _make_em()
-        em.bulk_data = {700: {"raw_value": 1}}
-        em.begin_shutdown()
-        with self.assertLogs("nibe.commands", level="INFO") as cm:
-            em._run_learning_detection(700, 1, "cmd1")
-        self.assertTrue(any("abandoned — shutting down" in m for m in cm.output), cm.output)
 
     def test_begin_shutdown_is_idempotent(self):
         em = _make_em()
@@ -2460,20 +2541,55 @@ class TestRunLearningDetectionShutdownAbort(unittest.TestCase):
         em.begin_shutdown()
         self.assertTrue(em._shutdown_event.is_set())
 
-    def test_normal_detection_completes_when_not_shutting_down(self):
-        """The interruptible wait must not change ordinary behaviour: a
-        detection that sees a bulk-size change still records its outcome."""
+
+class TestRequestedStateShownAtOnce(unittest.TestCase):
+    """HA flips a toggle back when the entity's state hasn't followed within
+    two seconds. The controller takes about 1.5 s, sometimes more, to accept
+    a write, so the requested state is published when the command arrives,
+    not after the write."""
+
+    def _info(self, point_id=100):
+        return {
+            "point_id": point_id,
+            "entity_type": "switch",
+            "metadata": {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"},
+            "point_data": {},
+            "is_degenerate_range": False,
+            "state_topic": f"nibe/state/{point_id}",
+        }
+
+    def _command(self, em, payload):
+        msg = MagicMock()
+        msg.payload = payload.encode()
+        msg.topic = "homeassistant/switch/nibe_100/set"
+        em._handle_command(self._info(), msg)
+
+    def test_state_is_published_before_the_write(self):
         em = _make_em()
-        em.bulk_data = {700: {"raw_value": 1}}
+        em.bulk_data[100] = {"raw_value": 0}
+        with patch.object(em, "_submit_write") as submit:
+            self._command(em, "1")
+        em.mqtt.publish.assert_any_call("nibe/state/100", "1", retain=True)
+        submit.assert_called_once()
+        self.assertEqual(em.last_states[100], "1")
 
-        def fake_wait(_timeout):
-            em.bulk_data[999999] = {"raw_value": 0}
-            return False
+    def test_write_does_not_publish_its_value_again(self):
+        """On, then straight off: the first write finishing after the second
+        command must not put "on" back in HA."""
+        em = _make_em()
+        em._api.write_point.return_value = True
+        em.mqtt.publish.reset_mock()
+        em._handle_command_worker(self._info(), 1, "1", "c1")
+        state_publishes = [
+            c for c in em.mqtt.publish.call_args_list if c.args and c.args[0] == "nibe/state/100"
+        ]
+        self.assertEqual(state_publishes, [])
 
-        with (
-            patch.object(em._shutdown_event, "wait", side_effect=fake_wait),
-            patch.object(em.dynamic_point_map, "record_outcome") as mock_record,
-            patch.object(em, "_persist_dynamic_map"),
-        ):
-            em._run_learning_detection(700, 1, "cmd1")
-        mock_record.assert_called_once()
+    def test_failed_write_puts_the_controller_value_back(self):
+        em = _make_em()
+        em._api.write_point.return_value = False
+        em.pending_writes[100] = {"value": 1, "cmd_id": "c1"}
+        with patch.object(em, "_force_readback") as readback:
+            em._handle_command_worker(self._info(), 1, "1", "c1")
+        readback.assert_called_once()
+        self.assertNotIn(100, em.pending_writes)

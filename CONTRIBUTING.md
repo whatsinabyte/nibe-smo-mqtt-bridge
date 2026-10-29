@@ -503,7 +503,7 @@ Not installed via pip/npm — MacPorts: `sudo port install shellcheck` (or your 
 
 **MQTT topic strings** — all topic strings are defined in `MgmtTopic` and `BrowserTopic` enums in `nibe_mqtt_publisher.py`. Never construct a topic string outside this module.
 
-**Do not speculatively refactor `_fetch_bulk_data` or `_publish_dynamic_changes`** — these functions are intentionally large. Their complexity is inherent to the algorithm, they are fully covered by tests, and there is no current bug justifying the refactor risk. See `ARCHITECTURE.md` section 4.4 for the full rationale.
+**Dynamic detection: decisions in `nibe_attribution.py`, parts tested on their own** — `_fetch_bulk_data` and `_publish_dynamic_changes` are built from small parts (`ARCHITECTURE.md` §4.4). A new decision about what a poll shows goes into `nibe_attribution.py` as a pure function. A new step goes into a part of its own, with a direct test in `tests/test_entity_manager_dynamic_parts.py`. The tests that drive the two functions as a whole stay unchanged as proof of unchanged behaviour.
 
 **Hypothesis `@example` pins** — property-based tests should include `@example` decorators grounding the test in real firmware observations where applicable. This documents why the test exists and ensures the specific case is always exercised regardless of the random seed.
 

@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, bridgeEnabled, pointEntityId, setMockValue } from './support/stack';
 
 /**
  * A number setting says live whether it differs from its factory default.
@@ -11,7 +11,14 @@ import { HA_URL, pointEntityId, setMockValue } from './support/stack';
  * follows the value: 32341 "Desired room temperature for zone 1" (default
  * 20 °C) set to 21.5 °C must read "✏️ default: 20 °C", and back at 20 °C
  * "default".
+ *
+ * Whether the point is enabled already is asked of the bridge, not of Home
+ * Assistant's entity registry: after a spec that put the bridge back into
+ * essential mode, the registry can still list the entity menus mode enabled
+ * while the bridge has just disabled it. The test then never enabled it and
+ * waited for an attribute on an entity that was going away.
  */
+
 
 const POINT = 32341;
 const DUMP_VALUE = 210;
@@ -39,7 +46,7 @@ async function defaultStatus(token: string, entityId: string): Promise<string> {
 test('a number setting reports live whether it differs from its default', async () => {
   test.setTimeout(240_000);
   const token = readToken();
-  const enabledHere = !(await pointEntityId(token, POINT));
+  const enabledHere = !bridgeEnabled(POINT);
   try {
     if (enabledHere) {
       await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(POINT));

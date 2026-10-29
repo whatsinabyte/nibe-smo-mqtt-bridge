@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, pointEntityId, setMockValue, bridgeEnabled } from './support/stack';
 
 /**
  * "Priority" (55000) shows the labels of the myUplink cloud's own option list.
@@ -42,7 +42,7 @@ async function haState(token: string, entityId: string): Promise<string> {
 test('Priority (55000) shows the cloud labels, translated', async () => {
   test.setTimeout(300_000);
   const token = readToken();
-  const enabledHere = !(await pointEntityId(token, POINT));
+  const enabledHere = !bridgeEnabled(POINT);
   try {
     if (enabledHere) {
       await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(POINT));

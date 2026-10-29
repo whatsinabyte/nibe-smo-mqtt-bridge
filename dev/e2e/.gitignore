@@ -5,3 +5,4 @@ test-results/
 playwright-report/
 seed-out-*/
 test-durations.json
+bridge-logs/

@@ -127,7 +127,7 @@ The bridge surfaces important events in the HA notification bell.
 | **Started Without Device** | Controller unreachable at bridge startup | Yes — on first successful poll |
 | **Dynamic entity disabled in HA** | User disabled a dynamic entity; bridge re-enabled it | No — replaced on each occurrence |
 | **Entity disabled in HA** | User disabled a static entity via HA settings | No — replaced on each occurrence |
-| **Nibe Menus — Dashboard updated** | Dynamic point appeared/disappeared in `menus` mode | No — dismissed manually |
+| **Nibe Menus — Dashboard updated** | Dynamic point appeared/disappeared in `menus` mode | No — dismissed manually. One per switch that caused it, replaced when that switch changes again |
 | **Entity ids changed** | An entity changed type (after an update, or a binary sensor reclassified to a sensor), so Home Assistant gave it a new entity id; lists old → new | No — dismissed manually, replaced on the next occurrence |
 
 Alarms are polled every 10 seconds, regardless of `poll_interval` — an alarm condition appears in HA within 10 seconds of occurring.
@@ -285,7 +285,7 @@ Some data points only appear when a related feature is active. These **dynamic d
 - If new points appear, the relationship is recorded permanently — future flips open the same scan window
 - If no new points appear, the switch is recorded as non-controlling and future writes execute immediately
 
-**After learning** — the bridge immediately opens the 90-second scan window when you flip a known controlling switch. Dynamic entities appear within the next bulk poll cycle (up to ~60s). Disappearances are typically faster (~16s observed on S2125).
+**After learning** — the bridge immediately opens the 90-second scan window when you flip a known controlling switch. Dynamic entities appear or disappear when the REST API's point list catches up: anywhere from a few seconds to about a minute after the write, either way, even though the controller's own display shows the change at once. The values of existing points keep updating every poll.
 
 **Firmware updates** — if a firmware update changes which points a switch shows, the next flip records the new outcome in place of the old one; the points appearing or disappearing show in the Changelog as usual.
 

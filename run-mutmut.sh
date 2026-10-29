@@ -11,12 +11,11 @@
 # Mutmut 3.x only recognises '.', 'src/', 'source/' as source roots.
 # Our source lives in app/ (on sys.path via pytest.ini pythonpath=app).
 # This script copies the target module to the repo root before running
-# mutmut. The copy is kept after the run so that mutmut show/results work
-# (mutmut show needs the source file to apply patches against). Always edit
-# app/<module>.py — the root-level copy is regenerated on every run, and is
-# deleted at the end of a full ("all") run so it can't shadow app/ during a
-# later plain `pytest` invocation (pytest.ini sets pythonpath = ". app",
-# so a stale root-level copy silently wins over app/'s real file).
+# mutmut, and removes the copy when it exits, so it can't shadow app/
+# during a later plain `pytest` invocation (pytest.ini sets pythonpath =
+# ". app", so a stale root-level copy silently wins over app/'s real file)
+# or make ruff sort imports as if the module were local. Always edit
+# app/<module>.py. `--show` stages it again for `mutmut show`.
 # The sandbox overrides pythonpath to '. app' so both the mutated file
 # (at mutants/) and peer modules (at mutants/app/) are importable.
 #
@@ -38,6 +37,10 @@
 #   ./run-mutmut.sh              — run every module below, sequentially
 #   ./run-mutmut.sh <module>     — run just one module (e.g. nibe_lovelace)
 #   ./run-mutmut.sh --list       — print the module list and exit
+#   ./run-mutmut.sh --show <module> <mutant>
+#                                — print one mutant's diff from that module's
+#                                  archived run (e.g. --show nibe_attribution
+#                                  x_changed_candidates__mutmut_2)
 #
 # Each module's mutmut run produces:
 #   mutmut-results/<module>.txt        — full `mutmut results` output
@@ -55,11 +58,10 @@
 # INSPECTING AN ARCHIVED MODULE'S MUTANTS LATER
 #   mutmut hardcodes the literal directory name "mutants" relative to cwd
 #   throughout its own source — there is no config option to rename or
-#   relocate it, so `mutmut show`/`mutmut results` only ever read from
-#   ./mutants. To inspect a module that isn't the one most recently run:
-#     rm -rf mutants && cp -r mutants-<module> mutants && mutmut show <id>
-#   (cp, not mv, so the archive under mutants-<module>/ survives for next
-#   time too.)
+#   relocate it — and `mutmut show` also needs the module staged at the
+#   repo root and named in pyproject.toml. `--show <module> <mutant>` does
+#   all three from the archive under mutants-<module>/ (copied, so the
+#   archive survives) and cleans up afterwards.
 #
 # RESUMING AN INTERRUPTED RUN
 # A module's mutants/ sandbox is only renamed to mutants-<module>/ after
@@ -77,7 +79,8 @@
 #   strings whose case doesn't affect a re.IGNORECASE regex match).
 #
 # ⚠ MUTMUT RELIABILITY CAVEAT — READ BEFORE TRUSTING ANY OUTPUT HERE ⚠
-#   mutmut 3.7.0 (pinned in this project) calls pytest.main() IN-PROCESS —
+#   mutmut 3.7.0 (the version this was observed with; requirements-dev.txt
+#   now asks for >=3.8.0, not re-verified since) calls pytest.main() IN-PROCESS —
 #   once for its own baseline "which tests cover which mutants" stats
 #   collection, then again per mutant tested, all in the same worker
 #   process. Calling pytest.main() more than once in the same interpreter
@@ -104,14 +107,19 @@
 #   prints the diff — no test execution involved); it is specifically the
 #   coverage-collection/survived-verdict machinery that is compromised.
 #
-# MEMORY-CONSTRAINED MACHINES
-#   mutmut defaults to one worker per CPU core. nibe_entity_manager.py's
-#   test suite (12 test files, thousands of tests) is large enough that this
-#   caused an OOM-kill on a 6-core/8GB Mac in earlier testing. Set
-#   MUTMUT_MAX_CHILDREN to cap worker concurrency if this recurs, e.g.:
+# WORKERS AND MEMORY
+#   One worker per CPU core (hw.ncpu on macOS, nproc elsewhere), passed to
+#   mutmut explicitly as --max-children. nibe_entity_manager.py's test suite
+#   (13 test files, thousands of tests) is large enough that this caused an
+#   OOM-kill on a 6-core/8GB Mac in earlier testing. Stop memory-hungry
+#   things first (Colima's VM takes 4 GB), or cap the workers:
 #     MUTMUT_MAX_CHILDREN=3 ./run-mutmut.sh nibe_entity_manager
-#   Smaller modules' own test suites are small enough that this has not
-#   been necessary — the default (all cores) is fine for those.
+#
+# PYPROJECT.TOML
+#   mutmut reads its configuration only from pyproject.toml, so each module
+#   run writes one there. The repo's own pyproject.toml is put back when the
+#   script exits (also on Ctrl-C or an error), so a run leaves no change in
+#   git.
 
 set -euo pipefail
 
@@ -132,7 +140,8 @@ MODULES=(
     "nibe_entity_detection|tests/test_entity_detection.py,tests/test_dynamic_map.py,tests/test_api.py"
     "nibe_dynamic_map|tests/test_entity_detection.py,tests/test_dynamic_map.py,tests/test_api.py"
     "nibe_api|tests/test_entity_detection.py,tests/test_dynamic_map.py,tests/test_api.py"
-    "nibe_entity_manager|tests/test_entity_manager.py,tests/test_entity_manager_changelog.py,tests/test_entity_manager_commands.py,tests/test_entity_manager_discovery.py,tests/test_entity_manager_dynamic.py,tests/test_entity_manager_lifecycle.py,tests/test_entity_manager_polling.py,tests/test_entity_manager_snapshots.py,tests/test_entity_manager_state.py,tests/test_ha_integration.py,tests/test_generate.py,tests/test_lovelace.py"
+    "nibe_attribution|tests/test_attribution.py,tests/test_entity_manager_dynamic.py,tests/test_entity_manager_commands.py"
+    "nibe_entity_manager|tests/test_entity_manager.py,tests/test_entity_manager_changelog.py,tests/test_entity_manager_commands.py,tests/test_entity_manager_controller_side.py,tests/test_entity_manager_discovery.py,tests/test_entity_manager_dynamic.py,tests/test_entity_manager_dynamic_parts.py,tests/test_entity_manager_lifecycle.py,tests/test_entity_manager_polling.py,tests/test_entity_manager_running_totals.py,tests/test_entity_manager_snapshots.py,tests/test_entity_manager_state.py,tests/test_ha_integration.py,tests/test_generate.py,tests/test_lovelace.py"
     "nibe_ha_integration|tests/test_ha_integration.py,tests/test_lovelace.py,tests/test_caching.py,tests/test_utils.py,tests/test_generate.py,tests/test_connectivity_check.py"
     "nibe_lovelace|tests/test_ha_integration.py,tests/test_lovelace.py,tests/test_caching.py,tests/test_utils.py,tests/test_generate.py,tests/test_connectivity_check.py"
     "nibe_caching|tests/test_ha_integration.py,tests/test_lovelace.py,tests/test_caching.py,tests/test_utils.py,tests/test_generate.py,tests/test_connectivity_check.py"
@@ -169,6 +178,72 @@ fi
 
 mkdir -p "$RESULTS_DIR"
 
+if [ -n "${MUTMUT_MAX_CHILDREN:-}" ]; then
+    WORKERS="$MUTMUT_MAX_CHILDREN"
+else
+    WORKERS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
+fi
+echo "[mutmut] Workers: ${WORKERS} (override with MUTMUT_MAX_CHILDREN)"
+
+PYPROJECT="$SCRIPT_DIR/pyproject.toml"
+PYPROJECT_BACKUP=""
+if [ -f "$PYPROJECT" ]; then
+    PYPROJECT_BACKUP="$(mktemp)"
+    cp "$PYPROJECT" "$PYPROJECT_BACKUP"
+fi
+STAGED=()
+cleanup() {
+    if [ -n "$PYPROJECT_BACKUP" ]; then
+        cp "$PYPROJECT_BACKUP" "$PYPROJECT"
+        rm -f "$PYPROJECT_BACKUP"
+    else
+        rm -f "$PYPROJECT"
+    fi
+    if [ "${#STAGED[@]}" -gt 0 ]; then
+        for staged in "${STAGED[@]}"; do
+            rm -rf "$staged"
+        done
+    fi
+}
+trap cleanup EXIT
+
+# Stage app/<module>.py (and menu_structure.yaml for nibe_lovelace, which
+# finds it __file__-relative) at the repo root, removed again on exit.
+stage_module() {
+    local module="$1"
+    cp "$SCRIPT_DIR/app/${module}.py" "$SCRIPT_DIR/${module}.py"
+    STAGED+=("$SCRIPT_DIR/${module}.py")
+    if [ "$module" = "nibe_lovelace" ]; then
+        cp "$SCRIPT_DIR/app/menu_structure.yaml" "$SCRIPT_DIR/menu_structure.yaml"
+        STAGED+=("$SCRIPT_DIR/menu_structure.yaml")
+    fi
+}
+
+if [ "$ARG" = "--show" ]; then
+    show_module="${2:-}"
+    show_mutant="${3:-}"
+    if [ -z "$show_module" ] || [ -z "$show_mutant" ]; then
+        echo "[mutmut] usage: ./run-mutmut.sh --show <module> <mutant>" >&2
+        exit 1
+    fi
+    if [ ! -d "$SCRIPT_DIR/mutants-${show_module}" ]; then
+        echo "[mutmut] ERROR: no archived run for ${show_module} (mutants-${show_module}/)." >&2
+        exit 1
+    fi
+    stage_module "$show_module"
+    printf '[tool.mutmut]\nsource_paths = ["%s.py"]\n' "$show_module" > "$PYPROJECT"
+    rm -rf "$SCRIPT_DIR/mutants"
+    cp -r "$SCRIPT_DIR/mutants-${show_module}" "$SCRIPT_DIR/mutants"
+    STAGED+=("$SCRIPT_DIR/mutants")
+    cd "$SCRIPT_DIR"
+    case "$show_mutant" in
+        "${show_module}."*) ;;
+        *) show_mutant="${show_module}.${show_mutant}" ;;
+    esac
+    mutmut show "$show_mutant"
+    exit 0
+fi
+
 run_one_module() {
     local module="$1"
     local test_files_csv="$2"
@@ -179,13 +254,8 @@ run_one_module() {
     echo "[mutmut] Module: ${module}.py"
     echo "=================================================================="
 
-    cp "$SCRIPT_DIR/app/${module}.py" "$SCRIPT_DIR/${module}.py"
-    echo "[mutmut] Staged: ${module}.py (copy of app/${module}.py — kept for mutmut show)"
-
-    if [ "$module" = "nibe_lovelace" ]; then
-        cp "$SCRIPT_DIR/app/menu_structure.yaml" "$SCRIPT_DIR/menu_structure.yaml"
-        echo "[mutmut] Staged: menu_structure.yaml (nibe_lovelace __file__-relative lookup)"
-    fi
+    stage_module "$module"
+    echo "[mutmut] Staged: ${module}.py (copy of app/${module}.py, removed on exit)"
 
     {
         echo "[tool.mutmut]"
@@ -211,7 +281,7 @@ run_one_module() {
         echo "mutate_only_covered_lines = false"
         echo "timeout_multiplier = 5.0"
         echo "timeout_constant = 30.0"
-    } > "$SCRIPT_DIR/pyproject.toml"
+    } > "$PYPROJECT"
 
     # Any plain mutants/ left over here can only be a half-finished sandbox
     # from an interrupted earlier run (a completed run always renames it
@@ -221,12 +291,7 @@ run_one_module() {
     rm -rf "$SCRIPT_DIR/mutants"
 
     cd "$SCRIPT_DIR"
-    if [ -n "${MUTMUT_MAX_CHILDREN:-}" ]; then
-        echo "[mutmut] Capping worker concurrency: --max-children ${MUTMUT_MAX_CHILDREN}"
-        mutmut run --max-children "$MUTMUT_MAX_CHILDREN" || true
-    else
-        mutmut run || true
-    fi
+    mutmut run --max-children "$WORKERS" || true
 
     local results_file="$RESULTS_DIR/${module}.txt"
     mutmut results > "$results_file" 2>&1 || true
@@ -272,22 +337,13 @@ else
     for entry in "${MODULES[@]}"; do
         run_one_module "${entry%%|*}" "${entry#*|}"
     done
-    # Clean up root-level staging copies after a full run so they can't
-    # shadow app/ during a later plain `pytest` invocation.
-    echo ""
-    echo "[mutmut] Full run complete — removing root-level staging copies..."
-    for entry in "${MODULES[@]}"; do
-        rm -f "$SCRIPT_DIR/${entry%%|*}.py"
-    done
-    rm -f "$SCRIPT_DIR/menu_structure.yaml"
 fi
 
 echo ""
 echo "[mutmut] Done. Results saved under: ${RESULTS_DIR}/"
 echo "  cat ${RESULTS_DIR}/SUMMARY.txt                       — one line per module run this session"
 echo "  cat ${RESULTS_DIR}/<module>.txt                      — full mutmut results for one module"
-echo "  rm -rf mutants && cp -r mutants-<module> mutants      — restore a module's sandbox for 'mutmut show'"
-echo "  mutmut show <mutant_id>                              — diff for a specific mutant (after restoring above)"
+echo "  ./run-mutmut.sh --show <module> <mutant>              — diff for a specific mutant"
 echo ""
 echo "Remember the reliability caveat at the top of this script: verify"
 echo "every 'survived' result by hand before trusting it."

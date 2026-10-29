@@ -1325,12 +1325,11 @@ class TestManagementHandlers(unittest.TestCase):
         )
 
     def test_flush_dynamic_map_serializes_against_em_lock(self):
-        """dynamic_point_map._table is also mutated (under _em_lock) by
-        _run_learning_detection (write executor thread) and
-        _publish_dynamic_changes (poll thread) — the flush handler runs on
-        mgmt_executor's thread and must serialize against those the same
-        way, or a flush landing mid-mutation on either of those threads
-        corrupts the table. Regression test proving real mutual exclusion:
+        """dynamic_point_map._table is also mutated (under _em_lock) by the
+        poll thread (_publish_dynamic_changes, _finish_learning_window) — the
+        flush handler runs on mgmt_executor's thread and must serialize
+        against it the same way, or a flush landing mid-mutation corrupts
+        the table. Regression test proving real mutual exclusion:
         holds em._em_lock on the main thread and confirms the flush handler
         genuinely blocks on it via a separate executor thread, rather than
         sailing through — not just that the final state looks right.

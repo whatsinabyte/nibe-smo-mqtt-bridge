@@ -1,15 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { gotoLoggedIn, loginToHa, readToken } from './support/ha-login';
-import {
-  DEFAULT_BRIDGE_ENV,
-  FAKE_SUPERVISOR_TOKEN,
-  HA_URL,
-  haNow,
-  pointEntityId,
-  recreateBridge,
-  savedMenuDashboardMtime,
-  savedMenuDashboardText,
-} from './support/stack';
+import { DEFAULT_BRIDGE_ENV, FAKE_SUPERVISOR_TOKEN, HA_URL, haNow, pointEntityId, recreateBridge, savedMenuDashboardMtime, savedMenuDashboardText, bridgeEnabled } from './support/stack';
 
 /**
  * A ground-source S1155, emulated from its owner's own bulk fetch (GitHub
@@ -133,7 +124,7 @@ test('an S1155 gets its ground-source menus and registers', async ({ page }) => 
       [671, (s) => String(s?.entity_id).startsWith('sensor.')],
     ];
     for (const [pid] of readOnly) {
-      if (!(await pointEntityId(token, pid))) {
+      if (!bridgeEnabled(pid)) {
         await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(pid));
       }
     }
