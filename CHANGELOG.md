@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.5] — 2026-10-29
+
+Learning which settings a switch or drop-down shows was rebuilt, and no
+longer goes wrong when a switch is turned on and straight off again, when
+another switch is changed on the controller meanwhile, or when the
+controller restarts. Switches no longer jump back after being switched,
+setpoints and buttons no longer wait while a switch is learned, settings
+that went away also leave Home Assistant when it was reconnecting, and the
+Nibe Menus dashboard reloads once per change.
+
 ### Changed
 
 - **Setpoints and buttons no longer wait while a switch is being learned.**
