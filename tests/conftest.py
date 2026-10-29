@@ -104,6 +104,24 @@ def _make_em():
     return em
 
 
+def _set_window(em, **changes):
+    """Open em's post-write scan window, or change the open one: ``point``,
+    ``until`` (default: never ends), ``controller_side``, ``learning_value``,
+    ``saw_points`` — see nibe_attribution.ScanWindow."""
+    import dataclasses
+
+    from nibe_attribution import ScanWindow
+
+    window = em._window or ScanWindow(point=None, until=float("inf"))
+    em._window = dataclasses.replace(window, **changes)
+
+
+def _learning_value(em):
+    """The value an open learning window is learning, or None (no window, or
+    one not learning)."""
+    return em._window.learning_value if em._window is not None else None
+
+
 def _cannot_be_int(s: str) -> bool:
     """Return True when int(s) would raise.  Used as a Hypothesis filter to
     match what production code does: int() strips whitespace, so '0\\r', ' 1 '
@@ -303,6 +321,18 @@ def _reset_menu_structure_cache():
     nl._reset_menu_structure_cache()
     yield
     nl._reset_menu_structure_cache()
+
+
+# The fingerprint of the menu dashboard config last saved is process-lifetime
+# module state too: a save in one test would make an identical save in a
+# later one skip (_setup_menu_dashboard_lovelace).
+@pytest.fixture(autouse=True)
+def _reset_menu_dashboard_fingerprint():
+    import nibe_lovelace as nl
+
+    nl._last_saved_menu_fingerprint = None
+    yield
+    nl._last_saved_menu_fingerprint = None
 
 
 # nibe_entity_detection._description_mapping_cache is the same kind of

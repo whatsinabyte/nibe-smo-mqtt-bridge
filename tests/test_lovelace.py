@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -10796,3 +10797,149 @@ class TestRoomSetpointMenuOrder(unittest.TestCase):
         settings = {s["point_id"]: s for s in self._menu_1_1()["settings"]}
         for point_id in (3945, 5079):
             self.assertIn("has no effect", settings[point_id]["note"], point_id)
+
+
+class TestMenuDashboardSavedOncePerChange(unittest.TestCase):
+    """One change used to save the same menu dashboard twice — the build it
+    scheduled, then the one the registry watcher schedules when its refresh
+    maps the new entities — and every save reloads the dashboard in each
+    open browser (lovelace_updated)."""
+
+    def _save(self, config, exists=True, missing_dynamic=False):
+        import nibe_lovelace as nl
+
+        em = MagicMock()
+        em.active_dynamic_points = {400} if missing_dynamic else set()
+        rw = MagicMock()
+        rw.entity_id_for = lambda pid: None if pid == 400 else f"sensor.nibe_{pid}"
+        calls = []
+
+        def fake_ws_call(_ws, _mid, payload, _timeout=10):
+            calls.append(payload.get("type"))
+            if payload.get("type") == "lovelace/dashboards/list":
+                listed = [{"url_path": nl._MENU_DASHBOARD_SLUG}] if exists else []
+                return {"success": True, "result": listed}
+            return {"success": True}
+
+        with patch("nibe_lovelace._ws_call", side_effect=fake_ws_call):
+            result = nl._setup_menu_dashboard_lovelace(
+                MagicMock(), iter(range(1, 100)).__next__, config, em, rw, {1}, set()
+            )
+        return result, calls
+
+    def _config(self, title="Menu"):
+        return {"views": [{"title": title, "cards": [{"type": "entities"}]}]}
+
+    def test_first_save_after_start_happens(self):
+        _, calls = self._save(self._config())
+        self.assertIn("lovelace/config/save", calls)
+        self.assertIn("fire_event", calls)
+
+    def test_identical_config_is_not_saved_again(self):
+        self._save(self._config())
+        result, calls = self._save(self._config())
+        self.assertFalse(result)
+        self.assertNotIn("lovelace/config/save", calls)
+        self.assertNotIn("fire_event", calls)
+
+    def test_changed_config_is_saved(self):
+        self._save(self._config())
+        _, calls = self._save(self._config(title="Other"))
+        self.assertIn("lovelace/config/save", calls)
+
+    def test_dashboard_created_again_is_always_saved(self):
+        """Deleted in HA since the last save: it is recreated, so saved."""
+        self._save(self._config())
+        _, calls = self._save(self._config(), exists=False)
+        self.assertIn("lovelace/dashboards/create", calls)
+        self.assertIn("lovelace/config/save", calls)
+
+    def test_failed_save_is_not_remembered(self):
+        import nibe_lovelace as nl
+
+        def failing(_ws, _mid, payload, _timeout=10):
+            if payload.get("type") == "lovelace/dashboards/list":
+                return {"success": True, "result": [{"url_path": nl._MENU_DASHBOARD_SLUG}]}
+            return {"success": False}
+
+        with patch("nibe_lovelace._ws_call", side_effect=failing):
+            nl._setup_menu_dashboard_lovelace(
+                MagicMock(),
+                iter(range(1, 100)).__next__,
+                self._config(),
+                MagicMock(active_dynamic_points=set()),
+                MagicMock(),
+                set(),
+                set(),
+            )
+        _, calls = self._save(self._config())
+        self.assertIn("lovelace/config/save", calls)
+
+    def test_unchanged_dashboard_still_asks_for_a_retry_for_missing_dynamic_points(self):
+        self._save(self._config(), missing_dynamic=True)
+        result, calls = self._save(self._config(), missing_dynamic=True)
+        self.assertNotIn("lovelace/config/save", calls)
+        self.assertTrue(result)
+
+    def test_builds_do_not_overlap(self):
+        """A second build waits for the first instead of running beside it,
+        so an older build can't save after a newer one."""
+        import nibe_lovelace as nl
+
+        inside = threading.Event()
+        release = threading.Event()
+        order = []
+
+        def build(*_a, **_k):
+            order.append("start")
+            inside.set()
+            release.wait(5)
+            order.append("end")
+            return False
+
+        with patch("nibe_lovelace._setup_menu_dashboard_build", side_effect=build):
+            first = threading.Thread(target=nl._setup_menu_dashboard, args=(None, MagicMock()))
+            first.start()
+            self.assertTrue(inside.wait(5))
+            second = threading.Thread(target=nl._setup_menu_dashboard, args=(None, MagicMock()))
+            second.start()
+            second.join(0.3)
+            self.assertTrue(second.is_alive(), "second build must wait for the first")
+            release.set()
+            first.join(5)
+            second.join(5)
+        self.assertEqual(order, ["start", "end", "start", "end"])
+
+    @given(
+        config=st.dictionaries(
+            st.text(min_size=1, max_size=5),
+            st.recursive(
+                st.one_of(st.integers(), st.text(max_size=5), st.booleans()),
+                lambda inner: (
+                    st.lists(inner, max_size=3)
+                    | st.dictionaries(st.text(min_size=1, max_size=5), inner, max_size=3)
+                ),
+                max_leaves=10,
+            ),
+            min_size=1,
+            max_size=4,
+        )
+    )
+    def test_only_the_content_counts_not_the_key_order(self, config):
+        import nibe_lovelace as nl
+
+        def reordered(node):
+            if isinstance(node, dict):
+                return {k: reordered(node[k]) for k in reversed(list(node))}
+            if isinstance(node, list):
+                return [reordered(v) for v in node]
+            return node
+
+        nl._last_saved_menu_fingerprint = None
+        config = {"views": [config]}  # every real config has views
+        self._save(config)
+        _, calls = self._save(reordered(config))
+        self.assertNotIn("lovelace/config/save", calls, "same content, other key order")
+        changed = {**config, "\x00extra": 1}
+        _, calls = self._save(changed)
+        self.assertIn("lovelace/config/save", calls, "changed content is saved")

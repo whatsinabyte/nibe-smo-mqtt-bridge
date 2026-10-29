@@ -19,6 +19,11 @@ replaying real firmware data from reference-dumps/all_points_<lang>.json:
 
   POST /mock-control/points/{id}        → test-only control channel (see below)
   POST /mock-control/hidden/{id}        → test-only: withhold/restore a point
+  POST /mock-control/shows              → test-only: which points a value shows
+  POST /mock-control/list               → test-only: let the point list lag
+  POST /mock-control/list-refresh       → test-only: let a lagging list catch up
+  POST /mock-control/list-snapshot      → test-only: what the list catches up to
+  POST /mock-control/fail               → test-only: fail the next bulk fetches
 
 Any HTTP Basic Authorization header is accepted (this is a dev harness, not
 an auth test). Runs over HTTPS with a generated self-signed certificate,
@@ -43,6 +48,28 @@ param". The point definition is kept, so unhiding restores it unchanged. This
 reproduces what a real controller does while it restarts — during a 4.13.12
 firmware update one served 1145 of its 1169 points for about a minute, across
 four polls, before the rest returned.
+
+/mock-control/shows models a switch or select showing settings: body
+{"controller": "10613", "value": 1, "points": ["3260", "4694", "10614"]}
+means those points are served only while 10613 has the value 1, and the
+mock applies it after every value change (a PATCH or the points channel).
+The points must exist (inject them first). {"reset": true} drops every rule
+and ends a lagging list. Independent of /hidden: a point is withheld if
+either withholds it.
+
+/mock-control/list with {"lagging": true} reproduces the REST API's point
+list lagging behind its values (docs/known-firmware-quirks.md): values still
+change at once, but what the rules show or hide only reaches the bulk
+response at the next POST /mock-control/list-refresh. A spec decides that
+way exactly whether the list catches up before or after its next action.
+The real list can also catch up to a state that is already gone (a switch
+turned on and straight off shows its "on" settings after the off): POST
+/mock-control/list-snapshot records what the rules show now, and a refresh
+with {"from_snapshot": true} publishes that instead of the current state.
+
+/mock-control/fail with {"count": N} answers the next N bulk fetches with
+HTTP 500, as an unreachable or restarting controller would, without
+restarting the mock (which would lose injected points and rules).
 """
 
 from __future__ import annotations
@@ -65,6 +92,41 @@ with open(DUMP_PATH, encoding="utf-8") as f:
 # Point IDs currently withheld from every read/write path; see the module
 # docstring. Normally empty, so the bulk response is served as-is.
 HIDDEN: set[str] = set()
+# Show rules, {controller: {value: point ids}} (/mock-control/shows), the
+# points they withhold as last applied, and whether the list lags (applied
+# only at /mock-control/list-refresh). See the module docstring.
+SHOWS: dict[str, dict[int, set[str]]] = {}
+RULE_HIDDEN: set[str] = set()
+LIST_LAGS = False
+# What /mock-control/list-snapshot recorded, for a refresh "from_snapshot".
+SNAPSHOT: set[str] | None = None
+# Bulk fetches still to fail (/mock-control/fail).
+FAILS_LEFT = 0
+
+
+def _withheld_now() -> set[str]:
+    """Every point a rule lists for a value its controller doesn't have."""
+    withheld: set[str] = set()
+    for controller, by_value in SHOWS.items():
+        current = ((POINTS.get(controller) or {}).get("value") or {}).get("integerValue")
+        shown = by_value.get(current, set())
+        for points in by_value.values():
+            withheld |= points - shown
+    return withheld
+
+
+def _apply_shows(refresh: bool = False, withheld: set[str] | None = None) -> None:
+    """Apply the rules — at once, or with a lagging list only on a refresh."""
+    if LIST_LAGS and not refresh:
+        return
+    RULE_HIDDEN.clear()
+    RULE_HIDDEN.update(_withheld_now() if withheld is None else withheld)
+
+
+def _hidden(point_id: str) -> bool:
+    return point_id in HIDDEN or point_id in RULE_HIDDEN
+
+
 # Active alarms served by GET /notifications; set via /mock-control/alarms,
 # cleared by DELETE /notifications (the bridge's Reset Alarms).
 ALARMS: list = []
@@ -133,6 +195,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/mock-control/last-request":
             self._send_json(200, LAST_REQUEST)
         elif path == f"{BASE_PATH}/points":
+            global FAILS_LEFT
+            if FAILS_LEFT > 0:
+                FAILS_LEFT -= 1
+                self._send_json(500, {"error": "mock failure"})
+                return
             LAST_REQUEST.clear()
             LAST_REQUEST.update(
                 {
@@ -140,13 +207,13 @@ class Handler(BaseHTTPRequestHandler):
                     "accept_language": self.headers.get("Accept-Language"),
                 }
             )
-            if HIDDEN:
-                self._send_json(200, {k: v for k, v in POINTS.items() if k not in HIDDEN})
+            if HIDDEN or RULE_HIDDEN:
+                self._send_json(200, {k: v for k, v in POINTS.items() if not _hidden(k)})
             else:
                 self._send_json(200, POINTS)
         elif path.startswith(f"{BASE_PATH}/points/"):
             point_id = path.rsplit("/", 1)[-1]
-            point = None if point_id in HIDDEN else POINTS.get(point_id)
+            point = None if _hidden(point_id) else POINTS.get(point_id)
             if point is None:
                 self._send_json(404, {"error": "not found"})
             else:
@@ -172,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
         result = {}
         for item in writes:
             point_id = str(item.get("variableId"))
-            point = None if point_id in HIDDEN else POINTS.get(point_id)
+            point = None if _hidden(point_id) else POINTS.get(point_id)
             if point is None:
                 result[point_id] = "error: no such param"
                 continue
@@ -188,6 +255,7 @@ class Handler(BaseHTTPRequestHandler):
             point["value"]["stringValue"] = item.get("stringValue")
             point["value"]["isOk"] = True
             result[point_id] = "modified"
+        _apply_shows()
         self._send_json(200, result)
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -221,6 +289,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ALARMS[:] = list(body.get("alarms", []))
             self._send_json(200, {"status": "ok", "alarms": ALARMS})
+            return
+        if path in (
+            "/mock-control/shows",
+            "/mock-control/list",
+            "/mock-control/list-refresh",
+            "/mock-control/list-snapshot",
+            "/mock-control/fail",
+        ):
+            self._list_control(path)
             return
         hidden_prefix = "/mock-control/hidden/"
         prefix = "/mock-control/points/"
@@ -282,7 +359,56 @@ class Handler(BaseHTTPRequestHandler):
         if "stringValue" in body:
             point["value"]["stringValue"] = body["stringValue"]
         point["value"]["isOk"] = True
+        _apply_shows()
         self._send_json(200, {"status": "ok", "point": point})
+
+    def _list_control(self, path: str) -> None:
+        """/mock-control/shows, /list and /list-refresh — see the module
+        docstring."""
+        global LIST_LAGS, SNAPSHOT, FAILS_LEFT
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if path == "/mock-control/shows":
+            if body.get("reset"):
+                SHOWS.clear()
+                LIST_LAGS = False
+                SNAPSHOT = None
+                FAILS_LEFT = 0
+            else:
+                points = {str(p) for p in body.get("points", [])}
+                missing = sorted(p for p in points if p not in POINTS)
+                if missing:
+                    self._send_json(400, {"error": f"unknown points (inject first): {missing}"})
+                    return
+                controller = str(body["controller"])
+                SHOWS.setdefault(controller, {})[int(body["value"])] = points
+            _apply_shows()
+        elif path == "/mock-control/list":
+            LIST_LAGS = bool(body.get("lagging"))
+            _apply_shows()
+        elif path == "/mock-control/list-snapshot":
+            SNAPSHOT = _withheld_now()
+        elif path == "/mock-control/fail":
+            FAILS_LEFT = int(body.get("count", 1))
+        elif body.get("from_snapshot"):
+            if SNAPSHOT is None:
+                self._send_json(400, {"error": "no snapshot recorded"})
+                return
+            _apply_shows(refresh=True, withheld=SNAPSHOT)
+        else:
+            _apply_shows(refresh=True)
+        self._send_json(
+            200,
+            {
+                "lagging": LIST_LAGS,
+                "withheld": sorted(RULE_HIDDEN),
+                "shows": {c: {v: sorted(p) for v, p in r.items()} for c, r in SHOWS.items()},
+            },
+        )
 
 
 def main() -> None:

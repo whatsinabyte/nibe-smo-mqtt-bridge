@@ -2371,6 +2371,25 @@ class TestRepublishRetainedState(unittest.TestCase):
         em._pub.publish_entity_discovery.assert_not_called()
         em.mqtt.publish.assert_not_called()
 
+    def test_resends_dynamic_removals_before_republishing_configs(self):
+        """A point that appears in between must be republished, not cleared."""
+        em, _ = self._em()
+
+        def resend():
+            em._pub.publish_entity_discovery.assert_not_called()
+
+        with (
+            patch.object(em, "_resend_dynamic_removals", side_effect=resend) as resent,
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+        resent.assert_called_once_with()
+        em._pub.publish_entity_discovery.assert_called_once()
+
     def test_applied_mode_is_remembered_from_persist(self):
         em = _make_em()
         with patch("nibe_entity_manager._atomic_write_text"):
@@ -3024,3 +3043,94 @@ class TestUnrecognisedAppliedModeIsTreatedAsNoRecord(unittest.TestCase):
         ):
             em.apply_startup_action("restore", None, "essential")
         mock_record.assert_called_once_with("essential")
+
+
+class TestResendDynamicRemovals(unittest.TestCase):
+    """A removal sent while Home Assistant's MQTT connection was down never
+    reaches it, and the broker keeps nothing of an empty retained message —
+    so HA kept the entity of a dynamic point that had gone, until it
+    restarted. The removal is sent again when HA comes back online and at
+    startup."""
+
+    def _em(self):
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em.dynamic_point_map._table[10613] = DynamicPointEntry(
+            point_id=10613,
+            title="SG Ready activation",
+            entity_type="switch",
+            is_controlling=True,
+            dynamic_points_by_value={0: [], 1: [3260, 4694, 10614]},
+        )
+        em.active_entities_by_id[3260] = {"point_id": 3260}
+        em.mqtt_enabled_points.update({3260, 10614})
+        em._enabled_set_restored = True
+        return em
+
+    def _cleared(self, em):
+        from nibe_entity_detection import create_entity_id
+
+        cleared = set()
+        for c in em.mqtt.publish.call_args_list:
+            topic, payload = c.args[0], c.args[1]
+            if payload == "" and c.kwargs.get("retain"):
+                for pid in (3260, 4694, 10614):
+                    if f"/{create_entity_id(pid)}/" in topic:
+                        cleared.add((pid, topic))
+        return cleared
+
+    def test_clears_every_domain_of_a_known_dynamic_point_without_entity(self):
+        from nibe_entity_detection import create_entity_id
+        from nibe_entity_manager import _DISCOVERY_DOMAINS
+        from nibe_mqtt_publisher import t_attributes, t_config
+
+        em = self._em()
+        em._resend_dynamic_removals()
+        entity_id = create_entity_id(4694)
+        expected = {(4694, t_config(d, entity_id)) for d in _DISCOVERY_DOMAINS} | {
+            (4694, t_attributes(d, entity_id)) for d in _DISCOVERY_DOMAINS
+        }
+        self.assertEqual(self._cleared(em), expected)
+
+    def test_points_with_an_entity_or_enabled_keep_their_config(self):
+        em = self._em()
+        em._resend_dynamic_removals()
+        self.assertFalse({pid for pid, _ in self._cleared(em)} & {3260, 10614})
+
+    def test_nothing_before_the_enabled_set_is_restored(self):
+        """Before the startup action, enabled dynamic points have no entity
+        yet — clearing their configs would remove them."""
+        em = self._em()
+        em._enabled_set_restored = False
+        em._resend_dynamic_removals()
+        em.mqtt.publish.assert_not_called()
+
+    def test_nothing_from_a_new_bridge_until_the_startup_action_ran(self):
+        em = self._em()
+        em._enabled_set_restored = _make_em()._enabled_set_restored
+        em._resend_dynamic_removals()
+        em.mqtt.publish.assert_not_called()
+
+    def test_logs_what_it_resent(self):
+        em = self._em()
+        with self.assertLogs("nibe.discovery", level="INFO") as cm:
+            em._resend_dynamic_removals()
+        self.assertTrue(any("[4694]" in line for line in cm.output))
+
+    def test_startup_action_resends_once_the_enabled_set_is_in_place(self):
+        for action in ("apply", "restore", "reconcile"):
+            with self.subTest(action=action):
+                em = _make_em()
+
+                def resend(em=em):
+                    self.assertTrue(em._enabled_set_restored)
+
+                with (
+                    patch.object(em, "apply_mode"),
+                    patch.object(em, "restore_from_mqtt"),
+                    patch.object(em, "record_applied_mode"),
+                    patch.object(em, "_resend_dynamic_removals", side_effect=resend) as resent,
+                ):
+                    em.apply_startup_action(action, "menus", "menus")
+                resent.assert_called_once_with()

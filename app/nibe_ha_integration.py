@@ -1372,12 +1372,11 @@ class ManagementCommandHandler:
                 pid: pt.get("entity_type", "") for pid, pt in self._em.all_points_by_id.items()
             }
             # dynamic_point_map._table is also mutated (under _em_lock) by
-            # _run_learning_detection (write executor thread) and
-            # _publish_dynamic_changes (poll thread) — this runs on
-            # mgmt_executor's thread, a third mutator that must serialize
-            # against those two the same way, or a flush landing mid-mutation
-            # on either of those threads corrupts the table rather than just
-            # producing a stale read.
+            # the poll thread (_publish_dynamic_changes, _finish_learning_window)
+            # — this runs on mgmt_executor's thread, a second mutator that must
+            # serialize against it the same way, or a flush landing
+            # mid-mutation corrupts the table rather than just producing a
+            # stale read.
             with self._em._em_lock:
                 self._em.dynamic_point_map.flush(self._em.all_points_by_id, entity_types)
                 self._em._persist_dynamic_map()

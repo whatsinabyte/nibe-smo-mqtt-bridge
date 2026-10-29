@@ -16,6 +16,11 @@ import { bridgeLogsSince, HA_URL, haWs, MQTT_CONTAINER } from './support/stack';
  * here is that the write reaches it at all — and that the resulting
  * "Write Failed" message names the setting: it read the title from a key
  * entity_info never has, so it always said "point 3478 (point 3478)".
+ *
+ * The press can wait in the bridge's write queue: writes run one at a time,
+ * and a switch write from a spec just before may itself be waiting up to
+ * 95 s for a value the bridge is still learning (_wait_for_learning_window).
+ * The press and its alert are awaited that long.
  */
 
 const POINT_ID = 3478;
@@ -36,7 +41,7 @@ async function entityId(token: string): Promise<string> {
 }
 
 test('pressing a holding-register button flagged isWritable false asks the controller', async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const token = readToken();
   try {
     await haPost(token, '/api/services/mqtt/publish', {
@@ -70,7 +75,7 @@ test('pressing a holding-register button flagged isWritable false asks the contr
 
     // The bridge alert carries the same text as the "Write Failed" notification.
     const sub = spawn('docker', [
-      'exec', MQTT_CONTAINER, 'mosquitto_sub', '-t', 'nibe/browser/bridge/alert', '-C', '1', '-W', '30',
+      'exec', MQTT_CONTAINER, 'mosquitto_sub', '-t', 'nibe/browser/bridge/alert', '-C', '1', '-W', '120',
     ]);
     let alertRaw = '';
     sub.stdout.on('data', (d) => (alertRaw += d));
@@ -88,7 +93,7 @@ test('pressing a holding-register button flagged isWritable false asks the contr
           return 'nothing yet';
         },
         {
-          timeout: 30_000,
+          timeout: 120_000,
           message:
             `the bridge refused the press of ${id} itself, from the firmware's isWritable flag, ` +
             'without asking the controller',

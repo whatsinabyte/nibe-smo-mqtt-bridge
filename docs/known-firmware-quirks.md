@@ -228,6 +228,29 @@ and disabled at once, deleting its Home Assistant entity and history. Now
 only a point already known to be dynamic is treated that way. Any other
 point gets the same grace period as at any other time.
 
+## The REST API's point list lags behind the controller by up to a minute
+
+When a switch or drop-down shows or hides settings, the controller's own
+display shows the change at once, but the REST API's point list changes only
+up to about a minute later. Point values in that same API keep changing from
+one 5-second poll to the next. How long it takes varies with
+the moment of the write: on 2026-10-27 an SMO S40 served the three points
+SG Ready activation (10613) shows 64 seconds after the write, and dropped
+them 65 seconds after switching it off. Each time all three arrived or left
+in the same poll. Removals of about 16 seconds have also been seen (S2125).
+NIBE documents none of this.
+
+**Workaround:** the bridge watches for 90 seconds after a write to a switch
+(`_POST_WRITE_SCAN_S`), and points that arrive later are still linked to
+that switch during a late-arrival period (`_LATE_ARRIVAL_S`, #131). While
+the bridge learns what a switch shows, another switch write waits until the
+point list has changed or the 90 seconds are up, so that its points can't
+be linked to the wrong switch. Setpoints and other writes don't wait.
+Because values arrive before the point list, points appearing in a window
+are recorded as what the switch shows only while it still reads the value
+it was set to, and not at all when the window saw it set to two different
+values (`recordable_value`). See ARCHITECTURE.md.
+
 ## A restarting controller can serve 0 for a lifetime counter
 
 During the 4.14.6 firmware update's restart, a VVM S320 served 0 for its

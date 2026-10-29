@@ -1596,8 +1596,7 @@ class TestHandleApiFailure(unittest.TestCase):
             "availability_topic": f"nibe/avail/{point_id}",
         }
         em.active_entities_by_id[point_id] = entity_info
-        with patch.object(em, "_run_learning_detection"):
-            em._handle_command_worker(entity_info, 1, "1", "test")
+        em._handle_command_worker(entity_info, 1, "1", "test")
         em._dismiss.assert_called()
 
     def test_write_failure_skips_bridge_alert_when_pub_is_none(self):

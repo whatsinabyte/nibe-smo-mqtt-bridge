@@ -37,6 +37,12 @@ import { haWs, pointEntityId } from './support/stack';
  * raw value — see that function's own docstring. The scan window is a
  * real 90s (_POST_WRITE_SCAN_S in nibe_entity_manager.py), so this test
  * needs a longer-than-default timeout.
+ *
+ * Writes run one at a time, and while a value is being learned a switch or
+ * select write waits until that learning window shows the write's effect or
+ * ends (up to 95 s, _wait_for_learning_window). The 10613 write can wait behind
+ * one from a spec just before, and the select write behind 10613's own when
+ * its points were already served. Both are awaited that long.
  */
 
 const HA_URL = process.env.HA_URL || 'http://localhost:18123';
@@ -210,7 +216,7 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
   // internal cache refresh, plus this bridge's own 90s post-write scan
   // window, plus login/enable/UI overhead — comfortably exceeds
   // playwright.config.ts's global 90s default.
-  test.setTimeout(180_000);
+  test.setTimeout(420_000);
 
   const token = readToken();
 
@@ -299,7 +305,7 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
         return false;
       },
       {
-        timeout: 150_000,
+        timeout: 240_000,
         message:
           'no new select.* entity with a translated SG Ready option label appeared after activating SG Ready',
       }
@@ -343,7 +349,7 @@ test('writing to the SG Ready API-activation switch surfaces 3260/10614 correctl
         return state?.state === 'Lage prijs';
       },
       {
-        timeout: 30_000,
+        timeout: 120_000,
         message: `${point10614EntityId} never reached state "Lage prijs" after selecting it`,
       }
     )

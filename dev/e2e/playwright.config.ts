@@ -22,7 +22,11 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   workers: process.env.E2E_STACK ? 1 : STACKS,
-  reporter: [['list'], ['./tests/support/duration-reporter.ts']],
+  reporter: [
+    ['list'],
+    ['./tests/support/duration-reporter.ts'],
+    ['./tests/support/bridge-log-reporter.ts'],
+  ],
   use: {
     baseURL: stackEnv(STACK).HA_URL,
     trace: 'retain-on-failure',

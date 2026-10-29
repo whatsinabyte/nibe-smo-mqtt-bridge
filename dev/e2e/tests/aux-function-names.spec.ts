@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, pointEntityId, setMockValue, bridgeEnabled } from './support/stack';
 
 /**
  * AUX inputs are selects naming their function, over their whole range.
@@ -38,7 +38,7 @@ async function haState(token: string, entityId: string): Promise<any> {
 test('an AUX input is a select naming its function, unknown ones by number', async () => {
   test.setTimeout(240_000);
   const token = readToken();
-  const enabledHere = !(await pointEntityId(token, POINT));
+  const enabledHere = !bridgeEnabled(POINT);
   try {
     if (enabledHere) {
       await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(POINT));

@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, pointEntityId, setMockValue, bridgeEnabled } from './support/stack';
 
 /**
  * Version sensors show the same version myUplink does.
@@ -44,7 +44,7 @@ test('version sensors match myUplink', async () => {
   try {
     for (const [pointId, want] of Object.entries(EXPECTED)) {
       await setMockValue(pointId, want.raw);
-      if (!(await pointEntityId(token, pointId))) {
+      if (!bridgeEnabled(pointId)) {
         await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', pointId);
         enabledHere.push(pointId);
       }

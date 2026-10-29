@@ -51,6 +51,7 @@ EntityManager(api_client, publisher, notify_fn, dismiss_fn, mqtt_client)
 import base64
 import concurrent.futures
 import contextlib
+import dataclasses
 import gzip
 import hashlib
 import json
@@ -70,6 +71,18 @@ from datetime import timedelta as _timedelta
 from typing import Any
 
 import yaml
+from nibe_attribution import (
+    LateTail,
+    ScanWindow,
+    changed_candidates,
+    controller_side_decision,
+    late_arrival_decision,
+    late_tail_until,
+    learning_outcome,
+    poll_verdict,
+    recordable_value,
+    version_changed,
+)
 from nibe_caching import LRUCache, ValueCache
 from nibe_dynamic_map import DynamicPointEntry, DynamicPointMap
 from nibe_entity_detection import (
@@ -127,15 +140,17 @@ _POST_WRITE_SCAN_S = 90  # seconds to keep accelerated bulk polling
 _LATE_ARRIVAL_S = 180  # after a scan window, new points are still linked to
 # its switch for this long (plus one poll interval) at the normal poll
 # rate — see _late_arrival.
+_LEARNING_WAIT_MARGIN_S = 5  # a write waits for a learning window this
+# much longer than the window: the poll loop ends it at its next 5 s poll —
+# see _wait_for_learning_window.
 
 # Pending-write staleness: a write that has been *executing* this long is
 # treated as timed-out. Measured from the moment the write executor picked
 # the write up, never from when the command arrived — time spent queued
 # behind other writes doesn't count, since the executor is single-worker
 # (deliberately, to serialize writes) and a queue can legitimately be many
-# minutes deep with nothing wrong. Must still exceed _POST_WRITE_SCAN_S,
-# because a write that opens a learning-detection window holds the worker
-# for the whole of that window before finishing.
+# minutes deep with nothing wrong. A write waiting for a learning window
+# (_wait_for_learning_window) gets its start time only after that wait.
 _STALE_WRITE_AGE_S = _POST_WRITE_SCAN_S + 10  # seconds
 
 # How long a point must be *continuously* absent from the bulk response
@@ -250,6 +265,21 @@ def _decompress_payload(payload: bytes | str) -> bytes:
 # ============================================================================
 # STARTUP MODE DECISION (pure — unit-testable without mocking main())
 # ============================================================================
+
+
+def _response_values(response: dict) -> dict[int, int | None]:
+    """Each point's integerValue in a bulk response, keyed by point id
+    (None for a point without one)."""
+    values: dict[int, int | None] = {}
+    for key, point in response.items():
+        try:
+            pid = int(key)
+        except (TypeError, ValueError):
+            continue
+        values[pid] = (
+            (point.get("value") or {}).get("integerValue") if isinstance(point, dict) else None
+        )
+    return values
 
 
 def _known_mode_or_none(mode: str | None) -> str | None:
@@ -611,9 +641,9 @@ class EntityManager:
         # from a non-poll thread must not assume this lock is sufficient.
         self._em_lock = threading.RLock()
 
-        # ── Post-write scan flag ──────────────────────────────────────────────
-        # Protects post_write_active and _post_write_until which are written
-        # by the write executor and read/cleared by the main poll thread.
+        # ── Post-write scan lock ──────────────────────────────────────────────
+        # Protects _window and _late_tail, replaced by the write executor and
+        # the poll loop (and Force Poll on the management thread).
         self._post_write_lock = threading.Lock()
 
         # ── Enabled-state tracking ────────────────────────────────────────────
@@ -649,6 +679,10 @@ class EntityManager:
         # in HA right now.  Persisted to MQTT (ACTIVE_DYNAMIC topic) so restarts
         # resume the correct active set without re-running discovery.
         self.active_dynamic_points: set[int] = set()
+        # True once the startup action has put the enabled set in place —
+        # before that, a point without an entity may simply not be restored
+        # yet, so _resend_dynamic_removals must not clear its config.
+        self._enabled_set_restored = False
         self.baseline_point_ids: set[int] = set()
         # point_id -> when it was first seen missing from the bulk response,
         # cleared the moment it comes back. Gates the destructive disable in
@@ -738,38 +772,32 @@ class EntityManager:
         # shutdown budget. Never cleared — a shutdown is terminal.
         self._shutdown_event = threading.Event()
 
-        # ── Learning mode ─────────────────────────────────────────────────────
-        # When True, writes to unprocessed switches/selects are serialised and
         # ── Post-write scan ───────────────────────────────────────────────────
-        # After any write to a switch, _post_write_active is set to True and
-        # _post_write_until records when the accelerated scan window ends.
-        # During this window the main poll loop uses _post_write_interval
-        # instead of bulk_interval so dynamic point changes surface quickly.
-        self.post_write_active: bool = False
-        self._post_write_until: float = 0.0
+        # The open scan window, or None (see ScanWindow). While one is open
+        # the poll loop polls every post_write_interval instead of
+        # bulk_interval, so the points a switch shows surface quickly, and
+        # links them to the window's point. Opened by an HA write
+        # (_open_post_write_scan) or a change on the controller
+        # (_open_learning_window); ended by update_all_states.
+        self._window: ScanWindow | None = None
         self.post_write_interval: int = 5
         self._post_write_duration: int = _POST_WRITE_SCAN_S
-        self._post_write_controlling_point: int | None = None
-        # Learning from a switch changed on the controller itself — see
-        # _controller_side_change. The point whose controller-side change
-        # opened the current scan window (None when an HA write opened it, or
-        # none is open), and every (point, value) that has opened one in this
-        # run: each opens a window at most once, so a switch the controller
-        # flips by itself can't keep the poll loop at 5 s.
-        self._controller_side_point: int | None = None
+        # Set when the point set changes in a learning window or the window
+        # ends. A write that opens a scan window waits for it, keeping one
+        # value learned at a time (_wait_for_learning_window).
+        self._learning_window_ended = threading.Event()
+        self._learning_window_ended.set()
+        # Every (point, value) whose change on the controller opened a window
+        # in this run: each opens one at most once, so a switch the controller
+        # flips by itself can't keep the poll loop at 5 s
+        # (_controller_side_change).
         self._controller_side_tried: set[tuple[int, int]] = set()
         # Points a switch shows that arrive after its scan window — see
-        # _late_arrival. (point, value, until, changed on the controller), or
-        # None. Neither this nor a controller-side window is used until
-        # _attribution_blocked_until after a failed poll, a partial point list
-        # or a firmware version change.
-        self._late_tail: tuple[int, int, float, bool] | None = None
+        # _late_arrival. Neither this nor a controller-side window is used
+        # until _attribution_blocked_until after a failed poll, a partial
+        # point list or a firmware version change.
+        self._late_tail: LateTail | None = None
         self._attribution_blocked_until: float = 0.0
-        # Points confirmed present by _resolve_dynamic_points_fast, keyed to
-        # expiry time.  The firmware bulk API has a ~60s cache, so the next
-        # bulk fetch may return stale data that omits the newly-activated point.
-        # Entries here suppress false-disappearance routing until the bulk cache
-        # clears or the point actually appears in the bulk response.
 
         # ── Bulk data cache ───────────────────────────────────────────────────
         self.bulk_data: dict[int, dict] = {}
@@ -903,6 +931,11 @@ class EntityManager:
     # ------------------------------------------------------------------ #
     # Public list views                                                    #
     # ------------------------------------------------------------------ #
+
+    @property
+    def post_write_active(self) -> bool:
+        """Whether a post-write scan window is open (_window)."""
+        return self._window is not None
 
     @property
     def all_points(self) -> list:
@@ -1209,6 +1242,8 @@ class EntityManager:
         else:  # "reconcile"
             self.restore_from_mqtt()
             self.apply_mode(initial_mode)
+        self._enabled_set_restored = True
+        self._resend_dynamic_removals()
 
     # ------------------------------------------------------------------ #
     # MQTT scan / restore                                                  #
@@ -1822,25 +1857,24 @@ class EntityManager:
         # Use faster polling during the post-write scan window so dynamic
         # point changes surface quickly after a switch write.
         # Outside that window use the normal user-configured poll interval.
+        ended: ScanWindow | None = None
         with self._post_write_lock:
-            if self.post_write_active and current_time > self._post_write_until:
-                self.post_write_active = False
-                ended_point = self._post_write_controlling_point
-                self._post_write_controlling_point = None
-                if ended_point is not None:
-                    ended_value = (self.bulk_data.get(ended_point) or {}).get("raw_value")
+            window = self._window
+            if window is not None and current_time > window.until:
+                ended = window
+                self._window = None
+                if window.point is not None:
+                    ended_value = (self.bulk_data.get(window.point) or {}).get("raw_value")
                     if ended_value is not None:
                         self._start_late_tail(
-                            ended_point,
-                            int(ended_value),
-                            ended_point == self._controller_side_point,
-                            after=0,
+                            window.point, int(ended_value), window.controller_side, after=0
                         )
-                self._controller_side_point = None
                 log_commands.info(
-                    "Post-write scan window ended for point %s", ended_point
+                    "Post-write scan window ended for point %s", window.point
                 )  # pragma: no mutate
-            _post_write_now_active = self.post_write_active
+            _post_write_now_active = self._window is not None
+        if ended is not None and ended.point is not None and ended.learning_value is not None:
+            self._finish_learning_window(ended.point, ended.learning_value, ended.saw_points)
 
         effective_interval = (
             self.post_write_interval if _post_write_now_active else self.bulk_interval
@@ -2007,16 +2041,18 @@ class EntityManager:
         if point_id not in self.bulk_data:
             if point_id in self.mqtt_enabled_points:
                 with self._post_write_lock:
-                    post_write_snapshot = self.post_write_active
-                    controlling_point_snapshot = self._post_write_controlling_point
+                    window = self._window
                 known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
-                if post_write_snapshot and (
+                if window is not None and (
                     point_id in known_dynamic or point_id in self.active_dynamic_points
                 ):
                     # A known dynamic point absent during a post-write scan is
                     # disappearing. Route through _publish_dynamic_changes so it
                     # is deindexed, its MQTT meta is cleared, the changelog is
                     # updated, and the frontend is notified — not just disabled.
+                    # _fetch_bulk_data has already removed the known dynamic
+                    # points that were active; this catches the rest, e.g.
+                    # active ones the map no longer knows after a flush.
                     # Any other point takes the absence grace path below, write
                     # or no write: a static point briefly missing within 90s of
                     # any write (a controller restart, a partial response) used
@@ -2035,7 +2071,8 @@ class EntityManager:
                         self._publish_dynamic_changes(
                             [],
                             {point_id},
-                            controlling_point_snapshot,
+                            window.point,
+                            controller_side=window.controller_side,
                         )
                 else:
                     now = time.time()
@@ -2654,17 +2691,10 @@ class EntityManager:
         firmware's: no point is linked for _ABSENT_GRACE_S, and a late-arrival
         period is dropped. A failed poll does the same (_handle_api_failure).
         """
-        if not self.initial_discovery_complete or not self.published_configs:
-            return None
-        now = time.time()
-        if now < self._attribution_blocked_until:
-            return None
         with self._pending_writes_lock:
-            if set(self.pending_writes) - {own_point}:
-                return None
+            other_pending = bool(set(self.pending_writes) - {own_point})
         with self._write_queue_lock:
-            if self._write_queue_depth:
-                return None
+            other_pending = other_pending or bool(self._write_queue_depth)
         served: set[int] = set()
         for key in response:
             try:
@@ -2673,17 +2703,29 @@ class EntityManager:
                 continue
         with self._em_lock:
             known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
-        version_changed = any(
-            ((response.get(str(pid)) or {}).get("value") or {}).get("integerValue")
-            != self.bulk_data[pid].get("raw_value")
-            for pid in _FIRMWARE_VERSION_POINTS
-            if pid in self.bulk_data
+        now = time.time()
+        verdict = poll_verdict(
+            discovery_complete=self.initial_discovery_complete,
+            published=self.published_configs,
+            now=now,
+            blocked_until=self._attribution_blocked_until,
+            other_write_pending=other_pending,
+            served=served,
+            known_dynamic=known_dynamic,
+            versions_changed=version_changed(
+                {
+                    pid: self.bulk_data[pid].get("raw_value")
+                    for pid in _FIRMWARE_VERSION_POINTS
+                    if pid in self.bulk_data
+                },
+                _response_values(response),
+                _FIRMWARE_VERSION_POINTS,
+            ),
         )
-        if self.published_configs - served - known_dynamic or version_changed:
+        if verdict == "block":
             self._attribution_blocked_until = now + _ABSENT_GRACE_S
             self._late_tail = None
-            return None
-        return served
+        return served if verdict == "ok" else None
 
     def _changed_candidates(self, response: dict) -> list[tuple[int, int, int, DynamicPointEntry]]:
         """The candidate switches and selects whose value differs between the
@@ -2691,20 +2733,13 @@ class EntityManager:
         ``(point_id, old_value, new_value, entry)``."""
         with self._em_lock:
             entries = list(self.dynamic_point_map.items())
-        changed: list[tuple[int, int, int, DynamicPointEntry]] = []
-        for pid, entry in entries:
-            if entry.firmware_removed:
-                continue
-            previous = self.bulk_data.get(pid)
-            point = response.get(str(pid))
-            if previous is None or not isinstance(point, dict):
-                continue
-            new_value = (point.get("value") or {}).get("integerValue")
-            old_value = previous.get("raw_value")
-            if new_value is None or old_value is None or new_value == old_value:
-                continue
-            changed.append((pid, int(old_value), int(new_value), entry))
-        return changed
+        changed = changed_candidates(
+            ((pid, entry.firmware_removed) for pid, entry in entries),
+            {pid: data.get("raw_value") for pid, data in self.bulk_data.items()},
+            _response_values(response),
+        )
+        by_id = dict(entries)
+        return [(pid, old, new, by_id[pid]) for pid, old, new in changed]
 
     def _controller_side_change(self, response: dict) -> tuple[int, int, int] | None:
         """The one switch or select changed on the controller itself since the
@@ -2731,16 +2766,17 @@ class EntityManager:
         if self._attributable_poll(response) is None:
             return None
         changed = self._changed_candidates(response)
-        if len(changed) != 1:
+        decision = controller_side_decision(
+            [(pid, old, new) for pid, old, new, _entry in changed],
+            {pid: entry.unprocessed_values for pid, _old, _new, entry in changed},
+            self._controller_side_tried,
+        )
+        if decision is None:
             return None
-        pid, old_value, new_value, entry = changed[0]
-        if (
-            new_value in entry.unprocessed_values
-            and (pid, new_value) not in self._controller_side_tried
-        ):
-            self._controller_side_tried.add((pid, new_value))
-            return pid, old_value, new_value
-        self._start_late_tail(pid, new_value, True, after=_POST_WRITE_SCAN_S)
+        if decision.open_window:
+            self._controller_side_tried.add((decision.point_id, decision.new))
+            return decision.point_id, decision.old, decision.new
+        self._start_late_tail(decision.point_id, decision.new, True, after=_POST_WRITE_SCAN_S)
         return None
 
     def _start_late_tail(
@@ -2748,8 +2784,8 @@ class EntityManager:
     ) -> None:
         """Link new points to ``point_id`` at ``value`` for ``after`` seconds
         plus the late-arrival period (_late_arrival)."""
-        until = time.time() + after + _LATE_ARRIVAL_S + self.bulk_interval
-        self._late_tail = (point_id, value, until, controller_side)
+        until = late_tail_until(time.time(), after, _LATE_ARRIVAL_S, self.bulk_interval)
+        self._late_tail = LateTail(point_id, value, until, controller_side)
 
     def _late_arrival(self, response: dict) -> tuple[int, int, bool, list[int]] | None:
         """New points that arrive after a switch's scan window ended, as
@@ -2772,38 +2808,82 @@ class EntityManager:
         tail = self._late_tail
         if tail is None:
             return None
-        point_id, value, until, controller_side = tail
-        if time.time() > until:
-            self._late_tail = None
-            return None
-        served = self._attributable_poll(response, own_point=point_id)
-        if served is None:
-            return None
-        current = ((response.get(str(point_id)) or {}).get("value") or {}).get("integerValue")
-        others = [c for c in self._changed_candidates(response) if c[0] != point_id]
-        if current != value or others:
-            self._late_tail = None
-            return None
+        point_id, value, until = tail.point, tail.value, tail.until
+        now = time.time()
+        # Expiry first: an expired period must not run _attributable_poll,
+        # whose verdict can block attribution.
+        served = self._attributable_poll(response, own_point=point_id) if now <= until else None
+        if self._late_tail is None:
+            return None  # _attributable_poll blocked attribution and dropped it
         with self._em_lock:
             known_dynamic = self.dynamic_point_map.all_known_dynamic_point_ids()
-        new = sorted(served - self.published_configs - self.baseline_point_ids - known_dynamic)
-        if not new:
+        decision = late_arrival_decision(
+            until=until,
+            value=value,
+            now=now,
+            served=served,
+            current_value=_response_values(response).get(point_id),
+            others_changed=any(c[0] != point_id for c in self._changed_candidates(response)),
+            published=self.published_configs,
+            baseline=self.baseline_point_ids,
+            known_dynamic=known_dynamic,
+        )
+        if not decision.keep_tail:
+            self._late_tail = None
+        if not decision.new_points:
             return None
-        self._late_tail = None
-        return point_id, value, controller_side, new
+        return point_id, value, tail.controller_side, decision.new_points
 
-    def _open_learning_window(self, point_id: int, controller_side: bool) -> bool:
-        """Open a scan window for ``point_id`` from the poll loop, unless one
-        is open — an HA write's window keeps its own point. Same field order
-        as _open_post_write_scan."""
+    def _other_switch_spoils_window(self, response: dict, window: ScanWindow) -> ScanWindow:
+        """Make ``window`` record nothing when another switch or select
+        changed on the controller while it is open — the settings that one
+        shows would otherwise be recorded under ``window``'s point.
+
+        ``response`` is the new bulk response; ``bulk_data`` still holds the
+        previous poll. A switch learned as showing nothing is left out: it
+        can't explain points appearing. The window stays open, only as
+        ambiguous (value None, as for two values of its own switch), and a
+        value being learned stays to be learned on a later change.
+        """
+        others = sorted(
+            pid
+            for pid, _old, _new, entry in self._changed_candidates(response)
+            if pid != window.point and not (entry.is_fully_processed() and not entry.is_controlling)
+        )
+        if not others:
+            return window
         with self._post_write_lock:
-            if self.post_write_active:
-                return False
-            self._post_write_controlling_point = point_id
-            self.post_write_active = True
-            self._post_write_until = time.time() + self._post_write_duration
-            self._controller_side_point = point_id if controller_side else None
-        return True
+            current = self._window
+            if current is None or current.point != window.point:
+                return window
+            if current.learning_value is not None:
+                self._learning_window_ended.set()
+            self._window = dataclasses.replace(current, value=None, learning_value=None)
+            spoiled = self._window
+        log_discovery.info(
+            "Point(s) %s changed on the controller during the scan window of point %d — "
+            "nothing that appears in it is recorded as what either shows",
+            others,
+            window.point,
+        )  # pragma: no mutate
+        return spoiled
+
+    def _open_learning_window(
+        self, point_id: int, controller_side: bool, value: int
+    ) -> ScanWindow | None:
+        """Open a scan window for ``point_id`` at ``value`` from the poll loop
+        and return it, unless one is open — an HA write's window keeps its
+        own point."""
+        with self._post_write_lock:
+            if self._window is not None:
+                return None
+            self._window = ScanWindow(
+                point=point_id,
+                until=time.time() + self._post_write_duration,
+                controller_side=controller_side,
+                value=value,
+            )
+            return self._window
 
     def _fetch_bulk_data(
         self,
@@ -2865,57 +2945,23 @@ class EntityManager:
             # discovery (e.g. one deindexed by the absence-grace disable that
             # has since come back) — announced to the card after the loop.
             reindexed_points: list[int] = []
-            # Snapshot post_write_active and _post_write_controlling_point
-            # together, once, for the whole fetch cycle. The write executor
-            # does not block for the scan window — it sets these flags and
-            # returns immediately, so a second write (to a different
-            # controlling switch) can update _post_write_controlling_point
-            # while this cycle is still running. Re-reading the live
-            # attribute later (e.g. when _publish_dynamic_changes attributes
-            # newly-appeared points) would risk crediting this cycle's
-            # changes to that *other* write's controlling point. Snapshotting
-            # once, up front, ties the whole cycle to one consistent value.
+            # Read the window once, for the whole fetch cycle: a write can
+            # replace it while this cycle is still running (a write to a
+            # switch whose values are all learned doesn't wait for its
+            # window), and re-reading it later — e.g. when
+            # _publish_dynamic_changes attributes newly-appeared points — would
+            # credit this cycle's changes to that *other* write's point.
             with self._post_write_lock:
-                post_write_snapshot = self.post_write_active
-                controlling_point_snapshot = self._post_write_controlling_point
-            if not post_write_snapshot:
-                # A switch or select changed on the controller itself: open the
-                # same scan window an HA write would, so the points it shows —
-                # which the firmware serves about a minute later — are learned
-                # as its dynamic points instead of indexed as static ones.
+                window_snapshot = self._window
+            if window_snapshot is None:
                 # Decided before the point loop below, which would otherwise
                 # classify points arriving in this same poll first.
-                # Points arriving after a window ended are linked the same
-                # way (_late_arrival).
-                changed = self._controller_side_change(response)
-                late = self._late_arrival(response) if changed is None else None
-                if changed is not None and self._open_learning_window(changed[0], True):
-                    post_write_snapshot = True
-                    controlling_point_snapshot = changed[0]
+                window_snapshot = self._window_opened_by_poll(response)
+                if window_snapshot is not None:
                     detect_changes = True
-                    # pragma: no mutate start
-                    log_discovery.info(
-                        "Point %d changed on the controller (%s -> %s) — scan window "
-                        "opened for up to %ds to learn the points it shows",
-                        changed[0],
-                        changed[1],
-                        changed[2],
-                        self._post_write_duration,
-                    )
-                    # pragma: no mutate end
-                elif late is not None and self._open_learning_window(late[0], late[2]):
-                    post_write_snapshot = True
-                    controlling_point_snapshot = late[0]
-                    detect_changes = True
-                    # pragma: no mutate start
-                    log_discovery.info(
-                        "New point(s) %s arrived after the scan window for point %d "
-                        "(value %d) — learning them as points it shows",
-                        late[3],
-                        late[0],
-                        late[1],
-                    )
-                    # pragma: no mutate end
+            elif window_snapshot.value is not None:
+                window_snapshot = self._other_switch_spoils_window(response, window_snapshot)
+            post_write_snapshot = window_snapshot is not None
             # scan_type/known_count are only ever read by the debug log
             # below, and that entire log call is itself unobservable —
             # nothing captures/formats this log record in tests, so even a
@@ -2943,170 +2989,20 @@ class EntityManager:
                     point_id = int(point_id_str)
                     current_point_ids.add(point_id)
 
-                    # `or {}` (not just a .get default) also covers the API
-                    # sending an explicit "value": null / "metadata": null —
-                    # .get()'s default only applies when the key is absent,
-                    # so a present-but-null value would otherwise reach the
-                    # .get() calls below as None and raise AttributeError,
-                    # which isn't caught by the (ValueError, KeyError) below
-                    # and would abort the whole bulk fetch for every point.
-                    value_data = point_data.get("value") or {}
-                    metadata = apply_metadata_overrides(point_id, point_data.get("metadata") or {})
-
-                    # ── String cache (Finding 2) ──────────────────────────────
-                    # title and description never change between firmware updates.
-                    # Cache the clean_string result; only recompute when the raw
-                    # string from the API actually differs.
-                    raw_title = point_data.get("title", f"Point {point_id}")
-                    raw_desc = point_data.get("description", "")
-                    cached_strings = self._point_string_cache.get(point_id)
-                    if (
-                        cached_strings is None
-                        or cached_strings[0] != raw_title
-                        or cached_strings[1] != raw_desc
-                    ):
-                        title = clean_string(raw_title)
-                        description = clean_string(raw_desc)
-                        self._point_string_cache.put(
-                            point_id, (raw_title, raw_desc, title, description)
-                        )
-                    else:
-                        title, description = cached_strings[2], cached_strings[3]
-
-                    # ── In-place bulk_data update (Finding 4) ─────────────────
-                    # Update the existing dict entry rather than building a new
-                    # one each poll.  Metadata, title, and description are only
-                    # updated when they differ (which is essentially never on a
-                    # running installation) to avoid redundant object churn.
-                    existing = self.bulk_data.get(point_id)
-                    if existing is None:
-                        self.bulk_data[point_id] = {
-                            "raw_value": value_data.get("integerValue", 0),
-                            "string_value": value_data.get("stringValue", ""),
-                            "is_ok": value_data.get("isOk", False),
-                            "metadata": metadata,
-                            "title": title,
-                            "description": description,
-                            "timestamp": now,
-                        }
-                    else:
-                        existing["raw_value"] = value_data.get("integerValue", 0)
-                        existing["string_value"] = value_data.get("stringValue", "")
-                        existing["is_ok"] = value_data.get("isOk", False)
-                        existing["timestamp"] = now
-                        # Metadata and strings change only on firmware update —
-                        # update in place to avoid unnecessary allocation.
-                        # A wrong/None key on either .get() below just makes
-                        # the condition always True (extra unconditional
-                        # write instead of a conditional skip) — the final
-                        # stored value is identical either way, so this is
-                        # equivalent by outcome, not pragma'd since it's not
-                        # provable via any black-box assertion on final state.
-                        if existing.get("title") != title:
-                            existing["title"] = title
-                        if existing.get("description") != description:
-                            existing["description"] = description
-                        if existing.get("metadata") != metadata:
-                            existing["metadata"] = metadata
+                    metadata, title, description = self._update_bulk_entry(
+                        point_id, point_data, now
+                    )
 
                     if (
                         detect_changes
                         and self.initial_discovery_complete
                         and point_id not in self.baseline_point_ids
                         and point_id not in self.published_configs
+                        and self._is_dynamic_appearance(
+                            point_id, metadata, title, description, post_write_snapshot
+                        )
                     ):
-                        if post_write_snapshot:
-                            # Point appeared during post-write scan window.
-                            # Route through _publish_dynamic_changes regardless
-                            # of whether it is a known dynamic point or newly
-                            # discovered — both are treated as dynamic appearances.
-                            new_points.append((point_id, point_data))
-
-                        else:
-                            # Point appeared outside any scan window.
-                            # Check whether it is a known dynamic point first —
-                            # this covers the case where a bulk fetch caught a
-                            # dynamic point appearance after the scan window expired.
-                            # Routing a known dynamic point as static would
-                            # permanently misclassify it.
-                            if self.dynamic_point_map.is_known_dynamic(point_id):
-                                # Entire call is unobservable — nothing
-                                # captures/formats this log record in tests
-                                # (title is also unused for classification,
-                                # see _get_cached_entity_type below).
-                                # Verified empirically. (An earlier version
-                                # of this comment incorrectly claimed
-                                # point_id would crash on None via %d — it
-                                # does not.)
-                                log_discovery.info(
-                                    "Known dynamic point %d '%s' appeared outside "
-                                    "scan window — routing as dynamic",
-                                    point_id,
-                                    title,
-                                )  # pragma: no mutate
-                                new_points.append((point_id, point_data))
-                            else:
-                                # Genuinely unknown point — permanent firmware
-                                # addition (e.g. firmware update). Entire
-                                # call unobservable — nothing
-                                # captures/formats this log record in
-                                # tests. Verified empirically. (An earlier
-                                # version of this comment incorrectly
-                                # claimed point_id would crash on None via
-                                # %d — it does not.)
-                                log_discovery.info(
-                                    "New permanent point %d '%s' appeared during "
-                                    "normal poll — indexing as static",
-                                    point_id,
-                                    title,
-                                )  # pragma: no mutate
-                                # 'title' key here is unused by detect_entity_type
-                                # (only 'description'/'metadata' drive
-                                # classification) — not pragma'd, 'description'
-                                # is real/tested (see test_new_permanent_point_
-                                # classified_select_from_enum_description).
-                                entity_type_p, category_p = self._get_cached_entity_type(
-                                    {
-                                        "variableId": point_id,
-                                        "metadata": metadata,
-                                        "title": title,
-                                        "description": description,
-                                    }
-                                )
-                                self._index_point(
-                                    {
-                                        "variableId": point_id,
-                                        "display_title": title,
-                                        "description": description,
-                                        "metadata": metadata,
-                                        "entity_type": entity_type_p,
-                                        "entity_category": category_p,
-                                        "is_writable": is_writable_point(metadata, point_id),
-                                        "is_dynamic": False,
-                                    }
-                                )
-                                self.baseline_point_ids.add(point_id)
-                                if entity_type_p in ("switch", "select"):
-                                    # dynamic_point_map._table is also mutated
-                                    # (unlocked otherwise) by _run_learning_detection
-                                    # and _publish_dynamic_changes — _em_lock
-                                    # serializes all of them.
-                                    with self._em_lock:
-                                        # The .get() default (second arg) is
-                                        # unreachable here — _index_point()
-                                        # just above unconditionally added
-                                        # point_id to all_points_by_id — not
-                                        # pragma'd, the key itself (point_id)
-                                        # is real/tested (see
-                                        # test_new_switch_point_populate_from_bulk_receives_the_real_point).
-                                        self.dynamic_point_map.populate_from_bulk(
-                                            {point_id: self.all_points_by_id.get(point_id, {})},
-                                            {point_id: entity_type_p},
-                                        )
-                                point_obj = self.all_points_by_id.get(point_id)
-                                if point_obj:
-                                    self._pub.publish_point_metadata(point_obj)
-                                self._point_catalog_changed()
+                        new_points.append((point_id, point_data))
 
                     if not detect_changes and not self.dynamic_point_map.is_known_dynamic(point_id):
                         if (
@@ -3114,29 +3010,7 @@ class EntityManager:
                             and point_id not in self.all_points_by_id
                         ):
                             reindexed_points.append(point_id)
-                        # 'title' key unused for classification — not
-                        # pragma'd, 'description' is real/tested (see
-                        # test_classified_select_from_enum_description).
-                        entity_type, category = self._get_cached_entity_type(
-                            {
-                                "variableId": point_id,
-                                "metadata": metadata,
-                                "title": title,
-                                "description": description,
-                            }
-                        )
-                        self._index_point(
-                            {
-                                "variableId": point_id,
-                                "display_title": title,
-                                "description": description,
-                                "metadata": metadata,
-                                "entity_type": entity_type,
-                                "entity_category": category,
-                                "is_writable": is_writable_point(metadata, point_id),
-                                "is_dynamic": False,
-                            }
-                        )
+                        self._index_static_point(point_id, metadata, title, description)
 
                 except (ValueError, KeyError) as e:
                     # Entire call is unobservable — nothing captures/formats
@@ -3159,41 +3033,14 @@ class EntityManager:
                 self.bulk_data.pop(gone_id, None)  # pragma: no mutate
                 self._point_string_cache.pop(gone_id, None)  # pragma: no mutate
 
-            # This initial value is immediately overwritten by the set
-            # comprehension below whenever the guarded block runs; outside
-            # it, disappeared_points is only ever used in a boolean context
-            # (`if disappeared_points:` / `... or disappeared_points`) where
-            # None and set() are equally falsy — genuinely unreachable.
-            disappeared_points = set()  # pragma: no mutate
-            if detect_changes and self.initial_discovery_complete:
-                known_dynamic_ids = self.dynamic_point_map.all_known_dynamic_point_ids()
-
-                disappeared_points = {
-                    pid
-                    for pid in known_dynamic_ids & self.active_dynamic_points
-                    if pid not in current_point_ids
-                }
-
-                # A baseline point that isn't a known dynamic point is not
-                # taken for a dynamic disappearance just because a write was
-                # made in the last 90s: it may be a controller restart or a
-                # partial response, so it gets the same absence grace period
-                # as at any other time (_update_entity_state).
-
-                if disappeared_points:
-                    # Entire call is unobservable — nothing captures/formats
-                    # this log record in tests. Verified empirically. (An
-                    # earlier version of this comment incorrectly claimed
-                    # sorted(disappeared_points) would crash on None — it
-                    # does not.)
-                    log_discovery.debug(
-                        "Dynamic points absent from this fetch: %s",
-                        sorted(disappeared_points),
-                    )  # pragma: no mutate
+            disappeared_points = (
+                self._dynamic_disappearances(current_point_ids)
+                if detect_changes and self.initial_discovery_complete
+                else set()
+            )
 
             # The detect_changes path announces a returning point itself
-            # (publish_point_metadata/publish_point_list in its "new permanent
-            # point" branch); this one used to re-index silently, so a point
+            # (_is_dynamic_appearance, for a new permanent point); this one used to re-index silently, so a point
             # deindexed by the absence-grace disable came back enabled (via
             # _reconcile_wanted_points) but never reappeared in the card.
             if reindexed_points and self._pub:
@@ -3201,79 +3048,20 @@ class EntityManager:
                     self._pub.publish_point_metadata(self.all_points_by_id[pid])
                 self._point_catalog_changed()
 
+            point_set_changed = current_point_ids != self.published_configs
             self.published_configs = current_point_ids
 
-            if detect_changes and (new_points or disappeared_points):
-                # Entire call is unobservable — nothing captures/formats
-                # this log record in tests. Verified empirically. (An
-                # earlier version of this comment incorrectly claimed the
-                # len(...) args would crash on None via %d — they do not.)
-                log_discovery.debug(
-                    "Dynamic changes detected: +%d new, -%d disappeared",
-                    len(new_points),
-                    len(disappeared_points),
-                )  # pragma: no mutate
-                self._publish_dynamic_changes(
-                    new_points,
-                    disappeared_points,
-                    controlling_point_snapshot,
-                )
-            # This elif's only effect is the debug log immediately below —
-            # `and` vs `or` purely changes when a diagnostic log fires, no
-            # functional consequence (no assertion anywhere on this log's
-            # content or timing).
-            elif detect_changes and post_write_snapshot:
-                log_discovery.debug(
-                    "Post-write scan: no dynamic changes yet (known=%d)",
-                    len(self.dynamic_point_map.all_known_dynamic_point_ids()),
-                )  # pragma: no mutate
+            # Not only when detecting: a write can open a window after the
+            # poll loop decided not to, and a point-set change still releases
+            # the write waiting for it. Both lists are empty then.
+            self._handle_dynamic_changes(
+                window_snapshot, new_points, disappeared_points, point_set_changed
+            )
 
             elapsed = time.time() - start_time
             self.last_fetch_duration = elapsed
 
-            # Both notifications promise to clear once the controller answers,
-            # but whether one is showing is only known to the process that
-            # raised it. After a restart while the controller was unreachable —
-            # often the user's own troubleshooting step — they stayed in HA
-            # for good. Dismissed unconditionally on this process's first
-            # success, like the write-error notification at startup.
-            if self._api_first_success_pending:
-                self._api_first_success_pending = False
-                if self.mqtt and not self._api_notification_active:
-                    self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
-                if self.mqtt and not self._discovery_notification_active:
-                    self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
-
-            if (
-                self.api_consecutive_failures >= self.api_failure_threshold
-                and self._api_notification_active
-                and self.mqtt
-            ):
-                self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
-                self._api_notification_active = False
-                # Publish a structured resolution alert so automations know
-                # the API outage has cleared — mirrors the "api_unreachable"
-                # alert published in _handle_api_failure.
-                if self._pub:
-                    self._pub.publish_bridge_alert(
-                        alert_type="api_restored",
-                        severity="info",
-                        message=(
-                            f"Nibe API contact restored after "
-                            f"{self.api_consecutive_failures} failed polls."
-                        ),
-                        context={
-                            "previous_failure_count": self.api_consecutive_failures,
-                            "api_url": self._api.base_url,
-                        },
-                    )
-
-            if self._discovery_notification_active and self.mqtt:
-                self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
-                self._discovery_notification_active = False
-
-            self.api_consecutive_failures = 0
-            self.api_last_success_time = time.time()
+            self._note_api_success()
 
             # Entire call is unobservable — nothing captures/formats this
             # log record in tests. Verified empirically. (An earlier
@@ -3343,6 +3131,315 @@ class EntityManager:
             return False
         finally:
             self._bulk_fetch_lock.release()
+
+    def _update_bulk_entry(
+        self, point_id: int, point_data: dict, now: float
+    ) -> tuple[dict, str | None, str | None]:
+        """Update bulk_data for one point of a bulk response; returns its
+        metadata (overrides applied), cleaned title and description."""
+        # `or {}` (not just a .get default) also covers the API
+        # sending an explicit "value": null / "metadata": null —
+        # .get()'s default only applies when the key is absent,
+        # so a present-but-null value would otherwise reach the
+        # .get() calls below as None and raise AttributeError,
+        # which isn't caught by _fetch_bulk_data's (ValueError, KeyError)
+        # and would abort the whole bulk fetch for every point.
+        value_data = point_data.get("value") or {}
+        metadata = apply_metadata_overrides(point_id, point_data.get("metadata") or {})
+
+        # ── String cache (Finding 2) ──────────────────────────────
+        # title and description never change between firmware updates.
+        # Cache the clean_string result; only recompute when the raw
+        # string from the API actually differs.
+        raw_title = point_data.get("title", f"Point {point_id}")
+        raw_desc = point_data.get("description", "")
+        cached_strings = self._point_string_cache.get(point_id)
+        if (
+            cached_strings is None
+            or cached_strings[0] != raw_title
+            or cached_strings[1] != raw_desc
+        ):
+            title = clean_string(raw_title)
+            description = clean_string(raw_desc)
+            self._point_string_cache.put(point_id, (raw_title, raw_desc, title, description))
+        else:
+            title, description = cached_strings[2], cached_strings[3]
+
+        # ── In-place bulk_data update (Finding 4) ─────────────────
+        # Update the existing dict entry rather than building a new
+        # one each poll.  Metadata, title, and description are only
+        # updated when they differ (which is essentially never on a
+        # running installation) to avoid redundant object churn.
+        existing = self.bulk_data.get(point_id)
+        if existing is None:
+            self.bulk_data[point_id] = {
+                "raw_value": value_data.get("integerValue", 0),
+                "string_value": value_data.get("stringValue", ""),
+                "is_ok": value_data.get("isOk", False),
+                "metadata": metadata,
+                "title": title,
+                "description": description,
+                "timestamp": now,
+            }
+        else:
+            existing["raw_value"] = value_data.get("integerValue", 0)
+            existing["string_value"] = value_data.get("stringValue", "")
+            existing["is_ok"] = value_data.get("isOk", False)
+            existing["timestamp"] = now
+            # Metadata and strings change only on firmware update —
+            # update in place to avoid unnecessary allocation.
+            # A wrong/None key on either .get() below just makes
+            # the condition always True (extra unconditional
+            # write instead of a conditional skip) — the final
+            # stored value is identical either way, so this is
+            # equivalent by outcome, not pragma'd since it's not
+            # provable via any black-box assertion on final state.
+            if existing.get("title") != title:
+                existing["title"] = title
+            if existing.get("description") != description:
+                existing["description"] = description
+            if existing.get("metadata") != metadata:
+                existing["metadata"] = metadata
+        return metadata, title, description
+
+    def _index_static_point(
+        self, point_id: int, metadata: dict, title: str | None, description: str | None
+    ) -> str:
+        """Classify and index a point as static; returns its entity type."""
+        # 'title' key unused for classification — not
+        # pragma'd, 'description' is real/tested (see
+        # test_classified_select_from_enum_description).
+        entity_type, category = self._get_cached_entity_type(
+            {
+                "variableId": point_id,
+                "metadata": metadata,
+                "title": title,
+                "description": description,
+            }
+        )
+        self._index_point(
+            {
+                "variableId": point_id,
+                "display_title": title,
+                "description": description,
+                "metadata": metadata,
+                "entity_type": entity_type,
+                "entity_category": category,
+                "is_writable": is_writable_point(metadata, point_id),
+                "is_dynamic": False,
+            }
+        )
+        return entity_type
+
+    def _is_dynamic_appearance(
+        self,
+        point_id: int,
+        metadata: dict,
+        title: str | None,
+        description: str | None,
+        in_window: bool,
+    ) -> bool:
+        """Decide what a point new since the last poll is.
+
+        True: a dynamic appearance, for _publish_dynamic_changes — every
+        point appearing during a scan window, and a known dynamic point
+        outside one (a bulk fetch catching its appearance after the window
+        expired; routing it as static would permanently misclassify it).
+        False: a genuinely unknown point outside a window, a permanent
+        firmware addition (e.g. a firmware update), indexed as static here.
+        """
+        if in_window:
+            return True
+        if self.dynamic_point_map.is_known_dynamic(point_id):
+            # Entire call is unobservable — nothing captures/formats this log
+            # record in tests. Verified empirically.
+            log_discovery.info(
+                "Known dynamic point %d '%s' appeared outside scan window — routing as dynamic",
+                point_id,
+                title,
+            )  # pragma: no mutate
+            return True
+        # Entire call unobservable — nothing captures/formats this log record
+        # in tests. Verified empirically.
+        log_discovery.info(
+            "New permanent point %d '%s' appeared during normal poll — indexing as static",
+            point_id,
+            title,
+        )  # pragma: no mutate
+        entity_type = self._index_static_point(point_id, metadata, title, description)
+        self.baseline_point_ids.add(point_id)
+        if entity_type in ("switch", "select"):
+            # dynamic_point_map._table is also mutated by a Force Poll or
+            # Flush Dynamic Map on the management thread — _em_lock
+            # serializes all of them.
+            with self._em_lock:
+                # The .get() default (second arg) is unreachable here —
+                # _index_static_point() just above unconditionally added
+                # point_id to all_points_by_id — not pragma'd, the key itself
+                # (point_id) is real/tested (see
+                # test_new_switch_point_populate_from_bulk_receives_the_real_point).
+                self.dynamic_point_map.populate_from_bulk(
+                    {point_id: self.all_points_by_id.get(point_id, {})},
+                    {point_id: entity_type},
+                )
+        point_obj = self.all_points_by_id.get(point_id)
+        if point_obj:
+            self._pub.publish_point_metadata(point_obj)
+        self._point_catalog_changed()
+        return False
+
+    def _dynamic_disappearances(self, current_point_ids: set[int]) -> set[int]:
+        """Active known dynamic points missing from this bulk response.
+
+        A baseline point that isn't a known dynamic point is not taken for a
+        dynamic disappearance just because a write was made in the last 90s:
+        it may be a controller restart or a partial response, so it gets the
+        same absence grace period as at any other time (_update_entity_state).
+        """
+        known_dynamic_ids = self.dynamic_point_map.all_known_dynamic_point_ids()
+        disappeared = {
+            pid
+            for pid in known_dynamic_ids & self.active_dynamic_points
+            if pid not in current_point_ids
+        }
+        if disappeared:
+            # Entire call is unobservable — nothing captures/formats this log
+            # record in tests. Verified empirically.
+            log_discovery.debug(
+                "Dynamic points absent from this fetch: %s",
+                sorted(disappeared),
+            )  # pragma: no mutate
+        return disappeared
+
+    def _handle_dynamic_changes(
+        self,
+        window: ScanWindow | None,
+        new_points: list[tuple[int, dict]],
+        disappeared_points: set[int],
+        point_set_changed: bool,
+    ) -> None:
+        """Act on the dynamic changes of one detecting poll, judged in the
+        scan window read at its start (``window``)."""
+        if new_points and window is not None:
+            # A learning window that saw points must not end by recording
+            # "shows nothing" (_finish_learning_window). Marked on the
+            # window still open for the same point, if any.
+            with self._post_write_lock:
+                if self._window is not None and self._window.point == window.point:
+                    self._window = dataclasses.replace(self._window, saw_points=True)
+        if new_points or disappeared_points:
+            # Entire call is unobservable — nothing captures/formats this log
+            # record in tests. Verified empirically.
+            log_discovery.debug(
+                "Dynamic changes detected: +%d new, -%d disappeared",
+                len(new_points),
+                len(disappeared_points),
+            )  # pragma: no mutate
+            self._publish_dynamic_changes(
+                new_points,
+                disappeared_points,
+                window.point if window else None,
+                controller_side=bool(window and window.controller_side),
+                controlling_value=window.value if window else None,
+            )
+        if point_set_changed and window is not None:
+            self._release_learning_write()
+        # This elif's only effect is the debug log immediately below — no
+        # functional consequence (no assertion anywhere on this log's
+        # content or timing).
+        elif window is not None:
+            log_discovery.debug(
+                "Post-write scan: no dynamic changes yet (known=%d)",
+                len(self.dynamic_point_map.all_known_dynamic_point_ids()),
+            )  # pragma: no mutate
+
+    def _note_api_success(self) -> None:
+        """Clear the API-failure bookkeeping and notifications after a
+        successful bulk fetch."""
+        # Both notifications promise to clear once the controller answers,
+        # but whether one is showing is only known to the process that
+        # raised it. After a restart while the controller was unreachable —
+        # often the user's own troubleshooting step — they stayed in HA
+        # for good. Dismissed unconditionally on this process's first
+        # success, like the write-error notification at startup.
+        if self._api_first_success_pending:
+            self._api_first_success_pending = False
+            if self.mqtt and not self._api_notification_active:
+                self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
+            if self.mqtt and not self._discovery_notification_active:
+                self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
+
+        if (
+            self.api_consecutive_failures >= self.api_failure_threshold
+            and self._api_notification_active
+            and self.mqtt
+        ):
+            self._dismiss(self.mqtt, _NOTIF_API_UNREACHABLE)
+            self._api_notification_active = False
+            # Publish a structured resolution alert so automations know
+            # the API outage has cleared — mirrors the "api_unreachable"
+            # alert published in _handle_api_failure.
+            if self._pub:
+                self._pub.publish_bridge_alert(
+                    alert_type="api_restored",
+                    severity="info",
+                    message=(
+                        f"Nibe API contact restored after "
+                        f"{self.api_consecutive_failures} failed polls."
+                    ),
+                    context={
+                        "previous_failure_count": self.api_consecutive_failures,
+                        "api_url": self._api.base_url,
+                    },
+                )
+
+        if self._discovery_notification_active and self.mqtt:
+            self._dismiss(self.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
+            self._discovery_notification_active = False
+
+        self.api_consecutive_failures = 0
+        self.api_last_success_time = time.time()
+
+    def _window_opened_by_poll(self, response: dict) -> ScanWindow | None:
+        """Open a scan window for what this poll shows, outside any window.
+
+        A switch or select changed on the controller itself gets the same
+        scan window an HA write would, so the points it shows — which the
+        firmware serves about a minute later — are learned as its dynamic
+        points instead of indexed as static ones. Points arriving after a
+        window ended are linked the same way (_late_arrival). Returns the
+        window opened, or None.
+        """
+        changed = self._controller_side_change(response)
+        if changed is not None:
+            window = self._open_learning_window(changed[0], True, changed[2])
+            if window is not None:
+                # pragma: no mutate start
+                log_discovery.info(
+                    "Point %d changed on the controller (%s -> %s) — scan window "
+                    "opened for up to %ds to learn the points it shows",
+                    changed[0],
+                    changed[1],
+                    changed[2],
+                    self._post_write_duration,
+                )
+                # pragma: no mutate end
+            return window
+        late = self._late_arrival(response)
+        if late is None:
+            return None
+        window = self._open_learning_window(late[0], late[2], late[1])
+        if window is not None:
+            # pragma: no mutate start
+            log_discovery.info(
+                "New point(s) %s arrived after the scan window for point %d "
+                "(value %d) — learning them as points it shows",
+                late[3],
+                late[0],
+                late[1],
+            )
+            # pragma: no mutate end
+        return window
 
     def _handle_api_failure(self, last_error: str | None = None) -> None:
         """Record a bulk-fetch failure and notify HA once the threshold is hit.
@@ -3418,35 +3515,37 @@ class EntityManager:
         new_points: list[tuple[int, dict]],
         disappeared_points: set[int],
         controlling_point_id: int | None = None,
+        controller_side: bool = False,
+        controlling_value: int | None = None,
     ) -> None:
-        """``controlling_point_id`` must be a snapshot of
-        ``_post_write_controlling_point`` taken by the caller (under
-        ``_post_write_lock``) at the moment this scan cycle's post-write
-        status was decided — not re-read from ``self._post_write_controlling_point``
-        here. The write executor doesn't block for the scan window, so a
-        second write (to a different controlling switch) can overwrite that
-        attribute while this call is still attributing the first write's
-        detected changes; re-reading it here would risk crediting those
-        changes to the wrong switch.
+        """Add the points that appeared, record what the window's switch
+        shows, remove the points that went away, and tell the card and the
+        user.
+
+        ``controlling_point_id`` and ``controller_side`` must come from the
+        window the caller read (under ``_post_write_lock``) at the moment this
+        scan cycle's post-write status was decided — not re-read from
+        ``self._window`` here. So must ``controlling_value``, the value the
+        window's switch was set to: appearing points are recorded under it
+        only while the controller still reports it (recordable_value). The
+        write executor doesn't block for the scan window, so a second write
+        (to a different controlling switch) can overwrite that attribute
+        while this call is still attributing the first write's detected
+        changes; re-reading it here would risk crediting those changes to the
+        wrong switch.
         """
         if not new_points and not disappeared_points:
             return
 
         # Entire call is unobservable — nothing captures/formats this log
-        # record in tests, so even a %d/None mismatch doesn't crash.
-        # Verified empirically. (An earlier version of this comment
-        # incorrectly claimed the len(...) args would crash — they do not.)
+        # record in tests. Verified empirically.
         log_discovery.info(
             "Publishing dynamic changes: +%d -%d", len(new_points), len(disappeared_points)
         )  # pragma: no mutate
 
         # 'timestamp'/'iso_timestamp' keys are real/tested (see
         # test_changelog_entry_reuses_the_change_events_own_timestamp).
-        # 'triggered_by''s initial key text is equivalent by outcome: it is
-        # unconditionally overwritten by `change_event['triggered_by'] = {...}`
-        # (string-literal assignment below) whenever controlling_point_id is
-        # set, and when it isn't, .get('triggered_by') on a wrong key still
-        # correctly falls back to None either way.
+        # 'triggered_by' is filled in below once added/removed are built.
         change_event: dict[str, object] = {
             "timestamp": time.time(),
             "iso_timestamp": _fmt_ts(),
@@ -3455,14 +3554,52 @@ class EntityManager:
             "source": "firmware",
             "triggered_by": None,
         }
+        added: list[dict] = change_event["added"]  # type: ignore[assignment]
+        removed: list[dict] = change_event["removed"]  # type: ignore[assignment]
 
+        enabled_new_pids = self._add_appeared_points(new_points, added)
+        self._record_window_outcome(enabled_new_pids, controlling_point_id, controlling_value)
+        self._remove_disappeared_points(disappeared_points, removed)
+
+        # enabled_new_pids (points that actually succeeded through
+        # _enable_entity_locked), not the raw new_points list — matches
+        # record_outcome's gating. If every point in new_points failed
+        # to enable, nothing actually changed and these calls would just be
+        # a wasted MQTT publish/persist cycle.
+        if enabled_new_pids:
+            self.publish_enabled_state()
+
+        if disappeared_points:
+            self.publish_enabled_state()
+
+        if not added and not removed:
+            return
+
+        # Persist active_dynamic_points for appearance events.
+        # Disappearances are already persisted per-point for crash safety.
+        if enabled_new_pids:
+            self._persist_active_dynamic()
+
+        self._point_catalog_changed()
+
+        trig = self._triggered_by(controlling_point_id, controller_side)
+        change_event["triggered_by"] = trig
+        self._update_changelog_history(change_event)
+        self.mqtt.publish(BrowserTopic.DYNAMIC, json.dumps(change_event), retain=False)
+        self._notify_dashboard_updated(added, removed, trig)
+
+    def _add_appeared_points(
+        self, new_points: list[tuple[int, dict]], added: list[dict]
+    ) -> list[int]:
+        """Index and enable each point that appeared as a dynamic point;
+        returns the ones enabled, each also appended to ``added``."""
+        enabled_new_pids: list[int] = []
         with self._em_lock, self._suppress_enabled_state():
-            enabled_new_pids: list[int] = []
             for point_id, point_data in new_points:
                 # `or {}` also covers an explicit "metadata": null from the
                 # API — .get()'s default only applies when the key is
                 # absent, matching the same guard already applied in
-                # _fetch_bulk_data for this exact same raw API response shape.
+                # _update_bulk_entry for this exact same raw API response shape.
                 # The {} vs None default itself is equivalent (`or {}`
                 # normalises both to {}) — not pragma'd, the 'metadata' key
                 # and the whole .get() call are real/tested.
@@ -3494,14 +3631,14 @@ class EntityManager:
                     # Discovery publish failed — do not mark this point as
                     # active in our own bookkeeping when HA was never told
                     # about it. Leaving it out of active_dynamic_points also
-                    # lets the reconciliation path above retry activation on
+                    # lets the reconciliation path retry activation on
                     # a future poll rather than presenting a permanently
                     # false "active" state.
                     continue
                 self.active_dynamic_points.add(point_id)
                 enabled_new_pids.append(point_id)
 
-                change_event["added"].append(  # type: ignore[attr-defined]
+                added.append(
                     {
                         "id": point_id,
                         "title": title,
@@ -3521,17 +3658,25 @@ class EntityManager:
                 log_discovery.info(
                     "Dynamic entity appeared: %d - %s (%s)", point_id, title, entity_type
                 )  # pragma: no mutate
+        return enabled_new_pids
 
+    def _record_window_outcome(
+        self,
+        enabled_new_pids: list[int],
+        controlling: int | None,
+        controlling_value: int | None,
+    ) -> None:
+        """Record the points that appeared as what the window's switch shows."""
         # Record all new points in dynamic_point_map via record_outcome
         # so the map is populated identically regardless of learning mode.
         # This ensures known_dynamic is correct for dashboard suppression
         # and injection — both in learning mode and normal operation.
         #
         # Uses enabled_new_pids (points that actually succeeded through
-        # _enable_entity_locked above), not the raw new_points list. A point
-        # whose discovery publish failed is deliberately left out of
-        # active_dynamic_points so a future poll's reconciliation can retry
-        # it (see the comment at the `continue` above) — but self.
+        # _enable_entity_locked in _add_appeared_points), not the raw
+        # new_points list. A point whose discovery publish failed is
+        # deliberately left out of active_dynamic_points so a later
+        # reconciliation can retry it (see the comment at its `continue`) — but self.
         # published_configs is unconditionally set to the full current-poll
         # id set every cycle in _fetch_bulk_data, so a point that already
         # appeared once in bulk data can never re-enter new_points on a
@@ -3540,14 +3685,27 @@ class EntityManager:
         # dynamic point that HA was never actually told about, with no path
         # left to retry activation — the promised retry would silently
         # never happen.
-        controlling = controlling_point_id
-        if controlling and enabled_new_pids:
+        current_raw = (
+            (self.bulk_data.get(controlling) or {}).get("raw_value")
+            if controlling is not None
+            else None
+        )
+        controlling_raw = recordable_value(controlling_value, current_raw)
+        if controlling and enabled_new_pids and controlling_raw is None:
+            log_discovery.info(
+                "Point(s) %s appeared in the scan window of point %d but aren't recorded "
+                "as what it shows: it was set to %s and now reads %s, so they can't be "
+                "told apart — learned on a later change",
+                enabled_new_pids,
+                controlling,
+                "different values" if controlling_value is None else controlling_value,
+                current_raw,
+            )  # pragma: no mutate
+        if controlling and enabled_new_pids and controlling_raw is not None:
             new_pids = enabled_new_pids
-            controlling_raw = self.bulk_data.get(controlling, {}).get("raw_value", 1)
-            # dynamic_point_map._table is also mutated (unlocked, from the
-            # write-executor thread) by _run_learning_detection's own
-            # record_outcome call, and read/iterated by populate_from_bulk
-            # on the poll thread — _em_lock serializes all of them.
+            # dynamic_point_map._table is also mutated by a Force Poll or
+            # Flush Dynamic Map on the management thread, and read/iterated by
+            # populate_from_bulk — _em_lock serializes all of them.
             with self._em_lock:
                 entry = self.dynamic_point_map.get(controlling)
                 if entry is None:
@@ -3602,6 +3760,9 @@ class EntityManager:
                 controlling_raw,
             )  # pragma: no mutate
 
+    def _remove_disappeared_points(self, disappeared_points: set[int], removed: list[dict]) -> None:
+        """Disable and deindex each dynamic point that went away, each
+        appended to ``removed``."""
         with self._em_lock:
             for point_id in disappeared_points:
                 entity = self.all_points_by_id.get(point_id)
@@ -3625,7 +3786,7 @@ class EntityManager:
                     # `entity` (from all_points_by_id) always has them. Not
                     # pragma'd: 'id'/'title'/'type' themselves are real/tested
                     # (see test_removed_entry_has_real_id_title_and_type_from_all_points).
-                    change_event["removed"].append(  # type: ignore[attr-defined]
+                    removed.append(
                         {
                             "id": point_id,
                             "title": entity.get("display_title", f"Point {point_id}"),
@@ -3644,56 +3805,28 @@ class EntityManager:
                     # ordering so a crash after this line leaves correct state.
                     self._persist_active_dynamic()
 
-        # enabled_new_pids (points that actually succeeded through
-        # _enable_entity_locked), not the raw new_points list — matches
-        # record_outcome's gating above. If every point in new_points failed
-        # to enable, nothing actually changed and these calls would just be
-        # a wasted MQTT publish/persist cycle.
-        if enabled_new_pids:
-            self.publish_enabled_state()
+    def _triggered_by(self, controlling: int | None, controller_side: bool) -> dict | None:
+        """The change event's triggered_by: the window's switch, or None for
+        startup / periodic-poll discoveries."""
+        if not controlling:
+            return None
+        cp = self.all_points_by_id.get(controlling, {})
+        ctrl_title = cp.get("display_title") or cp.get("title", f"Point {controlling}")
+        ctrl_value = self.bulk_data.get(controlling, {}).get("raw_value")
+        return {
+            "id": controlling,
+            "title": ctrl_title,
+            **(({"value": ctrl_value}) if ctrl_value is not None else {}),
+            # Changed on the controller's own display, not written here.
+            **({"changed_on": "controller"} if controller_side else {}),
+        }
 
-        if disappeared_points:
-            self.publish_enabled_state()
-
-        if not change_event["added"] and not change_event["removed"]:
-            return
-
-        # Persist active_dynamic_points for appearance events.
-        # Disappearances are already persisted per-point above for crash safety.
-        if enabled_new_pids:
-            self._persist_active_dynamic()
-
-        self._point_catalog_changed()
-
-        # Populate triggered_by now that added/removed are fully built.
-        # controlling_point_id is set when a write activates the scan window;
-        # None for startup / periodic-poll discoveries.
-        controlling = controlling_point_id
-        if controlling:
-            cp = self.all_points_by_id.get(controlling, {})
-            ctrl_title = cp.get("display_title") or cp.get("title", f"Point {controlling}")
-            ctrl_value = self.bulk_data.get(controlling, {}).get("raw_value")
-            change_event["triggered_by"] = {
-                "id": controlling,
-                "title": ctrl_title,
-                **(({"value": ctrl_value}) if ctrl_value is not None else {}),
-                # Changed on the controller's own display, not written here.
-                **(
-                    {"changed_on": "controller"}
-                    if controlling == self._controller_side_point
-                    else {}
-                ),
-            }
-
-        self._update_changelog_history(change_event)
-        self.mqtt.publish(BrowserTopic.DYNAMIC, json.dumps(change_event), retain=False)
-
-        # Send a persistent HA notification so the user knows the dashboard
-        # was updated and needs a browser reload to show the changes.
+    def _notify_dashboard_updated(
+        self, added: list[dict], removed: list[dict], trig: dict | None
+    ) -> None:
+        """Send a persistent HA notification so the user knows the dashboard
+        was updated and needs a browser reload to show the changes."""
         try:
-            added: list[dict] = change_event["added"]  # type: ignore[assignment]
-            removed: list[dict] = change_event["removed"]  # type: ignore[assignment]
-            trig: dict | None = change_event.get("triggered_by")  # type: ignore[assignment]
             ctrl_title = trig["title"] if trig else ""
             ctrl_menu = ""  # pragma: no mutate — None is equally falsy for the `if ctrl_menu:` check below when trig is falsy (never reassigned)
             if trig:
@@ -3711,13 +3844,15 @@ class EntityManager:
                 len(removed),
             )  # pragma: no mutate
 
-            # Both sections share one HA persistent-notification ID
-            # ("nibe_dashboard_updated") — notify_ha() creates-or-REPLACES by
-            # that ID, so sending two separate notifications here (one for
-            # added, one for removed) would silently drop whichever one is
-            # sent first whenever a single poll cycle produces both (e.g. a
-            # mode-select point swapping from one dynamic-point set to
-            # another). Build one combined message instead.
+            # Both sections share one HA persistent-notification ID —
+            # notify_ha() creates-or-REPLACES by that ID, so sending two
+            # separate notifications here (one for added, one for removed)
+            # would silently drop whichever one is sent first whenever a
+            # single poll cycle produces both (e.g. a mode-select point
+            # swapping from one dynamic-point set to another). Build one
+            # combined message instead. The ID is per triggering switch: two
+            # switches changed shortly after each other each keep their own
+            # notification, while one switch changed again replaces its own.
             if added or removed:
                 ctrl_line = f"\nTriggered by: **{ctrl_title}**" if ctrl_title else ""
                 menu_line = f" in {ctrl_menu}" if ctrl_menu else ""
@@ -3779,7 +3914,9 @@ class EntityManager:
                     self.mqtt,
                     title=title,
                     message=message,
-                    notification_id="nibe_dashboard_updated",
+                    notification_id=(
+                        f"nibe_dashboard_updated_{trig['id']}" if trig else "nibe_dashboard_updated"
+                    ),
                 )
         except (ValueError, TypeError, AttributeError) as e:
             log_discovery.warning(
@@ -3965,134 +4102,130 @@ class EntityManager:
 
         return None  # unknown entity type — no write path
 
-    def _run_learning_detection(
-        self,
-        point_id: int,
-        value: int,
-        cmd_id: str,
-    ) -> None:
-        """Wait for a clean bulk fetch cycle and record the outcome in the map.
+    def _opens_scan_window(self, point_id: int) -> bool:
+        """Whether a write to this switch/select opens a scan window: all do
+        except one learned as showing nothing (_handle_command_worker's case
+        A1)."""
+        entry = self.dynamic_point_map.get(point_id)
+        return not (entry is not None and entry.is_fully_processed() and not entry.is_controlling)
 
-        Called in the write executor (serialised) after a successful write to
-        an unprocessed switch/select in learning mode.
+    def _wait_for_learning_window(self, point_id: int, cmd_id: str) -> None:
+        """Before a write that opens a scan window, wait until an open
+        learning window has shown the effect of its own write — the point set
+        changed (_release_learning_write) — or ended (_finish_learning_window).
 
-        The detection window runs for the full _POST_WRITE_SCAN_S (90s) —
-        the firmware has an internal ~1 minute cycle before dynamic points
-        appear in the bulk fetch.  We must not terminate early on a quiet
-        poll; we wait the full window and record whatever appeared.
-
-        If the bulk-fetch size changes partway through the window, we stop
-        immediately rather than waiting out the rest of it — the bulk fetch
-        has already shown the full post-write state at that point, so
-        waiting longer adds nothing.
-
-        Parameters
-        ----------
-        point_id :
-            The controlling switch/select that was written.
-        value :
-            The integer value that was written.
-        cmd_id :
-            Correlation token for log tracing.
+        This write would take that window over, and the points still to come
+        from the switch being learned would be linked to this one. Writes
+        that open no window — numbers, buttons, times, a switch learned as
+        showing nothing — don't wait, and neither does a write to the switch
+        being learned itself: set to another value, its window turns
+        ambiguous and records nothing (_open_post_write_scan), so holding
+        the write back for up to 90 s would protect nothing. The wait ends
+        early on shutdown (begin_shutdown sets the event too), and after a
+        window plus a margin in case the poll loop stalls.
         """
+        if self._learning_window_ended.is_set():
+            return
+        with self._post_write_lock:
+            learning = self._window.point if self._window is not None else None
+        if learning == point_id:
+            return
         # pragma: no mutate start
-        prefix = f"[{cmd_id}] "
         log_commands.info(
-            "%sLearning detection started for point %d value=%d "
-            "(waiting up to %ds for firmware cache refresh)",
-            prefix,
+            "[%s] Write for point %d waits for the learning window of point %s "
+            "(up to %ds) — it would otherwise take that window over",
+            cmd_id,
             point_id,
-            value,
-            _POST_WRITE_SCAN_S,
+            learning,
+            self._post_write_duration,
         )
         # pragma: no mutate end
+        self._learning_window_ended.wait(self._post_write_duration + _LEARNING_WAIT_MARGIN_S)
 
-        # Snapshot point set before detection
-        points_before = set(self.bulk_data.keys())
-
-        # Activate post-write scan mode to get 5s polling.
+    def _release_learning_write(self) -> None:
+        """Let the write worker take the next write once the point set has
+        changed in a learning window — the firmware has shown the write's
+        effect, and points that appeared are recorded by now. A user setting
+        one of the points a switch just showed would otherwise wait out the
+        rest of the 90 s window. The window and its learning target stay:
+        _finish_learning_window still runs when it ends, unless a write to
+        another switch takes the window over first — then the value stays to
+        be learned on a later write (_open_post_write_scan)."""
         with self._post_write_lock:
-            self.post_write_active = True
-            self._post_write_until = time.time() + _POST_WRITE_SCAN_S
+            if self._window is not None and self._window.learning_value is not None:
+                self._learning_window_ended.set()
 
-        poll_interval = self.post_write_interval  # 5s
-        deadline = time.time() + _POST_WRITE_SCAN_S
-        last_size = len(points_before)
+    def _finish_learning_window(self, point_id: int, value: int, saw_points: bool) -> None:
+        """Record what a write to a value not learned yet showed, now that its
+        scan window has ended (update_all_states).
 
-        while True:
-            # Interruptible wait rather than time.sleep(): this loop runs on
-            # the single write-executor worker and can hold it for the whole
-            # window. Executor threads are non-daemon, so an uninterruptible
-            # sleep here blocks process exit (via Python's own atexit join)
-            # well past the shutdown budget, leaving the container to be
-            # SIGKILLed mid-shutdown — the same failure mode abort_test_suite
-            # already exists to prevent for an in-flight test subprocess.
-            if self._shutdown_event.wait(poll_interval):
-                # Abandon without recording an outcome: a window cut short by
-                # shutdown proves nothing about this value, and persisting
-                # "no dynamic points appeared" from it would teach the map a
-                # false negative that survives the restart. Leaving the value
-                # unprocessed just means detection runs again next time.
+        Points that appeared during the window were recorded as they arrived
+        (_publish_dynamic_changes). A window in which none appeared records
+        "shows nothing" for the value — together with this switch's known
+        points still present, which belong to every value showing them
+        (record_outcome replaces the value's list). Nothing is recorded, and
+        the value stays to be learned on a later write, when:
+
+        - points did appear but weren't recorded under this value (e.g. their
+          discovery publish failed, or the controller reports another value);
+        - attribution is blocked (_attributable_poll): an API failure or a
+          restarting controller in the window proves nothing about the value;
+        - the bridge is shutting down, which cut the window short.
+
+        The waiting write worker is released only afterwards, so the next
+        write sees this outcome in the map.
+        """
+        try:
+            self._record_learning_window(point_id, value, saw_points)
+        finally:
+            self._learning_window_ended.set()
+
+    def _record_learning_window(self, point_id: int, value: int, saw_points: bool) -> None:
+        """_finish_learning_window, without releasing the write worker."""
+        if self._shutdown_event.is_set():
+            return
+        with self._em_lock:
+            entry = self.dynamic_point_map.get(point_id)
+            if entry is None:
+                return
+            outcome = learning_outcome(
+                unprocessed=value in entry.unprocessed_values,
+                saw_points=saw_points,
+                blocked=time.time() < self._attribution_blocked_until,
+            )
+            if outcome == "learned":
+                # pragma: no mutate start
                 log_commands.info(
-                    "%sLearning detection for point %d value=%d abandoned — shutting down "
-                    "(value stays unprocessed and will be retried)",
-                    prefix,
+                    "Learning detection complete for point %d value=%d: %s",
+                    point_id,
+                    value,
+                    entry.dynamic_points_by_value.get(value) or "no new point(s)",
+                )
+                # pragma: no mutate end
+                return
+            if outcome == "skip":
+                # pragma: no mutate start
+                log_commands.info(
+                    "Learning window for point %d value=%d ended without a usable "
+                    "outcome — the value will be learned on a later write",
                     point_id,
                     value,
                 )
-                return
-
-            current_size = len(self.bulk_data)
-
-            if current_size != last_size:
-                # Change detected — controller cache refreshed. Stop immediately;
-                # there is no value in waiting longer since the bulk fetch has
-                # already shown us the full post-write state.
-                # pragma: no mutate start
-                log_commands.debug(
-                    "%sLearning: bulk size changed (%d→%d) — detection complete",
-                    prefix,
-                    last_size,
-                    current_size,
-                )
                 # pragma: no mutate end
-                break
-
-            if time.time() >= deadline:
-                # Full window elapsed with no changes — no dynamic points.
-                break
-
-        # Calculate what appeared
-        points_after = set(self.bulk_data.keys())
-        new_point_ids = sorted(points_after - points_before)
-
-        # Record outcome in map — dynamic_point_map._table is also mutated
-        # by _publish_dynamic_changes on the poll thread; _em_lock
-        # serializes both against each other.
-        with self._em_lock:
-            # Same as _publish_dynamic_changes: this controller's known
-            # dynamic points present both before and after the write belong
-            # to this value too (shared between values), not just the ones
-            # that newly appeared — record_outcome replaces the value's list.
-            entry = self.dynamic_point_map.get(point_id)
-            carried = (
-                entry.all_known_dynamic_points() & points_before & points_after
-                if entry is not None
-                else set()
+                return
+            carried = sorted(
+                entry.all_known_dynamic_points()
+                & self.active_dynamic_points
+                & self.bulk_data.keys()
             )
-            if carried:
-                new_point_ids = sorted(set(new_point_ids) | carried)
-            self.dynamic_point_map.record_outcome(point_id, value, new_point_ids)
+            self.dynamic_point_map.record_outcome(point_id, value, carried)
             self._persist_dynamic_map()
-
         # pragma: no mutate start
         log_commands.info(
-            "%sLearning detection complete for point %d value=%d: %d new point(s) %s",
-            prefix,
+            "Learning detection complete for point %d value=%d: no new point(s)%s",
             point_id,
             value,
-            len(new_point_ids),
-            new_point_ids if new_point_ids else "(none)",
+            f", still showing {carried}" if carried else "",
         )
         # pragma: no mutate end
 
@@ -4199,6 +4332,7 @@ class EntityManager:
                     "timestamp": time.time(),
                     "cmd_id": cmd_id,
                 }
+            self._publish_requested_state(entity_info, value, payload)
 
             self._submit_write(
                 self._handle_command_worker,
@@ -4216,6 +4350,35 @@ class EntityManager:
             )
             # pragma: no mutate end
 
+    def _publish_requested_state(self, entity_info: dict, value: float | str, payload: str) -> None:
+        """Show a write's value in HA as soon as its command arrives.
+
+        HA's toggle (and slider, and drop-down) moves at once and flips back
+        when the entity's state hasn't followed within two seconds; the
+        controller takes about 1.5 s to accept a write, sometimes more, so
+        publishing only after the write made a switch go on, off and on
+        again. The pending write keeps a poll's stale value from replacing
+        this one until the controller reports the new value. A write that
+        fails puts the controller's own value back (_force_readback), and
+        failing that, the next poll does, the pending write being gone.
+        """
+        state_topic = entity_info.get("state_topic")
+        if not state_topic:
+            return
+        entity_type = entity_info["entity_type"]
+        if entity_type == "switch":
+            state_value = "1" if value else "0"
+        elif entity_type == "time":
+            secs = int(value) % 86400
+            state_value = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:00"
+        elif entity_type in ("select", "number"):
+            state_value = payload
+        else:
+            state_value = str(value)
+        self.mqtt.publish(state_topic, state_value, retain=True)
+        with self._em_lock:
+            self.last_states[entity_info["point_id"]] = state_value
+
     def _submit_write(
         self,
         fn: Callable,
@@ -4232,11 +4395,11 @@ class EntityManager:
         explicitly cleared. Wrapping it here ensures every write failure is
         at least logged, mirroring ``ManagementCommandHandler._submit``.
 
-        ``_write_executor`` has a single worker, and a learning-detection
-        write holds that worker for up to ``_post_write_duration`` seconds
-        (it polls in a loop rather than returning immediately) — so a write
-        submitted while one is already running won't even start until it
-        finishes. If several switches are flipped in quick succession, each
+        ``_write_executor`` has a single worker, and a write to a switch or
+        select waits there for up to ``_post_write_duration`` seconds while
+        another value is being learned (so that one value is learned at a
+        time — see _wait_for_learning_window) — so a write submitted behind
+        it won't even start until it finishes. If several switches are flipped in quick succession, each
         one landing in this situation stacks the wait additively (e.g. three
         such writes can take up to 3x that duration before the last one is
         even attempted), which is not obvious from either write's own log
@@ -4259,8 +4422,8 @@ class EntityManager:
             prefix = f"[{cmd_id_for_log}] " if cmd_id_for_log else ""  # pragma: no mutate
             log_commands.info(
                 "%sWrite for point %d queued behind %d unfinished write(s) — writes run one "
-                "at a time, and each can hold the queue for up to %ds while it scans for new "
-                "dynamic points",
+                "at a time, and a switch or drop-down can hold the queue for up to %ds while "
+                "another is being learned",
                 prefix,
                 point_id,
                 ahead,
@@ -4292,9 +4455,9 @@ class EntityManager:
     def begin_shutdown(self) -> None:
         """Signal in-flight write work to stop waiting and wind up.
 
-        Call before draining ``_write_executor``: a learning detection in
-        progress otherwise holds the single write worker for the rest of its
-        90s window, which is longer than the whole shutdown budget, so the
+        Call before draining ``_write_executor``: a write waiting for its
+        learning window otherwise holds the single write worker for the rest
+        of that 90s window, which is longer than the whole shutdown budget, so the
         drain cannot complete and the executors that share that budget never
         get a chance to drain at all.
 
@@ -4304,31 +4467,62 @@ class EntityManager:
         Idempotent, and safe to call even if no write is in flight.
         """
         self._shutdown_event.set()
+        self._learning_window_ended.set()
         self._api.begin_shutdown()
 
-    def _open_post_write_scan(self, point_id: int) -> None:
+    def _open_post_write_scan(
+        self, point_id: int, learning_value: int | None = None, value: int | None = None
+    ) -> None:
         """Activate the post-write scan window for a write to ``point_id``.
 
-        Sets ``_post_write_controlling_point``, ``post_write_active``, and
-        ``_post_write_until`` under ``_post_write_lock`` in a single, fixed
-        order — controlling point first, active flag last. Several readers
-        elsewhere (_fetch_bulk_data, _publish_dynamic_changes) check
-        ``post_write_active`` without holding ``_post_write_lock`` themselves;
-        setting the controlling point before the active flag ensures that by
-        the time such a reader can observe ``post_write_active`` become True,
-        ``_post_write_controlling_point`` is already current — an unlocked
-        reader can otherwise be scheduled between the individual attribute
-        assignments even while this method holds the lock, since the GIL only
-        guarantees atomicity per bytecode instruction, not for the block as a
-        whole. Without this fixed order, a write to point B arriving right
-        after a scan window for point A closed could be observed as
-        ``post_write_active=True`` while ``_post_write_controlling_point``
-        still read A, misattributing point B's dynamic-point changes to A.
+        ``value``: the value written (defaults to ``learning_value``). A
+        second write to the same switch with a different value while its
+        window is open makes the window ambiguous (value None): points the
+        first value shows can still arrive — the REST API's point list lags
+        its values by up to a minute — and would be recorded under the
+        second, so nothing in that window is recorded, and a value being
+        learned stays to be learned later.
+
+        ``learning_value``: the value written, when it isn't learned yet —
+        the poll loop then records its outcome when the window ends
+        (_finish_learning_window), and the next write that opens a window
+        waits for that (_wait_for_learning_window).
+        A window opened for another point drops a learning target still set
+        (the worker gave up waiting on a stalled poll loop): what appears now
+        can't be told apart, so that value is learned on a later write.
+
+        The window is replaced whole under ``_post_write_lock``, so a reader
+        never sees one write's point with another's timing.
         """
+        if value is None:
+            value = learning_value
         with self._post_write_lock:
-            self._post_write_controlling_point = point_id
-            self.post_write_active = True
-            self._post_write_until = time.time() + self._post_write_duration
+            previous = self._window
+            saw_points = False
+            ambiguous = (
+                previous is not None and previous.point == point_id and previous.value != value
+            )
+            if ambiguous:
+                value = learning_value = None
+                if previous is not None and previous.learning_value is not None:
+                    self._learning_window_ended.set()
+            elif learning_value is not None:
+                self._learning_window_ended.clear()
+            elif (
+                previous is not None
+                and previous.learning_value is not None
+                and previous.point == point_id
+            ):
+                learning_value, saw_points = previous.learning_value, previous.saw_points
+            elif previous is not None and previous.learning_value is not None:
+                self._learning_window_ended.set()
+            self._window = ScanWindow(
+                point=point_id,
+                until=time.time() + self._post_write_duration,
+                learning_value=learning_value,
+                saw_points=saw_points,
+                value=value,
+            )
 
     def _handle_command_worker(
         self,
@@ -4354,6 +4548,9 @@ class EntityManager:
         prefix = f"[{cmd_id}] " if cmd_id else ""  # pragma: no mutate
 
         log_commands.info("%sWriting %s to point %d", prefix, value, point_id)  # pragma: no mutate
+
+        if entity_type in ("switch", "select") and self._opens_scan_window(point_id):
+            self._wait_for_learning_window(point_id, cmd_id)
 
         # Mark the moment this write actually left the queue and began
         # executing. _update_entity_state's staleness check ages from here,
@@ -4381,24 +4578,6 @@ class EntityManager:
                         message=f"Write to point {point_id} succeeded — previous error cleared.",
                         context={"point_id": point_id, "cmd_id": cmd_id},
                     )
-
-            # Publish optimistic state immediately so HA UI snaps to the
-            # new value without waiting for the next bulk fetch cycle.
-            # The pending write entry suppresses any stale bulk-fetch
-            # republish until the firmware confirms the new value.
-            if entity_type == "switch":
-                state_value = "1" if value else "0"
-            elif entity_type == "time":
-                secs = int(value) % 86400
-                state_value = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:00"
-            elif entity_type in ("select", "number"):
-                state_value = payload
-            else:
-                state_value = str(value)
-            if entity_info.get("state_topic"):
-                self.mqtt.publish(entity_info["state_topic"], state_value, retain=True)
-                with self._em_lock:
-                    self.last_states[point_id] = state_value
 
             # ── Post-write dynamic point handling ─────────────────────────────
             # Only switches and selects can be controlling points.
@@ -4455,7 +4634,7 @@ class EntityManager:
                         self._post_write_duration,
                     )
                     # pragma: no mutate end
-                    self._open_post_write_scan(point_id)
+                    self._open_post_write_scan(point_id, value=int_value)
 
                 else:
                     # Case A3 / B: unprocessed value or not in map.
@@ -4463,23 +4642,25 @@ class EntityManager:
                     # always recorded so the map self-populates without manual
                     # intervention. The detection window runs and any dynamic
                     # changes observed are attributed to this write.
-                    self._open_post_write_scan(point_id)
-                    if (
-                        entry is not None
+                    learning_value = (
+                        int_value
+                        if entry is not None
                         and int_value is not None
                         and int_value in entry.unprocessed_values
-                    ):
+                        else None
+                    )
+                    self._open_post_write_scan(point_id, learning_value, value=int_value)
+                    if learning_value is not None:
                         # pragma: no mutate start
                         log_commands.info(
                             "%sPoint %d value=%d is unprocessed — starting detection window "
                             "(learning always active, up to %ds to detect new points)",
                             prefix,
                             point_id,
-                            int_value,
+                            learning_value,
                             self._post_write_duration,
                         )
                         # pragma: no mutate end
-                        self._run_learning_detection(point_id, int_value, cmd_id)
                     else:
                         # The ternary below only feeds the log message's 4th
                         # arg — it has no effect outside this info call. Kept
@@ -4710,7 +4891,8 @@ class EntityManager:
 
         Called on every reconnect and when Home Assistant announces itself
         online (its MQTT birth message). Idempotent when the broker kept
-        everything — the same payloads again.
+        everything — the same payloads again. Resends the removals of dynamic
+        points without an entity first (_resend_dynamic_removals).
         """
         if not self.initial_discovery_complete or not self._pub:
             return
@@ -4720,6 +4902,9 @@ class EntityManager:
         # back, undoing an intentional uninstall cleanup.
         if self._shutdown_event.is_set():
             return
+        # Before the configs below: a point that appears in between is
+        # republished by them.
+        self._resend_dynamic_removals()
         with self._active_entities_lock:
             snapshot = list(self.active_entities_by_id.values())
         for entity_info in snapshot:
@@ -5978,10 +6163,50 @@ class EntityManager:
         if point_id in self.mqtt_enabled_points:
             self._disable_entity_locked(point_id)
             return
+        self._clear_discovery_topics(point_id)
+
+    def _clear_discovery_topics(self, point_id: int) -> None:
+        """Clear a point's config and attributes topic under every domain."""
         entity_id = create_entity_id(point_id)
         for domain in _DISCOVERY_DOMAINS:
             self.mqtt.publish(t_config(domain, entity_id), "", retain=True)
             self.mqtt.publish(t_attributes(domain, entity_id), "", retain=True)
+
+    def _resend_dynamic_removals(self) -> None:
+        """Clear the discovery config of every known dynamic point that has
+        no entity now, again.
+
+        The bridge removes an entity by clearing its retained config, and the
+        broker passes that empty message on only to clients connected at that
+        moment — it keeps nothing, since an empty retained message deletes the
+        retained one. When Home Assistant's MQTT connection is down just then
+        (it is reconnecting), it never hears of the removal, finds no config
+        when it is back, and keeps the entity until it restarts. A dynamic
+        point's entity comes and goes with its switch, so this is where that
+        happens. Called once the startup action has restored the enabled set
+        (for an entity left behind before the bridge restarted) and from
+        republish_retained_state (Home Assistant's birth message, and every
+        reconnect of the bridge). Clearing a topic that holds nothing is a
+        no-op on the broker, and Home Assistant ignores the removal of an
+        entity it doesn't have.
+
+        Under _em_lock: a point appearing (_publish_dynamic_changes) holds it
+        while it publishes its config, so its fresh config is never cleared.
+        """
+        if not self._enabled_set_restored:
+            return
+        with self._em_lock:
+            with self._active_entities_lock:
+                has_entity = set(self.active_entities_by_id) | self.mqtt_enabled_points
+            gone = sorted(self.dynamic_point_map.all_known_dynamic_point_ids() - has_entity)
+            for point_id in gone:
+                self._clear_discovery_topics(point_id)
+        if gone:
+            log_discovery.info(
+                "Resent the removal of %d dynamic point(s) without an entity: %s",
+                len(gone),
+                gone,
+            )  # pragma: no mutate
 
     def _setup_dynamic_map_loading(self) -> None:
         """Subscribe to retained MQTT topics to restore dynamic state on startup.

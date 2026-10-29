@@ -157,6 +157,7 @@ either existing suite's coverage.
 | `tests/mode-switch-behavior.spec.ts` | Covers three promises at once: an ordinary same-mode restart must not run `apply_mode` (so manual Entity Manager additions survive), `merge` only ever adds, and `replace` disables what falls outside the new mode. Reads the exact enabled set from the retained `enabled_state` topic, and switches mode by mounting a different options file via `BRIDGE_OPTIONS` — not `NIBE_MODE`, which `run.sh`'s own `--mode` CLI flag outranks. |
 | `tests/mqtt-callback-robustness.spec.ts` | Fires malformed payloads (bad numbers, wrong JSON shapes, invalid UTF-8) at every subscribed management topic, then proves the bridge is **still processing MQTT** by enabling a real entity over the same connection. Covers ARCHITECTURE.md §3's no-exception-escapes-a-callback invariant, whose failure mode leaves the container up and the poll loop logging normally while every command is silently ignored forever — verified by removing `_guard_callback` and watching exactly that happen. |
 | `tests/entity-attributes.spec.ts` | Confirms an enabled entity carries the attributes DOCS.md promises (`point_id`, `modbus_register`, `writable`, `default_value`) with values checked against the firmware dump, including that `default_value` is divisor-applied "display units" rather than the raw register integer. The attributes are a separate retained payload from the discovery config and the state, so an entity can be entirely correct and still reach HA with none — and a template reading a missing attribute renders `None` rather than failing. |
+| `tests/dynamic-learning-scenarios.spec.ts` | How the bridge learns which settings a switch shows, in the orderings a real controller produces, with two real switches (SG Ready 10613 → 3260/4694/10614, "Power at DOT, manual value" 6984 → 6983). The mock's show rules and lagging point list (`/mock-control/shows`, `/list`, `/list-refresh`, `/list-snapshot`, see `mock_nibe_api.py`) fix whether the REST API's point list catches up before or after the next action, which the real controller decides by timing (docs/known-firmware-quirks.md). Covers: learning once the list catches up; on and straight off, unlearned and learned; two unlearned switches in quick succession (and their own notifications); a setpoint during learning; a switch changed on the display during another's learning; an API failure during learning; settings arriving after the 90 s window; switches showing their new state without bouncing; and an entity whose removal Home Assistant missed (it has the entity, the broker no config) being removed when HA comes back online and at a bridge restart; and, in menus mode, one menu dashboard save per switch change although two builds run. |
 
 ## How the bridge runs without a Supervisor
 
@@ -301,6 +302,16 @@ test's own exit code.
 After a `--keep-open` run, HA is reachable at http://localhost:18123 with
 the seeded admin credentials in `ha-seed/seed_ha.py`
 (`HA_SEED_USERNAME`/`HA_SEED_PASSWORD` in `docker-compose.yml`).
+
+### Bridge logs
+
+Every run keeps each stack's bridge log in `bridge-logs/<container>.log`
+(`tests/support/bridge-log-reporter.ts`), and a failed test names the log of
+its stack. `docker logs` alone isn't enough: several specs restart or
+recreate the bridge, and a container that was recreated after a failure has
+lost what it logged. The next run moves it to `<container>.prev.log`, so
+rerunning a failed spec on its own doesn't wipe the log of the run it
+failed in.
 
 ### Running in parallel
 

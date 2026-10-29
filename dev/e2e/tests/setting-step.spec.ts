@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId } from './support/stack';
+import { HA_URL, pointEntityId, bridgeEnabled } from './support/stack';
 
 /**
  * A setting's step in Home Assistant is the firmware's own `change` metadata.
@@ -43,7 +43,7 @@ test('a setting moves by the firmware step', async () => {
   const enabledHere: number[] = [];
   try {
     for (const [pointId] of EXPECTED) {
-      if (!(await pointEntityId(token, pointId))) {
+      if (!bridgeEnabled(pointId)) {
         await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(pointId));
         enabledHere.push(pointId);
       }

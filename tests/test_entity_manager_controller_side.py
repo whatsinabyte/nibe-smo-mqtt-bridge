@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import nibe_entity_manager
-from conftest import _make_em
+from conftest import _make_em, _set_window
 
 SWITCH = 1001  # a candidate controlling switch
 OTHER = 1002  # a second candidate
@@ -97,8 +97,8 @@ class TestControllerSideChange(_Base):
         entry.unprocessed_values.discard(1)
         entry.processed_values.add(1)
         self.assertIsNone(self.em._controller_side_change(self._response(switch=1)))
-        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
-        self.assertTrue(self.em._late_tail[3])
+        self.assertEqual((self.em._late_tail.point, self.em._late_tail.value), (SWITCH, 1))
+        self.assertTrue(self.em._late_tail.controller_side)
 
     def test_pending_ha_write(self):
         """An HA write shows its own change in the next poll and opens its
@@ -148,8 +148,8 @@ class TestFetchBulkDataLearnsControllerSideChange(_Base):
     def test_the_change_opens_a_scan_window_for_the_switch(self):
         self._fetch(self._response(switch=1))
         self.assertTrue(self.em.post_write_active)
-        self.assertEqual(self.em._post_write_controlling_point, SWITCH)
-        self.assertEqual(self.em._controller_side_point, SWITCH)
+        self.assertEqual(self.em._window.point, SWITCH)
+        self.assertTrue(self.em._window.controller_side)
 
     def test_points_arriving_later_in_the_window_are_the_switchs(self):
         """The firmware serves a switch's points about a minute after it
@@ -179,17 +179,15 @@ class TestFetchBulkDataLearnsControllerSideChange(_Base):
     def test_an_open_ha_window_is_kept(self):
         """An HA write's window keeps its own controlling point."""
         with self.em._post_write_lock:
-            self.em._post_write_controlling_point = OTHER
-            self.em.post_write_active = True
-            self.em._post_write_until = 1e12
+            _set_window(self.em, point=OTHER, until=1e12)
         publish = self._fetch(self._response(switch=1, new=True), detect_changes=True)
-        self.assertEqual(self.em._post_write_controlling_point, OTHER)
-        self.assertIsNone(self.em._controller_side_point)
+        self.assertEqual(self.em._window.point, OTHER)
+        self.assertFalse(self.em._window.controller_side)
         self.assertEqual(publish.call_args.args[2], OTHER)
 
 
 class TestChangelogMarksAControllerSideChange(_Base):
-    def _triggered_by(self):
+    def _triggered_by(self, controller_side=False):
         captured = {}
         self.em._update_changelog_history = lambda event: captured.setdefault("event", event)
         self.em.all_points_by_id[SWITCH] = {
@@ -200,12 +198,13 @@ class TestChangelogMarksAControllerSideChange(_Base):
         }
         self.em.bulk_data[SWITCH] = {"raw_value": 1, "metadata": {}}
         point = _point(7, writable=False)
-        self.em._publish_dynamic_changes([(NEW, point)], set(), SWITCH)
+        self.em._publish_dynamic_changes(
+            [(NEW, point)], set(), SWITCH, controller_side=controller_side
+        )
         return captured["event"]["triggered_by"]
 
     def test_a_controller_side_window_says_so(self):
-        self.em._controller_side_point = SWITCH
-        self.assertEqual(self._triggered_by()["changed_on"], "controller")
+        self.assertEqual(self._triggered_by(controller_side=True)["changed_on"], "controller")
 
     def test_an_ha_write_window_does_not(self):
         self.assertNotIn("changed_on", self._triggered_by())
@@ -230,7 +229,7 @@ class TestLateArrival(_Base):
         self.assertIsNotNone(self.em._late_tail)
 
     def test_the_period_ends(self):
-        with patch("nibe_entity_manager.time.time", return_value=self.em._late_tail[2] + 1):
+        with patch("nibe_entity_manager.time.time", return_value=self.em._late_tail.until + 1):
             self.assertIsNone(self.em._late_arrival(self._response(switch=1, new=True)))
         self.assertIsNone(self.em._late_tail)
 
@@ -238,7 +237,21 @@ class TestLateArrival(_Base):
         with patch("nibe_entity_manager.time.time", return_value=1000.0):
             self.em._start_late_tail(SWITCH, 1, False, after=90)
         self.assertEqual(
-            self.em._late_tail[2], 1000 + 90 + nibe_entity_manager._LATE_ARRIVAL_S + 30
+            self.em._late_tail.until, 1000 + 90 + nibe_entity_manager._LATE_ARRIVAL_S + 30
+        )
+
+    def test_an_expired_period_does_not_judge_the_poll(self):
+        """A partial point list after the period ended must not block
+        attribution: there is nothing left to protect."""
+        with patch("nibe_entity_manager.time.time", return_value=self.em._late_tail.until + 1):
+            self.em._late_arrival(self._response(switch=1, static=False, new=True))
+        self.assertEqual(self.em._attribution_blocked_until, 0.0)
+
+    def test_the_switchs_own_change_keeps_the_period(self):
+        """Only another switch or select changing ends it."""
+        self.em.bulk_data[SWITCH]["raw_value"] = 0
+        self.assertEqual(
+            self.em._late_arrival(self._response(switch=1, new=True)), (SWITCH, 1, False, [NEW])
         )
 
     def test_the_switch_set_back(self):
@@ -291,6 +304,13 @@ class TestLateArrival(_Base):
         self.assertIsNone(self.em._late_arrival(response))
         self.assertIsNone(self.em._late_tail)
 
+    def test_an_unchanged_firmware_version(self):
+        self.em.bulk_data[2509] = {"raw_value": 1038, "metadata": {}}
+        self.em.published_configs.add(2509)
+        response = self._response(switch=1, new=True)
+        response["2509"] = _point(1038, writable=False)
+        self.assertEqual(self.em._late_arrival(response), (SWITCH, 1, False, [NEW]))
+
     def test_a_failed_poll(self):
         self.em._handle_api_failure("timeout")
         self.assertIsNone(self.em._late_tail)
@@ -311,24 +331,19 @@ class TestLateArrival(_Base):
 class TestLatePeriodStarts(_Base):
     def test_when_a_scan_window_ends(self):
         self.em.bulk_data[SWITCH]["raw_value"] = 1
-        self.em.post_write_active = True
-        self.em._post_write_controlling_point = SWITCH
-        self.em._post_write_until = 1.0
+        _set_window(self.em, point=SWITCH, until=1.0)
         with patch.object(self.em, "_fetch_bulk_data", return_value=True):
             self.em.update_all_states()
         self.assertFalse(self.em.post_write_active)
-        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
-        self.assertFalse(self.em._late_tail[3])
+        self.assertEqual((self.em._late_tail.point, self.em._late_tail.value), (SWITCH, 1))
+        self.assertFalse(self.em._late_tail.controller_side)
 
     def test_when_a_controller_side_window_ends(self):
         self.em.bulk_data[SWITCH]["raw_value"] = 1
-        self.em.post_write_active = True
-        self.em._post_write_controlling_point = SWITCH
-        self.em._controller_side_point = SWITCH
-        self.em._post_write_until = 1.0
+        _set_window(self.em, point=SWITCH, controller_side=True, until=1.0)
         with patch.object(self.em, "_fetch_bulk_data", return_value=True):
             self.em.update_all_states()
-        self.assertTrue(self.em._late_tail[3])
+        self.assertTrue(self.em._late_tail.controller_side)
 
     def test_when_a_switch_learned_as_showing_nothing_is_written(self):
         """It opens no window, but points it does show after all are still
@@ -356,7 +371,7 @@ class TestLatePeriodStarts(_Base):
         with patch.object(self.em, "_open_post_write_scan") as scan:
             self.em._handle_command_worker(info, 1, "1", "cmd-id")
         scan.assert_not_called()
-        self.assertEqual(self.em._late_tail[:2], (SWITCH, 1))
+        self.assertEqual((self.em._late_tail.point, self.em._late_tail.value), (SWITCH, 1))
 
 
 class TestFetchBulkDataLinksLatePoints(_Base):
@@ -374,7 +389,91 @@ class TestFetchBulkDataLinksLatePoints(_Base):
         self.assertEqual(entry.dynamic_points_by_value[1], [NEW])
         self.assertTrue(entry.is_controlling)
         self.assertIn(NEW, self.em.active_dynamic_points)
-        self.assertEqual(self.em._post_write_controlling_point, SWITCH)
+        self.assertEqual(self.em._window.point, SWITCH)
+
+
+class TestQuickOnOff(_Base):
+    """A learned switch turned on and straight off again. The REST API's point
+    list lags up to a minute behind its values (docs/known-firmware-quirks.md),
+    so the points "on" shows can first appear in a poll in which the switch
+    already reads off. Recording them then would teach the bridge that off
+    shows them too."""
+
+    def setUp(self):
+        super().setUp()
+        entry = self.em.dynamic_point_map.get(SWITCH)
+        entry.processed_values = {0, 1}
+        entry.unprocessed_values = set()
+        entry.is_controlling = True
+        entry.dynamic_points_by_value = {1: [NEW], 0: []}
+
+    def _write(self, value):
+        self.em._api.write_point.return_value = True
+        info = {"point_id": SWITCH, "entity_type": "switch", "point_data": {}}
+        self.em._handle_command_worker(info, value, str(value), f"w{value}")
+
+    def test_points_of_on_arriving_after_off_are_not_recorded_under_off(self):
+        self._write(1)
+        self._write(0)
+        self.em._api.fetch_bulk_points.return_value = self._response(switch=0, new=True)
+        with patch.object(self.em, "_update_changelog_history"):
+            self.em._fetch_bulk_data(detect_changes=True)
+        entry = self.em.dynamic_point_map.get(SWITCH)
+        self.assertEqual(entry.dynamic_points_by_value[0], [])
+        self.assertEqual(entry.dynamic_points_by_value[1], [NEW])
+        self.assertIn(NEW, self.em.active_dynamic_points, "the point is still shown")
+
+
+class TestOtherSwitchDuringWindow(_Base):
+    """While SWITCH's window is open, OTHER is changed on the controller's
+    display: what appears can be either's, so nothing is recorded."""
+
+    def setUp(self):
+        super().setUp()
+        self.em.bulk_data[SWITCH]["raw_value"] = 1
+        self.em._open_post_write_scan(SWITCH, learning_value=1, value=1)
+
+    def _fetch(self, response):
+        self.em._api.fetch_bulk_points.return_value = response
+        with patch.object(self.em, "_update_changelog_history"):
+            self.em._fetch_bulk_data(detect_changes=True)
+
+    def test_points_appearing_then_are_not_recorded_under_the_window_switch(self):
+        self._fetch(self._response(switch=1, other=1, new=True))
+        self.assertIsNone(self.em._window.value)
+        self.assertNotIn(1, self.em.dynamic_point_map.get(SWITCH).dynamic_points_by_value)
+        self.assertIn(NEW, self.em.active_dynamic_points, "the point is still shown")
+
+    def test_the_change_spoils_the_window_for_later_polls_too(self):
+        self._fetch(self._response(switch=1, other=1))
+        self._fetch(self._response(switch=1, other=1, new=True))
+        self.assertNotIn(1, self.em.dynamic_point_map.get(SWITCH).dynamic_points_by_value)
+
+    def test_the_value_being_learned_stays_to_be_learned(self):
+        self._fetch(self._response(switch=1, other=1))
+        self.assertIsNone(self.em._window.learning_value)
+        self.assertTrue(self.em._learning_window_ended.is_set(), "waiting writes go ahead")
+
+    def test_a_switch_learned_as_showing_nothing_does_not_spoil_it(self):
+        entry = self.em.dynamic_point_map.get(OTHER)
+        entry.processed_values, entry.unprocessed_values = {0, 1}, set()
+        entry.is_controlling = False
+        entry.dynamic_points_by_value = {0: [], 1: []}
+        self._fetch(self._response(switch=1, other=1, new=True))
+        self.assertEqual(self.em.dynamic_point_map.get(SWITCH).dynamic_points_by_value[1], [NEW])
+
+    def test_a_window_replaced_meanwhile_is_left_alone(self):
+        """A write to another switch replaced the window after this poll read
+        it: that newer window isn't the one to spoil."""
+        stale = self.em._window
+        self.em._open_post_write_scan(OTHER, value=1)
+        result = self.em._other_switch_spoils_window(self._response(switch=1, other=1), stale)
+        self.assertIs(result, stale)
+        self.assertEqual((self.em._window.point, self.em._window.value), (OTHER, 1))
+
+    def test_nothing_else_changing_records_as_before(self):
+        self._fetch(self._response(switch=1, new=True))
+        self.assertEqual(self.em.dynamic_point_map.get(SWITCH).dynamic_points_by_value[1], [NEW])
 
 
 if __name__ == "__main__":

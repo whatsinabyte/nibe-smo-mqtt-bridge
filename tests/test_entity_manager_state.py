@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from conftest import (
     _make_em,
+    _set_window,
 )
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
@@ -1463,7 +1464,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         import nibe_entity_manager as nem
 
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         self._seed_point(em, point_id)
         em.mqtt_enabled_points.add(point_id)
@@ -1485,7 +1486,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
 
     def test_absent_point_is_not_disabled_immediately(self):
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         with patch.object(em, "disable_entity") as mock_disable:
@@ -1496,7 +1497,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         """Honest and non-destructive: HA shows it unavailable and keeps the
         entity, its history, and every reference to it."""
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         em._update_entity_state(self._entity_info(point_id))
@@ -1506,7 +1507,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         import nibe_entity_manager as nem
 
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         info = self._entity_info(point_id)
@@ -1527,7 +1528,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         import nibe_entity_manager as nem
 
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         info = self._entity_info(point_id)
@@ -1577,7 +1578,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         from nibe_mqtt_publisher import BrowserTopic
 
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         self._seed_point(em, point_id)
         em.mqtt_enabled_points.add(point_id)
@@ -1633,7 +1634,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         """Left indexed, enable_entity treated a firmware-removed point as
         existing and created an entity that could only go unavailable."""
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         self._seed_point(em, point_id)
         em.mqtt_enabled_points.add(point_id)
@@ -1645,7 +1646,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
 
     def test_grace_disable_decrements_stats_before_deindexing(self):
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         self._seed_point(em, point_id)
         em._increment_stats(em.all_points_by_id[point_id])
@@ -1705,7 +1706,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         learning path again, even after a correct HA-driven write to its
         controlling point re-opens a scan window."""
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         em.baseline_point_ids.add(point_id)
@@ -1721,7 +1722,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         _wanted_points across the automatic disable, then be re-enabled the
         moment it reappears in a later bulk fetch."""
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         point_id = 9999
         em.mqtt_enabled_points.add(point_id)
         em._wanted_points.add(point_id)
@@ -2072,7 +2073,7 @@ class TestUpdateEntityStatePostWriteKnownAbsent(unittest.TestCase):
         em.initial_discovery_complete = True
         em.baseline_point_ids.add(500)
         em.mqtt_enabled_points.add(500)
-        em.post_write_active = True
+        _set_window(em)
         # Make point known-dynamic but NOT active (i.e. in the absent set)
         em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value={500})
         em.active_dynamic_points = set()  # 500 is absent: in known - active
@@ -2288,7 +2289,7 @@ class TestUpdateEntityStatePendingWriteEviction(unittest.TestCase):
         }
         # point_id deliberately absent from em.bulk_data
         em.mqtt_enabled_points.add(point_id)
-        em.post_write_active = False
+        em._window = None
         info = self._entity_info(point_id)
         with patch.object(em, "disable_entity") as mock_disable:
             # Must not raise AttributeError (None has no .get) — mutant 60 crashes here.
@@ -2352,8 +2353,7 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
         point_id = 800
         em.baseline_point_ids.add(point_id)
         em.mqtt_enabled_points.add(point_id)
-        em.post_write_active = True
-        em._post_write_controlling_point = 12345
+        _set_window(em, point=12345)
         em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value=set())
         em.active_dynamic_points = set()
         info = {
@@ -2384,8 +2384,7 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
         em.baseline_point_ids.add(point_id)
         em.baseline_point_ids.add(other_point)
         em.mqtt_enabled_points.add(point_id)
-        em.post_write_active = True
-        em._post_write_controlling_point = controlling_point
+        _set_window(em, point=controlling_point)
         # An active dynamic point -> routes through _publish_dynamic_changes.
         em.dynamic_point_map.all_known_dynamic_point_ids = MagicMock(return_value={point_id})
         em.active_dynamic_points = {point_id}
@@ -2399,7 +2398,9 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
         # point_id deliberately absent from em.bulk_data
         with patch.object(em, "_publish_dynamic_changes") as mock_pub_dyn:
             em._update_entity_state(info)
-        mock_pub_dyn.assert_called_once_with([], {point_id}, controlling_point)
+        mock_pub_dyn.assert_called_once_with(
+            [], {point_id}, controlling_point, controller_side=False
+        )
         self.assertNotIn(
             point_id,
             em.baseline_point_ids,

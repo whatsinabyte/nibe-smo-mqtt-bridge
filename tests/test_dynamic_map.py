@@ -11,8 +11,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from conftest import (
+    _learning_value,
     _make_em,
     _nibe_point_id,
+    _set_window,
 )
 from hypothesis import assume, given
 from hypothesis import strategies as st
@@ -1183,7 +1185,7 @@ class TestWriteCases(unittest.TestCase):
         self._seed_map_entry(pid, is_controlling=True, dynamic_pids=[22001])
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, "1", "test02")
         self.assertTrue(self.em.post_write_active, "Case A2 must open scan window")
-        self.assertEqual(self.em._post_write_controlling_point, pid)
+        self.assertEqual(self.em._window.point, pid)
 
     def test_caseA2_controlling_scan_window_sets_correct_expiry(self):
         """_open_post_write_scan must set _post_write_until to now + duration,
@@ -1195,7 +1197,7 @@ class TestWriteCases(unittest.TestCase):
         with patch("nibe_entity_manager.time.time", return_value=fixed_now):
             self.em._handle_command_worker(self._make_switch_entity(pid), 1, "1", "test02b")
         self.assertEqual(
-            self.em._post_write_until,
+            self.em._window.until,
             fixed_now + self.em._post_write_duration,
         )
 
@@ -1205,7 +1207,7 @@ class TestWriteCases(unittest.TestCase):
         self._seed_map_entry(pid, is_controlling=True, dynamic_pids=[22001])
         self.em._handle_command_worker(self._make_switch_entity(pid), 0, "0", "test03")
         self.assertTrue(self.em.post_write_active)
-        self.assertEqual(self.em._post_write_controlling_point, pid)
+        self.assertEqual(self.em._window.point, pid)
 
     def test_caseA3_unprocessed_always_runs_detection(self):
         """Case A3: unprocessed value → detection window always runs.
@@ -1213,10 +1215,8 @@ class TestWriteCases(unittest.TestCase):
         longer exists."""
         pid = 3001
         self._seed_map_entry(pid, is_controlling=None, fully_processed=False)
-        detection_called = []
-        self.em._run_learning_detection = lambda pid, val, _cid: detection_called.append((pid, val))
         self.em._handle_command_worker(self._make_switch_entity(pid), 1, "1", "test04")
-        self.assertEqual(detection_called, [(pid, 1)])
+        self.assertEqual(_learning_value(self.em), 1)
         self.assertTrue(
             self.em.post_write_active, "Learning detection must also activate scan window"
         )
@@ -1285,34 +1285,33 @@ class TestPostWriteControllingPoint(unittest.TestCase):
         correct triggered_by attribution in the changelog entry."""
         pid = 1001
         self._seed(pid, is_controlling=True)
-        self.em._post_write_controlling_point = None
+        self.em._window = None
         self.em._handle_command_worker(self._entity(pid), 1, "1", "tid")
-        self.assertEqual(self.em._post_write_controlling_point, pid)
+        self.assertEqual(self.em._window.point, pid)
 
     def test_caseA3_sets_controlling_point(self):
         """Unprocessed value always runs detection and sets controlling point."""
         pid = 3001
         self._seed(pid, is_controlling=None, fully_processed=False)
-        with patch.object(self.em, "_run_learning_detection"):
-            self.em._handle_command_worker(self._entity(pid), 1, "1", "tid")
-        self.assertEqual(self.em._post_write_controlling_point, pid)
+        self.em._handle_command_worker(self._entity(pid), 1, "1", "tid")
+        self.assertEqual(self.em._window.point, pid)
 
     def test_caseB_sets_controlling_point(self):
         self.em._handle_command_worker(self._entity(9999), 1, "1", "tid")
-        self.assertEqual(self.em._post_write_controlling_point, 9999)
+        self.assertEqual(self.em._window.point, 9999)
 
     def test_caseA1_does_not_set_controlling_point(self):
         pid = 2001
         self._seed(pid, is_controlling=False)
-        self.em._post_write_controlling_point = None
+        self.em._window = None
         self.em._handle_command_worker(self._entity(pid), 1, "1", "tid")
-        self.assertIsNone(self.em._post_write_controlling_point)
+        self.assertIsNone(self.em._window)
 
     def test_write_failure_does_not_set_controlling_point(self):
         self.em._api.write_point.return_value = False
-        self.em._post_write_controlling_point = None
+        self.em._window = None
         self.em._handle_command_worker(self._entity(9999), 1, "1", "tid")
-        self.assertIsNone(self.em._post_write_controlling_point)
+        self.assertIsNone(self.em._window)
 
     def test_new_dynamic_map_entry_created_on_first_controlling_write(self):
         """1687->1704 True branch: when _publish_dynamic_changes is called with a
@@ -1337,6 +1336,7 @@ class TestPostWriteControllingPoint(unittest.TestCase):
                 [(dynamic_pid, {})],
                 set(),
                 controlling_point_id=controlling,
+                controlling_value=1,
             )
         self.assertIn(controlling, em.dynamic_point_map._table)
 
@@ -1365,6 +1365,7 @@ class TestPostWriteControllingPoint(unittest.TestCase):
                 [(dynamic_pid, {})],
                 set(),
                 controlling_point_id=controlling,
+                controlling_value=1,
             )
         self.assertIn(controlling, em.dynamic_point_map._table)
 
@@ -1375,8 +1376,7 @@ class TestPostWriteControllingPoint(unittest.TestCase):
         self._seed(pid, is_controlling=False)
         entity = self._entity(pid)
         del entity["state_topic"]
-        with patch.object(self.em, "_run_learning_detection"):
-            self.em._handle_command_worker(entity, 1, "1", "tid")
+        self.em._handle_command_worker(entity, 1, "1", "tid")
         # No state topic publish should have occurred
         state_calls = [c for c in self.em.mqtt.publish.call_args_list if "state" in str(c)]
         self.assertEqual(len(state_calls), 0)
@@ -1517,9 +1517,8 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         em.dynamic_point_map._table[5102] = self._entry(5102, is_controlling=False)
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
-        mock_learn.assert_not_called()
+        em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
+        self.assertIsNone(_learning_value(em))
         self.assertFalse(em.post_write_active)
 
     def test_case_a2_fully_processed_controlling_opens_scan_window(self):
@@ -1529,11 +1528,10 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         em.dynamic_point_map._table[5102] = self._entry(5102, is_controlling=True)
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
-        mock_learn.assert_not_called()
+        em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
+        self.assertIsNone(_learning_value(em))
         self.assertTrue(em.post_write_active)
-        self.assertEqual(em._post_write_controlling_point, 5102)
+        self.assertEqual(em._window.point, 5102)
 
     def test_case_a2_excluded_when_firmware_removed(self):
         """A controlling, fully-processed entry that's ALSO firmware_removed
@@ -1545,9 +1543,8 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
             is_controlling=True,
             firmware_removed=True,
         )
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
-        mock_learn.assert_not_called()
+        em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
+        self.assertIsNone(_learning_value(em))
         self.assertTrue(em.post_write_active)  # fell through to A3
 
     def test_case_a3_unprocessed_value_always_runs_detection(self):
@@ -1562,9 +1559,8 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
             processed={1},
             unprocessed={2},
         )
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 2, "2", "cmd1")
-        mock_learn.assert_called_once_with(5102, 2, "cmd1")
+        em._handle_command_worker(self._entity_info(), 2, "2", "cmd1")
+        self.assertEqual(_learning_value(em), 2)
         self.assertTrue(em.post_write_active)
 
     def test_case_b_point_not_in_dynamic_map_falls_back_to_scan(self):
@@ -1572,11 +1568,10 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         window, no crash on a None entry."""
         em = _make_em()
         em._api.write_point.return_value = True
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
-        mock_learn.assert_not_called()
+        em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
+        self.assertIsNone(_learning_value(em))
         self.assertTrue(em.post_write_active)
-        self.assertEqual(em._post_write_controlling_point, 5102)
+        self.assertEqual(em._window.point, 5102)
 
     def test_non_switch_select_entity_type_skips_dynamic_logic_entirely(self):
         """A 'number' or 'text' write must never touch dynamic_point_map
@@ -1584,14 +1579,13 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = True
         em.dynamic_point_map._table[100] = self._entry(100, is_controlling=True)
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(
-                self._entity_info(point_id=100, entity_type="number"),
-                50,
-                "50",
-                "cmd1",
-            )
-        mock_learn.assert_not_called()
+        em._handle_command_worker(
+            self._entity_info(point_id=100, entity_type="number"),
+            50,
+            "50",
+            "cmd1",
+        )
+        self.assertIsNone(_learning_value(em))
         self.assertFalse(em.post_write_active)
 
     def test_write_failure_does_not_touch_dynamic_logic(self):
@@ -1601,21 +1595,15 @@ class TestHandleCommandWorkerDynamicCases(unittest.TestCase):
         em = _make_em()
         em._api.write_point.return_value = False
         em.dynamic_point_map._table[5102] = self._entry(5102, is_controlling=True)
-        with patch.object(em, "_run_learning_detection") as mock_learn:
-            em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
-        mock_learn.assert_not_called()
+        em._handle_command_worker(self._entity_info(), 1, "1", "cmd1")
+        self.assertIsNone(_learning_value(em))
         self.assertFalse(em.post_write_active)
 
     def test_successful_switch_write_publishes_optimistic_state(self):
         em = _make_em()
         em._api.write_point.return_value = True
         em.dynamic_point_map._table[100] = self._entry(100, is_controlling=False)
-        em._handle_command_worker(
-            self._entity_info(point_id=100),
-            1,
-            "1",
-            "cmd1",
-        )
+        em._publish_requested_state(self._entity_info(point_id=100), 1, "1")
         em.mqtt.publish.assert_called_once_with("nibe/state/100", "1", retain=True)
         self.assertEqual(em.last_states[100], "1")
 
@@ -1659,7 +1647,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
 
     def test_post_write_scan_routes_new_point_as_dynamic(self):
         em = self._ready_em()
-        em.post_write_active = True
+        _set_window(em)
         em._api.fetch_bulk_points.return_value = self._response(300)
         with patch.object(em, "_publish_dynamic_changes") as mock_pub_dyn:
             em._fetch_bulk_data(detect_changes=True)
@@ -1676,7 +1664,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
         checks dynamic_points_by_value's values, not the controlling entry's
         own point_id, so the fixture's controlling entry uses a different id."""
         em = self._ready_em()
-        em.post_write_active = False
+        em._window = None
         em.dynamic_point_map._table[5102] = self._fake_dynamic_entry(
             controlling_id=5102,
             dynamic_dependent_id=301,
@@ -1692,7 +1680,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
 
     def test_genuinely_unknown_point_outside_scan_window_indexed_as_static(self):
         em = self._ready_em()
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._response(302, title="Firmware update point")
         with (
             patch.object(em, "_publish_dynamic_changes") as mock_pub_dyn,
@@ -1724,7 +1712,7 @@ class TestFetchBulkDataNewPointRouting(unittest.TestCase):
         path) must skip the new-point routing entirely, regardless of
         scan window or dynamic-map state."""
         em = self._ready_em()
-        em.post_write_active = True
+        _set_window(em)
         em._api.fetch_bulk_points.return_value = self._response(304)
         with patch.object(em, "_publish_dynamic_changes") as mock_pub_dyn:
             em._fetch_bulk_data(detect_changes=False)
@@ -1845,7 +1833,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         spot. Within 90s of any write that includes a controller restart or
         a partial response, so it now gets the ordinary absence grace."""
         em = self._ready_em()
-        em.post_write_active = True
+        _set_window(em)
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])  # 601 vanished
         with patch.object(em, "_publish_dynamic_changes") as mock_pub:
@@ -1854,7 +1842,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
 
     def test_post_write_scan_keeps_a_vanished_static_point_in_baseline(self):
         em = self._ready_em()
-        em.post_write_active = True
+        _set_window(em)
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])
         with patch.object(em, "_publish_dynamic_changes"):
@@ -1866,7 +1854,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         must not be processed by both mechanisms redundantly — the
         newly_absent calculation explicitly excludes known_dynamic_ids."""
         em = self._ready_em()
-        em.post_write_active = True
+        _set_window(em)
         em.dynamic_point_map._table[700] = self._dynamic_entry(700, [701])
         em.baseline_point_ids = {701}  # also a known dynamic dependent
         em.active_dynamic_points = {701}
@@ -1883,7 +1871,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         NOT treated as a dynamic disappearance via this mechanism — only
         the known-dynamic-points path applies when no scan is active."""
         em = self._ready_em()
-        em.post_write_active = False
+        em._window = None
         em.baseline_point_ids = {600, 601}
         em._api.fetch_bulk_points.return_value = self._response([600])
         with patch.object(em, "_publish_dynamic_changes") as mock_pub:
@@ -2134,7 +2122,7 @@ class TestPendingWriteAbsentFromBulk(unittest.TestCase):
         bulk_raw must not be treated as a confirmation of the write."""
         em, pid, entity_info = self._setup()
         del em.bulk_data[pid]
-        em.post_write_active = False
+        em._window = None
         em._update_entity_state(entity_info)
         self.assertIn(
             pid,
@@ -2167,7 +2155,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
 
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         for pid in known_dynamic:
             entry = DynamicPointEntry(
                 point_id=pid,
@@ -2228,8 +2216,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
         static point missing) is reported as disappeared."""
         assume(current_ids)
         em = self._make_em_with_dynamic_map(known_dynamic, frozenset())
-        em.post_write_active = True
-        em._post_write_until = 1e18
+        _set_window(em, until=1e18)
         em.baseline_point_ids = set(baseline)
         for pid in current_ids:
             em.bulk_data[pid] = {
@@ -2252,7 +2239,7 @@ class TestDisappearedPointsSetAlgebra(unittest.TestCase):
     def test_non_dynamic_points_never_in_disappeared(self, all_pids, current_ids):
         """With no known-dynamic points and no post-write, disappeared must be empty."""
         em = self._make_em_with_dynamic_map(frozenset(), frozenset())
-        em.post_write_active = False
+        em._window = None
         for pid in all_pids:
             em.bulk_data[pid] = {
                 "raw_value": 0,

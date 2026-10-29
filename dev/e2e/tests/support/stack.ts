@@ -250,6 +250,16 @@ export function savedMenuDashboardEntities(): Set<string> | null {
  * bridge's unique_id (nibe_<point>), or undefined. Specs used to find an
  * entity as "the one that wasn't there before", which fails whenever an
  * earlier spec on the same stack left the point enabled. */
+/** Whether the bridge has a point enabled, from its own retained list.
+ * Ask this rather than whether Home Assistant has an entity for the point:
+ * right after a spec put the bridge back into essential mode, HA can still
+ * list an entity menus mode enabled while the bridge has just disabled it,
+ * and a spec that took it for enabled never enabled it. */
+export function bridgeEnabled(pointId: string | number): boolean {
+  const raw = readRetained('nibe/browser/enabled_state');
+  return raw ? (JSON.parse(raw).enabled_points ?? []).includes(Number(pointId)) : false;
+}
+
 export async function pointEntityId(token: string, pointId: string | number): Promise<string | undefined> {
   const [resp] = await haWs(token, [{ type: 'config/entity_registry/list' }]);
   return (resp.result ?? []).find((e: any) => e.unique_id === `nibe_${pointId}`)?.entity_id;

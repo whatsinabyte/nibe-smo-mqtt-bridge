@@ -5288,7 +5288,7 @@ class TestPollLoop(unittest.TestCase):
 
         em.update_all_states = MagicMock(side_effect=side_effects or [None] * iterations)
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5329,7 +5329,7 @@ class TestPollLoop(unittest.TestCase):
 
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5380,7 +5380,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5415,7 +5415,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 999999  # keep the bulk-update branch from firing
         em._post_write_interval = 5
 
@@ -5444,7 +5444,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5465,7 +5465,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5510,7 +5510,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("persistent crash"))
@@ -5557,7 +5557,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("crash"))
@@ -5598,7 +5598,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("crash"))
@@ -5646,7 +5646,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.initial_discovery_complete = False
         em.api_consecutive_failures = 0
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.complete_deferred_discovery = MagicMock(return_value=True)
@@ -5686,7 +5686,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock()
@@ -5743,7 +5743,7 @@ class TestPollLoop(unittest.TestCase):
         em.update_all_states = MagicMock()
         em.get_memory_usage = MagicMock(return_value={})
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 1
         em._post_write_interval = 5
 
@@ -5791,7 +5791,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("boom"))
@@ -5822,7 +5822,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5868,7 +5868,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5902,7 +5902,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.initial_discovery_complete = False
         em.api_consecutive_failures = 0
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.complete_deferred_discovery = MagicMock(return_value=True)
@@ -5935,7 +5935,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -5994,7 +5994,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.get_memory_usage = MagicMock(
@@ -6047,7 +6047,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.get_memory_usage = MagicMock(return_value={})
@@ -6090,7 +6090,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         boom = RuntimeError("oom")
@@ -6128,7 +6128,7 @@ class TestPollLoop(unittest.TestCase):
         em.update_all_states = MagicMock()
         em.get_memory_usage = MagicMock(return_value={})
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 1
         em._post_write_interval = 5
 
@@ -6177,7 +6177,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 999999  # keep the bulk-update branch from firing
         em._post_write_interval = 5
 
@@ -6220,7 +6220,7 @@ class TestPollLoop(unittest.TestCase):
         pub = MagicMock()
         em.update_all_states = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -6252,7 +6252,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("boom"))
@@ -6285,7 +6285,7 @@ class TestPollLoop(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock(side_effect=RuntimeError("crash"))
@@ -7679,7 +7679,7 @@ class TestPollLoopAlertPublishException(unittest.TestCase):
         pub.publish_bridge_alert.side_effect = RuntimeError("broker gone")
 
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
 
@@ -8441,7 +8441,7 @@ class TestPollLoopFreezeTime(unittest.TestCase):
         em = _make_em()
         pub = MagicMock()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.bulk_interval = 30
         em._post_write_interval = 5
         em.update_all_states = MagicMock()

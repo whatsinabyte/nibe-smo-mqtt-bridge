@@ -5,14 +5,15 @@ Dynamic point detection and reconciliation tests for nibe_entity_manager.py — 
 for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
-import itertools
 import json
+import time
 import unittest
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
     _make_em,
+    _set_window,
 )
 from hypothesis import given
 from hypothesis import strategies as st
@@ -914,6 +915,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
             new_points=[self._dynamic_point_data(50827)],
             disappeared_points=set(),
             controlling_point_id=5110,
+            controlling_value=em.bulk_data.get(5110, {}).get("raw_value"),
         )
 
         trig = captured["event"].get("triggered_by")
@@ -940,6 +942,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
             new_points=[self._dynamic_point_data(50827)],
             disappeared_points=set(),
             controlling_point_id=5110,
+            controlling_value=em.bulk_data.get(5110, {}).get("raw_value"),
         )
         trig = captured["event"].get("triggered_by")
         self.assertIn("value", trig)
@@ -964,6 +967,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
             new_points=[self._dynamic_point_data(50827)],
             disappeared_points=set(),
             controlling_point_id=None,
+            controlling_value=em.bulk_data.get(None, {}).get("raw_value"),
         )
         trig = captured["event"].get("triggered_by")
         self.assertIsNone(trig)
@@ -977,6 +981,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
             new_points=[self._dynamic_point_data(50827)],
             disappeared_points=set(),
             controlling_point_id=5110,
+            controlling_value=em.bulk_data.get(5110, {}).get("raw_value"),
         )
         entry = em.change_history[0]
         trig = entry.get("triggered_by")
@@ -1012,6 +1017,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
                 new_points=[self._dynamic_point_data(50827)],
                 disappeared_points=set(),
                 controlling_point_id=5110,
+                controlling_value=em.bulk_data.get(5110, {}).get("raw_value"),
             )
         entry = em.change_history[0]
         self.assertEqual(entry["timestamp"], 1000.0)
@@ -1024,7 +1030,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
         _post_write_controlling_point while an earlier scan cycle is still
         being processed. _publish_dynamic_changes must attribute changes to
         the controlling_point_id it was called with — a caller-supplied
-        snapshot — not whatever self._post_write_controlling_point holds by
+        snapshot — not whatever self._window holds by
         the time this runs."""
         em = self._make_em()
         em.all_points_by_id[5111] = {
@@ -1043,7 +1049,7 @@ class TestTriggeredByPopulation(unittest.TestCase):
         }
         # Simulate a second write already having overwritten the live
         # attribute by the time this call happens.
-        em._post_write_controlling_point = 5111
+        _set_window(em, point=5111)
 
         em._publish_dynamic_changes(
             new_points=[self._dynamic_point_data(50827)],
@@ -1066,7 +1072,7 @@ class TestUpdateEntityStateDynamicDisappearance(unittest.TestCase):
     def test_post_write_absent_point_triggers_dynamic_change(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
+        _set_window(em)
         point_id = 9001
         em.mqtt_enabled_points.add(point_id)
         em.baseline_point_ids.add(point_id)
@@ -1132,6 +1138,7 @@ class TestPublishDynamicChangesMissingDescriptionKey(unittest.TestCase):
             new_points=[(60001, point_data)],
             disappeared_points=set(),
             controlling_point_id=None,
+            controlling_value=em.bulk_data.get(None, {}).get("raw_value"),
         )
         self.assertEqual(em.all_points_by_id[60001]["description"], "")
 
@@ -1299,6 +1306,7 @@ class TestPublishDynamicChangesChangeEventStructure(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         event = self._capture_dynamic_publish(em)
         self.assertEqual(event["triggered_by"]["title"], "Fallback Ctrl Title")
@@ -1316,6 +1324,7 @@ class TestPublishDynamicChangesChangeEventStructure(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         event = self._capture_dynamic_publish(em)
         self.assertEqual(event["triggered_by"]["title"], f"Point {controlling_pid}")
@@ -1474,6 +1483,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         entry = em.dynamic_point_map.get(controlling_pid)
         self.assertIsNotNone(entry)
@@ -1504,6 +1514,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         entry = em.dynamic_point_map.get(controlling_pid)
         self.assertIsNotNone(entry)
@@ -1528,6 +1539,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         entry = em.dynamic_point_map.get(controlling_pid)
         self.assertIsNotNone(entry)
@@ -1549,6 +1561,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         entry = em.dynamic_point_map.get(controlling_pid)
         self.assertIsNotNone(entry)
@@ -1594,6 +1607,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
 
         entry = em.dynamic_point_map.get(controlling_pid)
@@ -1622,6 +1636,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(9021, {"title": "Dyn", "description": "", "metadata": {}})],
             set(),
             controlling_point_id=pid_a,
+            controlling_value=em.bulk_data.get(pid_a, {}).get("raw_value"),
         )
         self.assertEqual(em.dynamic_point_map.get(pid_a).title, "Fallback Title")
 
@@ -1633,13 +1648,13 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(9023, {"title": "Dyn2", "description": "", "metadata": {}})],
             set(),
             controlling_point_id=pid_b,
+            controlling_value=em.bulk_data.get(pid_b, {}).get("raw_value"),
         )
         self.assertEqual(em.dynamic_point_map.get(pid_b).title, f"Point {pid_b}")
 
     def test_record_outcome_uses_real_controlling_raw_value(self):
-        """controlling_raw = bulk_data.get(controlling, {}).get('raw_value', 1) —
-        must reflect the actual bulk_data value, not the (1) default, when
-        bulk_data has a distinct value."""
+        """Points are recorded under the window's value when the controller
+        reports that same value — here a distinctive select value."""
         em = _make_em()
         em.initial_discovery_complete = True
         controlling_pid = 9003
@@ -1657,6 +1672,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         entry = em.dynamic_point_map.get(controlling_pid)
         self.assertIn(pid, entry.dynamic_points_by_value.get(2, []))
@@ -1705,6 +1721,7 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
                 new_points,
                 set(),
                 controlling_point_id=controlling_pid,
+                controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
             )
 
         entry = em.dynamic_point_map.get(controlling_pid)
@@ -1718,7 +1735,10 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
         )
         self.assertNotIn(failing_pid, em.active_dynamic_points)
 
-    def test_controlling_raw_defaults_to_one_when_bulk_data_missing(self):
+    def test_nothing_recorded_when_the_controller_no_longer_serves_the_switch(self):
+        """Points are recorded under the window's value only while the
+        controller still reports it; with no reading at all there is no
+        value to record them under (the old fallback assumed 1)."""
         em = _make_em()
         em.initial_discovery_complete = True
         controlling_pid = 9005
@@ -1736,9 +1756,28 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=1,
         )
-        entry = em.dynamic_point_map.get(controlling_pid)
-        self.assertIn(pid, entry.dynamic_points_by_value.get(1, []))
+        self.assertIsNone(em.dynamic_point_map.get(controlling_pid))
+        self.assertIn(pid, em.active_dynamic_points, "the point is still shown")
+
+    def test_nothing_recorded_when_the_switch_reads_another_value(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        controlling_pid = 9005
+        em.all_points_by_id[controlling_pid] = {
+            "variableId": controlling_pid,
+            "entity_type": "switch",
+            "metadata": {},
+        }
+        em.bulk_data[controlling_pid] = {"raw_value": 0}
+        em._publish_dynamic_changes(
+            [(9006, {"title": "Dyn", "description": "", "metadata": {}})],
+            set(),
+            controlling_point_id=controlling_pid,
+            controlling_value=1,
+        )
+        self.assertIsNone(em.dynamic_point_map.get(controlling_pid))
 
 
 class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
@@ -1869,6 +1908,7 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         kwargs = em._notify.call_args.kwargs
         self.assertIn("Triggered by", kwargs["message"])
@@ -1917,6 +1957,7 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
             [(pid, point_data)],
             set(),
             controlling_point_id=controlling_pid,
+            controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         kwargs = em._notify.call_args.kwargs
         self.assertIn("menu 7 — Distinctive Menu Name", kwargs["message"])
@@ -1943,9 +1984,36 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
                 [(pid, point_data)],
                 set(),
                 controlling_point_id=controlling_pid,
+                controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
             )
         kwargs = em._notify.call_args.kwargs
         self.assertIn("The Nibe Menus dashboard was updated:", kwargs["message"])
+
+    def _notification_id(self, em, controlling):
+        em.all_points_by_id[controlling] = {
+            "variableId": controlling,
+            "display_title": f"Switch {controlling}",
+            "entity_type": "switch",
+            "metadata": {},
+        }
+        em.bulk_data[controlling] = {"raw_value": 1}
+        em._publish_dynamic_changes(
+            [(controlling + 1, {"title": "Dyn", "description": "", "metadata": {}})],
+            set(),
+            controlling,
+            controlling_value=1,
+        )
+        return em._notify.call_args.kwargs["notification_id"]
+
+    def test_each_switch_keeps_its_own_notification(self):
+        """Two switches changed shortly after each other: the second's
+        notification must not replace the first's (HA replaces by ID)."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        first = self._notification_id(em, 6984)
+        second = self._notification_id(em, 10613)
+        self.assertEqual(first, "nibe_dashboard_updated_6984")
+        self.assertEqual(second, "nibe_dashboard_updated_10613")
 
     def test_added_and_removed_in_same_call_both_appear_in_one_notification(self):
         """Regression: added and removed both used the same hardcoded
@@ -1988,138 +2056,236 @@ class TestPublishDynamicChangesNotificationContent(unittest.TestCase):
         self.assertIn("Newly Removed Point", kwargs["message"])
 
 
-class TestDynamicLearningDetection(unittest.TestCase):
-    """_run_learning_detection: size-change exit and deadline exit."""
+class TestFinishLearningWindow(unittest.TestCase):
+    """When the window of a write to a value not learned yet ends, the poll
+    loop records "shows nothing" for that value if no points appeared —
+    unless the window proves nothing about it."""
 
-    def _em_with_bulk(self, initial_size=1):
+    POINT = 5
+
+    def _em(self, unprocessed=frozenset({0, 1})):
+        from nibe_dynamic_map import DynamicPointEntry
+
         em = _make_em()
-        for i in range(initial_size):
-            em.bulk_data[i] = {
-                "raw_value": 0,
-                "string_value": "",
-                "is_ok": True,
-                "metadata": {},
-                "title": f"P{i}",
-            }
+        em.dynamic_point_map._table[self.POINT] = DynamicPointEntry(
+            point_id=self.POINT,
+            title="Switch",
+            entity_type="switch",
+            unprocessed_values=set(unprocessed),
+        )
         return em
 
-    def test_size_change_exits_loop_early(self):
-        em = self._em_with_bulk(initial_size=2)
-        sleep_calls = [0]
-
-        def fake_sleep(t):
-            sleep_calls[0] += 1
-            em.bulk_data[999] = {
-                "raw_value": 1,
-                "string_value": "",
-                "is_ok": True,
-                "metadata": {},
-                "title": "New",
-            }
-
+    def _finish(self, em, value=1, saw_points=False):
         with (
-            patch.object(em._shutdown_event, "wait", side_effect=fake_sleep),
-            patch("nibe_entity_manager.time.time", return_value=0.0),
             patch.object(em.dynamic_point_map, "record_outcome") as mock_rec,
             patch.object(em, "_persist_dynamic_map"),
         ):
-            em._run_learning_detection(5, 1, "test")
-        self.assertEqual(sleep_calls[0], 1)
-        mock_rec.assert_called_once_with(5, 1, [999])
+            em._finish_learning_window(self.POINT, value, saw_points)
+        return mock_rec
 
-    def test_deadline_exit_records_empty_outcome(self):
-        em = self._em_with_bulk(initial_size=1)
-        # _post_write_until, deadline, loop check — exactly 3 real time.time()
-        # calls, padded with a repeating tail so a 4th call (if one ever
-        # happens) returns 999.0 forever rather than raising StopIteration.
-        #
-        # log_commands.info() is explicitly mocked out below (not just left
-        # to ambient logger state) because LogRecord creation internally
-        # calls time.time() *whenever the logger's effective level allows
-        # the info() call through* — which depends on global logging state
-        # other tests may have left behind. Previously this test only
-        # padded the iterator to survive that extra call without crashing;
-        # it didn't stop the extra call from silently shifting deadline's
-        # value to 999.0 + 90 while the loop's own "now" stayed pinned at
-        # 999.0 forever — deadline could never be reached, and since the
-        # loop's interval wait is also mocked to a no-op, the loop spun as a
-        # genuine CPU-bound infinite loop until pytest-timeout killed it. That
-        # depended on test execution order (whether the logger happened to
-        # be INFO-enabled already), so it passed locally under one
-        # pytest-randomly seed and hung for real under another — this is
-        # what actually happened in CI. Mocking log_commands.info()
-        # unconditionally removes the ambiguity: exactly 3 time.time()
-        # calls, every time, regardless of what ran before this test.
-        time_seq = itertools.chain([0.0, 0.0, 999.0], itertools.repeat(999.0))
-        with (
-            patch.object(em._shutdown_event, "wait", return_value=False),
-            patch("nibe_entity_manager.time.time", side_effect=time_seq),
-            patch("nibe_entity_manager.log_commands"),
-            patch.object(em.dynamic_point_map, "record_outcome") as mock_rec,
-            patch.object(em, "_persist_dynamic_map"),
-        ):
-            em._run_learning_detection(10, 0, "test")
-        mock_rec.assert_called_once_with(10, 0, [])
+    def test_quiet_window_records_empty_outcome(self):
+        mock_rec = self._finish(self._em())
+        mock_rec.assert_called_once_with(self.POINT, 1, [])
 
-    def test_post_write_until_and_poll_interval_use_correct_values(self):
-        """_post_write_until must be time.time() + _POST_WRITE_SCAN_S (not None
-        or a subtraction), and the loop's interval wait must be given the
-        configured post_write_interval (not None)."""
-        em = self._em_with_bulk(initial_size=1)
-        em.post_write_interval = 7.5
-        captured_sleep_args = []
+    def test_quiet_window_keeps_known_points_still_present(self):
+        em = self._em()
+        em.dynamic_point_map._table[self.POINT].dynamic_points_by_value[0] = [500]
+        em.active_dynamic_points.add(500)
+        em.bulk_data[500] = {"raw_value": 0}
+        mock_rec = self._finish(em)
+        mock_rec.assert_called_once_with(self.POINT, 1, [500])
 
-        def fake_sleep(t):
-            captured_sleep_args.append(t)
-            em.bulk_data[999] = {
-                "raw_value": 1,
-                "string_value": "",
-                "is_ok": True,
-                "metadata": {},
-                "title": "New",
-            }
+    def test_value_recorded_during_the_window_is_left_alone(self):
+        mock_rec = self._finish(self._em(unprocessed={0}))
+        mock_rec.assert_not_called()
+
+    def test_points_seen_but_not_recorded_leave_the_value_unlearned(self):
+        mock_rec = self._finish(self._em(), saw_points=True)
+        mock_rec.assert_not_called()
+
+    def test_blocked_attribution_leaves_the_value_unlearned(self):
+        """An API failure or a restarting controller in the window proves
+        nothing about the value — recording "shows nothing" then would, for a
+        switch, also mark its other value as showing nothing."""
+        em = self._em()
+        em._attribution_blocked_until = time.time() + 60
+        mock_rec = self._finish(em)
+        mock_rec.assert_not_called()
+
+    def test_point_not_in_map_records_nothing(self):
+        em = self._em()
+        em.dynamic_point_map._table.clear()
+        mock_rec = self._finish(em)
+        mock_rec.assert_not_called()
+
+    def test_releases_the_waiting_write_worker(self):
+        em = self._em()
+        em._learning_window_ended.clear()
+        self._finish(em, saw_points=True)
+        self.assertTrue(em._learning_window_ended.is_set())
+
+    def test_releases_the_worker_only_after_recording(self):
+        """The next write must see this outcome in the map."""
+        em = self._em()
+        em._learning_window_ended.clear()
+        seen = []
+
+        def record(*_args):
+            seen.append(em._learning_window_ended.is_set())
 
         with (
-            patch.object(em._shutdown_event, "wait", side_effect=fake_sleep),
-            patch("nibe_entity_manager.time.time", return_value=1000.0),
-            patch.object(em.dynamic_point_map, "record_outcome"),
+            patch.object(em.dynamic_point_map, "record_outcome", side_effect=record),
             patch.object(em, "_persist_dynamic_map"),
         ):
-            em._run_learning_detection(5, 1, "test")
-        self.assertEqual(em._post_write_until, 1000.0 + 90)
-        self.assertEqual(captured_sleep_args, [7.5])
+            em._finish_learning_window(self.POINT, 1, saw_points=False)
+        self.assertEqual(seen, [False])
+        self.assertTrue(em._learning_window_ended.is_set())
 
-    def test_deadline_uses_addition_not_subtraction(self):
-        """deadline = time.time() + _POST_WRITE_SCAN_S. If it were a
-        subtraction, the loop would exit on its first iteration instead of
-        continuing to poll."""
-        em = self._em_with_bulk(initial_size=1)
-        time_seq = itertools.chain([100.0, 100.0, 50.0, 999.0], itertools.repeat(999.0))
+    def test_releases_the_worker_even_if_recording_fails(self):
+        em = self._em()
+        em._learning_window_ended.clear()
         with (
-            patch.object(em._shutdown_event, "wait", return_value=False) as mock_sleep,
-            patch("nibe_entity_manager.time.time", side_effect=time_seq),
-            patch("nibe_entity_manager.log_commands"),
-            patch.object(em.dynamic_point_map, "record_outcome"),
-            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em.dynamic_point_map, "record_outcome", side_effect=RuntimeError),
+            self.assertRaises(RuntimeError),
         ):
-            em._run_learning_detection(5, 1, "test")
-        self.assertEqual(mock_sleep.call_count, 2)
+            em._finish_learning_window(self.POINT, 1, saw_points=False)
+        self.assertTrue(em._learning_window_ended.is_set())
 
-    def test_deadline_boundary_is_reached_when_equal(self):
-        """The exit check is `time.time() >= deadline` (inclusive), not a
-        strict `>`. At exact equality the loop must exit on the first
-        iteration."""
-        em = self._em_with_bulk(initial_size=1)
-        time_seq = itertools.chain([100.0, 100.0, 190.0], itertools.repeat(999.0))
+    def test_value_recorded_during_the_window_is_logged_as_learned(self):
+        em = self._em(unprocessed={0})
+        em.dynamic_point_map._table[self.POINT].dynamic_points_by_value[1] = [77]
+        with self.assertLogs("nibe.commands", level="INFO") as cm:
+            self._finish(em)
+        self.assertTrue(any("complete for point 5 value=1: [77]" in m for m in cm.output))
+
+
+class TestLearningWindowLifecycle(unittest.TestCase):
+    """The learning target travels with the scan window: opened by the
+    write, taken by update_all_states when the window ends."""
+
+    def test_window_end_finishes_the_learning_target(self):
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        _set_window(em, until=0.0)
         with (
-            patch.object(em._shutdown_event, "wait", return_value=False) as mock_sleep,
-            patch("nibe_entity_manager.time.time", side_effect=time_seq),
-            patch("nibe_entity_manager.log_commands"),
-            patch.object(em.dynamic_point_map, "record_outcome"),
-            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_finish_learning_window") as mock_finish,
+            patch.object(em, "_fetch_bulk_data", return_value=False),
         ):
-            em._run_learning_detection(5, 1, "test")
-        self.assertEqual(mock_sleep.call_count, 1)
+            em.update_all_states()
+        mock_finish.assert_called_once_with(5, 1, False)
+        self.assertIsNone(em._window)
+
+    def test_open_window_does_not_finish_it(self):
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        with (
+            patch.object(em, "_finish_learning_window") as mock_finish,
+            patch.object(em, "_fetch_bulk_data", return_value=False),
+        ):
+            em.update_all_states()
+        mock_finish.assert_not_called()
+
+    def test_points_appearing_in_the_window_are_noted(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1}
+        em._open_post_write_scan(5, learning_value=1)
+        em._api.fetch_bulk_points.return_value = {
+            "1": {"value": {"integerValue": 0}, "metadata": {}},
+            "77": {"value": {"integerValue": 0}, "metadata": {}},
+        }
+        with patch.object(em, "_publish_dynamic_changes"):
+            em._fetch_bulk_data(detect_changes=True)
+        self.assertTrue(em._window.saw_points)
+
+    def _fetch_with(self, em, point_ids):
+        em._api.fetch_bulk_points.return_value = {
+            str(pid): {"value": {"integerValue": 0}, "metadata": {}} for pid in point_ids
+        }
+        with patch.object(em, "_publish_dynamic_changes"):
+            em._fetch_bulk_data(detect_changes=True)
+
+    def test_changed_point_set_releases_the_write_worker(self):
+        """Setting a point a switch just showed mustn't wait out the rest of
+        the 90 s window; the target stays for the window-end outcome."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1, 2}
+        em._open_post_write_scan(5, learning_value=1)
+        self._fetch_with(em, [1])
+        self.assertTrue(em._learning_window_ended.is_set())
+        self.assertEqual((em._window.point, em._window.learning_value), (5, 1))
+
+    def test_unchanged_point_set_keeps_the_write_worker_waiting(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1, 2}
+        em._open_post_write_scan(5, learning_value=1)
+        self._fetch_with(em, [1, 2])
+        self.assertFalse(em._learning_window_ended.is_set())
+
+    def test_changed_point_set_outside_a_window_releases_nothing(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1, 2}
+        em._learning_window_ended.clear()
+        self._fetch_with(em, [1])
+        self.assertFalse(em._learning_window_ended.is_set())
+
+    def test_release_without_a_learning_target_is_a_no_op(self):
+        em = _make_em()
+        em._learning_window_ended.clear()
+        em._release_learning_write()
+        self.assertFalse(em._learning_window_ended.is_set())
+
+    def test_window_opened_for_another_point_drops_the_target(self):
+        """If the worker gave up waiting (a stalled poll loop) and the next
+        write opens a window for another switch, what appears can't be told
+        apart: the first value stays to be learned later."""
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        em._open_post_write_scan(6)
+        self.assertIsNone(em._window.learning_value)
+        self.assertTrue(em._learning_window_ended.is_set())
+
+    def test_window_reopened_for_the_same_point_keeps_the_target(self):
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        em._open_post_write_scan(5, value=1)
+        self.assertEqual((em._window.point, em._window.learning_value), (5, 1))
+
+    def test_window_reopened_for_the_same_point_keeps_that_it_saw_points(self):
+        """Otherwise the window would end by recording "shows nothing" for
+        a value whose points already appeared."""
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        _set_window(em, saw_points=True)
+        em._open_post_write_scan(5, value=1)
+        self.assertTrue(em._window.saw_points)
+
+    def test_second_value_for_the_same_point_makes_the_window_ambiguous(self):
+        """On then straight off: points "on" shows can still arrive, and
+        would be recorded under off — so the window records nothing and the
+        value being learned stays to be learned later."""
+        em = _make_em()
+        em._open_post_write_scan(5, learning_value=1)
+        em._open_post_write_scan(5, value=0)
+        self.assertIsNone(em._window.value)
+        self.assertIsNone(em._window.learning_value)
+        self.assertTrue(em._learning_window_ended.is_set())
+
+    def test_ambiguous_window_stays_ambiguous(self):
+        em = _make_em()
+        em._open_post_write_scan(5, value=1)
+        em._open_post_write_scan(5, value=0)
+        em._open_post_write_scan(5, value=0)
+        self.assertIsNone(em._window.value)
+
+    def test_window_for_another_point_takes_its_own_value(self):
+        em = _make_em()
+        em._open_post_write_scan(5, value=1)
+        em._open_post_write_scan(6, value=0)
+        self.assertEqual((em._window.point, em._window.value), (6, 0))
 
 
 class TestSetupDynamicMapLoadingCallbacks(unittest.TestCase):
@@ -3480,7 +3646,9 @@ class TestSharedDynamicPointsAcrossSelectValues(unittest.TestCase):
             patch.object(em, "_persist_active_dynamic"),
             patch.object(em, "_update_changelog_history"),
         ):
-            em._publish_dynamic_changes([(self.EXTRA, point_data)], set(), self.SELECT)
+            em._publish_dynamic_changes(
+                [(self.EXTRA, point_data)], set(), self.SELECT, controlling_value=2
+            )
         entry = em.dynamic_point_map.get(self.SELECT)
         self.assertEqual(sorted(entry.dynamic_points_by_value[2]), [self.SHARED, self.EXTRA])
         self.assertEqual(
@@ -3488,20 +3656,13 @@ class TestSharedDynamicPointsAcrossSelectValues(unittest.TestCase):
             {self.SHARED, self.EXTRA},
         )
 
-    def test_learning_detection_keeps_shared_point_in_new_values_list(self):
+    def test_quiet_learning_window_keeps_shared_point_in_new_values_list(self):
+        """A value showing only the shared point records it at window end."""
         em = self._em_with_select_learned_for_value_1()
-
-        def extra_point_appears(_timeout):
-            em.bulk_data[self.EXTRA] = dict(em.bulk_data[self.SHARED])
-            return False
-
-        with (
-            patch.object(em._shutdown_event, "wait", side_effect=extra_point_appears),
-            patch.object(em, "_persist_dynamic_map"),
-        ):
-            em._run_learning_detection(self.SELECT, 2, "test")
+        with patch.object(em, "_persist_dynamic_map"):
+            em._finish_learning_window(self.SELECT, 2, saw_points=False)
         entry = em.dynamic_point_map.get(self.SELECT)
-        self.assertEqual(sorted(entry.dynamic_points_by_value[2]), [self.SHARED, self.EXTRA])
+        self.assertEqual(entry.dynamic_points_by_value[2], [self.SHARED])
 
     def test_no_sharing_records_only_the_new_points(self):
         """Without sharing nothing changes: a value whose points don't
@@ -3517,6 +3678,8 @@ class TestSharedDynamicPointsAcrossSelectValues(unittest.TestCase):
             patch.object(em, "_persist_active_dynamic"),
             patch.object(em, "_update_changelog_history"),
         ):
-            em._publish_dynamic_changes([(self.EXTRA, point_data)], set(), self.SELECT)
+            em._publish_dynamic_changes(
+                [(self.EXTRA, point_data)], set(), self.SELECT, controlling_value=2
+            )
         entry = em.dynamic_point_map.get(self.SELECT)
         self.assertEqual(entry.dynamic_points_by_value[2], [self.EXTRA])

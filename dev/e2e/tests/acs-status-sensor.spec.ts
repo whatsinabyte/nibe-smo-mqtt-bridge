@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 import { readToken } from './support/ha-login';
-import { HA_URL, pointEntityId, setMockValue } from './support/stack';
+import { HA_URL, pointEntityId, setMockValue, bridgeEnabled } from './support/stack';
 
 /**
  * A two-state status that isn't 0/1 is a sensor from the start.
@@ -29,7 +29,7 @@ test('ACS status (2701) is discovered as a sensor, not a binary_sensor', async (
   test.setTimeout(240_000);
   const token = readToken();
   await setMockValue(POINT, DUMP_VALUE);
-  const enabledHere = !(await pointEntityId(token, POINT));
+  const enabledHere = !bridgeEnabled(POINT);
   try {
     if (enabledHere) {
       await mqttPublish(token, 'homeassistant/text/nibe_enable_entity/set', String(POINT));

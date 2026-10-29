@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from conftest import (
     _make_em,
+    _set_window,
 )
 
 
@@ -480,7 +481,7 @@ class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
         None argument) must keep this point OUT of all_points_by_id."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         self._setup_known_dynamic(em)
         resp = self._resp(700)
         em._api.fetch_bulk_points.return_value = resp
@@ -497,8 +498,7 @@ class TestFetchBulkDataKnownDynamicPointRoutingCorrectness(unittest.TestCase):
         placeholder like None."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999
+        _set_window(em, until=time.time() + 9999)
         resp = self._resp(701)
         em._api.fetch_bulk_points.return_value = resp
         with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
@@ -531,7 +531,7 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
         metadata shape that real classification would require."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(950)
         with (
             patch.object(em, "_get_cached_entity_type", return_value=("select", "config")),
@@ -543,7 +543,7 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
     def test_populate_from_bulk_called_with_correct_point_id_and_entity_type(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(951)
         with (
             patch.object(em, "_get_cached_entity_type", return_value=("switch", "config")),
@@ -559,7 +559,7 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
     def test_publish_point_metadata_called_with_the_indexed_point_object(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(952)
         em._fetch_bulk_data(detect_changes=True)
         expected_point_obj = em.all_points_by_id[952]
@@ -568,7 +568,7 @@ class TestFetchBulkDataNewPermanentPointDetails(unittest.TestCase):
     def test_publish_point_list_called_with_all_points_by_id_not_a_placeholder(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(953)
         em._fetch_bulk_data(detect_changes=True)
         em._pub.publish_point_list.assert_called_once_with(em.all_points_by_id)
@@ -805,7 +805,7 @@ class TestFetchBulkDataPostWriteNoChanges(unittest.TestCase):
     def test_post_write_no_changes_debug_log(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
+        _set_window(em)
         em._api.fetch_bulk_points.return_value = {
             "100": {
                 "title": "T",
@@ -949,8 +949,7 @@ class TestFetchBulkDataDisappearedGuardRequiresDetectChanges(unittest.TestCase):
     def test_baseline_point_ids_untouched_when_detect_changes_false(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999
+        _set_window(em, until=time.time() + 9999)
         em.baseline_point_ids.add(555)  # absent from this fetch's response
         em.baseline_point_ids.add(999)  # present, stays
         em._api.fetch_bulk_points.return_value = {
@@ -978,7 +977,7 @@ class TestFetchBulkDataNewSwitchPopulatesMap(unittest.TestCase):
     def test_new_switch_point_calls_populate_from_bulk(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = {
             "500": {
                 "title": "Mode switch",
@@ -1009,7 +1008,7 @@ class TestFetchBulkDataNewSwitchPopulatesMap(unittest.TestCase):
         the resulting DynamicPointEntry."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = {
             "500": {
                 "title": "Mode switch",
@@ -1087,8 +1086,7 @@ class TestUpdateAllStates(unittest.TestCase):
 
     def test_post_write_window_ends_when_expired(self):
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = 0.0  # already past
+        _set_window(em, until=0.0)
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
         self.assertFalse(em.post_write_active)
@@ -1100,8 +1098,7 @@ class TestUpdateAllStates(unittest.TestCase):
         nearly every call regardless of whether it actually expired,
         since post_write_active is independently True."""
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999  # far in the future
+        _set_window(em, until=time.time() + 9999)
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
         self.assertTrue(em.post_write_active)
@@ -1232,11 +1229,11 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
 
         from nibe_entity_manager import EntityManager
 
-        src = inspect.getsource(EntityManager._fetch_bulk_data)
+        src = inspect.getsource(EntityManager._update_bulk_entry)
         self.assertNotIn(
             "is not metadata",
             src,
-            "_fetch_bulk_data must use != not 'is not' for metadata comparison",
+            "_update_bulk_entry must use != not 'is not' for metadata comparison",
         )
         self.assertIn("!= metadata", src)
 
@@ -1247,8 +1244,7 @@ class TestFetchBulkDataMetadataUpdate(unittest.TestCase):
     def test_notification_exception_does_not_propagate(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em._post_write_controlling_point = None
-
+        em._window = None
         point_id = 500
         em.all_points_by_id[point_id] = {
             "variableId": point_id,
@@ -1431,8 +1427,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         """The expiry check is `current_time > _post_write_until` (strict).
         At exact equality the window must NOT be considered expired yet."""
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = 500.0
+        _set_window(em, until=500.0)
         em._api.fetch_bulk_points.return_value = {}
         with patch("time.time", return_value=500.0):
             em.update_all_states()
@@ -1442,8 +1437,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         """post_write_active must become the literal False, not None —
         assertFalse alone can't tell these apart, so use assertIs."""
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = 0.0
+        _set_window(em, until=0.0)
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
         self.assertIs(em.post_write_active, False)
@@ -1453,12 +1447,10 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         since downstream code checks `is None` to detect 'no controlling
         point snapshot'."""
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = 0.0
-        em._post_write_controlling_point = 42
+        _set_window(em, until=0.0, point=42)
         em._api.fetch_bulk_points.return_value = {}
         em.update_all_states()
-        self.assertIsNone(em._post_write_controlling_point)
+        self.assertIsNone(em._window)
 
     def test_should_detect_true_when_known_dynamic_points_exist(self):
         """should_detect = bool(known_count) or post_write_active. With
@@ -1467,7 +1459,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         from nibe_dynamic_map import DynamicPointEntry
 
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         em.dynamic_point_map._table[77] = DynamicPointEntry(
             point_id=77,
             title="Test Switch",
@@ -1489,7 +1481,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         wrong-typed value in other scenarios, but here the correct answer
         is unambiguously False."""
         em = _make_em()
-        em.post_write_active = False
+        em._window = None
         self.assertEqual(len(em.dynamic_point_map.all_known_dynamic_point_ids()), 0)
         with patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch:
             em.update_all_states()
@@ -1500,8 +1492,7 @@ class TestUpdateAllStatesDetailedBranches(unittest.TestCase):
         dynamic points, must still make should_detect True. An `or`->`and`
         mutation would instead force it to False here."""
         em = _make_em()
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999
+        _set_window(em, until=time.time() + 9999)
         self.assertEqual(len(em.dynamic_point_map.all_known_dynamic_point_ids()), 0)
         with patch.object(em, "_fetch_bulk_data", return_value=True) as mock_fetch:
             em.update_all_states()
@@ -1658,8 +1649,7 @@ class TestFetchBulkDataDisappearedPoints(unittest.TestCase):
         disappearance — it gets the ordinary absence grace period."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
-        em._post_write_controlling_point = 77
+        _set_window(em, point=77)
         em.baseline_point_ids.add(999)  # will be absent from the response
         em._api.fetch_bulk_points.return_value = self._resp(1)  # 999 absent
         with patch.object(em, "_publish_dynamic_changes") as mock_dyn:
@@ -1716,8 +1706,7 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
     def test_baseline_point_absent_during_post_write_is_not_disappeared(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999
+        _set_window(em, until=time.time() + 9999)
         em.baseline_point_ids.add(555)  # will go missing this fetch
         em.baseline_point_ids.add(999)  # present, stays
         em._api.fetch_bulk_points.return_value = self._resp(999)  # 555 absent
@@ -1732,7 +1721,7 @@ class TestFetchBulkDataPostWriteNewlyAbsent(unittest.TestCase):
         be left untouched and no dynamic-change event fired."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em.baseline_point_ids.add(555)
         em.baseline_point_ids.add(999)
         em._api.fetch_bulk_points.return_value = self._resp(999)
@@ -1961,9 +1950,7 @@ class TestFetchBulkDataControllingPointSnapshot(unittest.TestCase):
 
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = True
-        em._post_write_until = time.time() + 9999
-        em._post_write_controlling_point = 314159  # distinctive, independently-known value
+        _set_window(em, until=time.time() + 9999, point=314159)
         em.dynamic_point_map._table[77] = DynamicPointEntry(
             point_id=77,
             title="Switch",
@@ -2002,7 +1989,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
     def test_new_permanent_point_indexed_with_is_dynamic_false(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(600)
         em._fetch_bulk_data(detect_changes=True)
         self.assertIn(600, em.all_points_by_id)
@@ -2013,7 +2000,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         (is_writable_point) — not hardcoded."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(601, writable=True)
         em._fetch_bulk_data(detect_changes=True)
         self.assertIs(em.all_points_by_id[601]["is_writable"], True)
@@ -2024,7 +2011,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         writable in HA."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = {
             "602": {
                 "title": "No isWritable key",
@@ -2039,7 +2026,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
     def test_new_permanent_point_added_to_baseline_point_ids(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(602)
         em._fetch_bulk_data(detect_changes=True)
         self.assertIn(602, em.baseline_point_ids)
@@ -2047,7 +2034,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
     def test_new_permanent_point_publishes_metadata_and_point_list(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(603)
         em._fetch_bulk_data(detect_changes=True)
         em._pub.publish_point_metadata.assert_called_once()
@@ -2056,7 +2043,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
     def test_new_permanent_point_display_title_and_description_from_response(self):
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = self._resp(604)
         em._fetch_bulk_data(detect_changes=True)
         self.assertEqual(em.all_points_by_id[604]["display_title"], "New Sensor")
@@ -2070,7 +2057,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         the point as a plain 'number' instead."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = {
             "605": {
                 "title": "Mode",
@@ -2092,7 +2079,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         category HA groups the entity by."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         metadata = {
             "modbusRegisterType": "MODBUS_INPUT_REGISTER",
             "isWritable": False,
@@ -2116,7 +2103,7 @@ class TestFetchBulkDataNewPermanentPointIndexing(unittest.TestCase):
         title would render oddly in the HA UI."""
         em = _make_em()
         em.initial_discovery_complete = True
-        em.post_write_active = False
+        em._window = None
         em._api.fetch_bulk_points.return_value = {
             "607": {
                 "description": "",
