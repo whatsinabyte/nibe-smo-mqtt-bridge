@@ -1975,7 +1975,6 @@ class TestGetMemoryUsageProperties(unittest.TestCase):
             "active_entities",
             "mqtt_enabled_points",
             "active_dynamic_points",
-            "value_cache_size",
             "last_states_size",
             "point_string_cache_size",
             "pending_writes",
@@ -2002,7 +2001,6 @@ class TestGetMemoryUsageProperties(unittest.TestCase):
             "active_entities",
             "mqtt_enabled_points",
             "active_dynamic_points",
-            "value_cache_size",
             "last_states_size",
             "point_string_cache_size",
             "pending_writes",
@@ -3293,6 +3291,180 @@ class TestPublishEnabledStateProperties(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestPublisherBookkeepingAndAttributes(unittest.TestCase):
+    """What the publisher remembers per point — hashes, retained domains,
+    type changes, default_status — and what it publishes from that."""
+
+    _pub = TestDiscoveryConfigSnapshots._pub
+    _point = TestDiscoveryConfigSnapshots._point
+    _get_config = TestDiscoveryConfigSnapshots._get_config
+
+    def _setting(self, pid, entity_type, int_default=1, description="", **meta):
+        p = self._point(pid, entity_type, description=description, is_writable=True)
+        p["metadata"].update(
+            {
+                "isWritable": True,
+                "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                "intDefaultValue": int_default,
+                **meta,
+            }
+        )
+        return p
+
+    def _published(self, mqtt, topic):
+        return [c for c in mqtt.publish.call_args_list if c.args[0] == topic]
+
+    def test_a_binary_sensor_gets_its_device_class_through_the_publisher(self):
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(1973, "binary_sensor"), {})
+        self.assertEqual(self._get_config(mqtt, "binary_sensor", 1973)["device_class"], "running")
+
+    def test_invalidate_forgets_retained_domains_too(self):
+        """A point that disappears and comes back as another type must not
+        clear (and report) a domain it no longer has."""
+        pub, mqtt = self._pub()
+        pub._point_retained_domains[700] = {"switch"}
+        pub.invalidate_config_hash(700)
+        pub.publish_entity_discovery(self._point(700, "sensor"), {})
+        self.assertEqual(self._published(mqtt, "homeassistant/switch/nibe_700/config"), [])
+        self.assertEqual(list(pub.type_changes), [])
+
+    def test_forget_published_hashes_republishes_config_and_attributes(self):
+        pub, mqtt = self._pub()
+        pub.forget_published_hashes(701)  # never published: must not raise
+        point = self._point(701, "sensor")
+        pub.publish_entity_discovery(point, {})
+        mqtt.publish.reset_mock()
+        pub.publish_entity_discovery(point, {})
+        self.assertEqual(self._published(mqtt, "homeassistant/sensor/nibe_701/attributes"), [])
+        pub.forget_published_hashes(701)
+        pub.publish_entity_discovery(point, {})
+        self.assertEqual(len(self._published(mqtt, "homeassistant/sensor/nibe_701/config")), 1)
+        self.assertEqual(len(self._published(mqtt, "homeassistant/sensor/nibe_701/attributes")), 1)
+
+    def test_type_change_clears_the_old_domains_retained_topics(self):
+        """Every retained topic of the old domain is emptied with retain, or
+        the broker keeps it and Home Assistant a ghost entity; the change is
+        recorded for the entity-id notification."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(702, "switch", display_title="Pump"), {})
+        mqtt.publish.reset_mock()
+        pub.publish_entity_discovery(self._point(702, "sensor", display_title="Pump"), {})
+        for kind in ("config", "attributes", "available"):
+            topic = f"homeassistant/switch/nibe_702/{kind}"
+            self.assertEqual(
+                [(c.args[1], c.kwargs) for c in self._published(mqtt, topic)],
+                [("", {"retain": True})],
+                kind,
+            )
+        self.assertEqual(list(pub.type_changes), [(702, "switch", "sensor", "Pump")])
+
+    def test_number_range_is_anchored_on_its_own_current_value(self):
+        """A number without declared bounds gets a fallback range around its
+        current value, read from bulk_data by its own point id."""
+        pub, mqtt = self._pub()
+        p = self._setting(703, "number", minValue=0, maxValue=0, divisor=10)
+        pub.publish_entity_discovery(p, {703: {"raw_value": 5000}})
+        config = self._get_config(mqtt, "number", 703)
+        self.assertEqual((config["min"], config["max"]), (-100, 500))
+
+    def test_select_options_are_translated(self):
+        pub, mqtt = self._pub()
+        pub._value_translations = {"Auto": "Automatisch"}
+        p = self._setting(704, "select", int_default=0, description="0 = Auto, 1 = Manual")
+        pub.publish_entity_discovery(p, {})
+        self.assertEqual(
+            self._get_config(mqtt, "select", 704)["options"], ["Automatisch", "Manual"]
+        )
+
+    def test_entity_info_marks_running_totals(self):
+        """A total_increasing sensor's drop is published unavailable — the
+        entity manager finds out through is_running_total."""
+        pub, _ = self._pub()
+        energy = self._point(705, "sensor")
+        energy["metadata"].update({"unit": "kWh", "divisor": 10, "maxValue": 100000})
+        self.assertIs(pub.publish_entity_discovery(energy, {})["is_running_total"], True)
+        plain = self._point(706, "sensor")
+        self.assertIs(pub.publish_entity_discovery(plain, {})["is_running_total"], False)
+
+    def test_default_status_is_in_the_first_publish_when_already_known(self):
+        """The entity manager can report a value's default status before the
+        point's attributes are first published; they must then carry it."""
+        pub, mqtt = self._pub()
+        pub.update_default_status(707, True)
+        pub.update_default_status(708, False)
+        self.assertEqual(mqtt.publish.call_args_list, [], "no attributes stored yet")
+        for pid in (707, 708, 709):
+            pub.publish_entity_discovery(
+                self._setting(
+                    pid, "number", int_default=200, minValue=50, maxValue=350, divisor=10, unit="°C"
+                ),
+                {},
+            )
+
+        def status(pid):
+            (call,) = self._published(mqtt, f"homeassistant/number/nibe_{pid}/attributes")
+            return json.loads(call.args[1]).get("default_status")
+
+        self.assertEqual(status(707), "✏️ default: 20 °C")
+        self.assertEqual(status(708), "default")
+        self.assertIsNone(status(709), "unknown yet: no status")
+
+    def test_readable_default_of_switches_and_selects(self):
+        """Untranslated words and labels are shown as they are; a select's
+        label can come from the point's own manual mapping alone."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._setting(710, "switch", int_default=0), {})
+        # 3958 has a manual mapping and no firmware description.
+        pub.publish_entity_discovery(self._setting(3958, "select", int_default=1), {})
+        pub.publish_entity_discovery(
+            self._setting(711, "select", int_default=1, description="0 = Auto, 1 = Manual"), {}
+        )
+        mqtt.publish.reset_mock()
+        for pid in (710, 3958, 711):
+            pub.update_default_status(pid, True)
+        sent = {
+            c.args[0].split("/")[2]: json.loads(c.args[1])["default_status"]
+            for c in mqtt.publish.call_args_list
+        }
+        self.assertEqual(
+            sent,
+            {
+                "nibe_710": "✏️ default: Off",
+                "nibe_3958": "✏️ default: Temp. more hot water",
+                "nibe_711": "✏️ default: Manual",
+            },
+        )
+
+    def test_update_default_status_needs_attributes_and_a_default_text(self):
+        """Nothing is published for a point whose attributes were never
+        published, nor for one without a readable default (a sensor)."""
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._point(712, "sensor"), {})
+        mqtt.publish.reset_mock()
+        pub.update_default_status(712, True)
+        pub.update_default_status(713, True)
+        self.assertEqual(mqtt.publish.call_args_list, [])
+
+    def test_update_default_status_publishes_retained_and_hashes_only_on_success(self):
+        import hashlib
+
+        pub, mqtt = self._pub()
+        pub.publish_entity_discovery(self._setting(714, "switch"), {})
+        before = pub._attributes_hashes[714]
+        mqtt.publish.return_value = MagicMock(rc=4)
+        pub.update_default_status(714, True)
+        self.assertEqual(mqtt.publish.call_args.kwargs, {"retain": True})
+        self.assertEqual(pub._attributes_hashes[714], before, "failed publish: hash kept")
+        mqtt.publish.return_value = MagicMock(rc=0)
+        pub.update_default_status(714, False)
+        payload = mqtt.publish.call_args.args[1]
+        self.assertEqual(
+            pub._attributes_hashes[714],
+            hashlib.md5(payload.encode(), usedforsecurity=False).hexdigest(),
+        )
+
+
 class TestInvalidateConfigHashProperties(unittest.TestCase):
     """Hypothesis properties for invalidate_config_hash."""
 
@@ -3532,59 +3704,59 @@ class TestBuildSwitchConfigProperties(unittest.TestCase):
 class TestBuildBinarySensorConfigProperties(unittest.TestCase):
     """Hypothesis properties for _build_binary_sensor_config."""
 
-    @given(_safe_entity_id, st.text(max_size=50))
-    def test_always_sets_state_topic(self, entity_id, title):
+    @given(_safe_entity_id, _nibe_point_id)
+    def test_always_sets_state_topic(self, entity_id, point_id):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", entity_id), title
+            config, t_state("binary_sensor", entity_id), point_id
         )
         self.assertIn("state_topic", config)
 
-    @given(_safe_entity_id, st.text(max_size=50))
-    def test_payload_on_is_ON(self, entity_id, title):
+    @given(_safe_entity_id, _nibe_point_id)
+    def test_payload_on_is_ON(self, entity_id, point_id):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", entity_id), title
+            config, t_state("binary_sensor", entity_id), point_id
         )
         self.assertEqual(config["payload_on"], "ON")
 
-    @given(_safe_entity_id, st.text(max_size=50))
-    def test_payload_off_is_OFF(self, entity_id, title):
+    @given(_safe_entity_id, _nibe_point_id)
+    def test_payload_off_is_OFF(self, entity_id, point_id):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", entity_id), title
+            config, t_state("binary_sensor", entity_id), point_id
         )
         self.assertEqual(config["payload_off"], "OFF")
 
-    @given(_safe_entity_id, st.text(max_size=50))
-    def test_state_topic_contains_entity_id(self, entity_id, title):
+    @given(_safe_entity_id, _nibe_point_id)
+    def test_state_topic_contains_entity_id(self, entity_id, point_id):
         config = {}
         import nibe_discovery_config as discovery_config
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", entity_id), title
+            config, t_state("binary_sensor", entity_id), point_id
         )
         self.assertIn(entity_id, config["state_topic"])
 
-    @given(_safe_entity_id, st.text(max_size=50))
-    def test_consistent_with_t_state(self, entity_id, title):
+    @given(_safe_entity_id, _nibe_point_id)
+    def test_consistent_with_t_state(self, entity_id, point_id):
         from nibe_mqtt_publisher import t_state
 
         config = {}
         import nibe_discovery_config as discovery_config
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", entity_id), title
+            config, t_state("binary_sensor", entity_id), point_id
         )
         self.assertEqual(config["state_topic"], t_state("binary_sensor", entity_id))
 
@@ -3706,7 +3878,7 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", "nibe_1000"), "Test"
+            config, t_state("binary_sensor", "nibe_1000"), 1000
         )
         self.assertEqual(config["payload_on"], "ON")
         self.assertEqual(config["payload_off"], "OFF")
@@ -3717,7 +3889,7 @@ class TestDiscoveryConfigBuilders(unittest.TestCase):
         from nibe_mqtt_publisher import t_state
 
         discovery_config.build_binary_sensor_config(
-            config, t_state("binary_sensor", "nibe_1000"), "Test"
+            config, t_state("binary_sensor", "nibe_1000"), 1000
         )
         self.assertIn("state_topic", config)
 
@@ -7137,45 +7309,41 @@ class TestPublishEntityDiscoveryMqttBranches(unittest.TestCase):
 
 
 class TestBuildBinarySensorConfigDeviceClass(unittest.TestCase):
-    """_build_binary_sensor_config assigns device_class when map_device_class
-    returns something meaningful for the title."""
+    """A binary sensor gets the device class its point has in
+    BINARY_SENSOR_DEVICE_CLASSES, and none otherwise."""
 
-    def setUp(self):
-        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+    def _config(self, point_id):
+        import nibe_discovery_config as discovery_config
+        from nibe_mqtt_publisher import t_state
 
-        self.mqtt = MagicMock()
-        self.pub = MqttDiscoveryPublisher(
-            mqtt_client=self.mqtt,
-            device_info={},
-            device_id="test",
-            device_name="Test",
+        config = {}
+        discovery_config.build_binary_sensor_config(
+            config, t_state("binary_sensor", f"nibe_{point_id}"), point_id
         )
+        return config
 
-    def test_device_class_set_when_title_maps(self):
-        """A title that maps to a device class should set device_class
-        in the config dict."""
-        # Find a title that produces a non-None device class for binary_sensor
-        # 'motion' maps to 'motion' device class
-        config = {"state_topic": "test/state"}
-        with patch("nibe_discovery_config.map_device_class", return_value="motion"):
-            import nibe_discovery_config as discovery_config
-            from nibe_mqtt_publisher import t_state
+    def test_compressor_status_is_running(self):
+        self.assertEqual(self._config(1973)["device_class"], "running")
 
-            discovery_config.build_binary_sensor_config(
-                config, t_state("binary_sensor", "nibe_test"), "Motion sensor"
-            )
-        self.assertEqual(config.get("device_class"), "motion")
+    def test_pool_diverter_valve_is_opening(self):
+        self.assertEqual(self._config(2046)["device_class"], "opening")
 
-    def test_no_device_class_when_title_does_not_map(self):
-        config = {"state_topic": "test/state"}
-        with patch("nibe_discovery_config.map_device_class", return_value=None):
-            import nibe_discovery_config as discovery_config
-            from nibe_mqtt_publisher import t_state
+    def test_active_alarm_is_problem(self):
+        self.assertEqual(self._config(1709)["device_class"], "problem")
 
-            discovery_config.build_binary_sensor_config(
-                config, t_state("binary_sensor", "nibe_test"), "Status"
-            )
-        self.assertNotIn("device_class", config)
+    def test_point_without_a_confirmed_meaning_gets_none(self):
+        """1179 "Permit (undefined)" is a binary sensor whose 0/1 meaning
+        no NIBE document gives."""
+        self.assertNotIn("device_class", self._config(1179))
+
+    def test_table_uses_binary_sensor_classes_only(self):
+        """Home Assistant rejects a binary sensor whose device class is not a
+        binary sensor class — these three are the ones the table needs."""
+        from nibe_entity_detection import BINARY_SENSOR_DEVICE_CLASSES
+
+        self.assertLessEqual(
+            set(BINARY_SENSOR_DEVICE_CLASSES.values()), {"running", "opening", "problem"}
+        )
 
 
 class TestBuildSensorConfigRemainingBranches(unittest.TestCase):

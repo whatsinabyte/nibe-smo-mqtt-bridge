@@ -101,10 +101,10 @@ def _copy_card_file() -> bool:
             data = f.read()
         with open(dst, "wb") as f:
             f.write(data.replace(_CARD_BUILD_PLACEHOLDER, _card_cache_key(data).encode()))
-        log_startup.info("Card file copied to %s", dst)
+        log_startup.info("Card file copied to %s", dst)  # pragma: no mutate
         return True
     except OSError as e:
-        log_startup.warning("Could not copy card file to %s: %s", dst, e)
+        log_startup.warning("Could not copy card file to %s: %s", dst, e)  # pragma: no mutate
         return False
 
 
@@ -175,12 +175,10 @@ def _format_point_value(point_id: int, point: dict, int_value: int) -> str:
         return value_mapping[int_value]
     if min_val == 0 and max_val == 1:
         return "on" if int_value else "off"
-    # `or 1` masks any falsy divisor default (None/0/dropped) — only a
-    # truthy-but-wrong default (e.g. 2) is observable.
-    divisor = meta.get("divisor", 1) or 1
+    divisor = meta.get("divisor") or 1
     display = f"{int_value / divisor:g}"
     unit = clean_unit(meta.get("unit") or meta.get("shortUnit"))
-    return f"{display} {unit}".strip() if unit else display
+    return f"{display} {unit}".strip()
 
 
 def _build_point_defaults(all_points_by_id: dict[int, dict]) -> dict[int, str]:
@@ -230,7 +228,7 @@ def _step_text(point: dict) -> str:
     change = meta.get("change")
     if not isinstance(change, int) or isinstance(change, bool) or change <= 1:
         return ""
-    divisor = meta.get("divisor", 1) or 1
+    divisor = meta.get("divisor") or 1
     unit = clean_unit(meta.get("unit"))
     return f"{change / divisor:g}{' ' + unit if unit else ''}"
 
@@ -267,7 +265,7 @@ def _build_changed_from_default(
         # confirmed on a real installation.
         if not point.get("is_ok"):
             continue
-        current_display = _format_point_value(point_id, point, point.get("raw_value", 0))
+        current_display = _format_point_value(point_id, point, point["raw_value"])
         if current_display != default_display:
             changed.add(point_id)
     return changed
@@ -285,7 +283,7 @@ def _build_controller_values(
     for point_id in dynamic_injection:
         point = bulk_data.get(point_id)
         if point and point.get("is_ok"):
-            values[point_id] = _format_point_value(point_id, point, point.get("raw_value", 0))
+            values[point_id] = _format_point_value(point_id, point, point["raw_value"])
     return values
 
 
@@ -430,7 +428,7 @@ def _find_split_descendants(menu: dict) -> list[dict]:
     every one of menu 3's other, already-small children into a split too.
     """
     found = []
-    for sub in menu.get("submenus", []) or []:
+    for sub in menu.get("submenus") or []:
         if sub.get("split_submenus"):
             found.append(sub)
         else:
@@ -471,7 +469,7 @@ def _build_view_specs(menu_structure: list) -> list[dict]:
 
     def _expand(menu: dict, subview: bool) -> None:
         if menu.get("split_submenus"):
-            children = menu.get("submenus", []) or []
+            children = menu.get("submenus") or []
             specs.append({"menu": menu, "children": children, "subview": subview})
             for child in children:
                 _expand(child, subview=True)
@@ -537,34 +535,30 @@ def _group_cards_for_masonry(cards: list) -> list:
         else:
             sections[-1].append(card)
 
-    if len(sections) <= 1:
-        return [
-            section[0] if len(section) == 1 else {"type": "vertical-stack", "cards": section}
-            for section in sections
-        ]
+    if not sections:
+        return []
 
-    def _weight(section: list[dict]) -> int:
-        # Approximates rendered height: the markdown card itself, plus its
-        # settings (_card_weight) — so a section with 40 settings counts for
-        # much more than one with 2.
-        return 1 + sum(_card_weight(card) for card in section if card.get("type") != "markdown")
+    # Approximate rendered height: a section with 40 settings counts for
+    # much more than one with 2.
+    weights = [sum(_card_weight(card) for card in section) for section in sections]
+    target = sum(weights) / min(_MASONRY_COLUMN_CHUNKS, len(sections))
 
-    weights = [_weight(section) for section in sections]
-    chunk_count = min(_MASONRY_COLUMN_CHUNKS, len(sections))
-    target = sum(weights) / chunk_count
-
+    # A section starts the next chunk when its middle lies past the chunk's
+    # boundary — the boundary is then nearer its start than its end. Closing
+    # a chunk only once the boundary was passed kept a light section and a
+    # heavy one after it together: one column for a header and its menu.
+    # The last boundary is the total weight, which no section's middle lies
+    # past, so this never makes more chunks than intended.
     chunks: list[list[list[dict]]] = [[]]
     running = 0
     for section, weight in zip(sections, weights, strict=True):
+        if chunks[-1] and running + weight / 2 > target * len(chunks):
+            chunks.append([])
         chunks[-1].append(section)
         running += weight
-        if len(chunks) < chunk_count and running >= target * len(chunks):
-            chunks.append([])
 
     result = []
     for chunk in chunks:
-        if not chunk:
-            continue
         flat_cards = [card for section in chunk for card in section]
         result.append(
             flat_cards[0]
@@ -596,7 +590,7 @@ def _build_dynamic_injection(
 
     def _flatten(controller: int, depth: int, seen: set[int]) -> list[tuple[str, str, str, str]]:
         items = []
-        for dyn_pid, (eid, title, rng, dflt) in direct.get(controller, []):
+        for dyn_pid, (eid, title, rng, dflt) in direct[controller]:
             items.append((eid, "↳ " * depth + title, rng, dflt))
             # seen guards against a learned cycle (A shows B, B shows A).
             if dyn_pid in direct and dyn_pid not in seen:
@@ -629,19 +623,10 @@ def _build_direct_dynamic_injection(
                 point = all_points_by_id.get(dyn_pid, {})
                 title = point.get("display_title") or point.get("title") or f"Point {dyn_pid}"
                 meta = point.get("metadata", {})
-                # Any falsy .get() default here (None, dropped) is masked
-                # by the trailing `or 1` — only a truthy non-1 default
-                # (e.g. 2) would be observable. Verified empirically.
-                div = meta.get("divisor", 1) or 1
-                # `or 0` (not just a .get default) also covers the API
-                # sending an explicit "minValue"/"maxValue": null — .get()'s
-                # default only applies when the key is absent, so a
-                # present-but-null value would otherwise reach the division
-                # below as None and raise TypeError. Same falsy-default
-                # masking as divisor above applies to the .get() defaults
-                # themselves (0 vs None/dropped) — verified empirically.
-                mn = (meta.get("minValue", 0) or 0) / div
-                mx = (meta.get("maxValue", 0) or 0) / div
+                div = meta.get("divisor") or 1
+                # `or 0` covers an absent key and an explicit null alike.
+                mn = (meta.get("minValue") or 0) / div
+                mx = (meta.get("maxValue") or 0) / div
                 unit = clean_unit(meta.get("unit"))
                 # min == max is this firmware's "no bounds declared"
                 # convention (about half of all points) — "0 – 0 %" would be
@@ -680,7 +665,7 @@ def _is_tile_entity(entity_id: str) -> bool:
     return entity_id.split(".", 1)[0] in _TILE_FEATURES
 
 
-def _setting_tile(entity_id: str, name: str, has_default: bool = False) -> dict:
+def _setting_tile(entity_id: str, name: str, has_default: bool) -> dict:
     """A tile card for a setting: the menu's own label as its name, its
     control as a feature, and — for a setting with a factory default — the
     live default_status attribute ("default", or "✏️ default: 20 °C") next
@@ -775,11 +760,7 @@ def _build_menu_view(
         """
         return f'<ha-alert alert-type="{alert_type}" title="{title}">{text.strip()}</ha-alert>'
 
-    # depth's own default (2) is unreachable — every call site below always
-    # passes depth explicitly (either `depth=2` or `depth + 1`), and the
-    # top-level call's own `depth=2` matches this default anyway, so
-    # dropping that kwarg is also unobservable. Verified empirically.
-    def _render_section(m: dict, depth: int = 2) -> None:
+    def _render_section(m: dict, depth: int) -> None:
         # ── Description + callouts markdown card ────────────────────────────
         # Section heading embedded in the markdown using colour-coded HTML.
         # Top-level menus use larger heading; submenus use smaller heading.
@@ -795,12 +776,6 @@ def _build_menu_view(
             md_lines.append(_linkify(m["description"].strip()))
             md_lines.append("")
 
-        # Every blank-line `md_lines.append("")` below (menu-level and
-        # per-setting callouts alike) is purely cosmetic markdown spacing —
-        # all existing tests use assertIn/splitlines() substring checks on
-        # individual lines, never exact-equality on the fully joined
-        # content, so a wrong separator string is unobservable. Verified
-        # empirically.
         # Menu-level callouts using ha-alert for native coloured boxes
         if m.get("warning"):
             md_lines.append(_alert("warning", "Warning", _linkify(m["warning"])))
@@ -822,16 +797,13 @@ def _build_menu_view(
                 )
             )
             md_lines.append("")
-            if md_lines:
-                cards.append({"type": "markdown", "content": "\n".join(md_lines)})
+            cards.append({"type": "markdown", "content": "\n".join(md_lines)})
             return
 
         def _callouts(s: dict) -> list[tuple[str, str]]:
             """A setting's own note, tip and warning, as (alert type, text),
             in the order they are shown: what it is, what to do, and the risk
             right above the control."""
-            # None/dropped defaults are masked — only ever checked via
-            # truthiness, where None and '' are equally falsy.
             return [
                 (kind, s[key])
                 for key, kind in (("note", "info"), ("tip", "success"), ("warning", "warning"))
@@ -872,7 +844,7 @@ def _build_menu_view(
             if title and not any(kind == "info" for kind, _ in callouts):
                 callouts = [("info", ""), *callouts]
             alerts = [
-                _alert(kind, title if kind == "info" else "", _linkify(text) if text else "")
+                _alert(kind, title if kind == "info" else "", _linkify(text))
                 for kind, text in callouts
             ]
             info = [{"type": "markdown", "content": "\n".join(alerts)}] if alerts else []
@@ -892,8 +864,6 @@ def _build_menu_view(
         for s in m.get("settings", []):
             point_id = s.get("point_id")
             label = s.get("label", "")
-            # None/dropped default is masked — only ever checked via
-            # `if rng:` below. Verified empirically.
             rng = s.get("range", "")
 
             # Dynamic points: skip entirely regardless of active state.
@@ -1051,9 +1021,6 @@ def _build_unplaced_view(
     Only included when debug_mode=True.
     """
     # Patterns that indicate a multi-system series — grouped separately.
-    # Matched with re.IGNORECASE below, so a case-flip mutation of any
-    # pattern here is unobservable — only a change to the pattern text
-    # itself (e.g. an XX-wrap) would alter what actually matches.
     _GROUP_PATTERNS = [
         r"climate system [2-8]",
         r"zone \d+",
@@ -1077,19 +1044,12 @@ def _build_unplaced_view(
         if point_id in menu_yaml_points:
             continue
         meta = point_data.get("metadata", {})
-        # A None/dropped default is unobservable — reg is only ever
-        # checked via `not in (...)`, which a wrong-but-still-absent value
-        # also fails. Verified empirically.
         reg = meta.get("modbusRegisterType", "")
         if reg not in ("MODBUS_HOLDING_REGISTER", "MODBUS_INPUT_REGISTER"):
             continue
-        # `or 0` also covers an explicit "minValue"/"maxValue": null from
-        # the API — .get()'s default only applies when the key is absent.
-        # A None/dropped default for minValue is masked by `or 0` the same
-        # way — verified empirically. maxValue's default is NOT masked by
-        # any `or`, so a wrong non-0 default there is real/tested.
-        mn = meta.get("minValue", 0) or 0
-        mx = meta.get("maxValue", 0) or 0
+        # `or 0` covers an absent key and an explicit null alike.
+        mn = meta.get("minValue") or 0
+        mx = meta.get("maxValue") or 0
         # min == max is this firmware's "no bounds declared" convention, not
         # a dead register. A read-only point like that (status/enum fields)
         # has nothing to adjust and stays out of this audit; a writable one
@@ -1097,31 +1057,24 @@ def _build_unplaced_view(
         writable_holding = is_writable_point(meta, point_id) and reg == "MODBUS_HOLDING_REGISTER"
         if mn == mx and not writable_holding:
             continue
-        # display_title's None/dropped default is unobservable: clean_string()
-        # below falls back to f'Point {point_id}' regardless. Verified
-        # empirically.
-        title = point_data.get("display_title") or point_data.get("title", f"Point {point_id}")
+        title = point_data.get("display_title") or point_data.get("title")
         title = clean_string(title) or f"Point {point_id}"
         unit = clean_unit(meta.get("unit"))
-        # `or 1` masks a None/dropped default the same way `or 0` masks
-        # minValue/maxValue above — but divisor's own default (1) and the
-        # `or` fallback value ARE both real/tested, since 1 (default) and
-        # a wrong-but-truthy fallback are never masked. Verified empirically.
-        div = meta.get("divisor", 1) or 1
+        div = meta.get("divisor") or 1
         if mn == mx:
             rng = f"no declared range{' (' + unit + ')' if unit else ''}"
         else:
             rng = f"{mn / div:g} – {mx / div:g}{' ' + unit if unit else ''}"
         entry = (point_id, title, rng)
 
-        if is_writable_point(meta, point_id) and reg == "MODBUS_HOLDING_REGISTER":
+        if writable_holding:
             # Check if it's part of a repetitive series
             is_grouped = any(re.search(pat, title, re.IGNORECASE) for pat in _GROUP_PATTERNS)
             if is_grouped:
                 unplaced_grouped.append(entry)
             else:
                 unplaced_writable.append(entry)
-        elif reg in ("MODBUS_HOLDING_REGISTER", "MODBUS_INPUT_REGISTER"):
+        else:
             unplaced_readonly.append(entry)
 
     if not unplaced_writable and not unplaced_grouped and not unplaced_readonly:
@@ -1146,10 +1099,7 @@ def _build_unplaced_view(
     def _section_rows(entries: list[tuple], label: str) -> list:
         rows = [{"type": "section", "label": label}]
         for point_id, title, rng in entries:
-            # A None/dropped default is unobservable — only ever checked
-            # via `if default_str:`, where None and '' are both falsy.
-            # Verified empirically.
-            default_str = point_defaults.get(point_id, "")
+            default_str = point_defaults.get(point_id)
             divider = f"{title}  ·  {rng}"
             if default_str:
                 divider += f"  ·  default: {default_str}"
@@ -1218,9 +1168,7 @@ def _build_menu_dashboard_config(
     included_menus = []
     view_specs = _build_view_specs(menu_structure)
     valid_top_level_menus = {str(spec["menu"]["id"]) for spec in view_specs}
-    changed_from_default = (
-        _build_changed_from_default(bulk_data, point_defaults or {}) if bulk_data else set()
-    )
+    changed_from_default = _build_changed_from_default(bulk_data or {}, point_defaults or {})
     controller_values = _build_controller_values(bulk_data or {}, dynamic_injection or {})
 
     for spec in view_specs:
@@ -1425,13 +1373,7 @@ def _wait_for_registry_stable(
     _step = 0.5
     _limit = 60.0
     _waited = 0.0
-    # Any sentinel (negative or None) works here — only ever compared
-    # with `==` to a real (non-negative) entity count, never read as an
-    # actual count value. Verified empirically.
     _prev_count = -1
-    # A wrong initial value (None, or a truthy float like 1.0) is also
-    # unobservable — no test asserts the exact number of loop iterations
-    # needed to reach _stable_need. Verified empirically.
     _stable_for = 0.0
     _stable_need = 3.0
     # On a fresh start HA creates entities in batches, causing the count to
@@ -1462,6 +1404,7 @@ def _wait_for_registry_stable(
             if _stable_for >= _stable_need and menu_resolved > 0 and menu_complete:
                 # All dynamic points resolved — ideal exit
                 if dyn_resolved == len(active_dynamic):
+                    # pragma: no mutate start
                     log_startup.debug(
                         "Registry stable: %d/%d menu + %d/%d dynamic after %.1fs",
                         menu_resolved,
@@ -1470,17 +1413,12 @@ def _wait_for_registry_stable(
                         len(active_dynamic),
                         _waited,
                     )
+                    # pragma: no mutate end
                     return
                 # Menu stable but dynamic still missing — wait a bit more
                 # but don't hold up the retry mechanism indefinitely
                 if _stable_for >= 8.0:
-                    # This call is unobservable — the test that exercises
-                    # this branch (test_eight_second_fallback_boundary_uses_
-                    # greater_or_equal_eight) only counts loop iterations via
-                    # a mocked time.sleep, it never captures/formats this
-                    # log record. Verified empirically. (Contrast with the
-                    # sibling "Registry stable: ..." log a few lines above,
-                    # which IS format-tested.)
+                    # pragma: no mutate start
                     log_startup.debug(
                         "Registry stable at %d/%d menu, %d/%d dynamic after %.1fs — proceeding",
                         menu_resolved,
@@ -1488,11 +1426,13 @@ def _wait_for_registry_stable(
                         dyn_resolved,
                         len(active_dynamic),
                         _waited,
-                    )  # pragma: no mutate
+                    )
+                    # pragma: no mutate end
                     return
         else:
             _stable_for = 0.0
             _prev_count = current_count
+    # pragma: no mutate start
     log_startup.warning(
         "Registry wait timed out — %d/%d menu + %d/%d dynamic resolved",
         sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p)),
@@ -1500,6 +1440,7 @@ def _wait_for_registry_stable(
         sum(1 for p in active_dynamic if registry_watcher.entity_id_for(p)),
         len(active_dynamic),
     )
+    # pragma: no mutate end
 
 
 def _setup_menu_dashboard(
@@ -1518,7 +1459,7 @@ def _setup_menu_dashboard(
 
 
 def _setup_menu_dashboard_build(
-    open_ws_fn: Callable, registry_watcher: "HAEntityRegistryWatcher", debug_mode: bool = False
+    open_ws_fn: Callable, registry_watcher: "HAEntityRegistryWatcher", debug_mode: bool
 ) -> bool:
     """Build the Nibe Menus Lovelace dashboard config and save it.
 
@@ -1549,7 +1490,9 @@ def _setup_menu_dashboard_build(
     # Load menu structure first so we know which points to enable
     menu_path = os.path.join(os.path.dirname(__file__), "menu_structure.yaml")
     if not os.path.exists(menu_path):
+        # pragma: no mutate start
         log_startup.debug("menu_structure.yaml not found — skipping menu dashboard")
+        # pragma: no mutate end
         return False
 
     try:
@@ -1559,11 +1502,11 @@ def _setup_menu_dashboard_build(
         # null byte in the path, which open() rejects before it can even
         # raise OSError. yaml.YAMLError: malformed YAML. AttributeError:
         # top-level YAML document isn't a mapping.
-        log_startup.warning("Could not load menu_structure.yaml: %s", e)
+        log_startup.warning("Could not load menu_structure.yaml: %s", e)  # pragma: no mutate
         return False
 
     if not menu_structure:
-        log_startup.debug("menu_structure.yaml has no menus — skipping")
+        log_startup.debug("menu_structure.yaml has no menus — skipping")  # pragma: no mutate
         return False
 
     all_menu_points = _collect_menu_points(menu_structure)
@@ -1649,7 +1592,9 @@ def _setup_menu_dashboard_build(
         point_steps=_build_point_steps(all_points_snapshot),
     )
     if not dashboard_config or not dashboard_config.get("views"):
+        # pragma: no mutate start
         log_startup.warning("Menu dashboard: no views generated — check menu_structure.yaml")
+        # pragma: no mutate end
         return False
 
     # Open a fresh WebSocket NOW — after the registry wait — so the connection
@@ -1658,7 +1603,9 @@ def _setup_menu_dashboard_build(
     # resulting in every subsequent _ws_call returning {} ("returned no result").
     ws_result = open_ws_fn()
     if ws_result is None:
+        # pragma: no mutate start
         log_startup.warning("Menu dashboard: could not open WebSocket for Lovelace API calls")
+        # pragma: no mutate end
         return True  # signal retry
     ws, next_id = ws_result
 
@@ -1722,27 +1669,31 @@ def _setup_menu_dashboard_lovelace(
             },
         )
         if not resp.get("success"):
-            # A missing 'error' key defaulting to None instead of {} is
-            # unobservable: str(None) == "None" and str({}) == "{}" both
-            # lack the sentinel substrings checked below, so either default
-            # takes the same "genuine failure" branch.
             error_msg = str(resp.get("error", {}))
             if "url_already_exists" not in error_msg and "already in use" not in error_msg:
+                # pragma: no mutate start
                 log_startup.warning("Could not create Nibe Menus dashboard: %s", resp)
+                # pragma: no mutate end
                 return False
+            # pragma: no mutate start
             log_startup.debug("Nibe Menus dashboard already exists — proceeding to update config")
+            # pragma: no mutate end
     elif not dashboards.get("success"):
+        # pragma: no mutate start
         log_startup.warning("lovelace/dashboards/list call returned no result — will retry.")
+        # pragma: no mutate end
         return True
     else:
         existed = True
+        # pragma: no mutate start
         log_startup.debug("Nibe Menus dashboard already exists — skipping create")
+        # pragma: no mutate end
 
     fingerprint = hashlib.sha256(
         json.dumps(dashboard_config, sort_keys=True).encode("utf-8")
     ).hexdigest()
     if existed and fingerprint == _last_saved_menu_fingerprint:
-        log_startup.debug("Nibe Menus dashboard unchanged — not saved again")
+        log_startup.debug("Nibe Menus dashboard unchanged — not saved again")  # pragma: no mutate
         return _menu_dashboard_needs_retry(entity_manager, registry_watcher, available_menu_points)
 
     # Save the dashboard config (views + cards)
@@ -1756,16 +1707,18 @@ def _setup_menu_dashboard_lovelace(
         },
     )
 
-    log_startup.debug("lovelace/config/save response: %s", resp)
+    log_startup.debug("lovelace/config/save response: %s", resp)  # pragma: no mutate
     if resp.get("success"):
         _last_saved_menu_fingerprint = fingerprint
         view_count = len(dashboard_config["views"])
+        # pragma: no mutate start
         log_startup.info(
             "Nibe Menus dashboard provisioned with %d menu view(s). "
             "Find it in your HA sidebar under '%s'.",
             view_count,
             _MENU_DASHBOARD_TITLE,
         )
+        # pragma: no mutate end
         # Fire lovelace_updated event so connected browsers reload.
         _ws_call(
             ws,
@@ -1779,7 +1732,7 @@ def _setup_menu_dashboard_lovelace(
 
         return _menu_dashboard_needs_retry(entity_manager, registry_watcher, available_menu_points)
     else:
-        log_startup.warning("Menu dashboard config save failed: %s", resp)
+        log_startup.warning("Menu dashboard config save failed: %s", resp)  # pragma: no mutate
         return False
 
 
@@ -1791,19 +1744,18 @@ def _menu_dashboard_needs_retry(
     """Whether the dashboard just saved (or found unchanged) needs another
     build: active dynamic points still missing from the registry while menu
     entities did resolve (so the registry is up)."""
-    # menu_resolved is only ever compared against 0 below, so the
-    # per-point weight (1) is unobservable — any positive constant
-    # would behave identically.
-    menu_resolved = sum(1 for p in available_menu_points if registry_watcher.entity_id_for(p))
+    menu_resolved = any(registry_watcher.entity_id_for(p) for p in available_menu_points)
     missing_dynamic = [
         p for p in entity_manager.active_dynamic_points if not registry_watcher.entity_id_for(p)
     ]
-    if missing_dynamic and menu_resolved > 0:
+    if missing_dynamic and menu_resolved:
+        # pragma: no mutate start
         log_startup.debug(
             "Dashboard saved but %d dynamic point(s) not yet in registry — retry needed: %s",
             len(missing_dynamic),
             missing_dynamic,
         )
+        # pragma: no mutate end
         return True  # needs retry
     return False  # all good
 
@@ -1823,10 +1775,12 @@ def _open_ha_websocket() -> tuple[Any, Callable[[], int]] | None:
 
         ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=10)
     except ImportError:
+        # pragma: no mutate start
         log_startup.warning("websocket-client not installed — WebSocket unavailable")
+        # pragma: no mutate end
         return None
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.warning("Could not connect to HA WebSocket: %s", e)
+        log_startup.warning("Could not connect to HA WebSocket: %s", e)  # pragma: no mutate
         return None
 
     _mid: int = 0
@@ -1839,18 +1793,20 @@ def _open_ha_websocket() -> tuple[Any, Callable[[], int]] | None:
     try:
         greeting = json.loads(ws.recv())
         if greeting.get("type") != "auth_required":
+            # pragma: no mutate start
             log_startup.warning("Unexpected HA WebSocket greeting: %s", greeting.get("type"))
+            # pragma: no mutate end
             ws.close()
             return None
         ws.send(json.dumps({"type": "auth", "access_token": supervisor_token}))
         auth_result = json.loads(ws.recv())
         if auth_result.get("type") != "auth_ok":
-            log_startup.warning("HA WebSocket auth failed")
+            log_startup.warning("HA WebSocket auth failed")  # pragma: no mutate
             ws.close()
             return None
         return ws, _next_id
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.warning("HA WebSocket auth error: %s", e)
+        log_startup.warning("HA WebSocket auth error: %s", e)  # pragma: no mutate
         try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
         except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
@@ -1900,9 +1856,11 @@ def _setup_lovelace(
 
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
+        # pragma: no mutate start
         log_startup.debug(
             "No SUPERVISOR_TOKEN — skipping Lovelace setup (running outside HA add-on environment)"
         )
+        # pragma: no mutate end
         return
 
     # ── Build versioned resource URL ──────────────────────────────────────────
@@ -1916,10 +1874,12 @@ def _setup_lovelace(
     # ── Open WebSocket and authenticate ─────────────────────────────────────────
     result = _open_ha_websocket()
     if result is None:
+        # pragma: no mutate start
         log_startup.debug(
             "Could not open HA WebSocket — Lovelace setup skipped "
             "(no SUPERVISOR_TOKEN or connection failed)"
         )
+        # pragma: no mutate end
         return
     ws, _next_id = result
 
@@ -1945,7 +1905,7 @@ def _setup_lovelace(
             _regen_menu_dashboard(registry_watcher, debug_mode, attempt=1)
 
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.warning("Lovelace setup failed: %s", e)
+        log_startup.warning("Lovelace setup failed: %s", e)  # pragma: no mutate
     finally:
         try:  # noqa: SIM105 — deliberately broad, documented on the except line below
             ws.close()
@@ -1959,13 +1919,6 @@ def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url:
     Called from _setup_lovelace with an already-authenticated WebSocket.
     Returns whether Lovelace now serves versioned_url.
     """
-    # ws/next_id/result-default mutations throughout this function are
-    # unobservable — this function's own test suite's fake_ws_call never
-    # inspects its ws or msg_id arguments (only payload), and always
-    # returns a dict with a 'result' key so the default never fires. A
-    # wrong non-matching default for r.get("url", "") below is also
-    # unobservable — the substring check fails identically for any
-    # non-matching string. Verified empirically.
     resp = _ws_call(ws, next_id(), {"type": "lovelace/resources/list"})
     resources = resp.get("result", [])
 
@@ -1983,15 +1936,19 @@ def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url:
                 "resource_id": dup.get("id"),
             },
         )
+        # pragma: no mutate start
         log_startup.info("Removed duplicate Lovelace resource: %s", dup.get("url"))
+        # pragma: no mutate end
 
     existing = matching[0] if matching else None
 
     if existing is not None:
         if existing.get("url") == versioned_url:
+            # pragma: no mutate start
             log_startup.debug(
                 "Lovelace resource already current (%s) — no update needed", versioned_url
             )
+            # pragma: no mutate end
             return True
         resp = _ws_call(
             ws,
@@ -2017,9 +1974,11 @@ def _setup_lovelace_resource(ws: Any, next_id: Callable[[], int], versioned_url:
         action = "Registered"
 
     if resp.get("success"):
-        log_startup.info("%s Lovelace resource: %s", action, versioned_url)
+        log_startup.info("%s Lovelace resource: %s", action, versioned_url)  # pragma: no mutate
         return True
+    # pragma: no mutate start
     log_startup.warning("Lovelace resource %s failed: %s", action.lower(), resp)
+    # pragma: no mutate end
     return False
 
 
@@ -2043,13 +2002,6 @@ def _setup_lovelace_dashboard(
     # Manager card is the only place to enable entities. The list call below
     # already avoids the spurious error the flag was added to prevent.
 
-    # ws->None mutations on every _ws_call() below in this function are
-    # unobservable: this function's own test suite (TestSetupLovelaceDashboard)
-    # patches _ws_call with a fake that never inspects its ws argument
-    # (only payload). Verified empirically. (A ws->None mutation IS caught
-    # elsewhere in the module by a cross-cutting test that checks every
-    # _ws_call site receives the real ws — but that test does not exercise
-    # this specific function's call sites.)
     # Check if dashboard already exists before attempting create — avoids HA
     # logging a system-log error for "URL already in use" on every restart
     # after a container rebuild that wiped the flag file.
@@ -2064,10 +2016,12 @@ def _setup_lovelace_dashboard(
             # the very first startup. Leave flag_file absent so this is
             # retried on the next restart, matching the menu dashboard
             # path's equivalent branch.
+            # pragma: no mutate start
             log_startup.warning(
                 "lovelace/dashboards/list call failed — will retry creating "
                 "the Nibe Bridge dashboard on next restart."
             )
+            # pragma: no mutate end
             return
         # Existing does not mean configured: if a previous startup's create
         # succeeded but its config save failed (dropped socket, _ws_call
@@ -2078,21 +2032,27 @@ def _setup_lovelace_dashboard(
         # left alone.
         current = _ws_call(ws, next_id(), {"type": "lovelace/config", "url_path": _DASHBOARD_SLUG})
         if (current.get("error") or {}).get("code") == "config_not_found":
+            # pragma: no mutate start
             log_startup.info(
                 "Nibe Bridge dashboard exists (/%s) but has no saved config — writing it",
                 _DASHBOARD_SLUG,
             )
+            # pragma: no mutate end
             _save_bridge_dashboard_config(ws, next_id, device_name, flag_file)
             return
+        # pragma: no mutate start
         log_startup.info(
             "Nibe Bridge dashboard already exists (/%s) — writing flag to skip future attempts",
             _DASHBOARD_SLUG,
         )
+        # pragma: no mutate end
         try:
             with open(flag_file, "w") as f:
                 f.write("provisioned\n")
         except OSError as e:
+            # pragma: no mutate start
             log_startup.warning("Could not write lovelace provisioned flag: %s", e)
+            # pragma: no mutate end
         return
 
     resp = _ws_call(
@@ -2111,38 +2071,36 @@ def _setup_lovelace_dashboard(
 
     if not resp.get("success"):
         error = resp.get("error", {})
-        # error_code is only ever compared against the "url_already_exists"
-        # string sentinel, so a "" vs None default for the missing 'code'
-        # key is unobservable — neither equals the sentinel.
         error_code = error.get("translation_key") or error.get("code", "")
-        # A wrong non-empty default (e.g. "XXXX") is also unobservable —
-        # only ever checked via `"already in use" in error_msg.lower()`,
-        # which any non-matching default string fails identically.
-        # Verified empirically.
         error_msg = error.get("message", "")
         if error_code == "url_already_exists" or "already in use" in error_msg.lower():
+            # pragma: no mutate start
             log_startup.info(
                 "Nibe Bridge dashboard already exists (/%s) — writing flag to skip future attempts",
                 _DASHBOARD_SLUG,
             )
+            # pragma: no mutate end
             try:
                 with open(flag_file, "w") as f:
                     f.write("provisioned\n")
             except OSError as e:
-                # e/format-string mutations here are log-only. Verified empirically.
-                log_startup.warning(
-                    "Could not write lovelace provisioned flag: %s", e
-                )  # pragma: no mutate
+                # pragma: no mutate start
+                log_startup.warning("Could not write lovelace provisioned flag: %s", e)
+                # pragma: no mutate end
         else:
+            # pragma: no mutate start
             log_startup.warning("Could not create Nibe Bridge dashboard: %s", resp)
+            # pragma: no mutate end
         return
 
     dashboard_id = resp.get("result", {}).get("id")
+    # pragma: no mutate start
     log_startup.info(
         "Created Nibe Bridge dashboard (id=%s, url_path=/%s)",
         dashboard_id,
         _DASHBOARD_SLUG,
     )
+    # pragma: no mutate end
     _save_bridge_dashboard_config(ws, next_id, device_name, flag_file)
 
 
@@ -2184,27 +2142,30 @@ def _save_bridge_dashboard_config(
     )
 
     if resp.get("success"):
+        # pragma: no mutate start
         log_startup.info(
             "Nibe Bridge dashboard configured with '%s' card. "
             "Find it in your HA sidebar under '%s'.",
             _CARD_TYPE,
             _DASHBOARD_TITLE,
         )
+        # pragma: no mutate end
         try:
             with open(flag_file, "w") as f:
                 f.write("provisioned\n")
         except OSError as e:
-            # e/format-string mutations here are log-only. Verified empirically.
-            log_startup.warning(
-                "Could not write lovelace provisioned flag: %s", e
-            )  # pragma: no mutate
+            # pragma: no mutate start
+            log_startup.warning("Could not write lovelace provisioned flag: %s", e)
+            # pragma: no mutate end
     else:
+        # pragma: no mutate start
         log_startup.warning(
             "Dashboard created but card config could not be written: %s. "
             "You can add the '%s' card manually.",
             resp,
             _CARD_TYPE,
         )
+        # pragma: no mutate end
 
 
 def _ws_call(ws: Any, msg_id: int, payload: dict, timeout: int = 10) -> dict:
@@ -2229,7 +2190,7 @@ def _ws_call(ws: Any, msg_id: int, payload: dict, timeout: int = 10) -> dict:
     try:
         ws.send(json.dumps({**payload, "id": msg_id}))
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.debug("_ws_call: send failed (id=%s): %s", msg_id, e)
+        log_startup.debug("_ws_call: send failed (id=%s): %s", msg_id, e)  # pragma: no mutate
         return {}
     deadline = time.time() + timeout
     try:
@@ -2245,7 +2206,7 @@ def _ws_call(ws: Any, msg_id: int, payload: dict, timeout: int = 10) -> dict:
             if msg.get("id") == msg_id and msg.get("type") == "result":
                 return msg
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.debug("_ws_call: recv failed (id=%s): %s", msg_id, e)
+        log_startup.debug("_ws_call: recv failed (id=%s): %s", msg_id, e)  # pragma: no mutate
     finally:
         ws.settimeout(None)
     return {}
@@ -2267,7 +2228,9 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
     if not remove_frontend:
         return
 
+    # pragma: no mutate start
     log_startup.info("remove_frontend=true — removing Lovelace dashboard and resources")
+    # pragma: no mutate end
 
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
 
@@ -2276,11 +2239,13 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
     try:
         if os.path.exists(card_dst):
             os.remove(card_dst)
-            log_startup.info("Removed card file: %s", card_dst)
+            log_startup.info("Removed card file: %s", card_dst)  # pragma: no mutate
         else:
+            # pragma: no mutate start
             log_startup.debug("Card file not found at %s — already removed", card_dst)
+            # pragma: no mutate end
     except OSError as e:
-        log_startup.warning("Could not remove card file %s: %s", card_dst, e)
+        log_startup.warning("Could not remove card file %s: %s", card_dst, e)  # pragma: no mutate
 
     # The debug "Run Test Suite" report sits next to it, served at /local/
     # (unauthenticated) — it used to be left behind by an uninstall.
@@ -2288,37 +2253,37 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
     try:
         if os.path.exists(report_dst):
             os.remove(report_dst)
-            log_startup.info("Removed test report: %s", report_dst)
+            log_startup.info("Removed test report: %s", report_dst)  # pragma: no mutate
     except OSError as e:
+        # pragma: no mutate start
         log_startup.warning("Could not remove test report %s: %s", report_dst, e)
+        # pragma: no mutate end
 
     if not supervisor_token:
+        # pragma: no mutate start
         log_startup.warning(
             "No SUPERVISOR_TOKEN — cannot remove Lovelace dashboard or resource "
             "(running outside HA add-on environment)"
         )
+        # pragma: no mutate end
         return
 
     # ── Open WebSocket ────────────────────────────────────────────────────────
     result = _open_ha_websocket()
     if result is None:
+        # pragma: no mutate start
         log_startup.warning(
             "Could not open HA WebSocket for Lovelace teardown — "
             "dashboard and resource will not be removed"
         )
+        # pragma: no mutate end
         return
     ws, _next_id = result
 
     try:
         try:
-            # ws->None and result-default mutations throughout this
-            # function are unobservable — this function's own test suite's
-            # fake_ws_call never inspects its ws argument (only payload),
-            # and always returns a dict with a 'result' key so the default
-            # never fires. A wrong non-matching default for r.get("url", "")
-            # below is also unobservable — the substring check fails
-            # identically for any non-matching string. Verified empirically.
             resp = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
+            list_ok = bool(resp.get("success"))
             dashboards = resp.get("result", [])
             existing = next(
                 (d for d in dashboards if d.get("url_path") == _DASHBOARD_SLUG),
@@ -2334,17 +2299,29 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
                     },
                 )
                 if resp.get("success"):
+                    # pragma: no mutate start
                     log_startup.info("Removed Nibe Bridge dashboard (id=%s)", existing.get("id"))
+                    # pragma: no mutate end
                 else:
-                    log_startup.warning("Could not remove dashboard: %s", resp)
+                    log_startup.warning("Could not remove dashboard: %s", resp)  # pragma: no mutate
+            elif not list_ok:
+                # pragma: no mutate start
+                log_startup.warning(
+                    "Could not list the Lovelace dashboards — the Nibe Bridge dashboard may "
+                    "still be there; remove it from Settings → Dashboards if it is"
+                )
+                # pragma: no mutate end
             else:
+                # pragma: no mutate start
                 log_startup.debug("Nibe Bridge dashboard not found — already removed")
+                # pragma: no mutate end
         except Exception as e:  # noqa: BLE001 — best-effort teardown; logged and degrades gracefully
-            log_startup.warning("Dashboard removal failed: %s", e)
+            log_startup.warning("Dashboard removal failed: %s", e)  # pragma: no mutate
 
         # ── Remove Lovelace resource registration ─────────────────────────────
         try:
             resp = _ws_call(ws, _next_id(), {"type": "lovelace/resources/list"})
+            list_ok = bool(resp.get("success"))
             resources = resp.get("result", [])
             existing = next(
                 (r for r in resources if "nibe-entity-manager-card.js" in r.get("url", "")),
@@ -2360,13 +2337,24 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
                     },
                 )
                 if resp.get("success"):
-                    log_startup.info("Removed Lovelace resource registration")
+                    log_startup.info("Removed Lovelace resource registration")  # pragma: no mutate
                 else:
+                    # pragma: no mutate start
                     log_startup.warning("Could not remove Lovelace resource: %s", resp)
+                    # pragma: no mutate end
+            elif not list_ok:
+                # pragma: no mutate start
+                log_startup.warning(
+                    "Could not list the Lovelace resources — the card's resource may still "
+                    "be registered; remove it from Settings → Dashboards → Resources if it is"
+                )
+                # pragma: no mutate end
             else:
+                # pragma: no mutate start
                 log_startup.debug("Lovelace resource not found — already removed")
+                # pragma: no mutate end
         except Exception as e:  # noqa: BLE001 — best-effort teardown; logged and degrades gracefully
-            log_startup.warning("Resource removal failed: %s", e)
+            log_startup.warning("Resource removal failed: %s", e)  # pragma: no mutate
 
     finally:
         try:  # noqa: SIM105 — deliberately broad, documented on the except line below
@@ -2385,11 +2373,11 @@ def _teardown_lovelace(remove_frontend: bool) -> None:
     # add-on is reinstalled after a clean removal.
     try:
         os.remove(_LOVELACE_FLAG)
-        log_startup.debug("Lovelace provisioned flag file removed")
+        log_startup.debug("Lovelace provisioned flag file removed")  # pragma: no mutate
     except OSError:
         pass
 
-    log_startup.info("Lovelace teardown complete")
+    log_startup.info("Lovelace teardown complete")  # pragma: no mutate
 
 
 def _remove_menu_dashboard() -> None:
@@ -2407,35 +2395,33 @@ def _remove_menu_dashboard() -> None:
     """
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
+        # pragma: no mutate start
         log_startup.debug(
             "No SUPERVISOR_TOKEN — skipping menu dashboard teardown "
             "(running outside HA add-on environment)"
         )
+        # pragma: no mutate end
         return
 
     result = _open_ha_websocket()
     if result is None:
+        # pragma: no mutate start
         log_startup.debug(
             "Could not open HA WebSocket for menu dashboard teardown — will retry on next startup"
         )
+        # pragma: no mutate end
         return
     ws, _next_id = result
 
     try:
         resp = _ws_call(ws, _next_id(), {"type": "lovelace/dashboards/list"})
         dashboards = resp.get("result", [])
-        # Only ever used in truthiness checks below, so a None default is
-        # unobservable — both False and None are falsy.
         list_succeeded = resp.get("success", False)
         existing = next(
             (d for d in dashboards if d.get("url_path") == _MENU_DASHBOARD_SLUG),
             None,
         )
         if existing is not None:
-            # ws->None is unobservable here — same reasoning as the other
-            # _ws_call sites in this file: this function's own test suite's
-            # fake_ws_call never inspects its ws argument. Verified
-            # empirically.
             resp = _ws_call(
                 ws,
                 _next_id(),
@@ -2445,22 +2431,26 @@ def _remove_menu_dashboard() -> None:
                 },
             )
             if resp.get("success"):
+                # pragma: no mutate start
                 log_startup.info("Removed Nibe Menus dashboard (id=%s)", existing.get("id"))
+                # pragma: no mutate end
             else:
+                # pragma: no mutate start
                 log_startup.warning("Could not remove Nibe Menus dashboard: %s", resp)
-                # False->None is unobservable — list_succeeded is only ever
-                # read via `not list_succeeded`/truthiness, where False and
-                # None are equally falsy. Verified empirically.
+                # pragma: no mutate end
                 list_succeeded = False  # suppress flag removal — retry next startup
         elif not list_succeeded:
+            # pragma: no mutate start
             log_startup.debug(
                 "Nibe Menus dashboard list call returned no result — will retry on next startup"
             )
+            # pragma: no mutate end
         else:
+            # pragma: no mutate start
             log_startup.debug("Nibe Menus dashboard not found — nothing to remove")
+            # pragma: no mutate end
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
-        log_startup.warning("Menu dashboard teardown failed: %s", e)
-        # Same False/None-truthiness equivalence as above.
+        log_startup.warning("Menu dashboard teardown failed: %s", e)  # pragma: no mutate
         list_succeeded = False
     finally:
         try:  # noqa: SIM105 — deliberately broad, documented on the except line below
@@ -2474,7 +2464,7 @@ def _remove_menu_dashboard() -> None:
     if list_succeeded:
         try:
             os.remove(_MENU_DASHBOARD_FLAG)
-            log_startup.debug("Menu dashboard provisioned flag file removed")
+            log_startup.debug("Menu dashboard provisioned flag file removed")  # pragma: no mutate
         except OSError:
             pass
 
@@ -2543,7 +2533,7 @@ def _regen_menu_dashboard(
 
     schedule_retry_fn = schedule_retry_fn or _default_schedule_retry
 
-    log_startup.debug("Menu dashboard regen starting (attempt %d)...", attempt)
+    log_startup.debug("Menu dashboard regen starting (attempt %d)...", attempt)  # pragma: no mutate
     try:
         needs_retry = setup_dashboard_fn(
             open_ws_fn,
@@ -2551,14 +2541,17 @@ def _regen_menu_dashboard(
             debug_mode=debug_mode,
         )
     except Exception as e:  # noqa: BLE001 — best-effort I/O/network op; logged and degrades gracefully
+        # pragma: no mutate start
         log_startup.warning(
             "Menu dashboard regen attempt %d failed unexpectedly: %s",
             attempt,
             e,
         )
+        # pragma: no mutate end
         needs_retry = True
 
     if needs_retry and attempt < max_attempts:
+        # pragma: no mutate start
         log_startup.debug(
             "Dashboard regen attempt %d: dynamic points not yet in registry — "
             "refreshing registry and retrying in %ss (attempt %d of %d)",
@@ -2567,12 +2560,15 @@ def _regen_menu_dashboard(
             attempt + 1,
             max_attempts,
         )
+        # pragma: no mutate end
         schedule_retry_fn()
     elif needs_retry:
+        # pragma: no mutate start
         log_startup.warning(
             "Dashboard regen: dynamic points still missing after %d attempts — giving up",
             max_attempts,
         )
+        # pragma: no mutate end
 
 
 def _on_enabled_state_change_factory(
@@ -2608,9 +2604,11 @@ def _on_enabled_state_change_factory(
 
     def _on_enabled_state_change() -> None:
         if lovelace_thread is not None and lovelace_thread.is_alive():
+            # pragma: no mutate start
             log_startup.debug("Menu dashboard regen skipped — Lovelace setup thread still running")
+            # pragma: no mutate end
             return
-        log_startup.debug("Menu dashboard regen scheduled (2s debounce)")
+        log_startup.debug("Menu dashboard regen scheduled (2s debounce)")  # pragma: no mutate
 
         def _fire(attempt: int = 1) -> None:
             with _regen_timer_lock:
@@ -2686,13 +2684,17 @@ def build_menu_points(yaml_path: str, controller_family: str | None = None) -> f
         if controller_family is not None:
             menu_structure = _filter_menu_structure_by_family(menu_structure, controller_family)
         points = _collect_menu_points(menu_structure)
+        # pragma: no mutate start
         log_startup.debug("Built MENU_POINTS from YAML: %d unique point_ids", len(points))
+        # pragma: no mutate end
         return frozenset(points)
     except (OSError, ValueError, yaml.YAMLError, AttributeError, TypeError) as e:
         # OSError/ValueError/yaml.YAMLError: see _load_menu_structure_yaml.
         # AttributeError/TypeError: a menu/setting/submenu entry isn't a
         # dict, so _collect_menu_points' .get() calls fail.
+        # pragma: no mutate start
         log_startup.warning("Could not build MENU_POINTS from %s: %s", yaml_path, e)
+        # pragma: no mutate end
         return frozenset()
 
 

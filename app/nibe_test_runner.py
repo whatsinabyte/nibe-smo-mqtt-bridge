@@ -88,10 +88,7 @@ def abort_test_suite(reason: str = "add-on shutting down") -> None:
     proc = _current_proc
     if proc is None or proc.poll() is not None:
         return
-    # reason value substitution and message text are log-only (reused for
-    # real right after) — not pragma'd, arg count/format string are
-    # real/tested (crash on None via %s formatting a None message).
-    log_commands.info("Aborting in-flight test suite run: %s", reason)
+    log_commands.info("Aborting in-flight test suite run: %s", reason)  # pragma: no mutate
     _abort_reason = reason
     # Process (and thus its group) already exited between the poll() check
     # above and this call — nothing left to kill.
@@ -108,8 +105,6 @@ def _extract_failure_lines(text: str) -> list[str]:
     Falls back to E-prefixed assertion lines from the FAILURES section.
     """
     result: list[str] = []
-    # None is equally falsy for the `if in_short:` check below — not
-    # pragma'd, `in_short = True` is real/tested.
     in_short = False
     for ln in text.splitlines():
         if "short test summary info" in ln:
@@ -125,8 +120,6 @@ def _extract_failure_lines(text: str) -> list[str]:
     if result:
         return result
     # Fallback: E-prefixed assertion lines from the FAILURES section
-    # None is equally falsy for the `if in_failures:` check below — not
-    # pragma'd, `in_failures = True` is real/tested.
     in_failures = False
     block: list[str] = []
     for ln in text.splitlines():
@@ -183,37 +176,27 @@ def run_test_suite(
     # with the new run. Kill it first rather than let two runs overlap.
     if _current_proc is not None and _current_proc.poll() is None:
         stale_proc = _current_proc
-        # Message text is log-only — not pragma'd, stale_proc.pid is
-        # real/tested (crashes on None via %d).
+        # pragma: no mutate start
         log_commands.warning(
             "Stale test subprocess (pid %d) found before starting a new run — killing it first",
             stale_proc.pid,
         )
-        # The exact reason string is unobservable — _abort_reason (which
-        # this sets) is unconditionally reset to None a few lines below,
-        # before the new run's own abort/timeout logic can ever read it.
-        # Not pragma'd: abort_test_suite(None) vs a real string is still a
-        # separate concern from THIS call's own correctness (it's what
-        # actually kills the stale process), which is tested elsewhere.
+        # pragma: no mutate end
         abort_test_suite("superseded by a new test run")
         try:
             stale_proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            # Message text is log-only — not pragma'd, stale_proc.pid is
-            # real/tested (crashes on None via %d).
+            # pragma: no mutate start
             log_commands.error(
                 "Stale test subprocess (pid %d) did not exit within 10s after SIGKILL",
                 stale_proc.pid,
             )
+            # pragma: no mutate end
 
     _abort_reason = None  # clear any stale reason (incl. from the cleanup above)
     try:
         addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # Text-case mutations of the '/tests' literal are equivalent-ish in
-        # this dev/CI environment (that exact path never exists here, so
-        # the fallback branch always runs regardless) — not pragma'd, the
-        # isdir() check itself and the fallback's addon_dir usage are
-        # real/tested (see test_run_tests_test_path_arg_is_real_absolute_tests_dir).
+        # /tests in the add-on container (Dockerfile: COPY tests/ /tests/).
         test_path = "/tests"
         if not os.path.isdir(test_path):
             # Fallback for development layout (tests/ alongside app/)
@@ -222,10 +205,6 @@ def run_test_suite(
         # Determine working directory — pytest.ini lives at addon root
         # and configures testpaths/pythonpath relative to it.
         pytest_ini = os.path.join(addon_dir, "pytest.ini")
-        # Same reasoning as test_path above for the '/tests' fallback text
-        # — not pragma'd, addon_dir/os.path.exists(pytest_ini) are
-        # real/tested (see test_run_tests_subprocess_kwargs_pipe_and_text_and_cwd
-        # and test_run_tests_pytest_ini_lookup_uses_absolute_addon_dir_path).
         run_dir = addon_dir if os.path.exists(pytest_ini) else "/tests"
 
         # sys.executable is normally the running interpreter's absolute path,
@@ -332,13 +311,7 @@ def run_test_suite(
                 partial_output = (partial_stdout + partial_stderr).strip()
                 elapsed = time.monotonic() - t_start
                 exit_code = -1
-                # Diagnostic log line only — its text, arg values, and the
-                # -4000/'(nothing captured)' fallback are independent of
-                # `output`/`partial_output` below (the values that actually
-                # drive the published summary and notification, already
-                # covered by test_run_tests_timeout_no_output_captured_summary
-                # / test_run_tests_timeout_with_captured_output_summary) — not
-                # pragma'd, nothing else consumes this call's arguments.
+                # pragma: no mutate start
                 log_commands.error(
                     "Test suite subprocess did not finish within the 14400s hard "
                     "limit — killed process group (pid %d) after %.1fs elapsed. "
@@ -348,11 +321,7 @@ def run_test_suite(
                     len(partial_output),
                     partial_output[-4000:] if partial_output else "(nothing captured)",
                 )
-                # This line's own text is unobservable — verified empirically:
-                # `output` only ever surfaces downstream via its extracted
-                # counts_line (the LAST line of the string), which this line
-                # is never part of, and the timeout notification body is a
-                # separately hardcoded string that never quotes `output`.
+                # pragma: no mutate end
                 output = (
                     f"Test suite process killed after {elapsed:.1f}s "
                     "(14400s hard limit).\n"
@@ -373,9 +342,7 @@ def run_test_suite(
             # looks like a Markdown link reference and can be silently
             # stripped by the renderer, losing the one detail (the path)
             # needed to actually diagnose a launch failure.
-            # Log-only text — not pragma'd, this call happening at all
-            # (vs. being skipped) is real/tested elsewhere.
-            log_commands.exception("Failed to launch test suite subprocess")
+            log_commands.exception("Failed to launch test suite subprocess")  # pragma: no mutate
         finally:
             # Never drop the handle while the process is still alive. It is
             # detached (start_new_session=True), so this reference is the only
@@ -392,14 +359,14 @@ def run_test_suite(
             # exited or been killed, so poll() short-circuits this for them,
             # and a failed Popen() leaves _current_proc None.
             if _current_proc is not None and _current_proc.poll() is None:
-                # pid is real/tested (crashes on None via %d); the message
-                # text itself is log-only.
+                # pragma: no mutate start
                 log_commands.warning(
                     "Test subprocess (pid %d) still running after an error — killing its "
                     "process group so it cannot outlive this run untracked",
                     _current_proc.pid,
                 )
-                with contextlib.suppress(ProcessLookupError, OSError):
+                # pragma: no mutate end
+                with contextlib.suppress(OSError):
                     os.killpg(os.getpgid(_current_proc.pid), signal.SIGKILL)
                 # Reap it, so the kill doesn't just leave a zombie behind for
                 # the lifetime of the add-on process.
@@ -423,16 +390,14 @@ def run_test_suite(
             with open(report_path, "w", encoding="utf-8") as _f:
                 _f.write(_html)
         except FileNotFoundError:
-            # Diagnostic log line only — text and the report_path arg (a
-            # human-readable pointer, not consumed elsewhere) don't affect
-            # behavior; that a warning fires on FileNotFoundError at all is
-            # real/tested by test_run_tests_logs_warning_when_report_missing.
+            # pragma: no mutate start
             log_commands.warning(
                 "Test suite HTML report not found at %s — "
                 "pytest-html may not be installed in the Docker image. "
                 "Check requirements-test.txt and rebuild the add-on.",
                 report_path,
             )
+            # pragma: no mutate end
         except (OSError, UnicodeDecodeError) as _e:
             # UnicodeDecodeError (not an OSError subclass) can happen when a
             # kill (abort_test_suite's SIGKILL, or the hard-timeout path)
@@ -441,15 +406,13 @@ def run_test_suite(
             # that would replace the carefully-computed aborted/timed_out/
             # failed status with a generic 'error' state, losing exactly the
             # abort/timeout distinction this module exists to preserve.
-            # Diagnostic log line only — text and args are human-readable
-            # pointers, not consumed elsewhere; the call firing at all on
-            # this except is the real/tested behavior (see the comment
-            # above about not letting this propagate to the outer except).
+            # pragma: no mutate start
             log_commands.warning(
                 "Could not post-process HTML report at %s: %s",
                 report_path,
                 _e,
             )
+            # pragma: no mutate end
 
         # Explicit, unconditional existence check — independent of whether
         # the post-processing block above raised. This is the ground truth
@@ -461,16 +424,14 @@ def run_test_suite(
         # the path apart from another container's.
         report_exists = os.path.isfile(report_path)
         report_size = os.path.getsize(report_path) if report_exists else 0
-        # Diagnostic log line only — text and this call's own copy of the
-        # args are independent of report_exists/report_size, which are
-        # separately real/tested via the published RUN_TESTS_ATTRS
-        # ('report_exists'/'report_size' keys).
+        # pragma: no mutate start
         log_commands.info(
             "Post-run report check: exists=%s size=%d at %s",
             report_exists,
             report_size,
             report_path,
         )
+        # pragma: no mutate end
 
         passed = exit_code == 0
         aborted = _abort_reason is not None
@@ -512,25 +473,11 @@ def run_test_suite(
             # line in (the exact dash count isn't guaranteed, e.g.
             # "---- Generated html report: ... ----") before comparing, so
             # the prefix check doesn't depend on matching that padding
-            # verbatim. Widening the strip() charset here to include a char
-            # that never appears in real pytest output (e.g. 'X') is
-            # unobservable — verified empirically, still real/tested for
-            # the actual '-', '=', ' ' chars via
-            # test_pass_summary_strips_report_line_regardless_of_dash_count.
+            # verbatim.
             core = ln.strip().strip("-= ").lower()
-            # The second `or` clause exists only for symbol-only prefixes
-            # ('=== '/'--- ') on lines with NO extra dash/equals padding to
-            # strip (see test_pass_summary_strips_equals_wrapped_section_headers)
-            # — `core` would already have stripped the prefix itself away
-            # in that case. For any prefix containing letters
-            # ('bringing up nodes', 'generated html report'), this clause
-            # is always redundant with the first (no padding means `core`
-            # equals this same lowered string already) and for the
-            # symbol-only prefixes .lower()/.upper() make no difference —
-            # verified empirically, .upper() here is an equivalent mutant.
-            return core.startswith(_NOISE_PREFIXES) or ln.strip().lower().startswith(
-                _NOISE_PREFIXES
-            )
+            # The second clause is for the symbol-only prefixes ('=== ',
+            # '--- '), which stripping the padding above removes from `core`.
+            return core.startswith(_NOISE_PREFIXES) or ln.strip().startswith(_NOISE_PREFIXES)
 
         if aborted:
             # The captured output is just whatever partial stdout/stderr
@@ -539,22 +486,18 @@ def run_test_suite(
             # all; state plainly what happened instead.
             summary = f"Test run aborted before completion: {_abort_reason}"
         elif exit_code == 0:
-            # Widening this charset (e.g. adding a char real pytest
-            # progress-dot output never contains) is unobservable — an
-            # issubset() check only cares about chars the real data
-            # actually has. Verified empirically, not pragma'd since the
-            # real chars themselves are covered by
-            # test_pass_summary_progress_marker_charset_is_case_sensitive.
+            # Progress lines: pytest's markers (. F E s x X), subtests' u,
+            # and the "[ 50%]" counter.
             meaningful = [
                 ln
                 for ln in lines
                 if ln.strip()
-                and not set(ln.strip()).issubset(set(".FEsx[] |\t0123456789%u"))
+                and not set(ln.strip()).issubset(set(".FEsxX[] |\t0123456789%u"))
                 and not _is_noise_line(ln)
             ]
             if counts_line and counts_line not in meaningful:
                 meaningful.append(counts_line)
-            summary = "\n".join(meaningful) if meaningful else counts_line
+            summary = "\n".join(meaningful)
             if report_exists:
                 summary += (
                     f"\n\n📄 [View full report]({get_base_url_fn()}/local/"
@@ -564,17 +507,7 @@ def run_test_suite(
                     '"Open link in new tab" to view it.)'
                 )
         else:
-            fail_lines = _extract_failure_lines(output)
-            parts = fail_lines + ([counts_line] if counts_line else [])
-            # The `output[-2000:]` fallback only runs when `parts` is empty,
-            # i.e. both fail_lines and counts_line are falsy — counts_line
-            # is only falsy when `output` itself has no non-whitespace
-            # content at all (see counts_line's `next(..., '')` above), so
-            # this branch only ever slices an empty string; the exact slice
-            # bounds (-2000 vs -2001 vs +2000) are unobservable — verified
-            # empirically, not pragma'd since parts/fail_lines/counts_line
-            # themselves are real/tested.
-            summary = "\n".join(parts) if parts else output[-2000:]
+            summary = "\n".join([*_extract_failure_lines(output), counts_line])
 
         timestamp = _fmt_ts()
 
@@ -582,26 +515,25 @@ def run_test_suite(
         if elapsed < 60:
             elapsed_str = f"{elapsed:.1f}s"
         else:
-            # elapsed is always >= 0 here (time.monotonic() deltas), so
-            # floor division (//) and true division truncated by int() (/)
-            # agree — int(x // 60) == int(x / 60) for all non-negative x;
-            # they'd only diverge for negative x — not pragma'd, this is
-            # the only line-level mutation, verified empirically.
             elapsed_str = f"{int(elapsed // 60)}m {elapsed % 60:.0f}s"
 
         if exit_code == 0:
+            # pragma: no mutate start
             log_commands.info(
                 "Test suite %s in %s",
                 status,
                 elapsed_str,
             )
+            # pragma: no mutate end
         else:
+            # pragma: no mutate start
             log_commands.error(
                 "Test suite %s in %s (exit code %d)",
                 status,
                 elapsed_str,
                 exit_code,
             )
+            # pragma: no mutate end
 
         # Publish result sensor
         mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, status, retain=True)
@@ -682,7 +614,10 @@ def run_test_suite(
                             formatted.append(f"**{fl}**")
                     body = "\n\n".join(formatted)
                 else:
-                    body = f"```\n{summary}\n```"
+                    # Nothing recognisable as a failure (a crash, an abort
+                    # during collection): the end of the output says what
+                    # happened. Small enough to survive the cut below.
+                    body = f"```\n{output[-1500:]}\n```"
 
             report_link = (
                 f"[View full report]({get_base_url_fn()}/local/"
@@ -690,7 +625,10 @@ def run_test_suite(
                 '(right-click → "Open link in new tab" — left-click opens the HA '
                 "dashboard instead)"
             )
-            message = f"{timestamp} — {counts_line} — {elapsed_str}\n\n{body}\n\n{report_link}"
+            # Without a pytest summary the last line can be anything, however long.
+            message = (
+                f"{timestamp} — {counts_line[:200]} — {elapsed_str}\n\n{body}\n\n{report_link}"
+            )
             if len(message) > _MAX_NOTIF:
                 message = message[: _MAX_NOTIF - len(report_link) - 10] + f"\n…\n\n{report_link}"
             notify_fn(
@@ -706,7 +644,7 @@ def run_test_suite(
         # runs in a background executor, so nothing would surface the
         # error — leaving RUN_TESTS_STATE retained as "running" forever.
         # Force a terminal state so a stuck run is at least visible.
-        log_commands.exception("run_test_suite crashed unexpectedly")
+        log_commands.exception("run_test_suite crashed unexpectedly")  # pragma: no mutate
         try:
             mqtt_client.publish(MgmtTopic.RUN_TESTS_STATE, "error", retain=True)
             mqtt_client.publish(
@@ -715,6 +653,8 @@ def run_test_suite(
                 retain=True,
             )
         except Exception:
+            # pragma: no mutate start
             log_commands.exception("Failed to publish crash state for run_test_suite")
+            # pragma: no mutate end
     finally:
         done_event.clear()

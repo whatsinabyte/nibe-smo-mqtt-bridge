@@ -2285,3 +2285,111 @@ class TestRawApiValueToFinalStatePayload(unittest.TestCase):
             if c.args[0] == f"homeassistant/sensor/nibe_{point_id}/state"
         ]
         self.assertEqual(state_calls, [])
+
+
+class TestFetchBulkDataDisappearanceGating(unittest.TestCase):
+    """Dynamic disappearances are only looked for on a change-detecting
+    poll after initial discovery."""
+
+    def _poll(self, detect_changes, discovered):
+        em = _make_em()
+        em.initial_discovery_complete = discovered
+        em._api.fetch_bulk_points.return_value = {
+            "4": {
+                "title": "Outdoor temperature",
+                "description": "",
+                "metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER", "divisor": 10},
+                "value": {"integerValue": 50, "stringValue": "", "isOk": True},
+            }
+        }
+        with patch.object(em, "_dynamic_disappearances", return_value=set()) as look:
+            em._fetch_bulk_data(detect_changes=detect_changes)
+        return look
+
+    def test_a_plain_poll_does_not_look(self):
+        self._poll(detect_changes=False, discovered=True).assert_not_called()
+
+    def test_a_poll_before_discovery_does_not_look(self):
+        self._poll(detect_changes=True, discovered=False).assert_not_called()
+
+    def test_a_change_detecting_poll_after_discovery_looks(self):
+        self._poll(detect_changes=True, discovered=True).assert_called_once()
+
+
+class TestUpdateAllStatesGaps(unittest.TestCase):
+    def _em(self):
+        from unittest.mock import MagicMock
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.bulk_interval = 30
+        em.post_write_interval = 5
+        em._fetch_bulk_data = MagicMock(return_value=True)
+        return em
+
+    def test_a_window_that_ends_leaves_a_late_tail_from_its_end(self):
+        from nibe_attribution import ScanWindow
+
+        em = self._em()
+        em._window = ScanWindow(point=5, until=999.0, controller_side=True)
+        em.bulk_data[5] = {"raw_value": 1}
+        with (
+            patch("nibe_entity_manager.time.time", return_value=1_000.0),
+            patch.object(em, "_start_late_tail") as tail,
+        ):
+            em.update_all_states()
+        tail.assert_called_once_with(5, 1, True, after=0)
+
+    def test_an_open_window_polls_at_the_post_write_interval(self):
+        from nibe_attribution import ScanWindow
+
+        for window, expected_calls in ((ScanWindow(point=5, until=9e12), 1), (None, 0)):
+            em = self._em()
+            em._window = window
+            em.last_bulk_fetch = 1_000.0 - 10
+            with patch("nibe_entity_manager.time.time", return_value=1_000.0):
+                em.update_all_states()
+            self.assertEqual(em._fetch_bulk_data.call_count, expected_calls, window)
+
+    def test_after_a_failed_fetch_or_before_discovery_nothing_follows_up(self):
+        """No map restore, no startup-absence expiry, no firmware check."""
+        for result, discovered in ((False, True), (True, False)):
+            em = self._em()
+            em.initial_discovery_complete = discovered
+            em._absent_at_startup = {1: 0.0}
+
+            def fetch(em=em, result=result, **_kw):
+                if not result:
+                    em.api_consecutive_failures += 1  # a real failure, not a busy lock
+                return result
+
+            em._fetch_bulk_data = fetch
+            with (
+                patch.object(em, "_restore_reappeared_map_entries") as restore,
+                patch.object(em, "_expire_absent_at_startup") as expire,
+                patch.object(em, "_check_firmware_update") as firmware,
+            ):
+                em.update_all_states(force=True)
+            restore.assert_not_called()
+            expire.assert_not_called()
+            firmware.assert_not_called()
+
+    def test_poll_timing_names_each_step(self):
+        import re
+
+        em = self._em()
+        em.active_entities_by_id[1] = {"point_id": 1, "entity_type": "button"}
+        em.active_entities_by_id[1]["availability_topic"] = "a"
+        with self.assertLogs("nibe.entities", level="DEBUG") as logs:
+            em.update_all_states(force=True)
+        line = next(m for m in logs.output if "Poll timing:" in m)
+        for step in (
+            "fetch",
+            "firmware check",
+            "entity id check",
+            "entity updates",
+            "catalog flush",
+        ):
+            match = re.search(rf"{step} (\d+) ms", line)
+            self.assertIsNotNone(match, step)
+            self.assertLess(int(match.group(1)), 5_000)

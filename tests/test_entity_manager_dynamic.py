@@ -356,6 +356,34 @@ class TestDynamicPoints(unittest.TestCase):
         self.assertIn(6983, self.em.active_dynamic_points)
         self.assertIn(32825, self.em.active_dynamic_points)
 
+    def _restore(self, handler_name, payload, discovered=False):
+        from nibe_entity_manager import EntityManager
+
+        self.em.initial_discovery_complete = discovered
+        EntityManager._setup_dynamic_map_loading(self.em)
+        msg = MagicMock()
+        msg.payload = payload
+        getattr(self.em, handler_name)(None, None, msg)
+
+    def test_point_set_restores_ignore_empty_odd_and_broken_payloads(self):
+        """Empty, not a list, or broken: the set stays as it is and nothing
+        raises on paho's thread. (Restoring and ignoring a re-delivery after
+        discovery: TestSetupDynamicMapLoadingCallbacks.)"""
+        cases = [
+            (b"", False),
+            (json.dumps({"a": 9}).encode(), False),
+            (b"not json {{{", False),
+            (json.dumps([None]).encode(), False),
+        ]
+        for handler, attr in (
+            ("_on_wanted_points_message", "_wanted_points"),
+            ("_on_reclassified_points_message", "_binary_sensor_reclassified"),
+        ):
+            for payload, discovered in cases:
+                setattr(self.em, attr, {1})
+                self._restore(handler, payload, discovered)
+                self.assertEqual(getattr(self.em, attr), {1}, (handler, payload))
+
     def test_malformed_active_dynamic_payload_does_not_crash(self):
         """Malformed JSON must be rejected cleanly, not partially applied —
         active_dynamic_points must remain unchanged, not just 'not raise'."""
@@ -1286,16 +1314,15 @@ class TestPublishDynamicChangesChangeEventStructure(unittest.TestCase):
                 return json.loads(args[1])
         return None
 
-    def test_triggered_by_title_falls_back_to_title_key_when_no_display_title(self):
-        """ctrl_title = cp.get('display_title') or cp.get('title', ...) —
-        the second tier ('title' key) must be reachable and use the real
-        value, not a wrong key or the f'Point {id}' default."""
+    def test_triggered_by_title_of_an_untitled_controller_is_point_n(self):
+        """An indexed point carries display_title (None for an untitled
+        one), never "title"."""
         em = _make_em()
         em.initial_discovery_complete = True
         controlling_pid = 8020
         em.all_points_by_id[controlling_pid] = {
             "variableId": controlling_pid,
-            "title": "Fallback Ctrl Title",
+            "display_title": None,
             "entity_type": "switch",
             "metadata": {},
         }
@@ -1309,7 +1336,7 @@ class TestPublishDynamicChangesChangeEventStructure(unittest.TestCase):
             controlling_value=em.bulk_data.get(controlling_pid, {}).get("raw_value"),
         )
         event = self._capture_dynamic_publish(em)
-        self.assertEqual(event["triggered_by"]["title"], "Fallback Ctrl Title")
+        self.assertEqual(event["triggered_by"]["title"], "Point 8020")
 
     def test_triggered_by_title_falls_back_to_point_id_when_controlling_point_unknown(self):
         """When the controlling point isn't in all_points_by_id at all
@@ -1420,7 +1447,8 @@ class TestPublishDynamicChangesEnabledStateCalls(unittest.TestCase):
     _publish_dynamic_changes call with BOTH additions and removals must
     call it twice."""
 
-    def test_called_twice_when_both_new_and_disappeared_present(self):
+    def test_called_once_when_both_new_and_disappeared_present(self):
+        """One publish of the enabled set covers both."""
         em = _make_em()
         em.initial_discovery_complete = True
         added_pid, removed_pid = 8020, 8021
@@ -1442,7 +1470,7 @@ class TestPublishDynamicChangesEnabledStateCalls(unittest.TestCase):
         point_data = {"title": "Added", "description": "", "metadata": {}}
         with patch.object(em, "publish_enabled_state") as mock_publish_state:
             em._publish_dynamic_changes([(added_pid, point_data)], {removed_pid})
-        self.assertEqual(mock_publish_state.call_count, 2)
+        self.assertEqual(mock_publish_state.call_count, 1)
 
     def test_called_once_when_only_disappeared_points_present(self):
         """`if new_points: ...` and `if disappeared_points: ...` are two
@@ -1616,19 +1644,16 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
         self.assertIn(0, entry.processed_values)
         self.assertIn(12345, entry.dynamic_points_by_value.get(0, []))
 
-    def test_new_controlling_entry_title_falls_back_to_title_key_then_default(self):
-        """title = display_title or title-key or f'Point {id}' — each
-        fallback tier must be reachable and use the real value, not a
-        wrong key or inverted 'and' short-circuit."""
+    def test_new_controlling_entry_title_is_its_display_title_or_point_n(self):
+        """An indexed point carries display_title (None when untitled)."""
         em = _make_em()
         em.initial_discovery_complete = True
 
-        # Tier 2: no display_title, but 'title' key present.
         pid_a = 9020
         em.all_points_by_id[pid_a] = {
             "variableId": pid_a,
             "entity_type": "switch",
-            "title": "Fallback Title",
+            "display_title": "Pool heating",
             "metadata": {},
         }
         em.bulk_data[pid_a] = {"raw_value": 1}
@@ -1638,11 +1663,15 @@ class TestPublishDynamicChangesControllingPointMapEntry(unittest.TestCase):
             controlling_point_id=pid_a,
             controlling_value=em.bulk_data.get(pid_a, {}).get("raw_value"),
         )
-        self.assertEqual(em.dynamic_point_map.get(pid_a).title, "Fallback Title")
+        self.assertEqual(em.dynamic_point_map.get(pid_a).title, "Pool heating")
 
-        # Tier 3: neither display_title nor title present -> f'Point {id}'.
         pid_b = 9022
-        em.all_points_by_id[pid_b] = {"variableId": pid_b, "entity_type": "switch", "metadata": {}}
+        em.all_points_by_id[pid_b] = {
+            "variableId": pid_b,
+            "entity_type": "switch",
+            "display_title": None,
+            "metadata": {},
+        }
         em.bulk_data[pid_b] = {"raw_value": 1}
         em._publish_dynamic_changes(
             [(9023, {"title": "Dyn2", "description": "", "metadata": {}})],
@@ -3393,6 +3422,36 @@ class TestBinarySensorDynamicReclassification(unittest.TestCase):
             "value_mapping": None,
         }
 
+    def test_stats_move_once_and_only_for_an_enabled_point(self):
+        """A point that isn't enabled was never counted. An enabled one moves
+        from binary_sensor to sensor once — not again on the retry after a
+        failed republish, when the point is already "sensor"."""
+        em = _make_em()
+        entity_info = self._entity_info()
+        em._pub.publish_entity_discovery.return_value = None
+        with (
+            patch.object(em, "_decrement_stats") as dec,
+            patch.object(em, "_increment_stats") as inc,
+        ):
+            em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30)
+            dec.assert_not_called()
+            inc.assert_not_called()
+            entity_info = self._entity_info()
+            em.mqtt_enabled_points.add(self.POINT_ID)
+            em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30)
+            em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30)  # the retry
+        self.assertEqual((dec.call_count, inc.call_count), (1, 1))
+
+    def test_reclassification_caches_the_type_republishes_and_returns_sensor(self):
+        em = _make_em()
+        entity_info = self._entity_info()
+        entity_info["point_data"]["entity_category"] = "diagnostic"
+        point_data = entity_info["point_data"]
+        em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
+        self.assertEqual(em._reclassify_binary_sensor(self.POINT_ID, entity_info, 30), "sensor")
+        self.assertEqual(em._entity_type_cache.get(self.POINT_ID), ("sensor", "diagnostic"))
+        em._pub.publish_entity_discovery.assert_called_once_with(point_data, em.bulk_data)
+
     def test_boolean_value_stays_binary_sensor_no_warning(self):
         """A genuine 0/1 reading must not reclassify or warn."""
         em = _make_em()
@@ -3506,7 +3565,7 @@ class TestBinarySensorDynamicReclassification(unittest.TestCase):
         em = _make_em()
         entity_info = self._entity_info()
         em._pub.publish_entity_discovery.return_value = self._reclassified_entity_info()
-        with patch("nibe_entity_manager._atomic_write_text") as mock_write:
+        with patch("nibe_entity_manager.atomic_write_text") as mock_write:
             em._process_and_publish_state(entity_info, 30, "30", {})
         mock_write.assert_called_once()
         self.assertEqual(json.loads(mock_write.call_args.args[1]), [self.POINT_ID])
@@ -3683,3 +3742,74 @@ class TestSharedDynamicPointsAcrossSelectValues(unittest.TestCase):
             )
         entry = em.dynamic_point_map.get(self.SELECT)
         self.assertEqual(entry.dynamic_points_by_value[2], [self.EXTRA])
+
+
+class TestNotifyDashboardUpdatedMessages(unittest.TestCase):
+    """The whole notification, in menus mode and in the other modes."""
+
+    def _send(self, mode):
+        em = _make_em()
+        em._notify = MagicMock()
+        em.point_to_menu_map = {5: ("7.1", "Heating")}
+        em._applied_mode_known = mode
+        em._notify_dashboard_updated(
+            [{"title": "A", "id": 10}, {"title": "C", "id": 12}],
+            [{"title": "B", "id": 11}, {"title": "D", "id": 13}],
+            {"id": 5, "title": "Ctl"},
+        )
+        return em
+
+    _SECTIONS = (
+        "2 new setting(s) are now available:\n\n- **A** (point 10)\n- **C** (point 12)\n\n"
+        "2 setting(s) are no longer available:\n\n- **B** (point 11)\n- **D** (point 13)"
+    )
+
+    def test_menus_mode_points_at_the_menus_dashboard(self):
+        em = self._send("menus")
+        em._notify.assert_called_once_with(
+            em.mqtt,
+            title="Nibe Menus — Dashboard updated",
+            message=(
+                "The Nibe Menus dashboard was updated in menu 7.1 — Heating:\n"
+                "Triggered by: **Ctl**\n\n"
+                + self._SECTIONS
+                + "\n\n[Open Nibe Menus dashboard](/nibe-menus) and reload the page "
+                "to see the changes."
+            ),
+            notification_id="nibe_dashboard_updated_5",
+        )
+
+    def test_other_modes_point_at_the_bridge_dashboard(self):
+        em = self._send("essential")
+        em._notify.assert_called_once_with(
+            em.mqtt,
+            title="Nibe Bridge — Available settings changed",
+            message=(
+                "The set of available Nibe settings changed in menu 7.1 — Heating:\n"
+                "Triggered by: **Ctl**\n\n"
+                + self._SECTIONS
+                + "\n\n[Open the Nibe Bridge entity manager](/nibe-bridge) to see the changes."
+            ),
+            notification_id="nibe_dashboard_updated_5",
+        )
+
+
+class TestUntitledDynamicPointDisappearing(unittest.TestCase):
+    def test_an_untitled_dynamic_point_reads_point_n(self):
+        """The firmware may send no title: display_title is then None."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.all_points_by_id[8021] = {
+            "variableId": 8021,
+            "display_title": None,
+            "entity_type": "sensor",
+            "entity_category": "diagnostic",
+            "is_dynamic": True,
+            "is_writable": False,
+            "metadata": {},
+            "description": "",
+        }
+        em.active_dynamic_points.add(8021)
+        removed = []
+        em._remove_disappeared_points({8021}, removed)
+        self.assertEqual(removed[0]["title"], "Point 8021")

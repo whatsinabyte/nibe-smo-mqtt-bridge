@@ -49,7 +49,7 @@ Two consequences of that queue follow. `_STALE_WRITE_AGE_S` ages a pending write
 |---|---|---|
 | `EntityManager._em_lock` | `nibe_entity_manager.py` | `last_states` writes from the poll loop and the write executor |
 | `EntityManager._post_write_lock` | `nibe_entity_manager.py` | `_window` (a `ScanWindow`) and `_late_tail` (a `LateTail`), each replaced whole — never changed in place — by the poll loop, the write executor and Force Poll on the management executor, so a reader always sees one consistent window |
-| `ValueCache` / `LRUCache` internal locks | `nibe_caching.py` | `_point_string_cache` / `_entity_type_cache`, mutated from both the poll thread and the write/management executors |
+| `LRUCache` internal lock | `nibe_caching.py` | `_point_string_cache` / `_entity_type_cache`, mutated from both the poll thread and the write/management executors |
 | `HAEntityRegistryWatcher._registry_map_lock` | `nibe_ha_integration.py` | `_unique_id_map`, read by callbacks dispatched off the registry watcher's WebSocket thread while the watcher itself mutates it |
 | `_regen_timer_lock` (closure-local) | `nibe_lovelace.py`, `_on_enabled_state_change_factory` | the debounce `threading.Timer` reference, to prevent concurrent enable/disable events from orphaning a timer |
 | `_menu_dashboard_lock` | `nibe_lovelace.py`, `_setup_menu_dashboard` | one menu dashboard build at a time, and `_last_saved_menu_fingerprint` |
@@ -73,7 +73,7 @@ The orchestration layer. Owns configuration parsing, startup sequencing, the pol
 
 **Device identity persistence:** `_derive_device_id()` builds the HA device identifier from the controller's serial number (`nibe_<serial>`) and persists it to `/data/device_id`. A later startup where the device is transiently unreachable (serial not available in that startup's API response) reuses the persisted id rather than falling back to the generic config default — without this, device_id flip-flops across restarts depending on whether that specific connection attempt happened to succeed, and every entity gets recreated under a different HA device identity each time, most visibly the Management device (published unconditionally at every startup regardless of whether point discovery succeeds), leaving the old one behind as an orphaned empty duplicate device in HA.
 
-**Durability of `/data` fallback files:** every one of these files (`applied_mode`, `wanted_points.json`, `reclassified_points.json`, `snapshots.json`, `dynamic_point_map.json`) is read back with its parse failure swallowed as "no data", so a half-written file doesn't surface as an error — it silently discards whatever it held. They are therefore always written via a uniquely-named sibling temp file plus `os.replace` (`_atomic_write_text`, and `DynamicPointMap.to_file`), never by truncating the destination: `open(path, "w")` empties the file before the new contents land, and being killed in that gap is a real scenario, since the shutdown drain budget can exceed a supervisor's stop grace period. This is what makes the write-ahead ordering used by `_persist_applied_mode` and `_persist_wanted_points` (file first, then the retained MQTT topic) actually hold — the file can only ever be one whole version behind, never empty. The temp name must be unique per call rather than a fixed `path + ".tmp"`: none of the callers hold a common lock and they are reachable from the MQTT command thread, the management executor, the registry watcher thread and the poll thread simultaneously, so a shared temp path lets concurrent writers truncate each other's half-written file and rename the mixture into place — measured at roughly half of concurrent runs, alongside spurious `FileNotFoundError`s from one writer's `os.replace` consuming another's temp file.
+**Durability of `/data` fallback files:** every one of these files (`applied_mode`, `wanted_points.json`, `reclassified_points.json`, `snapshots.json`, `dynamic_point_map.json`) is read back with its parse failure swallowed as "no data", so a half-written file doesn't surface as an error — it silently discards whatever it held. They are therefore always written via a uniquely-named sibling temp file plus `os.replace` (`nibe_utils.atomic_write_text`, which `DynamicPointMap.to_file` uses too), never by truncating the destination: `open(path, "w")` empties the file before the new contents land, and being killed in that gap is a real scenario, since the shutdown drain budget can exceed a supervisor's stop grace period. This is what makes the write-ahead ordering used by `_persist_applied_mode` and `_persist_wanted_points` (file first, then the retained MQTT topic) actually hold — the file can only ever be one whole version behind, never empty. The temp name must be unique per call rather than a fixed `path + ".tmp"`: none of the callers hold a common lock and they are reachable from the MQTT command thread, the management executor, the registry watcher thread and the poll thread simultaneously, so a shared temp path lets concurrent writers truncate each other's half-written file and rename the mixture into place — measured at roughly half of concurrent runs, alongside spurious `FileNotFoundError`s from one writer's `os.replace` consuming another's temp file.
 
 **What this module does not do:** no entity type logic, no MQTT topic construction, no Nibe API calls outside of the startup sequence wiring.
 
@@ -140,13 +140,9 @@ The largest module (~4,980 lines) and the core of the bridge. Owns the full life
 
 **MQTT-first state:** retained discovery configs in the broker are the single source of truth for which entities are enabled. On restart, `scan_mqtt_discovery()` reads these back rather than keeping a separate state file. This means the bridge survives restarts without losing user customisations.
 
-**Value cache (`ValueCache`, defined in `nibe_caching.py`):** decides whether a state is published, via two guards:
-- Change: only a changed value is published, by however little: the firmware's `change` metadata is a setting's step, not a publish threshold (the controller shows the THS-10, `change` 5, in 0.1 °C steps). An unchanged value is never republished: the state is retained and HA keeps it until a new one arrives. It used to be republished every `min_interval` with threshold 0, on the reasoning that HA needed repeats for continuous history (it doesn't); with menus mode's ~900 entities that, together with the per-poll availability repeats, was about 1,150 messages a poll — 176 in three minutes now, against 13,859 before, measured on the e2e stack.
-- Minimum interval: a change within `min_interval` of the last publish waits for the next poll after it.
+**State publishing:** a state is published when it differs from the last one published for the point (`last_states`), by however little: the firmware's `change` metadata is a setting's step, not a publish threshold (the controller shows the THS-10, `change` 5, in 0.1 °C steps). An unchanged state is never republished: it is retained and HA keeps it until a new one arrives. It used to be republished every poll interval, on the reasoning that HA needed repeats for continuous history (it doesn't); with menus mode's ~900 entities that, together with the per-poll availability repeats, was about 1,150 messages a poll — 176 in three minutes now, against 13,859 before, measured on the e2e stack. `force` (the readback after a failed write) always publishes, and so does a point not in `_state_sent` — the points published since the MQTT connection was made, cleared by `resubscribe_all`, so the poll a reconnect forces resends every state (the broker may have lost its retained messages). Trade-off: HA's "last reported" timestamp no longer advances while a value stays the same — availability, not that timestamp, says whether the bridge is alive.
 
-`force` (the readback after a failed write) always publishes; after a reconnect `resubscribe_all` replaces the cache, so the poll it forces resends every state. Trade-off: HA's "last reported" timestamp no longer advances while a value stays the same — availability, not that timestamp, says whether the bridge is alive.
-
-**LRU cache (`LRUCache`, defined in `nibe_caching.py`):** entity type classifications and point string representations are cached in an `LRUCache(max_size=2000)` to avoid recomputing on every poll cycle. Both caches were extracted out of this module into `nibe_caching.py` — see §4.4a.
+**LRU cache (`LRUCache`, defined in `nibe_caching.py`):** entity type classifications and point string representations are cached in an `LRUCache(max_size=2000)` to avoid recomputing on every poll cycle — see §4.4a.
 
 **Pending write guard:** when a write command is dispatched, the affected point is marked "pending". State publishes for that point are suppressed until the API confirms the write or the guard times out. This prevents the HA UI from flipping back to the old value while the write is in flight. `optimistic: false` is set on all writable discovery configs for the same reason.
 
@@ -209,15 +205,13 @@ The MQTT protocol between the bridge and the Entity Manager card is documented i
 
 ---
 
-### 4.4a `nibe_caching.py` — ValueCache, LRUCache
+### 4.4a `nibe_caching.py` — LRUCache
 
-Extracted from `nibe_entity_manager.py`. Two small, independent, generic cache classes with no knowledge of Nibe/HA/MQTT concepts.
-
-**`ValueCache`:** the changed-value and minimum-republish-interval logic described in §4.4.
+Extracted from `nibe_entity_manager.py`. A small, generic cache class with no knowledge of Nibe/HA/MQTT concepts.
 
 **`LRUCache`:** a bounded-size, thread-safe least-recently-used cache. Each public method acquires an internal `threading.Lock` — required because `EntityManager` reads and writes it from both the poll thread and the write/management executor threads.
 
-**What this module does not do:** no Nibe/HA/MQTT-specific logic — both classes are generic and reusable.
+**What this module does not do:** no Nibe/HA/MQTT-specific logic — the class is generic and reusable.
 
 ---
 
@@ -339,7 +333,7 @@ All interaction with the HA frontend. Creates and maintains two dashboards and t
 
 ### 4.9 `nibe_utils.py` — shared utilities
 
-One function: `fmt_ts(ts)` — formats a Unix timestamp as a human-readable string. No I/O, no state, no imports from the rest of the bridge. Exists to avoid duplicating the formatting logic across modules.
+Shared helpers, so they aren't duplicated across modules: `fmt_ts(ts)` formats a Unix timestamp as a human-readable string; `TLS_COMPAT_CIPHERS` is the cipher string both the real connection and the connectivity check use; `atomic_write_text(path, payload)` writes a `/data` file through a unique temp file and `os.replace` (see "Durability of `/data` fallback files" in §4.1). No state, no imports from the rest of the bridge; `atomic_write_text` is its only I/O.
 
 ---
 
@@ -403,7 +397,7 @@ The "Active Alarms" HA persistent notification (`update_alarm_state`) is re-sent
 
 ## 6. Test suite
 
-~4,554 tests (plus 19 Hypothesis subtests) across 26 files, at 100% line coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
+~5,100 tests (plus 22 Hypothesis subtests) across 31 files, at 100% line and branch coverage. Philosophy: correctness over coverage metrics — the suite exists to make refactoring safe, not to hit a percentage target, but a full mutation-testing pass (mutmut) across every module confirmed the coverage is substantive rather than incidental.
 
 For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -421,7 +415,7 @@ For setup instructions and how to run the suite locally, see [CONTRIBUTING.md](C
 **Testing approaches used:**
 - `unittest.TestCase` + `MagicMock` for unit tests
 - Hypothesis property-based tests with `@example` pins grounded in real firmware observations
-- `RuleBasedStateMachine` state machines for complex subsystems: `EntityManagerMachine`, `LRUCacheMachine`, `DynamicPointMapMachine`, `ValueCacheMachine`
+- `RuleBasedStateMachine` state machines for complex subsystems: `EntityManagerMachine`, `LRUCacheMachine`, `DynamicPointMapMachine`
 - pytest-xdist parallel execution (nightly, `-n auto`, 4 cores)
 - pytest-randomly for test order randomisation
 
@@ -440,7 +434,27 @@ All profiles use `database=None` — required to prevent `FlakyStrategyDefinitio
 - `TestRestoreSnapshot.setUp` patches `_read_applied_mode_from_file` to return `'essential'` — prevents xdist cross-worker `/data/applied_mode` file contamination.
 - All test paths must patch `notify_ha` and `dismiss_ha` — live calls during test runs create persistent HA notifications.
 
-**Mutation testing status:** all modules (`nibe_mqtt_publisher.py`, `nibe_discovery_config.py`, `nibe_entity_detection.py`, `nibe_dynamic_map.py`, `nibe_api.py`, `nibe_entity_manager.py`, `nibe_ha_integration.py`, `nibe_lovelace.py`, `nibe_caching.py`, `nibe_test_runner.py`, `nibe_utils.py`, `generate_nibe_mqtt.py`, `nibe_connectivity_check.py`, and `nibe_attribution.py` since 2026-10-29 with all 105 mutants killed) are at the structural ceiling — every survivor from the most recent run of each was individually diffed and either given an exact-value/exact-text test or confirmed as a genuine equivalent mutant (log format strings inside multi-line calls, codec-name case variants, dead-code fallback defaults, branches converging on identical output). `nibe_entity_manager.py` was rerun on 2026-10-29 after the split of `_fetch_bulk_data`/`_publish_dynamic_changes` (§4.4), for the functions that change touched: every survivor on a line it wrote was checked with plain pytest and either given a test or confirmed equivalent. Survivors in older lines of the module, most of them log text (see the pragma note below), haven't been gone through yet.
+**Mutation testing status (2026-10-30):** every module had a full run after the dynamic-learning rewrite, and every "survived" verdict was rechecked with plain pytest (`./run-mutmut.sh --verify <module>`). What surfaced got a test or a code fix; a second full run and its triage followed. A survivor left in the last column was read and is equivalent: it changes nothing a caller can see (log text, codec-name case, `None` vs `False` read as a truth value, `.get()` defaults only compared with other values), or differs only for input the firmware doesn't send (checked against the firmware dumps).
+
+| Module | First run | Second run | Left after triage |
+|---|---:|---:|---:|
+| `nibe_entity_manager.py` | 509 | 90 | 69 |
+| `nibe_lovelace.py` | 276 | 73 | 59 |
+| `nibe_ha_integration.py` | 79 | 35 | 32 |
+| `nibe_entity_detection.py` | 113 | 33 | 19 |
+| `generate_nibe_mqtt.py` | 134 | 25 | 11 |
+| `nibe_test_runner.py` | 29 | 19 | 14 |
+| `nibe_mqtt_publisher.py` | 74 | 15 | 13 |
+| `nibe_api.py` | 34 | 10 | 10 |
+| `nibe_utils.py` | 0 | 4 | 3 |
+| `nibe_connectivity_check.py` | 9 | 3 | 3 |
+| `nibe_discovery_config.py` | 15 | 2 | 2 |
+| `nibe_dynamic_map.py` | 23 | 2 | 0 |
+| `nibe_caching.py` | 1 | 1 | 1 |
+| `nibe_attribution.py` | 0 | 0 | 0 |
+| **Total** | **1,296** | **312** | **236** |
+
+The last column comes from reapplying the second run's survivors to the final code with plain pytest, not from a third full run, so a mutant on a line changed during that triage hasn't been through mutmut. `nibe_utils.py` rises from 0 because `atomic_write_text` moved there from two other modules.
 
 **Process note on empirical verification:** mutation-testing empirical verification (apply a mutant for real, run the test suite, check pass/fail) must be run in the **foreground**, in small batches — never as an unattended background batch script. This project's per-module workflow shares one `mutants/` sandbox directory and one `pyproject.toml`, both overwritten whenever work switches to a different module; a background verification loop can silently have its sandbox swapped out from under it by a concurrent or closely-sequenced operation, producing verdicts that look complete and consistent but are wrong.
 
@@ -448,11 +462,12 @@ All profiles use `database=None` — required to prevent `FlakyStrategyDefinitio
 
 Note: `run-mutmut.sh` regenerates the `mutants/` sandbox from scratch on every invocation, so a run's exact kill-rate/survivor numbers aren't retained once a later run overwrites the sandbox. Record `mutmut export-cicd-stats` output somewhere durable immediately after a run finishes if the exact figures need to survive past the session that produced them.
 
-Pragma syntax: `# pragma: no mutate` (space required) on the **closing `)` line** of the statement. In the 2026-10-29 run (mutmut 3.8.0) that form didn't keep the strings and arguments on the lines inside a multi-line call from being mutated; a `# pragma: no mutate start` / `# pragma: no mutate end` pair around the call did.
+Pragma syntax: a trailing `# pragma: no mutate` protects only the first line of its statement (mutmut 3.8's `pragma_handling.py` records the statement's start line), so on the closing `)` of a multi-line call it leaves every argument line open. Wrap a multi-line statement in a `# pragma: no mutate start` / `# pragma: no mutate end` pair instead (text after `start` is allowed). Formatting can turn a one-line call with a trailing pragma into a multi-line one, so check again after `ruff format`. mutmut PR #614 (merged 2026-10-26, not yet in a release when this was written) makes a bare pragma at the end of a line *inside* brackets cover that line; its description states that a pragma on the closing `)` still maps to the statement's first line, so the start/end form stays the one to use after upgrading.
 
 **JavaScript test suite (`app/nibe-entity-manager-card.js`):** Vitest+jsdom
 (the real card element driven through a stubbed `hass`) plus a Playwright
-smoke suite, at 99%+ line coverage on the card file, with ESLint as its
+smoke suite, at 100% statement, branch, function and line coverage on the
+card file (CI fails below 99% on any of them), with ESLint as its
 lint gate — entirely separate tooling from the Python suite above, scoped
 to `app/`. See [CONTRIBUTING.md](CONTRIBUTING.md#javascript-test-suite-entity-manager-card)
 for setup/run instructions.

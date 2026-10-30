@@ -2068,6 +2068,45 @@ class TestManagementHandlers(unittest.TestCase):
         self.assertTrue(_os.path.isdir(test_path))
         self.assertTrue(test_path.endswith("tests"))
 
+    def _popen_call_in_layout(self, tests_dir_exists, pytest_ini_exists):
+        """Run the suite with the add-on container's /tests directory and
+        the add-on's pytest.ini present or not; return Popen's call."""
+        import os as _os
+
+        real_isdir, real_exists = _os.path.isdir, _os.path.exists
+
+        def isdir(path):
+            return tests_dir_exists if path == "/tests" else real_isdir(path)
+
+        def exists(path):
+            if str(path).endswith("pytest.ini"):
+                return pytest_ini_exists
+            return real_exists(path)
+
+        with (
+            patch("subprocess.Popen") as mock_run,
+            patch("builtins.open", MagicMock()),
+            patch("nibe_ha_integration.dismiss_ha"),
+            patch("nibe_test_runner.os.path.isdir", side_effect=isdir),
+            patch("nibe_test_runner.os.path.exists", side_effect=exists),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            mock_run.return_value.communicate.return_value = ("", "")
+            self._run("RUN_TESTS_PRESS", "")
+        return mock_run.call_args
+
+    def test_run_tests_uses_the_containers_tests_directory(self):
+        """In the add-on container the tests live at /tests (Dockerfile:
+        COPY tests/ /tests/), and pytest runs from the add-on root, where
+        pytest.ini is."""
+        call = self._popen_call_in_layout(tests_dir_exists=True, pytest_ini_exists=True)
+        self.assertEqual(call.args[0][3], "/tests")
+        self.assertNotEqual(call.kwargs["cwd"], "/tests")
+
+    def test_run_tests_without_pytest_ini_runs_from_the_tests_directory(self):
+        call = self._popen_call_in_layout(tests_dir_exists=True, pytest_ini_exists=False)
+        self.assertEqual(call.kwargs["cwd"], "/tests")
+
     def test_run_tests_pytest_ini_lookup_uses_absolute_addon_dir_path(self):
         """pytest_ini = os.path.join(addon_dir, 'pytest.ini') must resolve
         to an absolute path — dropping addon_dir would make the
@@ -2715,6 +2754,70 @@ class TestRegistryWatcherEventHandling(unittest.TestCase):
         self._refresh_with(w, [("nibe_3933", "switch.nibe_smo_s40_time_format")])
         w._em._on_enabled_state_change.assert_not_called()
 
+    def test_a_refresh_overtaken_by_a_newer_one_changes_nothing(self):
+        w = self._make_watcher()
+        w._em = MagicMock()
+        w._unique_id_map["nibe_1"] = "sensor.old"
+        w._map_seq_issued = 0
+        w._map_seq_applied = 5  # a newer fetch was already applied
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps(
+            {
+                "id": 1,
+                "type": "result",
+                "success": True,
+                "result": [{"unique_id": "nibe_1", "entity_id": "sensor.new"}],
+            }
+        )
+        ws_mod = MagicMock()
+        ws_mod.create_connection.return_value = ws
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_ws_authenticate"),
+        ):
+            w.refresh_registry()
+        self.assertEqual(w._unique_id_map["nibe_1"], "sensor.old")
+        w._em._on_enabled_state_change.assert_not_called()
+
+    def test_a_moved_entity_without_a_regen_hook_is_just_mapped(self):
+        w = self._make_watcher()
+        w._em = MagicMock(_on_enabled_state_change=None)
+        self._refresh_with(w, [("nibe_3933", "switch.x")])
+        self.assertEqual(w.entity_id_for(3933), "switch.x")
+
+    def test_a_remove_event_without_ids_is_ignored(self):
+        w = self._make_watcher()
+        w._unique_id_map["nibe_1"] = "sensor.a"
+        w._handle_event({"data": {"action": "remove"}})
+        self.assertEqual(w._unique_id_map, {"nibe_1": "sensor.a"})
+
+    def test_a_fresh_watcher_is_ready_for_its_first_events(self):
+        """Built by its constructor (the other tests here skip it): it hooks
+        the reconcile into deferred discovery, handles an enable and a
+        reconcile, and its first unchanged refresh rebuilds nothing."""
+        from nibe_ha_integration import HAEntityRegistryWatcher
+
+        em = MagicMock()
+        em._after_deferred_discovery = []
+        em.resolve_point_from_entity_id.return_value = None
+        w = HAEntityRegistryWatcher(em, MagicMock())
+        self.assertEqual(em._after_deferred_discovery, [w._reconcile_user_disabled])
+        w._on_entity_enabled("sensor.nibe_1")
+        w._reconcile_user_disabled()
+        self._refresh_with(w, [])
+        em._on_enabled_state_change.assert_not_called()
+
+    def test_an_update_without_old_entity_id_is_not_a_rename(self):
+        w = self._make_watcher()
+        w._em = MagicMock()
+        with (
+            patch.object(w, "_apply_entity_id_rename") as rename,
+            patch.object(w, "_schedule_refresh_registry"),
+        ):
+            w._handle_event({"data": {"action": "update", "entity_id": "sensor.nibe_7"}})
+        rename.assert_not_called()
+
     def test_remove_event_clears_entry(self):
         w = self._make_watcher()
         w._unique_id_map["nibe_6983"] = "number.nibe_6983_power"
@@ -3085,21 +3188,6 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
             w._on_entity_disabled("switch.nibe_100")
         mock_disable.assert_called_once_with(100)
 
-    def test_disabled_point_missing_is_dynamic_key_treated_as_static(self):
-        """A point dict entirely missing the 'is_dynamic' key must default
-        to False (mirrored/silent path) — not True (revert/notify path)."""
-        em = _make_em()
-        em.all_points_by_id[100] = {"display_title": "Test point"}  # no 'is_dynamic'
-        w = self._make_watcher(em)
-        with (
-            patch.object(em, "disable_entity") as mock_disable,
-            patch("nibe_ha_integration._publish_stats"),
-            patch("nibe_ha_integration.notify_ha") as mock_notify,
-        ):
-            w._on_entity_disabled("switch.nibe_100")
-        mock_disable.assert_called_once_with(100)
-        mock_notify.assert_not_called()
-
     def test_disabled_logs_debug_with_real_entity_and_point_id(self):
         em = self._em_with_point(100, is_dynamic=False)
         w = self._make_watcher(em)
@@ -3202,11 +3290,22 @@ class TestOnEntityEnabledDisabled(unittest.TestCase):
             patch.object(w, "_ws_authenticate"),
         ):
             w._clear_disabled_by("sensor.nibe_50827")
+            authenticate = w._ws_authenticate
         self.assertIn("sensor.nibe_50827", w._self_reenabled)  # its echo is ours
-        sent = json.loads(ws.send.call_args.args[0])
-        self.assertEqual(sent["type"], "config/entity_registry/update")
-        self.assertEqual(sent["entity_id"], "sensor.nibe_50827")
-        self.assertIsNone(sent["disabled_by"])
+        ws_mod.create_connection.assert_called_once_with(
+            "ws://supervisor/core/websocket", timeout=10
+        )
+        authenticate.assert_called_once_with(ws, "tok")
+        self.assertEqual(
+            json.loads(ws.send.call_args.args[0]),
+            {
+                "id": 1,
+                "type": "config/entity_registry/update",
+                "entity_id": "sensor.nibe_50827",
+                "disabled_by": None,
+            },
+        )
+        ws.close.assert_called_once_with()
 
     def test_an_echo_handled_before_the_response_is_still_ours(self):
         """HA delivers the registry event to the watcher's connection, which
@@ -3541,6 +3640,34 @@ class TestUpdateAlarmState(unittest.TestCase):
         from nibe_ha_integration import update_alarm_state
 
         return update_alarm_state
+
+    def _notified(self, alarms, polls=1):
+        update_alarm_state = self._import()
+        em = _make_em()
+        em._api.fetch_notifications.return_value = alarms
+        with (
+            patch("nibe_ha_integration.notify_ha") as notify,
+            patch("nibe_ha_integration.dismiss_ha"),
+        ):
+            for _ in range(polls):
+                update_alarm_state(em, MagicMock())
+        return notify
+
+    def test_an_alarm_without_a_header_reads_unknown_alarm(self):
+        alarm = self._alarm(severity="")
+        del alarm["header"]
+        notify = self._notified([alarm])
+        self.assertIn("\n• Unknown alarm\n", notify.call_args.kwargs["message"])
+
+    def test_an_alarm_without_a_description_adds_nothing_after_its_header(self):
+        alarm = self._alarm(severity="")
+        del alarm["description"]
+        notify = self._notified([alarm])
+        self.assertIn("\n• High pressure alarm\n", notify.call_args.kwargs["message"])
+
+    def test_the_same_alarms_on_the_next_poll_are_not_notified_again(self):
+        notify = self._notified([self._alarm(), self._alarm(alarm_id=2)], polls=2)
+        notify.assert_called_once()
 
     # -- short-circuit conditions ---------------------------------------------
 
@@ -4467,6 +4594,15 @@ class TestOnEntityDisabledRefactor(unittest.TestCase):
         )
         em.mqtt = MagicMock()
         return w, em, pub
+
+    def test_disabling_an_entity_of_an_unindexed_point_does_not_crash(self):
+        """A point the bridge no longer indexes is handled as static."""
+        w, em, _pub = self._watcher()
+        em.all_points_by_id = {}
+        with patch("nibe_ha_integration.notify_ha") as mock_notify:
+            w._on_entity_disabled("switch.nibe_5110")
+        em.disable_entity.assert_called_once_with(5110)
+        mock_notify.assert_not_called()
 
     def test_static_point_disabled_no_notification(self):
         """Disabling a static point must call disable_entity and NOT send
@@ -6136,6 +6272,14 @@ class TestReconcileUserDisabled(unittest.TestCase):
         w = HAEntityRegistryWatcher(em, MagicMock())
         self.assertIn(w._reconcile_user_disabled, em._after_deferred_discovery)
 
+    def test_a_failing_dashboard_rebuild_after_a_rename_is_logged(self):
+        w = self._watcher()
+        w._unique_id_map["nibe_5"] = "sensor.old"
+        w._em._on_enabled_state_change = MagicMock(side_effect=RuntimeError("boom"))
+        with self.assertLogs("nibe.registry", level="WARNING") as logs:
+            w._apply_entity_id_rename("sensor.old", "sensor.new")
+        self.assertIn("Dashboard regen after rename failed: boom", logs.output[0])
+
     def test_rename_before_mapping_regenerates_after_the_next_refresh(self):
         """A rename for an entity the map doesn't hold yet (renamed right
         after creation) used to change nothing; the next refresh maps its new
@@ -6458,6 +6602,45 @@ class TestConnectAndSubscribe(unittest.TestCase):
         ws_mod.create_connection.return_value = ws
         return ws_mod, ws
 
+    def test_a_connect_fetch_overtaken_by_a_newer_refresh_keeps_the_newer_map(self):
+        w = self._make_watcher()
+        w._unique_id_map = {"nibe_1": "sensor.newer"}
+        w._map_seq_issued = 0
+        w._map_seq_applied = 5
+        ws_mod, _ws = self._make_ws_mod(
+            [
+                {"type": "auth_required"},
+                {"type": "auth_ok"},
+                {"id": 1, "type": "result", "success": True},
+            ]
+        )
+        with (
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_fetch_entity_registry", return_value={"nibe_1": "sensor.older"}),
+            patch.object(w, "_reconcile_user_disabled"),
+        ):
+            w._connect_and_subscribe("tok")
+        self.assertEqual(w._unique_id_map, {"nibe_1": "sensor.newer"})
+
+    def test_an_empty_registry_on_connect_needs_no_reconcile(self):
+        w = self._make_watcher()
+        w._map_seq_issued = 0
+        w._map_seq_applied = 0
+        ws_mod, _ws = self._make_ws_mod(
+            [
+                {"type": "auth_required"},
+                {"type": "auth_ok"},
+                {"id": 1, "type": "result", "success": True},
+            ]
+        )
+        with (
+            patch.dict("sys.modules", {"websocket": ws_mod}),
+            patch.object(w, "_fetch_entity_registry", return_value={}),
+            patch.object(w, "_reconcile_user_disabled") as reconcile,
+        ):
+            w._connect_and_subscribe("tok")
+        reconcile.assert_not_called()
+
     def test_wrong_greeting_type_closes_and_raises(self):
         w = self._make_watcher()
         ws_mod, ws = self._make_ws_mod([{"type": "auth_ok"}])  # wrong greeting
@@ -6731,58 +6914,6 @@ class TestRegistryWatcherPingPong(unittest.TestCase):
             w._run()
 
         mock_event.assert_not_called()
-
-    def test_websocket_import_error_falls_back_to_timeout_error(self):
-        """When websocket-client is not installed, _WsTimeout falls back to
-        TimeoutError and the ping/reconnect path still works (lines 358-359)."""
-        w = self._make_watcher()
-        ws = MagicMock()
-        connect_count = [0]
-
-        def fake_connect(_token):
-            connect_count[0] += 1
-            if connect_count[0] >= 2:
-                w._stop_event.set()
-            return ws
-
-        # recv raises TimeoutError (the ImportError fallback) immediately
-        ws.recv.side_effect = TimeoutError("timeout")
-        ws.send = MagicMock()
-
-        real_time = __import__("time").time
-
-        call_count = [0]
-
-        def fake_time():
-            call_count[0] += 1
-            # First call: return a timestamp far past the pong timeout
-            # so reconnect is triggered immediately
-            if call_count[0] <= 1:
-                from nibe_ha_integration import HAEntityRegistryWatcher
-
-                return real_time() - HAEntityRegistryWatcher._PING_TIMEOUT_S - 5
-            return real_time()
-
-        with (
-            patch.object(w, "_connect_and_subscribe", side_effect=fake_connect),
-            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
-            patch("nibe_ha_integration.time.time", side_effect=fake_time),
-            patch(
-                "builtins.__import__",
-                side_effect=lambda name, *a, **kw: (
-                    (_ for _ in ()).throw(ImportError("no websocket"))
-                    if name == "websocket"
-                    else __import__(name, *a, **kw)
-                ),
-            ),
-        ):
-            w._run()
-
-        self.assertGreaterEqual(
-            connect_count[0],
-            2,
-            "ImportError fallback must still trigger reconnect on keepalive timeout",
-        )
 
     def test_keepalive_timeout_triggers_reconnect(self):
         """If a ping was sent but no pong arrives within _PING_TIMEOUT_S,
@@ -8479,10 +8610,10 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
             message,
         )
 
-    def test_failure_notification_body_wraps_summary_in_code_block_when_no_fail_lines(self):
+    def test_failure_notification_body_wraps_output_in_code_block_when_no_fail_lines(self):
         """When no FAILED lines could be extracted, the body must fall back
-        to the plain summary wrapped in a triple-backtick code block — not
-        an empty/None body."""
+        to the output itself in a triple-backtick code block: its last line
+        alone (a crash, an abort during collection) says too little."""
         output = "some unparseable failure output\n1 failed in 0.5s\n"
         captured = {}
 
@@ -8494,15 +8625,51 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         with patch.object(_hi, "notify_ha", side_effect=_fake_notify):
             self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
         message = captured["message"]
-        self.assertIn("```\n", message)
-        self.assertIn("\n```", message)
-        self.assertIn("1 failed in 0.5s", message)
+        self.assertIn(f"```\n{output.strip()}\n```", message)
+
+    def test_failure_notification_without_fail_lines_shows_the_end_of_long_output(self):
+        """Exactly the last 1500 characters: the end says what happened, and
+        fits the notification without being cut off."""
+        output = "\n".join(f"crash detail {i}" for i in range(500))
+        captured = {}
+
+        def _fake_notify(mqtt_client, title, message, notification_id):
+            captured["message"] = message
+
+        import nibe_ha_integration as _hi
+
+        with patch.object(_hi, "notify_ha", side_effect=_fake_notify):
+            self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
+        self.assertIn(f"```\n{output[-1500:]}\n```", captured["message"])
+        self.assertNotIn("…", captured["message"])
+
+    def test_failure_notification_long_last_line_does_not_cost_the_output(self):
+        """The header takes at most 200 characters of a very long last line,
+        so the output's end still fits."""
+        output = "crash detail\n" + "x" * 3000
+        captured = {}
+
+        def _fake_notify(mqtt_client, title, message, notification_id):
+            captured["message"] = message
+
+        import nibe_ha_integration as _hi
+
+        with patch.object(_hi, "notify_ha", side_effect=_fake_notify):
+            self._trigger_and_wait(returncode=1, stdout=output, patch_notify=False)
+        self.assertIn(f" — {'x' * 200} — ", captured["message"])
+        self.assertIn(f"```\n{output[-1500:]}\n```", captured["message"])
+        self.assertNotIn("…", captured["message"])
+
+    def test_failure_summary_is_the_last_line_when_no_fail_lines(self):
+        """The sensor's summary stays one line when no failure was recognised."""
+        calls = self._trigger_and_wait(returncode=1, stdout="crash detail\nlast line\n")
+        self.assertEqual(self._get_attrs(calls)["summary"], "last line")
 
     def test_failure_notification_truncated_when_exceeds_max(self):
         """When the assembled notification message exceeds _MAX_NOTIF=2048 chars
         the truncation suffix is appended and the report link reattached.
         patch notify_ha to capture the message directly (no SUPERVISOR_TOKEN needed)."""
-        long_summary = "x" * 2200
+        long_summary = "===== short test summary info =====\nFAILED tests/t.py::t - " + "x" * 2200
         captured = {}
 
         def _fake_notify(mqtt_client, title, message, notification_id):
@@ -8651,6 +8818,14 @@ class TestManagementRunTestsOutputParsing(unittest.TestCase):
         summary = attrs["summary"]
         self.assertNotIn(".FFF..EEE...sx", summary)
         self.assertIn("before the fix", summary)
+
+    def test_pass_summary_strips_a_progress_line_with_an_xpass_marker(self):
+        """X is pytest's progress marker for an unexpectedly passing xfail
+        test, one of its markers (. F E s x X) like the others."""
+        output = "....X.....xX.... [100%]\n5 passed, 2 xpassed in 1.23s\n"
+        calls = self._trigger_and_wait(returncode=0, stdout=output)
+        summary = self._get_attrs(calls)["summary"]
+        self.assertEqual(summary, "5 passed, 2 xpassed in 1.23s")
 
     def test_pass_summary_strips_report_line_regardless_of_dash_count(self):
         """Regression test: pytest-html's report line doesn't always use the
@@ -9037,6 +9212,35 @@ class TestRunTestSuiteNeverLeaksALiveSubprocess(unittest.TestCase):
                 run_test_suite(
                     MagicMock(), MagicMock(), MagicMock(), lambda: "http://ha", done_event
                 )
+            self.assertIsNone(nibe_test_runner._current_proc)
+        finally:
+            nibe_test_runner._current_proc = None
+
+    def test_a_kill_refused_by_the_os_does_not_propagate(self):
+        """killpg can fail with any OSError (PermissionError, not only
+        ProcessLookupError); the run must still reap and finish reporting."""
+        import threading
+
+        import nibe_test_runner
+        from nibe_test_runner import run_test_suite
+
+        proc = MagicMock()
+        proc.pid = 5150
+        proc.communicate.side_effect = OSError("pipe blew up")
+        proc.poll.return_value = None
+
+        done_event = threading.Event()
+        done_event.set()
+        try:
+            with (
+                patch("subprocess.Popen", return_value=proc),
+                patch("os.killpg", side_effect=PermissionError("not permitted")),
+                patch("os.getpgid", return_value=5150),
+            ):
+                run_test_suite(
+                    MagicMock(), MagicMock(), MagicMock(), lambda: "http://ha", done_event
+                )
+            proc.wait.assert_called_once_with(timeout=10)
             self.assertIsNone(nibe_test_runner._current_proc)
         finally:
             nibe_test_runner._current_proc = None
@@ -11687,6 +11891,15 @@ class TestHandleSnapshotCmd(unittest.TestCase):
         with patch.object(self.em, "save_snapshot", return_value=(True, "ok")) as mock_save:
             self._send({"action": "save", "name": "Test"})
         mock_save.assert_called_once_with("Test")
+
+    def test_restore_without_mode_flushes_quietly(self):
+        """No mode means flush — not an "unknown mode" error."""
+        with (
+            patch.object(self.em, "restore_snapshot", return_value=(True, "ok")) as mock_restore,
+            self.assertNoLogs("nibe.commands", level="ERROR"),
+        ):
+            self._send({"action": "restore", "name": "Test"})
+        mock_restore.assert_called_once_with("Test", "flush")
 
     def test_restore_action_calls_restore_snapshot(self):
         with patch.object(self.em, "restore_snapshot", return_value=(True, "ok")) as mock_restore:

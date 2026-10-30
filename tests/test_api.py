@@ -102,6 +102,12 @@ class TestWritePointValidation(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
             self.assertTrue(self.c.write_point(1, 999, self._ei(lo=0, hi=0, degen=True)))
 
+    def test_degenerate_flag_skips_range_with_distinct_bounds(self):
+        """A number flagged as having no real bounds is written as asked even
+        when its min and max differ."""
+        with patch("urllib.request.urlopen", return_value=self._resp({"1": "modified"})):
+            self.assertTrue(self.c.write_point(1, 999, self._ei(lo=0, hi=100, degen=True)))
+
     def test_min_equals_max_skips_range_without_degenerate_flag(self):
         """is_degenerate_range is only ever set for number entities. A switch
         or button reporting min=max=0 (3754, 8982, 3478 in a real dump) must
@@ -586,24 +592,28 @@ class TestDescribeNetworkError(unittest.TestCase):
         result = _describe_network_error(OSError("Network is unreachable"))
         self.assertEqual(result, "Network is unreachable")
 
-    # NOTE: the `if not detail else None` guard inside the URLError+OSError
-    # branch is unreachable with real exception objects — urllib.error.
-    # URLError.__str__ always returns "<urlopen error ...>" (never empty),
-    # so `detail` can never be falsy for a URLError instance. Mutating that
-    # guard's condition is a genuinely equivalent mutant, not a test gap.
+    def test_url_error_with_a_blank_reason_gets_the_network_hint(self):
+        """str(URLError(...)) is "<urlopen error >" when the wrapped error has
+        no text — useless in the "API unreachable" notification."""
+        import socket
+        import urllib.error
 
-    def test_url_error_wrapping_os_error_reason_returns_the_url_error_text(self):
+        from nibe_api import _describe_network_error
+
+        result = _describe_network_error(urllib.error.URLError(socket.gaierror()))
+        self.assertEqual(result, "could not resolve host or reach network")
+
+    def test_url_error_wrapping_os_error_reason_returns_the_reasons_text(self):
         """A URLError wrapping a low-level OSError (DNS failure, socket
-        error) must hit the URLError+OSError branch and return URLError's
-        own detail text — the branch itself was previously never exercised
-        by any test (only its unreachable inner guard was analysed above)."""
+        error) is described by that error's own text, without urllib's
+        "<urlopen error ...>" wrapper."""
         import urllib.error
 
         from nibe_api import _describe_network_error
 
         e = urllib.error.URLError(OSError("Name or service not known"))
         result = _describe_network_error(e)
-        self.assertIn("Name or service not known", result)
+        self.assertEqual(result, "Name or service not known")
 
 
 class TestRequestRetryProperties(unittest.TestCase):
@@ -719,6 +729,7 @@ class TestRequestRetryProperties(unittest.TestCase):
             result = client.request("https://host/api/v1/devices/test/points")
         mock_open.assert_not_called()
         self.assertIsNone(result)
+        self.assertEqual(client.last_error, "shutting down")
 
     def test_pending_retry_is_abandoned_when_shutdown_starts_mid_request(self):
         """A shutdown arriving during the first attempt must abandon the
@@ -2022,6 +2033,26 @@ class TestRequestSslContextAndBody(unittest.TestCase):
         self.assertIsNotNone(ctx, "ssl_context must be passed to urlopen")
         self.assertEqual(ctx, self.client.ssl_context)
 
+    def test_request_gives_up_on_a_silent_controller_after_30_seconds(self):
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"ok": true}'
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_open:
+            self.client.request("https://192.0.2.1:8443/test")
+        self.assertEqual(mock_open.call_args.kwargs["timeout"], 30)
+
+    def test_writes_give_up_on_a_silent_controller_after_30_seconds(self):
+        """The write paths' own urlopen (_urlopen_serialized) uses the same
+        30 s socket timeout as request()."""
+        import threading
+
+        self.client._lock = threading.Lock()
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"{}"
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_open:
+            self.client._urlopen_serialized(MagicMock())
+        self.assertEqual(mock_open.call_args.kwargs["timeout"], 30)
+        self.assertIs(mock_open.call_args.kwargs["context"], self.client.ssl_context)
+
     def test_request_with_data_passes_body_to_request_object(self):
         """data=body must be included in the Request — without it PATCH sends no body."""
         mock_response = MagicMock()
@@ -3298,3 +3329,31 @@ class TestRequestConcurrencyLock(unittest.TestCase):
             [],
             "two request() calls executed their HTTP I/O concurrently — the lock did not serialize them",
         )
+
+
+class TestApiRemainingBranches(unittest.TestCase):
+    def test_begin_shutdown_without_a_shutdown_event_is_harmless(self):
+        import ssl
+
+        from nibe_api import NibeApiClient
+
+        client = NibeApiClient(
+            "https://h/api/v1/devices/0", "Basic x", ssl.create_default_context()
+        )
+        client._shutting_down = None
+        client.begin_shutdown()
+
+    def test_an_unreadable_403_body_on_notification_reset_still_fails_cleanly(self):
+        import io
+        import ssl
+        import urllib.error
+
+        from nibe_api import NibeApiClient
+
+        client = NibeApiClient(
+            "https://h/api/v1/devices/0", "Basic x", ssl.create_default_context()
+        )
+        error = urllib.error.HTTPError("u", 403, "Forbidden", {}, io.BytesIO(b""))
+        error.read = MagicMock(side_effect=OSError("reset"))
+        with patch("urllib.request.urlopen", side_effect=error):
+            self.assertFalse(client.reset_notifications())

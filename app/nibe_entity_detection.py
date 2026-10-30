@@ -12,12 +12,11 @@ Public surface
 --------------
 detect_entity_type(point)          → (entity_type, entity_category)
 map_device_class(entity_type, unit, title) → str | None
-get_value_mapping(point_id, point_data, register_type) → dict | None
+get_value_mapping(point_id, point_data) → dict | None
 get_entity_options(point_id, description)          → list[str]
 mapping_status(point_id)                           → str | None
 is_unitless_quantity(point_id, point)              → bool
 firmware_fingerprint(metadata)                     → dict
-get_register_type(point)           → "input" | "holding" | None
 clean_string(text)                 → str
 apply_divisor(raw, divisor)        → str
 reverse_divisor(display, divisor)  → int
@@ -814,6 +813,56 @@ UNIT_OVERRIDES: dict[int, str] = {
 # metadata mistake that needs correcting this way.
 DEVICE_CLASS_OVERRIDES: dict[int, str] = {}
 
+# Device class per binary sensor point. A binary sensor's meaning can't be
+# read from its metadata (a u8 0-1 input register is a pump running as much
+# as a permission or a blocking), so a point is only listed once its 0/1
+# meaning is confirmed. "Modbus doc" is NIBE's Modbus S-series document
+# (reference-pdfs/Modbus_S-Series_TIF_EN_2608_M12676.pdf), which gives each
+# register's states; "register name" is the firmware's own name for it
+# (Modbus_Register_S-Series_official), for registers the document leaves out
+# whose documented sibling has the same name. Any other binary sensor gets
+# no class. The register number is the point's modbusRegisterID.
+BINARY_SENSOR_DEVICE_CLASSES: dict[int, str] = {
+    # Modbus doc: "Compressor status", register 1100, 0-off 1-on.
+    1973: "running",  # Compressor status
+    # Register name CompressorOnoff, as 1100's; firmware description
+    # "1 = On, 0 = Off".
+    2858: "running",  # Compressor status (EB100-EP15), register 1691
+    2859: "running",  # Compressor status (EB100-EP14), register 1692
+    # Modbus doc: "Hot water circulation (GP11)", register 1063, 0-off 1-on.
+    1829: "running",  # Hot water circulation (GP11)
+    # Modbus doc: "Ext. heat. medium pump (GP10)", register 1066, 0-off 1-on.
+    1838: "running",  # External heating medium pump (GP10) status
+    # Modbus doc (ECS): "Ext. heat. medium pump (GP10)", register 1825, 0-off
+    # 1-on — register name HeatsystemVbp_1. The other climate systems'
+    # registers are HeatsystemVbp_0, _2…_7.
+    3141: "running",  # Climate system 2, register 1825
+    3142: "running",  # Climate system 1 (HMP), register 1826
+    3140: "running",  # Climate system 3, register 1824
+    3139: "running",  # Climate system 4, register 1823
+    304: "running",  # Climate system 5, register 159
+    303: "running",  # Climate system 6, register 158
+    302: "running",  # Climate system 7, register 157
+    301: "running",  # Climate system 8, register 156
+    # Modbus doc (Pool): "Circulation pump GP9/GP16", register 1828, 0-off
+    # 1-on — register name PoolPump_0; pool 2's is PoolPump_1, firmware
+    # description "1 = On, 0 = Off".
+    3144: "running",  # Pool 1 pump status, register 1828
+    3143: "running",  # Pool 2 pump status, register 1827
+    # Modbus doc (PCS44): "Passive cooling pump (GP13)", register 1833, 0-off 1-on.
+    3149: "running",  # Passive cooling pump (GP13)
+    # Modbus doc (AXC): "Circulation pump GP3", register 1835, 0-off 1-on.
+    3151: "running",  # Oper. mode groundwater pump
+    # Modbus doc (Pool): "Diverter valve QN19", register 1134, 0-closed to
+    # pool 1-open to pool — register name PoolValve_0; pool 2's is PoolValve_1.
+    2046: "opening",  # Pool 1 (QN19), register 1134
+    2045: "opening",  # Pool 2 (QN19), register 1133
+    # Modbus doc (ACS45): "Diverter valve QN12", register 1830, 0-closed 1-open.
+    3146: "opening",  # ACS EQ1-QN12
+    # Modbus doc: "Active alarm", register 2195, 0-No alarm 1-Active alarm.
+    1709: "problem",  # Class 1 alarm
+}
+
 # Per-point divisor overrides — corrects a firmware self-reported divisor
 # confirmed physically wrong, as opposed to UNIT_OVERRIDES above (which
 # only corrects a displayed unit label, not the actual scale of the value).
@@ -1073,12 +1122,13 @@ def clean_string(text: object) -> str | None:
         # best-effort description of the common case, not a hard guarantee.
         return text  # type: ignore[return-value]
     cleaned = text.strip()
-    cleaned = (
-        cleaned.replace("\u00c2", "").replace("\u00a0", " ").replace("\xa0", " ")
-    )  # pragma: no mutate
+    # Case variants of these two characters are the same characters.
+    # pragma: no mutate start
+    cleaned = cleaned.replace("\u00c2", "").replace("\u00a0", " ")
+    # pragma: no mutate end
     # U+00AD is the soft-hyphen inserted by Nibe firmware as an invisible
     # line-break hint.  It does not display but breaks substring search:
-    # "exter\u00adn" does not match "extern".  Strip it entirely.  # pragma: no mutate
+    # "exter\u00adn" does not match "extern".  Strip it entirely.
     cleaned = cleaned.replace("\u00ad", "")  # pragma: no mutate
     # Quote-stripping must run after mojibake removal above: a stray quote
     # next to a mojibake byte (e.g. '0"\u00c2') is not at the true string edge
@@ -1104,9 +1154,10 @@ def clean_unit(unit: object) -> str:
     """
     if not unit or not isinstance(unit, str):
         return ""
-    cleaned = (
-        unit.strip().replace("\u00c2", "").replace("\u00a0", " ").replace("\xa0", " ")
-    )  # pragma: no mutate
+    # Case variants of these two characters are the same characters.
+    # pragma: no mutate start
+    cleaned = unit.strip().replace("\u00c2", "").replace("\u00a0", " ")
+    # pragma: no mutate end
     cleaned = " ".join(cleaned.split())
     return _UNIT_NORMALISE.get(cleaned, cleaned)
 
@@ -1125,15 +1176,7 @@ def apply_divisor(raw_value: int, divisor: int) -> str:
     dimensionless registers.  Treating 0 as 1 is the correct defensive default:
     it preserves the raw integer value and never silently corrupts data.
     """
-    # `divisor and` already excludes 0 (falsy), making the `!= 0` comparison
-    # redundant — mutating it to any other constant, or to `or`, changes
-    # nothing observable. Effective is always >1 whenever this line's decimal
-    # formatting runs (guarded by `if effective == 1: return` above), so
-    # max(0, ...) vs max(1, ...) never differs either. Both rstrip() calls
-    # strip a character *set*; padding either set with extra characters that
-    # never appear in the formatted string (e.g. 'X') is unobservable.
-    # All verified empirically.
-    effective = divisor if divisor and divisor != 0 else 1
+    effective = divisor or 1
     if effective == 1:
         return str(raw_value)
     decimal_places = max(0, math.ceil(math.log10(effective)))
@@ -1148,9 +1191,7 @@ def reverse_divisor(display_value: float, divisor: int) -> int:
     ``divisor=0`` is treated as ``divisor=1`` — see ``apply_divisor`` for
     the full rationale.
     """
-    # Same `divisor and` redundancy as apply_divisor above — the `!= 0`
-    # comparison (and its operator) is unobservable. Verified empirically.
-    effective = divisor if divisor and divisor != 0 else 1
+    effective = divisor or 1
     return round(display_value * effective)
 
 
@@ -1161,19 +1202,6 @@ def create_entity_id(point_id: int) -> str:
     and permanent regardless of firmware title changes.
     """
     return f"nibe_{point_id}"
-
-
-def get_register_type(point: dict) -> str | None:
-    """Return 'input', 'holding', or None based on the point's Modbus register type."""
-    # modbus_type is only ever checked via `in` against 'INPUT'/'HOLDING' —
-    # any default that doesn't itself contain those substrings (e.g. '' or
-    # 'XXXX') is unobservable. Verified empirically.
-    modbus_type = point.get("metadata", {}).get("modbusRegisterType", "")
-    if "INPUT" in modbus_type:
-        return "input"
-    if "HOLDING" in modbus_type:
-        return "holding"
-    return None
 
 
 # ============================================================================
@@ -1216,7 +1244,7 @@ def _plain_int(text: str) -> int | None:
     return int(text) if _PLAIN_INT.fullmatch(text) else None
 
 
-def parse_description_mapping(description: str) -> dict | None:
+def parse_description_mapping(description: str | None) -> dict | None:
     """Parse a Nibe firmware enum description string into a {int: str} mapping.
 
     Handles both orderings used by different register families:
@@ -1274,11 +1302,7 @@ def _lookup_manual_mapping(point_id: int) -> dict | None:
     return None
 
 
-def get_value_mapping(
-    point_id: int,
-    point_data: dict,
-    register_type: str | None = None,
-) -> dict[int, str] | None:
+def get_value_mapping(point_id: int, point_data: dict) -> dict[int, str] | None:
     """Return a {raw_int: label_str} mapping for a point, or None.
 
     Lookup order:
@@ -1289,11 +1313,7 @@ def get_value_mapping(
     if manual:
         return manual
 
-    # parse_description_mapping short-circuits to None for any falsy value
-    # AND for any string without '=' — so None, '', or 'XXXX' (none contain
-    # '=') all produce the identical result. Verified empirically.
-    description = point_data.get("description", "")
-    return parse_description_mapping(description)
+    return parse_description_mapping(point_data.get("description"))
 
 
 def get_entity_options(
@@ -1309,24 +1329,18 @@ def get_entity_options(
     if mapping:
         return [text for _, text in sorted(mapping.items())]
 
-    # The `or` here is required, not just an equivalent alternative to
-    # `and`: a colon-only description (e.g. "0: Zones, 1: Climate system,
-    # 2: Profile") contains no '=' at all, so `and` would wrongly reject
-    # it. See _split_mapping_part for why both separators are supported.
-    if "," in description and ("=" in description or ":" in description):
-        options = []
-        for part in description.split(","):
-            pair = _split_mapping_part(part.strip())
-            if pair is None:
-                continue
-            left, right = pair
-            text = right if _plain_int(left) is not None else left
-            if text and text not in options:
-                options.append(text)
-        if len(options) >= 2:
-            return options
-
-    return []
+    # Pairs separated by commas, each "value = label" or "value: label" (see
+    # _split_mapping_part for why both); fewer than two is no option list.
+    options: list[str] = []
+    for part in description.split(","):
+        pair = _split_mapping_part(part.strip())
+        if pair is None:
+            continue
+        left, right = pair
+        text = right if _plain_int(left) is not None else left
+        if text and text not in options:
+            options.append(text)
+    return options if len(options) >= 2 else []
 
 
 # ============================================================================
@@ -1408,8 +1422,6 @@ def is_switch_candidate(metadata: dict) -> bool:
             metadata.get("unit", "") == "",
             metadata.get("variableSize") == "u8",
             metadata.get("minValue", 0) == 0,
-            # Any default not equal to 1 (e.g. None, dropped) is unobservable —
-            # only ever compared with `== 1`. Verified empirically.
             metadata.get("maxValue", 0) == 1,
             metadata.get("divisor", 1) == 1,
         ]
@@ -1418,9 +1430,8 @@ def is_switch_candidate(metadata: dict) -> bool:
 
 def is_number_candidate(metadata: dict) -> bool:
     """Return True if the register has a physical unit, implying a numeric measurement."""
-    # `or ''` also covers an explicit "unit": null from the API — .get()'s
-    # default only applies when the key is absent.
-    return bool((metadata.get("unit", "") or "").strip())
+    # `or ''` covers an absent key and an explicit "unit": null alike.
+    return bool((metadata.get("unit") or "").strip())
 
 
 # ── Auto-detection support for binary_sensor (INPUT registers only) ───────────
@@ -1536,10 +1547,7 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
     if (
         metadata.get("variableSize") != "u8"
         or metadata.get("minValue") != 0
-        or
-        # Any default > 1 (e.g. 100) is unobservable — only ever
-        # compared with `> 1`. Verified empirically.
-        metadata.get("maxValue", 99) > 1
+        or metadata.get("maxValue", 99) > 1
         or metadata.get("unit")
         or is_writable_point(metadata)
     ):
@@ -1554,11 +1562,8 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
     # multi-state sensor, and so is a 2-state mapping on other values (e.g.
     # 2701 ACS status, 3 = Passive / 7 = Active) — published as a
     # binary_sensor, its first real value would only get it reclassified.
-    # VALUE_MAPPINGS is a static dict literal that always has an 'input'
-    # key, so .get('input', ...)'s default is dead code — verified
-    # empirically, any default value (including None) is unobservable.
     if point_id is not None:
-        mapping = VALUE_MAPPINGS.get("input", {}).get(point_id)
+        mapping = VALUE_MAPPINGS["input"].get(point_id)
         if mapping is not None and set(mapping) != {0, 1}:
             return False
 
@@ -1566,8 +1571,7 @@ def _is_auto_binary_sensor(point: dict, metadata: dict) -> bool:
     # parse_description_mapping, which reads both separators the firmware
     # uses ('=' and ':', mixed within one string on 22268) — counting only
     # '=' let a 0–0 register described '0: A, 1: B, 2: C' pass as binary.
-    description = point.get("description", "")
-    return len(parse_description_mapping(description or "") or {}) <= 2
+    return len(parse_description_mapping(point.get("description")) or {}) <= 2
 
 
 def detect_entity_type(point: dict) -> tuple[str, str]:
@@ -1583,9 +1587,6 @@ def detect_entity_type(point: dict) -> tuple[str, str]:
     """
     metadata = point.get("metadata", {})
     point_id = point["variableId"]
-    # Same "only checked via `in` against known substrings" equivalence as
-    # get_register_type — any non-matching default is unobservable.
-    # Verified empirically.
     modbus_type = metadata.get("modbusRegisterType", "")
 
     if point_id in SAFETY_READ_ONLY_POINTS:
@@ -1597,13 +1598,15 @@ def detect_entity_type(point: dict) -> tuple[str, str]:
         if point_id not in _entity_type_override_warnings_issued:
             auto_type = _detect_type_without_override(point, metadata, modbus_type)[0]
             title = point.get("title") or f"Point {point_id}"
+            # pragma: no mutate start
             log_detection.debug(
                 "Point %d (%s): entity type overridden \u2014 auto-detect would use %r, using %r instead.",
                 point_id,
                 title,
                 auto_type,
                 to_type,
-            )  # pragma: no mutate
+            )
+            # pragma: no mutate end
             if len(_entity_type_override_warnings_issued) < _ENTITY_TYPE_WARNING_CACHE_MAX:
                 _entity_type_override_warnings_issued.add(point_id)
         return to_type, category
@@ -1641,18 +1644,7 @@ def _detect_holding_entity(point: dict, metadata: dict) -> tuple[str, str]:
       6. Default → number.
     """
     point_id = point["variableId"]
-    # description is only checked against '=' and ',' substrings below —
-    # any default without both (e.g. 'XXXX') is unobservable.
-    description = point.get("description", "")
-    # var_type's default is only ever compared with `==` against known
-    # non-empty literals ("time"/"date"/"string"/"floating-point"/"binary")
-    # — any non-matching default (None, 'XXXX', etc.) is unobservable.
     var_type = metadata.get("variableType", "")
-    # var_size is used only inside the already-pragma'd
-    # "floating-point"/f4/f8 log-only block below (see pragma comment there)
-    # — its own assignment is therefore equally unobservable regardless of
-    # key, default, or value. Verified empirically.
-    var_size = metadata.get("variableSize", "")
 
     # HA MQTT time/date entities require ISO strings; Nibe firmware
     # stores these as raw integers (seconds / packed date).  Map to
@@ -1662,7 +1654,6 @@ def _detect_holding_entity(point: dict, metadata: dict) -> tuple[str, str]:
     if var_type == "date":
         return "number", "config"
     if var_type == "string":
-        # The log message content below has no effect on the return value.
         # pragma: no mutate start
         log_detection.debug(
             "Point %d has variableType='string' — text entities are not supported "
@@ -1672,9 +1663,8 @@ def _detect_holding_entity(point: dict, metadata: dict) -> tuple[str, str]:
         )
         # pragma: no mutate end
         return "text", "config"
-    # The condition below is log-only — neither branch returns, so no
-    # mutation of it is externally observable via the return value.
     # pragma: no mutate start
+    var_size = metadata.get("variableSize", "")
     if var_type == "floating-point" or var_size in ("f4", "f8"):
         log_detection.debug(
             "Point %d has variableType='floating-point' / variableSize='%s' — "
@@ -1696,24 +1686,24 @@ def _detect_holding_entity(point: dict, metadata: dict) -> tuple[str, str]:
         )
     # pragma: no mutate end
 
-    # VALUE_MAPPINGS is a static dict literal that always has a 'holding'
-    # key, so this default is dead code — verified empirically.
-    if point_id in VALUE_MAPPINGS.get("holding", {}):
+    if point_id in VALUE_MAPPINGS["holding"]:
         return "select", "config"
 
     # >=2 to match get_entity_options()'s own minimum — a single-pair
     # description would otherwise classify as "select" but then render
     # zero dropdown options (get_entity_options requires >=2 to return
     # anything), producing a genuinely empty select entity.
-    if len(parse_description_mapping(description) or {}) >= 2:
+    if len(parse_description_mapping(point.get("description")) or {}) >= 2:
         return "select", "config"
 
     if is_switch_candidate(metadata):
         return "switch", "config"
 
+    # pragma: no mutate start
     log_detection.debug(
         "Holding register %d: no explicit mapping or switch shape, defaulting to number", point_id
-    )  # pragma: no mutate
+    )
+    # pragma: no mutate end
     return "number", "config"
 
 
@@ -1728,17 +1718,7 @@ def _detect_input_entity(point: dict, metadata: dict) -> tuple[str, str]:
     _detect_holding_entity for the full explanation.
     """
     point_id = point.get("variableId")
-    # description is only used in the pragma'd final branch below (see its
-    # comment: all remaining branches return the identical result) — its
-    # key/default is unobservable regardless of value. Verified empirically.
-    description = point.get("description", "")
-    # var_type's default is only ever compared with `==` against known
-    # non-empty literals — any non-matching default is unobservable.
     var_type = metadata.get("variableType", "")
-    # var_size is used only inside the already-pragma'd float-check log-only
-    # block below — its own assignment is equally unobservable.
-    # Verified empirically.
-    var_size = metadata.get("variableSize", "")
 
     # Read-only time/date registers — expose as sensor (raw integer).
     if var_type == "time":
@@ -1746,7 +1726,6 @@ def _detect_input_entity(point: dict, metadata: dict) -> tuple[str, str]:
     if var_type == "date":
         return "sensor", "diagnostic"
     if var_type == "string":
-        # The log message content below has no effect on the return value.
         # pragma: no mutate start
         log_detection.debug(
             "Point %d has variableType='string' (input register) — "
@@ -1756,9 +1735,8 @@ def _detect_input_entity(point: dict, metadata: dict) -> tuple[str, str]:
         )
         # pragma: no mutate end
         return "sensor", "diagnostic"
-    # The condition below is log-only — no branch returns, so no mutation
-    # of it or the log content is externally observable via the return value.
     # pragma: no mutate start
+    var_size = metadata.get("variableSize", "")
     if var_type == "floating-point" or var_size in ("f4", "f8"):
         log_detection.debug(
             "Point %d has variableType='floating-point' / variableSize='%s' "
@@ -1776,24 +1754,20 @@ def _detect_input_entity(point: dict, metadata: dict) -> tuple[str, str]:
     # Auto-detect binary_sensor before VALUE_MAPPINGS and description checks —
     # a 2-state VALUE_MAPPINGS entry or a 2-pair description is still binary.
     if _is_auto_binary_sensor(point, metadata):
+        # pragma: no mutate start
         log_detection.debug(
             "Input register %d: auto-classified as binary_sensor (u8, 0-1, no unit)", point_id
-        )  # pragma: no mutate
+        )
+        # pragma: no mutate end
         return "binary_sensor", "diagnostic"
 
-    # These last two branches, and the function's final fallback below, all
-    # return the identical ("sensor", "diagnostic") — so no test can ever
-    # distinguish "branch taken" from "fell through to the default" by
-    # checking the return value. Mutations here are structurally equivalent.
-    if point.get("variableId") in VALUE_MAPPINGS.get("input", {}):  # pragma: no mutate
-        return "sensor", "diagnostic"
-
-    if "=" in description and "," in description:  # pragma: no mutate
-        return "sensor", "diagnostic"
-
+    # Anything else — a mapped or described multi-state register too — is a
+    # sensor; its labels come from get_value_mapping.
+    # pragma: no mutate start
     log_detection.debug(
         "Input register %d: classified as sensor (no further classification)", point_id
-    )  # pragma: no mutate
+    )
+    # pragma: no mutate end
     return "sensor", "diagnostic"
 
 
@@ -1805,50 +1779,30 @@ def _detect_input_entity(point: dict, metadata: dict) -> tuple[str, str]:
 def map_device_class(
     entity_type: str,
     unit: str,
-    title: str,
+    title: str | None,
 ) -> str | None:
     """Return the most appropriate HA device_class for an entity, or None.
 
-    Only sensor and binary_sensor support device_class (number always returns
-    None by policy — HA unit validation is strict and assignment without a
-    matching unit causes errors).
+    Only a sensor's class is derived (number always returns None by policy —
+    HA unit validation is strict and assignment without a matching unit
+    causes errors). A binary sensor's comes from BINARY_SENSOR_DEVICE_CLASSES,
+    by point.
 
     Resolution for sensor:
       Pass 1 — unambiguous unit lookup via _UNIT_TO_DEVICE_CLASS.
       Pass 2 — keyword scan via _SENSOR_KEYWORD_RULES.
       When both resolve, the unit wins (ground truth for physical dimension).
     """
-    # Mutating "binary_sensor"/"number" here is unobservable: either string
-    # still falls through into the identical early-return at the very next
-    # check below, so the caller sees None either way. Verified empirically.
-    if entity_type not in ("sensor", "binary_sensor", "number"):
-        return None
-
-    # binary_sensor: no keyword rules — device class assigned via overrides
-    # by point ID in the publisher layer, not here.
-    if entity_type in ("binary_sensor", "number"):
+    if entity_type != "sensor":
         return None
 
     unit_clean = clean_unit(unit)
-    # A non-'' falsy-title default is unobservable given the current
-    # _SENSOR_KEYWORD_RULES contain no keyword substring of it (e.g. no
-    # keyword contains 'x') — verified empirically. Fragile if a future
-    # keyword rule changes; re-verify then.
     title_lower = (title or "").lower()
 
-    # `and`->`or` here is unobservable: _UNCLASSIFIABLE_UNITS and
-    # _UNIT_TO_DEVICE_CLASS's keys never overlap, so
-    # _UNIT_TO_DEVICE_CLASS.get(unit_clean) returns None for any
-    # unclassifiable unit regardless of whether this guard let it through.
-    # Verified empirically (confirmed the key sets are disjoint).
     unit_class: str | None = None
     if unit_clean and unit_clean not in _UNCLASSIFIABLE_UNITS:
         unit_class = _UNIT_TO_DEVICE_CLASS.get(unit_clean)
 
-    # unit_class/keyword_class default to None but are only ever checked via
-    # `if unit_class:`/`if keyword_class:` — None vs '' are both falsy and
-    # otherwise only ever assigned a real (non-'') class string. Verified
-    # empirically.
     keyword_class: str | None = None
     for keywords, device_class in _SENSOR_KEYWORD_RULES:
         if any(kw in title_lower for kw in keywords):

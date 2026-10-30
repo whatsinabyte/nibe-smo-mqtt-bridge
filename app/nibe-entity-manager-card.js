@@ -51,8 +51,9 @@
 // hash (nibe/browser/card_version), and a card whose own build differs
 // reloads the page once — see handleCardVersionMessage. The bridge writes
 // the build into the copy it serves (nibe_lovelace._copy_card_file); left
-// as the placeholder, as in the repository and its tests, it is unknown.
-const CARD_BUILD = ((build) => (build.startsWith('__') ? null : build))('__NIBE_CARD_BUILD__');
+// as the placeholder, as in the repository and its tests, it is unknown
+// (NibeEntityManager._cardBuildFrom).
+const CARD_BUILD_PLACEHOLDER = '__NIBE_CARD_BUILD__';
 
 const TYPE_DISPLAY_NAMES = {
   binary_sensor: 'Binary Sensor',
@@ -146,7 +147,8 @@ class NibeEntityManager extends HTMLElement {
 
     this.mqttSetupDone = false;
     this.showMobileFilters = false;
-    this._cardBuild = CARD_BUILD;  // this copy's build, see handleCardVersionMessage
+    // this copy's build, see handleCardVersionMessage
+    this._cardBuild = NibeEntityManager._cardBuildFrom(CARD_BUILD_PLACEHOLDER);
   }
 
   /**
@@ -1521,6 +1523,14 @@ class NibeEntityManager extends HTMLElement {
   }
 
   /**
+   * This copy's build from its placeholder: the cache key the bridge wrote
+   * over it, or null while it is still the placeholder.
+   */
+  static _cardBuildFrom(build) {
+    return build.startsWith('__') ? null : build;
+  }
+
+  /**
    * What a card should do about the bridge's current card version.
    *
    * 'reload' when this copy's build differs and no reload towards that
@@ -2277,13 +2287,9 @@ class NibeEntityManager extends HTMLElement {
     this._exactMatchIds  = new Set();
     this._prefixMatchIds = new Set();
 
+    // Every entity carries an id, a title and a type (the metadata handlers
+    // and handlePointListMessage's stubs all set them).
     return Array.from(this.entities.values()).filter(entity => {
-      // Guard: skip malformed entities that have no id yet (e.g. stubs
-      // added by handlePointListMessage before metadata arrives).
-      if (entity.id === undefined && entity.point_id === undefined) return false;
-      // Normalise: ensure id is always set for downstream code.
-      if (entity.id === undefined) entity.id = entity.point_id;
-
       if (this.searchTerm) {
         const term      = this.searchTerm.trim();
         const termLower = term.toLowerCase();
@@ -2294,7 +2300,7 @@ class NibeEntityManager extends HTMLElement {
         // 10210+ (narrowing as more digits are typed) but not 11021.
         // Unit stays a substring match since it's a short label, not an
         // identifier (e.g. typing "C" should still find "°C").
-        const idStr      = entity.id != null ? entity.id.toString() : '';
+        const idStr      = entity.id.toString();
         const unitLower  = (entity.unit || '').toLowerCase();
         const modbus     = entity.modbusRegisterID != null
                            ? entity.modbusRegisterID.toString() : '';
@@ -2309,19 +2315,12 @@ class NibeEntityManager extends HTMLElement {
         const prefixMatch = !exactMatch && termLower !== ''
                           && (idStr.startsWith(termLower) || modbus.startsWith(termLower));
 
-        // Fuzzy match on title via Fuse.js (when loaded and query ≥ 3 chars).
-        // Falls back to substring matching if Fuse is not yet available.
-        const title = (entity.title || '').toLowerCase();
-        let titleMatch;
-        if (term.length >= 3 && this._fuse) {
-          // Fuse searches the full entity list — check if this entity is in results.
-          titleMatch = this._fuseResultIds
-            ? this._fuseResultIds.has(entity.id)
-            : title.includes(termLower);
-        } else {
-          // Fuse not loaded or query < 3 chars: exact substring on title.
-          titleMatch = title.includes(termLower);
-        }
+        // Fuzzy match on title via Fuse.js, whose results were computed above
+        // when it is loaded and the query is ≥ 3 chars; otherwise an exact
+        // substring on the title.
+        const titleMatch = this._fuseResultIds
+          ? this._fuseResultIds.has(entity.id)
+          : entity.title.toLowerCase().includes(termLower);
 
         if (!exactMatch && !prefixMatch && !titleMatch) return false;
         if (exactMatch) this._exactMatchIds.add(entity.id);
@@ -2384,8 +2383,8 @@ class NibeEntityManager extends HTMLElement {
         aVal = a.enabled ? 1 : 0;
         bVal = b.enabled ? 1 : 0;
       } else {
-        aVal = String(aVal || '').toLowerCase();
-        bVal = String(bVal || '').toLowerCase();
+        aVal = String(aVal).toLowerCase();
+        bVal = String(bVal).toLowerCase();
       }
 
       if (aVal === bVal) return 0;
@@ -2814,7 +2813,7 @@ class NibeEntityManager extends HTMLElement {
     // between selectAll() and the subsequent enableSelected()/disableSelected()
     // call could recompute filteredEntities with new entities — without this
     // snapshot the user might enable entities they never saw selected.
-    const snapshot = this.filteredEntities || [];
+    const snapshot = this.filteredEntities;
     snapshot.forEach(entity => {
       this.selectedIds.add(entity.id);
     });
@@ -3304,7 +3303,7 @@ class NibeEntityManager extends HTMLElement {
 
     this._sendSnapshotCmd({ action: 'save', name });
 
-    if (input)  input.value = '';
+    input.value = '';  // a name came from it
     if (msgEl) {
       msgEl.style.color = 'var(--ha-color-secondary-text,#888)';
       msgEl.textContent = `Saving "${name}"…`;
@@ -3381,13 +3380,11 @@ class NibeEntityManager extends HTMLElement {
       this.setModalContent('changelog-modal', 'Discovery Changelog',
         '<p style="color: var(--ha-color-secondary-text);">No changes recorded yet.</p>');
     } else {
+      // Entries come from _cleanChangelogEntry: every field is set, and
+      // each has a change or is a firmware update.
       const content = this.changelog.map(entry => {
-        const added     = Array.isArray(entry.added)   ? entry.added   : [];
-        const removed   = Array.isArray(entry.removed) ? entry.removed : [];
-        const changed   = Array.isArray(entry.changed) ? entry.changed : [];
-        const timestamp = entry.timestamp || Date.now() / 1000;
-        const source    = entry.source || 'firmware';
-        const trig      = entry.triggered_by || null;  // {id, title} or null
+        const { added, removed, changed, timestamp, source } = entry;
+        const trig = entry.triggered_by;  // {id, title} or null
 
         // Visual treatment by source:
         //   firmware        — blue accent + blue 'controller' badge (the
@@ -3399,9 +3396,6 @@ class NibeEntityManager extends HTMLElement {
         const isHaDisable      = source === 'ha_disabled';
         const isLearned        = source === 'learning';
         const isFirmwareChange = source === 'firmware_change';
-
-        if (added.length === 0 && removed.length === 0 && changed.length === 0
-            && !isFirmwareChange) return '';
 
         const formattedTime = this.formatDateTimeHA(new Date(timestamp * 1000));
 
@@ -3486,7 +3480,7 @@ class NibeEntityManager extends HTMLElement {
               <div class="changelog-changed" style="margin-bottom:4px;color:#8e24aa;overflow-wrap:break-word;word-break:break-word;">
                 ✏️ #${this._num(e.id, '?')}: ${this._esc(e.title || 'Unknown')}
                 <span style="font-size:11px;color:var(--ha-color-secondary-text,#888);margin-left:4px;">
-                  ${this._esc(e.changes || '')}</span>
+                  ${this._esc(e.changes)}</span>
               </div>
             `).join('')}
           </div>

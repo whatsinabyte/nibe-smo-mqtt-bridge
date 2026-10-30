@@ -162,6 +162,7 @@ try:
     def _make_nibe_point_id_strategy():
         from nibe_entity_detection import (
             _BINARY_SENSOR_EXCLUSIONS,
+            BINARY_SENSOR_DEVICE_CLASSES,
             DEVICE_CLASS_OVERRIDES,
             DIVISOR_OVERRIDES,
             ENTITY_TYPE_OVERRIDES,
@@ -181,6 +182,7 @@ try:
             | set(DIVISOR_OVERRIDES)
             | set(RANGE_OVERRIDES)
             | set(DEVICE_CLASS_OVERRIDES)
+            | set(BINARY_SENSOR_DEVICE_CLASSES)
             | SAFETY_READ_ONLY_POINTS
             | _BINARY_SENSOR_EXCLUSIONS
             | ESSENTIAL_POINTS
@@ -285,12 +287,6 @@ _REPO_DIR = os.path.dirname(_APP_DIR)
 # Candidate: sister app/ directory (new repo layout: tests/ + app/)
 if os.path.isdir(os.path.join(_APP_DIR, "..", "app")):
     _APP_DIR = os.path.normpath(os.path.join(_APP_DIR, "..", "app"))
-
-# Candidate: /mnt/project/ (dev container — production code lives there)
-if not os.path.exists(os.path.join(_APP_DIR, "menu_structure.yaml")) and os.path.isdir(
-    "/mnt/project"
-):
-    _APP_DIR = "/mnt/project"
 
 # Resolve menu_structure.yaml — lives in app/ relative to repo root.
 _MENU_YAML = os.path.join(_APP_DIR, "menu_structure.yaml")

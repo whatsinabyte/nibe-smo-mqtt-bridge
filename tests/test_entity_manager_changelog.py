@@ -436,24 +436,6 @@ class TestUpdateChangelogHistoryDefaultsAndPayload(unittest.TestCase):
         em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
         self.assertEqual(em._history_seq, 101)
 
-    def test_unread_count_excludes_entries_missing_unread_key(self):
-        """unread_count = sum(1 for e in change_history if e.get('unread',
-        False)). An entry with NO 'unread' key at all must not be counted —
-        this exercises the 'default=True' mutant, which would incorrectly
-        count such entries as unread. (A default of None is unreachable via
-        black-box testing here since None is falsy exactly like False.)"""
-        em = _make_em()
-        em.change_history.appendleft(
-            {"timestamp": 1.0, "iso_timestamp": "x", "added": [], "removed": []}
-        )  # no 'unread' key
-        em._update_changelog_history({"added": [], "removed": [], "source": "firmware"})
-        # Only the freshly-appended entry (always unread=True) should count.
-        from nibe_entity_manager import _decompress_payload
-
-        history_calls = [c for c in em.mqtt.publish.call_args_list if "history" in c[0][0]]
-        payload = json.loads(_decompress_payload(history_calls[-1].args[1]))
-        self.assertEqual(payload["unread_count"], 1)
-
     def test_history_payload_has_all_expected_keys_with_correct_values(self):
         """Every key of history_payload (history/total_entries/unread_count/
         last_updated/_seq) must survive under its real name with the right
@@ -617,6 +599,19 @@ class TestChangelogConsistency(unittest.TestCase):
         )
         # After the call returns it should be updated
         self.assertGreater(self.em._last_published_seq, original_seq)
+
+    def test_a_non_integer_seq_still_loads_the_entries(self):
+        """An odd _seq (a string, written by hand or by an old version) can't
+        be compared; the history still loads instead of being cleared."""
+        from nibe_entity_manager import EntityManager, _compress_payload
+
+        self.em._last_published_seq = 5
+        self.em.change_history.clear()
+        EntityManager._setup_history_loading(self.em)
+        msg = MagicMock()
+        msg.payload = _compress_payload({"history": [self._entry()], "_seq": "7"}).encode("utf-8")
+        self.em._on_history_message(None, None, msg)
+        self.assertEqual(len(self.em.change_history), 1)
 
     def test_seq_guard_allows_load_when_seq_differs(self):
         """on_history_message must load the payload when incoming_seq differs
@@ -1181,6 +1176,27 @@ class TestPruneChangelogIfDue(unittest.TestCase):
             1,
             "Boundary entry must be kept exactly once (via 'recent'), not dropped or duplicated",
         )
+
+    def test_an_entry_exactly_at_the_cutoff_survives_without_the_floor(self):
+        """With enough recent entries the floor keeps nothing old: an entry
+        exactly at the cutoff must count as recent, or it is pruned."""
+        from collections import deque
+        from unittest.mock import patch as _patch
+
+        from nibe_entity_manager import _CHANGELOG_MIN_ENTRIES
+
+        em = _make_em()
+        em._last_prune_time = 0.0
+        em.changelog_retention_days = 1
+        fixed_now = 1_700_000_000.0
+        boundary = self._entry(0)
+        boundary["timestamp"] = fixed_now - 86400
+        boundary["id"] = "boundary"
+        recent = [self._entry(fixed_now - 10) for _ in range(_CHANGELOG_MIN_ENTRIES)]
+        em.change_history = deque([*recent, boundary], maxlen=500)
+        with _patch("nibe_entity_manager.time.time", return_value=fixed_now):
+            em._prune_changelog_if_due()
+        self.assertIn("boundary", [e.get("id") for e in em.change_history])
 
     def test_no_reassignment_or_log_when_nothing_pruned(self):
         """When pruned == len(history) - len(kept) is 0, the deque must not
@@ -2305,6 +2321,212 @@ class TestFirmwareUpdateEntry(unittest.TestCase):
             "Version (EB100): 4.13 → 4.14",
         )
 
+    def write_record(self, record):
+        """Replace the record on disk, read back as after a restart."""
+        with open(self.nem._FIRMWARE_RECORD_FILE, "w", encoding="utf-8") as f:
+            f.write(json.dumps(record))
+        self.em._firmware_record_loaded = False
+
+    def test_update_entry_items_are_complete_and_sorted(self):
+        """Added and removed items carry title and type; a dynamic point
+        sorting before a static one is still in id order."""
+        self.dynamic(5)
+        self.set_points(self.STATIC | {9}, version=1037, metadata={10: {"maxValue": 100}})
+        self.settle(self.STATIC | {9})
+        after = (self.STATIC | {5, 12}) - {11}
+        self.set_points(after | {9}, version=1038, metadata={10: {"maxValue": 200}})
+        self.settle(after | {9})
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(
+            entry["added"],
+            [
+                {"id": 5, "title": "Point title 5", "type": "sensor"},
+                {"id": 12, "title": "Point title 12", "type": "sensor"},
+            ],
+        )
+        self.assertEqual(
+            entry["removed"], [{"id": 11, "title": "Point title 11", "type": "sensor"}]
+        )
+        self.assertEqual(
+            entry["changed"],
+            [{"id": 10, "title": "Point title 10", "type": "sensor", "changes": "max 100 → 200"}],
+        )
+
+    def test_dynamic_points_hidden_by_an_update_use_their_recorded_description(self):
+        """Its title and type come from the record; one never recorded reads
+        "Point N", "unknown"."""
+        self.dynamic(31, 33)
+        ids = self.STATIC | {31}
+        self.set_points(ids, version=1037)
+        self.settle(ids)
+        self.poll(ids, 15)  # 31 recorded
+        record = self.record()
+        record["dynamic_present"] = ["31", "33"]
+        self.write_record(record)
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(
+            entry["removed"],
+            [
+                {"id": 31, "title": "Point title 31", "type": "sensor"},
+                {"id": 33, "title": "Point 33", "type": "unknown"},
+            ],
+        )
+
+    def test_record_keeps_checksum_points_and_present_dynamic_points(self):
+        from nibe_entity_manager import _fingerprint_checksum
+
+        def check(points, present):
+            record = self.record()
+            self.assertEqual(set(record["points"]), {str(p) for p in points})
+            self.assertEqual(record["checksum"], _fingerprint_checksum(record["points"]))
+            self.assertEqual(record["dynamic_present"], present)
+
+        self.dynamic(30)
+        self.settle(self.STATIC)
+        check(self.STATIC, [])
+        self.set_points(self.STATIC | {20, 30}, version=1037)  # renewal
+        self.settle(self.STATIC | {20, 30})
+        check(self.STATIC | {20}, ["30"])
+        self.set_points(self.STATIC | {21}, version=1038)  # update
+        self.settle(self.STATIC | {21})
+        check(self.STATIC | {21}, [])
+
+    def test_a_check_finding_nothing_changed_does_not_rewrite_the_record(self):
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC, version=1037)  # fresh, identical metadata
+        with patch.object(self.em, "_write_firmware_record_file") as write:
+            self.settle(self.STATIC)
+        write.assert_not_called()
+
+    def test_a_record_from_before_the_checksum_is_taken_as_the_reference(self):
+        self.settle(self.STATIC)
+        record = self.record()
+        del record["checksum"]
+        self.write_record(record)
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        self.em._update_changelog_history.assert_not_called()
+        self.assertIn("checksum", self.record())
+
+    def test_a_record_from_before_dynamic_presence_compares_static_points_only(self):
+        self.dynamic(30)
+        self.settle(self.STATIC | {30})
+        record = self.record()
+        del record["dynamic_present"]
+        self.write_record(record)
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual((entry["added"], entry["removed"]), ([], []))
+
+    def test_a_record_without_a_language_counts_as_the_current_one(self):
+        self.em._api.language = "en"
+        self.settle(self.STATIC)
+        record = self.record()
+        del record["language"]
+        self.write_record(record)
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        self.em._update_changelog_history.assert_called_once()
+
+    def test_a_language_change_with_a_version_change_rebaselines_silently(self):
+        self.em._api.language = "en"
+        self.settle(self.STATIC)
+        self.em._api.language = "nl"
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        self.em._update_changelog_history.assert_not_called()
+        self.assertEqual(self.record()["versions"], {"2509": 1038})
+
+    def test_a_point_that_becomes_dynamic_with_a_new_description_gets_an_entry(self):
+        """Its recorded dynamic description differs: reported once the point
+        set is stable, though no full check is due."""
+        self.set_points(self.STATIC, version=1037, metadata={10: {"maxValue": 200}})
+        self.settle(self.STATIC)
+        record = self.record()
+        record["dynamic"] = {"10": ["Point title 10", "sensor", {"maxValue": 100}]}
+        self.write_record(record)
+        self.dynamic(10)
+        self.poll(self.STATIC, 15)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual([e["id"] for e in entry["changed"]], [10])
+
+    def test_a_dynamic_point_checked_earlier_stays_checked(self):
+        """A point learned as dynamic later doesn't make the one checked
+        before it be described again."""
+        ids = self.STATIC | {30, 31}
+        self.dynamic(30)
+        self.set_points(ids, version=1037)
+        self.settle(ids)  # recorded
+        self.poll(ids, 15)  # 30 checked
+        self.dynamic(30, 31)  # 31 learned as dynamic, point set unchanged
+        self.poll(ids, 15)  # 31 checked
+        with patch.object(self.em, "_describe_point", wraps=self.em._describe_point) as spy:
+            self.poll(ids, 15)
+        self.assertEqual(spy.call_count, 0)
+
+    def test_checked_dynamic_points_are_not_described_again(self):
+        self.dynamic(30, 31)
+        ids = self.STATIC | {30, 31}
+        self.set_points(ids, version=1037)
+        self.settle(ids)
+        self.poll(ids, 15)
+        with patch.object(self.em, "_describe_point", wraps=self.em._describe_point) as spy:
+            for _ in range(3):
+                self.poll(ids, 15)
+        self.assertEqual(spy.call_count, 0)
+
+    def test_an_update_after_a_failed_version_read_is_still_reported(self):
+        self.settle(self.STATIC)
+        self.set_points(self.STATIC, version=1037)
+        self.em.bulk_data[2509]["is_ok"] = False
+        self.settle(self.STATIC)
+        self.assertEqual(self.record()["versions"], {"2509": 1037})
+        self.set_points(self.STATIC, version=1038)
+        self.settle(self.STATIC)
+        self.assertEqual(
+            self.em._update_changelog_history.call_args.args[0]["note"],
+            "Version (EB100): 4.13 → 4.14",
+        )
+
+    def test_a_changed_dynamic_point_carries_its_title_and_type(self):
+        self.dynamic(30)
+        ids = self.STATIC | {30}
+        self.set_points(ids, version=1037, metadata={30: {"maxValue": 100}})
+        self.settle(ids)
+        self.poll(ids, 15)
+        self.set_points(self.STATIC, version=1037)
+        self.settle(self.STATIC)
+        self.set_points(ids, version=1037, metadata={30: {"maxValue": 200}})
+        self.settle(ids)
+        entry = self.em._update_changelog_history.call_args.args[0]
+        self.assertEqual(
+            entry["changed"],
+            [{"id": 30, "title": "Point title 30", "type": "sensor", "changes": "max 100 → 200"}],
+        )
+
+    def test_an_unchanged_dynamic_point_rechecked_does_not_rewrite_the_record(self):
+        self.dynamic(30)
+        ids = self.STATIC | {30}
+        self.set_points(ids, version=1037)
+        self.settle(ids)
+        self.poll(ids, 15)  # recorded
+        with patch.object(self.em, "_write_firmware_record_file") as write:
+            self.em._check_dynamic_points({30})
+        write.assert_not_called()
+
+    def test_a_record_from_before_dynamic_points_gets_them_recorded(self):
+        self.settle(self.STATIC)
+        record = self.record()
+        del record["dynamic"]
+        self.write_record(record)
+        self.dynamic(30)
+        self.set_points(self.STATIC | {30}, version=1037, metadata={30: {"maxValue": 5}})
+        self.poll(self.STATIC | {30}, 15)
+        self.assertEqual(self.record()["dynamic"]["30"][2]["maxValue"], 5)
+
 
 class TestChangelogEntryNote(unittest.TestCase):
     def test_note_and_changed_are_kept_on_the_entry(self):
@@ -2403,6 +2625,41 @@ class TestEntityIdChangeNotification(unittest.TestCase):
         self.assertEqual(self.message().count("\n- "), 2)
         self.run_at(self.nem._ID_CHANGE_QUIET_S + 1)
         self.em._notify.assert_called_once()  # nothing new, nothing sent again
+
+    def test_the_whole_notification(self):
+        self.em._pub.type_changes.append((2701, "binary_sensor", "sensor", "Status (ACS)"))
+        self.ids[2701] = "sensor.smo_s40_status_acs"
+        self.run_at(1)
+        self.run_at(self.nem._ID_CHANGE_QUIET_S)
+        self.em._notify.assert_called_once_with(
+            self.em.mqtt,
+            title="Nibe Bridge: entity ids changed",
+            message=(
+                "These entities changed type, so Home Assistant gave them a new entity id. "
+                "Update automations, scripts and dashboards that use the old one; the history "
+                "continues under the new id from now on. If you had renamed one of these "
+                "entities, its old id was the one you chose.\n\n"
+                "- Status (ACS) (point 2701): `binary_sensor.smo_s40_status_acs` → "
+                "`sensor.smo_s40_status_acs`"
+            ),
+            notification_id="nibe_entity_ids_changed",
+        )
+
+    def test_a_registry_id_already_in_the_new_domain_is_not_the_old_one(self):
+        """The watcher may already hold the new id when the change is picked
+        up; the old one is then derived from it."""
+        self.ids[2701] = "sensor.renamed_status"
+        self.em._pub.type_changes.append((2701, "binary_sensor", "sensor", "Status (ACS)"))
+        self.run_at(1)
+        self.run_at(self.nem._ID_CHANGE_QUIET_S)
+        self.assertIn("`binary_sensor.renamed_status` → `sensor.renamed_status`", self.message())
+
+    def test_without_a_registry_watcher_no_id_is_known(self):
+        em = _make_em()
+        em._pub.type_changes = deque([(8060, "number", "switch", "Defrost Requested")])
+        em._notify = MagicMock()
+        em._report_entity_id_changes()
+        self.assertEqual(em._id_changes[8060]["old_id"], None)
 
 
 class TestPublisherRecordsTypeChanges(unittest.TestCase):

@@ -197,19 +197,16 @@ describe('_renderChangelogContent() — source variants', () => {
   });
 
   it('renders the firmware_change source with its note banner', () => {
-    // `note` is not part of the sanitised changelog entry shape produced by
-    // _cleanChangelogEntry() (see the MQTT path above), but
-    // _renderChangelogContent() still reads entry.note directly off
-    // whatever is in this.changelog — set it directly to exercise that
-    // rendering branch without going through the sanitizer.
     const { el } = createCard();
     el.changelog = [
-      changelogEntry({
-        source: 'firmware_change',
-        added: [{ id: 9, title: 'Changed pt', type: 'sensor' }],
-        removed: [],
-        note: 'Register type changed unexpectedly',
-      }),
+      el._cleanChangelogEntry(
+        changelogEntry({
+          source: 'firmware_change',
+          added: [{ id: 9, title: 'Changed pt', type: 'sensor' }],
+          removed: [],
+          note: 'Register type changed unexpectedly',
+        })
+      ),
     ];
     el.showChangelog();
     const html = el.shadowRoot.getElementById('changelog-content').innerHTML;

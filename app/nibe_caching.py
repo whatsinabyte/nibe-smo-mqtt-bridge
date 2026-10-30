@@ -1,16 +1,12 @@
 """
 nibe_caching.py
 ================
-ValueCache and LRUCache — generic, self-contained caching primitives used
-by EntityManager. Extracted from nibe_entity_manager.py because neither
-class has any dependency on EntityManager or the bridge's domain model;
-they are general-purpose data structures that happened to be defined
-alongside their only consumer.
+LRUCache — a generic, self-contained caching primitive used by
+EntityManager. Extracted from nibe_entity_manager.py because it has no
+dependency on EntityManager or the bridge's domain model.
 
 Responsibilities
 -----------------
-- ValueCache: rate-limits MQTT state publishes via a change-threshold and
-  minimum-interval guard.
 - LRUCache: a generic least-recently-used cache with eviction and hit/miss
   statistics.
 
@@ -20,90 +16,8 @@ What this module does NOT do
 """
 
 import threading
-import time
 from collections import OrderedDict
 from typing import Any
-
-# ============================================================================
-# VALUE CACHE
-# ============================================================================
-
-
-class ValueCache:
-    """Rate-limits MQTT state publishes via a change-threshold and minimum interval.
-
-    Without this cache every bulk fetch would republish every entity on every
-    poll cycle regardless of whether the value changed, producing unnecessary
-    MQTT traffic and HA history entries.
-
-    _cache stores the last-published raw integer value per point_id.
-    _last_publish stores the timestamp of the last publish per point_id.
-    These are kept separate so _cache stays a simple int lookup.
-    """
-
-    __slots__ = ("_cache", "_last_publish", "_lock")
-
-    def __init__(self) -> None:
-        self._cache: dict = {}  # point_id → last published raw int value
-        self._last_publish: dict = {}  # point_id → timestamp of last publish
-        self._lock = threading.Lock()
-
-    def should_publish(
-        self,
-        point_id: int,
-        raw_value: int,
-        threshold: int,
-        force: bool = False,
-        min_interval: int = 30,
-    ) -> bool:
-        """Return True if the value warrants publishing to MQTT.
-
-        Only a changed value does: by at least threshold when that is set,
-        by anything at all when it is 0 — what EntityManager passes, since
-        the firmware's 'change' metadata is a setting's step, not a publish
-        threshold.
-        An unchanged value is never republished — the state is retained, and
-        Home Assistant keeps it until a new one arrives. It used to be
-        republished every min_interval with threshold 0, which with menus
-        mode's ~900 entities meant hundreds of identical states every poll
-        for HA to process. force (a readback, a republish after a reconnect)
-        always publishes.
-        """
-        current_time = time.time()
-        with self._lock:
-            if force or point_id not in self._cache:
-                self._cache[point_id] = raw_value
-                self._last_publish[point_id] = current_time
-                return True
-
-            if (
-                point_id in self._last_publish
-                and current_time - self._last_publish[point_id] < min_interval
-                and not force
-            ):
-                return False
-
-            old_value = self._cache[point_id]
-            if raw_value != old_value and abs(raw_value - old_value) >= threshold:
-                self._cache[point_id] = raw_value
-                self._last_publish[point_id] = current_time
-                return True
-        return False
-
-    def update(self, point_id: int, raw_value: int) -> None:
-        """Update cached value without triggering a publish decision."""
-        with self._lock:
-            self._cache[point_id] = raw_value
-
-    def discard(self, point_id: int) -> None:
-        """Remove all cached state for a point (called on entity disable)."""
-        with self._lock:
-            self._cache.pop(point_id, None)
-            self._last_publish.pop(point_id, None)
-
-    def __len__(self) -> int:
-        with self._lock:
-            return len(self._cache)
 
 
 class LRUCache:
@@ -118,8 +32,7 @@ class LRUCache:
     ``_get_cached_entity_type``) and from the write/management executor
     threads (``disable_entity`` → ``_deindex_point``). ``put()`` in
     particular does a check-then-evict-then-insert sequence that is not
-    atomic without a lock — mirrors the locking already used by ``ValueCache``
-    above for the same reason.
+    atomic without a lock.
 
     Parameters
     ----------
@@ -154,9 +67,6 @@ class LRUCache:
                 self._cache.pop(key)
             elif len(self._cache) >= self.max_size:
                 # Remove least recently used item
-                # last=None behaves identically to last=False (OrderedDict
-                # checks truthiness) — not pragma'd, last=True on this same
-                # line evicts from the wrong end and is real/tested.
                 self._cache.popitem(last=False)
 
             self._cache[key] = value

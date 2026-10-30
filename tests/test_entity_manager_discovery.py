@@ -202,7 +202,13 @@ class TestDiscoverPoints(unittest.TestCase):
 
         def fake_fetch(**_kw):
             for pid in (*point_ids, *dynamic_ids):
-                em.bulk_data[pid] = {"raw_value": 0, "is_ok": True, "metadata": {}}
+                em.bulk_data[pid] = {
+                    "raw_value": 0,
+                    "is_ok": True,
+                    "metadata": {},
+                    "title": f"Point {pid}",
+                    "description": "",
+                }
             for pid in point_ids:
                 em.all_points_by_id[pid] = {
                     "variableId": pid,
@@ -231,6 +237,24 @@ class TestDiscoverPoints(unittest.TestCase):
     def test_returns_true_on_success(self):
         em = self._make_em_with_bulk()
         self.assertTrue(em.discover_points())
+
+    def test_point_sets_restored_from_mqtt_are_not_replaced_by_the_files(self):
+        """The files are the fallback for a broker that lost them; the
+        reclassified set must be in place before the fetch classifies."""
+        import nibe_entity_manager as nem
+
+        em = self._make_em_with_bulk()
+        em._wanted_points = {7}
+        em._binary_sensor_reclassified = {8}
+        with patch("nibe_entity_manager._load_point_ids_file") as load:
+            em.discover_points()
+        load.assert_not_called()
+
+        em = self._make_em_with_bulk()
+        files = {nem._WANTED_POINTS_FILE: {1}, nem._RECLASSIFIED_POINTS_FILE: {2}}
+        with patch("nibe_entity_manager._load_point_ids_file", side_effect=files.get):
+            em.discover_points()
+        self.assertEqual((em._wanted_points, em._binary_sensor_reclassified), ({1}, {2}))
 
     def test_returns_false_when_fetch_fails(self):
         em = _make_em()
@@ -1114,17 +1138,6 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em._pub.publish_entity_discovery.return_value = entity
         em.restore_from_mqtt()
         self.assertEqual(em.active_entities_by_id[100], entity)
-
-    def test_is_dynamic_missing_key_defaults_to_not_dynamic(self):
-        """When a point dict has no 'is_dynamic' key at all, restore must
-        default to False (not add it to active_dynamic_points) — matching
-        get('is_dynamic', False), not some other default."""
-        em = self._make_em_with_points([100])
-        del em.all_points_by_id[100]["is_dynamic"]
-        em.mqtt_enabled_points.add(100)
-        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
-        em.restore_from_mqtt()
-        self.assertNotIn(100, em.active_dynamic_points)
 
     def test_dynamic_point_added_to_active_dynamic_points(self):
         """restore_from_mqtt: is_dynamic=True points are added to

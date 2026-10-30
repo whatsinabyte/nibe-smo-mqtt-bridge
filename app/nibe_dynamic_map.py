@@ -21,19 +21,18 @@ DynamicPointMap             — the table itself; load/save, lookup, update
 
 The table's data model and mutation logic are pure (``serialise()`` /
 ``deserialise()``); ``to_file()`` / ``from_file()`` are the only I/O in this
-module and are thin, self-contained wrappers around ``json`` + ``os.replace``
-for atomic persistence — callers may use them directly or serialise/
+module and are thin wrappers around ``json`` and nibe_utils'
+atomic_write_text — callers may use them directly or serialise/
 deserialise themselves and handle storage elsewhere. The only external
 imports are from the standard library and nibe_utils.
 """
 
-import contextlib
 import json
 import logging
-import os
-import tempfile
 from collections.abc import ItemsView, ValuesView
 from dataclasses import dataclass, field
+
+from nibe_utils import atomic_write_text
 
 log = logging.getLogger("nibe.dynamic_map")
 
@@ -138,7 +137,7 @@ class DynamicPointEntry:
             dynamic_points_by_value={
                 int(k): list(v) for k, v in d.get("dynamic_points_by_value", {}).items()
             },
-            firmware_removed=bool(d.get("firmware_removed", False)),
+            firmware_removed=bool(d.get("firmware_removed")),
         )
 
 
@@ -243,9 +242,9 @@ class DynamicPointMap:
             pts = entry.dynamic_points_for_value(current_value)
             if pts:
                 active.update(pts)
-        log.debug(
-            "DynamicPointMap: expected active set = %d points", len(active)
-        )  # pragma: no mutate
+        # pragma: no mutate start
+        log.debug("DynamicPointMap: expected active set = %d points", len(active))
+        # pragma: no mutate end
         return active
 
     # ------------------------------------------------------------------
@@ -290,18 +289,11 @@ class DynamicPointMap:
             all_vals: set[int] = set(range(min_val, max_val + 1))
             if not all_vals:
                 all_vals = {0, 1}
-            # processed_values/is_controlling/firmware_removed here are
-            # explicitly passed but identical to DynamicPointEntry's own
-            # field defaults (set(), None, False respectively) — dropping
-            # any of them entirely is unobservable.
             entry = DynamicPointEntry(
                 point_id=point_id,
                 title=point.get("display_title", f"Point {point_id}"),
                 entity_type=etype,
-                processed_values=set(),
                 unprocessed_values=all_vals,
-                is_controlling=None,
-                firmware_removed=False,
             )
             self._table[point_id] = entry
             added += 1
@@ -317,9 +309,9 @@ class DynamicPointMap:
         entry = self._table.get(point_id)
         if entry and not entry.firmware_removed:
             entry.firmware_removed = True
-            log.debug(
-                "DynamicPointMap: point %d marked firmware_removed", point_id
-            )  # pragma: no mutate
+            # pragma: no mutate start
+            log.debug("DynamicPointMap: point %d marked firmware_removed", point_id)
+            # pragma: no mutate end
 
     def restore_from_bulk(self, bulk_point_ids: set[int]) -> set[int]:
         """Clear firmware_removed for points that have reappeared in a bulk fetch.
@@ -336,9 +328,9 @@ class DynamicPointMap:
             if entry.firmware_removed and point_id in bulk_point_ids:
                 entry.firmware_removed = False
                 restored.add(point_id)
-                log.debug(
-                    "DynamicPointMap: point %d restored (reappeared in bulk)", point_id
-                )  # pragma: no mutate
+                # pragma: no mutate start
+                log.debug("DynamicPointMap: point %d restored (reappeared in bulk)", point_id)
+                # pragma: no mutate end
         return restored
 
     def mark_absent_as_firmware_removed(self, bulk_point_ids: set[int]) -> set[int]:
@@ -461,9 +453,9 @@ class DynamicPointMap:
         Debug use only.  Called by the flush management button, which is
         only registered when the debug_mode option is enabled.
         """
-        log.info(
-            "DynamicPointMap: FLUSH requested — resetting all entries to unprocessed"
-        )  # pragma: no mutate
+        # pragma: no mutate start
+        log.info("DynamicPointMap: FLUSH requested — resetting all entries to unprocessed")
+        # pragma: no mutate end
         for entry in self._table.values():
             meta = all_points_by_id.get(entry.point_id, {}).get("metadata", {})
             min_val = meta.get("minValue", 0)
@@ -477,9 +469,9 @@ class DynamicPointMap:
             entry.dynamic_points_by_value = {}
         # Add any new entries that appeared since the table was built
         self.populate_from_bulk(all_points_by_id, entity_types)
-        log.info(
-            "DynamicPointMap: flush complete — %d entries reset", len(self._table)
-        )  # pragma: no mutate
+        # pragma: no mutate start
+        log.info("DynamicPointMap: flush complete — %d entries reset", len(self._table))
+        # pragma: no mutate end
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -500,9 +492,9 @@ class DynamicPointMap:
         try:
             raw = json.loads(json_str)
             if not isinstance(raw, dict):
-                log.warning(
-                    "DynamicPointMap.deserialise: expected dict, got %s", type(raw)
-                )  # pragma: no mutate
+                # pragma: no mutate start
+                log.warning("DynamicPointMap.deserialise: expected dict, got %s", type(raw))
+                # pragma: no mutate end
                 return 0
             loaded = 0
             for pid_str, entry_dict in raw.items():
@@ -536,31 +528,13 @@ class DynamicPointMap:
         """
         if path is None:
             path = _FILE_FALLBACK
-        # Unique temp name per write, same as nibe_entity_manager's
-        # _atomic_write_text (see its docstring): a fixed path + ".tmp" lets
-        # two concurrent writers truncate each other's half-written file and
-        # rename the mixture into place. Most callers hold EntityManager's
-        # _em_lock, but not all (discover_points persists unlocked), and the
-        # ARCHITECTURE.md durability guarantee covers this file too.
-        tmp = None
         try:
-            fd, tmp = tempfile.mkstemp(
-                dir=os.path.dirname(path) or ".",
-                prefix=f".{os.path.basename(path)}.",
-                suffix=".tmp",
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as f:  # pragma: no mutate
-                f.write(self.serialise())
-            os.chmod(tmp, 0o644)  # mkstemp's 0600 -> what a plain open() gave
-            os.replace(tmp, path)
-            log.debug("DynamicPointMap: saved to %s", path)  # pragma: no mutate
-            return True
+            atomic_write_text(path, self.serialise())
         except OSError as e:
-            if tmp is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp)
             log.warning("DynamicPointMap: could not write to %s: %s", path, e)  # pragma: no mutate
             return False
+        log.debug("DynamicPointMap: saved to %s", path)  # pragma: no mutate
+        return True
 
     def from_file(self, path: str | None = None) -> int:
         """Load the table from a JSON file.  Returns number of entries loaded.
@@ -574,9 +548,9 @@ class DynamicPointMap:
             with open(path, encoding="utf-8") as f:  # pragma: no mutate
                 data = f.read()
             count = self.deserialise(data)
-            log.info(
-                "DynamicPointMap: loaded %d entries from file %s", count, path
-            )  # pragma: no mutate
+            # pragma: no mutate start
+            log.info("DynamicPointMap: loaded %d entries from file %s", count, path)
+            # pragma: no mutate end
             return count
         except FileNotFoundError:
             log.debug("DynamicPointMap: no file at %s (first run)", path)  # pragma: no mutate

@@ -317,3 +317,104 @@ class TestTriggeredBy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDynamicPartsMutationGaps(unittest.TestCase):
+    """Edges of the dynamic-learning parts the tests above left open."""
+
+    def test_a_poll_opened_window_lasts_the_post_write_duration(self):
+        em = _make_em()
+        with patch("nibe_entity_manager.time.time", return_value=1_000.0):
+            window = em._open_learning_window(5, True, 1)
+        self.assertEqual(window.until, 1_000.0 + em._post_write_duration)
+
+    def test_only_disappearances_dont_mark_the_window_as_having_seen_points(self):
+        from nibe_attribution import ScanWindow
+
+        em = _make_em()
+        em._window = ScanWindow(point=5, until=9e12)
+        with patch.object(em, "_publish_dynamic_changes"):
+            em._handle_dynamic_changes(em._window, [], {30}, True)
+        self.assertFalse(em._window.saw_points)
+
+    def test_a_block_verdict_blocks_attribution_for_the_grace_period(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1, 2}
+        with patch("nibe_entity_manager.time.time", return_value=1_000.0):
+            self.assertIsNone(em._attributable_poll({"1": {}}))  # 2 went missing
+        self.assertEqual(em._attribution_blocked_until, 1_000.0 + nem._ABSENT_GRACE_S)
+        with patch("nibe_entity_manager.time.time", return_value=1_000.0 + 15):
+            self.assertIsNone(em._attributable_poll({"1": {}, "2": {}, "3": {}}))
+
+    def test_a_key_that_is_not_a_point_id_is_skipped(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em.published_configs = {1}
+        self.assertEqual(em._attributable_poll({"meta": {}, "1": {}, "2": {}}), {1, 2})
+
+    def test_a_learned_nothing_outcome_carries_only_its_own_shown_points(self):
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em.dynamic_point_map._table[1] = DynamicPointEntry(
+            point_id=1,
+            title="S",
+            entity_type="switch",
+            processed_values={0},
+            unprocessed_values={1},
+            dynamic_points_by_value={0: [30]},
+        )
+        em.active_dynamic_points.update({30, 40})
+        em.bulk_data.update({30: {}, 40: {}})
+        with (
+            patch.object(em.dynamic_point_map, "record_outcome") as record,
+            patch.object(em, "_persist_dynamic_map"),
+        ):
+            em._record_learning_window(1, 1, saw_points=False)
+        record.assert_called_once_with(1, 1, [30])
+
+    def test_a_write_with_no_learning_window_open_does_not_wait(self):
+        em = _make_em()
+        em._learning_window_ended.set()
+        with patch.object(em._learning_window_ended, "wait") as wait:
+            em._wait_for_learning_window(5, "c")
+        wait.assert_not_called()
+
+    def test_absent_for_exactly_the_grace_period_since_startup_is_removed(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em._absent_at_startup = {9: 1_000.0}
+        with (
+            patch("nibe_entity_manager.time.time", return_value=1_000.0 + nem._ABSENT_GRACE_S),
+            patch.object(em, "_clear_retained_discovery") as clear,
+        ):
+            em._expire_absent_at_startup(set())
+        clear.assert_called_once_with(9)
+
+    def test_a_safety_read_only_point_is_indexed_as_not_writable(self):
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS
+
+        em = _make_em()
+        pid = min(SAFETY_READ_ONLY_POINTS)
+        meta = {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"}
+        point = em._classify_and_index(pid, meta, "Safe", "", False)
+        self.assertIs(point["is_writable"], False)
+        self.assertIs(em._classify_and_index(4, meta, "T", "", True)["is_writable"], True)
+
+    def test_deferred_discovery_without_entities_does_not_wait_for_the_mode(self):
+        """Reading the applied mode waits for a retained message; with no
+        entities on the broker there is nothing to compare it with."""
+        em = _make_em()
+        em._api.fetch_device_info.return_value = None
+        with (
+            patch.object(em, "discover_points", return_value=True),
+            patch.object(em, "scan_mqtt_discovery", return_value=set()),
+            patch.object(em, "read_applied_mode") as read,
+            patch.object(em, "apply_mode"),
+        ):
+            em.complete_deferred_discovery("essential")
+        read.assert_not_called()

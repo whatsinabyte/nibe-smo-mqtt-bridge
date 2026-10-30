@@ -605,6 +605,14 @@ class TestRunCurl(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("authenticated", result["summary"])
 
+    def test_the_http_code_is_found_after_other_output(self):
+        from nibe_connectivity_check import _run_curl
+
+        with patch(
+            "subprocess.run", return_value=self._curl_result(stdout="* note\nHTTP_CODE:200")
+        ):
+            self.assertEqual(_run_curl("https://h/api", None, None)["http_code"], 200)
+
     def test_auth_header_401_is_not_ok_and_names_credentials(self):
         """With real credentials supplied, a 401 is a genuine, actionable
         finding — must be reported as a credentials problem, not silently

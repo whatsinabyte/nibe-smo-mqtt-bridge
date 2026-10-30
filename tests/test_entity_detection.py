@@ -461,47 +461,6 @@ class TestCreateEntityIdProperties(unittest.TestCase):
             self.assertNotEqual(create_entity_id(pid1), create_entity_id(pid2))
 
 
-class TestGetRegisterTypeProperties(unittest.TestCase):
-    """Hypothesis properties for get_register_type."""
-
-    @given(st.text())
-    def test_never_raises(self, modbus_type):
-        from nibe_entity_detection import get_register_type
-
-        get_register_type({"metadata": {"modbusRegisterType": modbus_type}})
-
-    @given(st.text())
-    def test_returns_only_valid_values(self, modbus_type):
-        from nibe_entity_detection import get_register_type
-
-        result = get_register_type({"metadata": {"modbusRegisterType": modbus_type}})
-        self.assertIn(result, ("input", "holding", None))
-
-    def test_input_in_type_returns_input(self):
-        """Any modbus type containing 'INPUT' returns 'input'."""
-        from nibe_entity_detection import get_register_type
-
-        for modbus_type in ["MODBUS_INPUT_REGISTER", "INPUT", "MY_INPUT_TYPE"]:
-            result = get_register_type({"metadata": {"modbusRegisterType": modbus_type}})
-            self.assertEqual(result, "input", f"Failed for {modbus_type!r}")
-
-    def test_holding_in_type_returns_holding(self):
-        """HOLDING (without INPUT) → 'holding'."""
-        from nibe_entity_detection import get_register_type
-
-        for modbus_type in ["MODBUS_HOLDING_REGISTER", "HOLDING", "MY_HOLDING_TYPE"]:
-            result = get_register_type({"metadata": {"modbusRegisterType": modbus_type}})
-            self.assertEqual(result, "holding", f"Failed for {modbus_type!r}")
-
-    def test_neither_returns_none(self):
-        """No INPUT or HOLDING → None."""
-        from nibe_entity_detection import get_register_type
-
-        for modbus_type in ["", "MODBUS_NO_REGISTER", "COIL", "DISCRETE"]:
-            result = get_register_type({"metadata": {"modbusRegisterType": modbus_type}})
-            self.assertIsNone(result, f"Failed for {modbus_type!r}")
-
-
 class TestParseDescriptionMappingProperties(unittest.TestCase):
     """Hypothesis properties for parse_description_mapping."""
 
@@ -779,15 +738,11 @@ class TestDetectEntityTypeProperties(unittest.TestCase):
 class TestGetValueMappingProperties(unittest.TestCase):
     """Hypothesis properties for get_value_mapping."""
 
-    @given(
-        _nibe_point_id,
-        st.text(max_size=100),
-        st.one_of(st.none(), st.just("input"), st.just("holding")),
-    )
-    def test_never_raises(self, point_id, description, register_type):
+    @given(_nibe_point_id, st.text(max_size=100))
+    def test_never_raises(self, point_id, description):
         from nibe_entity_detection import get_value_mapping
 
-        get_value_mapping(point_id, {"description": description}, register_type)
+        get_value_mapping(point_id, {"description": description})
 
     @given(_nibe_point_id, st.text(max_size=100))
     def test_returns_dict_or_none(self, point_id, description):
@@ -1323,37 +1278,6 @@ class TestMapDeviceClassUsesCleanUnit(unittest.TestCase):
 
 
 # ===========================================================================
-# 4. get_register_type
-# ===========================================================================
-
-
-class TestGetRegisterType(unittest.TestCase):
-    def setUp(self):
-        from nibe_entity_detection import get_register_type
-
-        self.fn = get_register_type
-
-    def test_holding(self):
-        self.assertEqual(
-            self.fn({"metadata": {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"}}), "holding"
-        )
-
-    def test_input(self):
-        self.assertEqual(
-            self.fn({"metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER"}}), "input"
-        )
-
-    def test_unknown(self):
-        self.assertIsNone(self.fn({"metadata": {"modbusRegisterType": "X"}}))
-
-    def test_no_metadata(self):
-        self.assertIsNone(self.fn({}))
-
-    def test_empty_meta(self):
-        self.assertIsNone(self.fn({"metadata": {}}))
-
-
-# ===========================================================================
 # 5. parse_description_mapping
 # ===========================================================================
 
@@ -1500,10 +1424,9 @@ class TestApiSpecConformance(unittest.TestCase):
     """
 
     def setUp(self):
-        from nibe_entity_detection import detect_entity_type, get_register_type
+        from nibe_entity_detection import detect_entity_type
 
         self.detect_type = detect_entity_type
-        self.get_reg_type = get_register_type
 
     def _point(
         self,
@@ -1545,16 +1468,6 @@ class TestApiSpecConformance(unittest.TestCase):
         Bridge must degrade gracefully rather than crashing."""
         entity_type, _ = self.detect_type(self._point("ERR_UNKNOWN"))
         self.assertIsInstance(entity_type, str)
-
-    def test_get_register_type_no_register_returns_none(self):
-        """get_register_type uses substring matching — MODBUS_NO_REGISTER
-        contains neither INPUT nor HOLDING so must return None."""
-        result = self.get_reg_type({"metadata": {"modbusRegisterType": "MODBUS_NO_REGISTER"}})
-        self.assertIsNone(result)
-
-    def test_get_register_type_err_unknown_returns_none(self):
-        result = self.get_reg_type({"metadata": {"modbusRegisterType": "ERR_UNKNOWN"}})
-        self.assertIsNone(result)
 
     # ── variableType: binary ──────────────────────────────────────────────────
 
@@ -2696,7 +2609,7 @@ class TestGetValueMappingEdgeCases(unittest.TestCase):
 
         # Use a point_id known to be in VALUE_MAPPINGS under 'holding'
         for pid in VALUE_MAPPINGS.get("holding", {}):
-            result = get_value_mapping(pid, {}, register_type="holding")
+            result = get_value_mapping(pid, {})
             self.assertIsNotNone(result)
             return
         self.skipTest("No holding VALUE_MAPPINGS entries available")
@@ -2705,15 +2618,15 @@ class TestGetValueMappingEdgeCases(unittest.TestCase):
         from nibe_entity_detection import get_value_mapping
 
         point_data = {"description": "0=Off,1=On,2=Auto"}
-        result = get_value_mapping(99999, point_data, register_type=None)
+        result = get_value_mapping(99999, point_data)
         self.assertEqual(result[0], "Off")
         self.assertEqual(result[1], "On")
 
     def test_returns_none_when_no_mapping_and_no_description(self):
         from nibe_entity_detection import get_value_mapping
 
-        result = get_value_mapping(99999, {"description": ""}, register_type=None)
-        self.assertIsNone(result)
+        self.assertIsNone(get_value_mapping(99999, {"description": ""}))
+        self.assertIsNone(get_value_mapping(99999, {}))
 
 
 class TestGetEntityOptionsEdgeCases(unittest.TestCase):
@@ -3444,10 +3357,10 @@ class TestEntityDetectionRemainingPaths(unittest.TestCase):
 
 
 class TestLastStatesFallbackPublishProperties(unittest.TestCase):
-    """The publish condition has three clauses:
-    should_pub OR pid not in last_states OR last_states[pid] != state_value.
-    The third clause guarantees publish even when ValueCache suppresses,
-    if the computed display state has diverged from what HA last received.
+    """The publish condition has three clauses: force, OR not sent since
+    the MQTT connection was made (_state_sent), OR last_states[pid] !=
+    state_value — a state that diverged from what HA last received is
+    published even when it was sent before.
     """
 
     _PID = 7777
@@ -3486,11 +3399,11 @@ class TestLastStatesFallbackPublishProperties(unittest.TestCase):
         divisor=st.sampled_from([1, 10, 100]),
     )
     def test_absent_last_state_always_publishes(self, raw, divisor):
-        """No last_states entry → must publish regardless of ValueCache."""
+        """No last_states entry → must publish, even if sent before."""
         em = _make_em()
         ei = self._entity_info()
         em.bulk_data[self._PID] = self._bulk(raw, divisor)
-        em.value_cache.should_publish(self._PID, raw, threshold=0)
+        em._state_sent.add(self._PID)
         self.assertNotIn(self._PID, em.last_states)
         self._activate(em, ei)
         em._update_entity_state(ei)
@@ -3513,7 +3426,7 @@ class TestLastStatesFallbackPublishProperties(unittest.TestCase):
         em = _make_em()
         ei = self._entity_info()
         em.bulk_data[self._PID] = self._bulk(raw, divisor)
-        em.value_cache.should_publish(self._PID, raw, threshold=0)
+        em._state_sent.add(self._PID)
         em.last_states[self._PID] = stale
         self._activate(em, ei)
         em._update_entity_state(ei)
@@ -3527,15 +3440,15 @@ class TestLastStatesFallbackPublishProperties(unittest.TestCase):
         raw=st.integers(min_value=-1000, max_value=1000),
         divisor=st.sampled_from([1, 10, 100]),
     )
-    def test_matching_last_state_suppressed_when_cache_says_no(self, raw, divisor):
-        """Matching last_states + ValueCache suppression → must not publish."""
+    def test_matching_last_state_already_sent_is_not_published_again(self, raw, divisor):
+        """Matching last_states, already sent → must not publish."""
         from nibe_entity_detection import apply_divisor
 
         computed = apply_divisor(raw, divisor)
         em = _make_em()
         ei = self._entity_info()
         em.bulk_data[self._PID] = self._bulk(raw, divisor)
-        em.value_cache.should_publish(self._PID, raw, threshold=0)
+        em._state_sent.add(self._PID)
         em.last_states[self._PID] = computed
         self._activate(em, ei)
         em._update_entity_state(ei)
@@ -4312,17 +4225,6 @@ class TestMutmutPhase2Survivors(unittest.TestCase):
 
         self.assertEqual(clean_unit("days"), "d")
 
-    # ── get_value_mapping: unknown register_type must not crash ────────────
-
-    def test_get_value_mapping_unknown_register_type_returns_none(self):
-        """VALUE_MAPPINGS.get(register_type, {}) must default to {} (not None)
-        for an unrecognised register_type, or the follow-up .get(point_id)
-        raises AttributeError on None.get()."""
-        from nibe_entity_detection import get_value_mapping
-
-        result = get_value_mapping(1, {"description": ""}, register_type="bogus")
-        self.assertIsNone(result)
-
     # ── get_entity_options: register_type selection must pick the right table ─
 
     def test_get_entity_options_reads_holding_table_entry(self):
@@ -5055,3 +4957,83 @@ class TestMeaningfulDefault(unittest.TestCase):
             is not None
         }
         self.assertEqual(live, dashboard)
+
+
+class TestDetectionHelpersMutationGaps(unittest.TestCase):
+    """Small helpers whose edges no other test reached."""
+
+    def test_numbered_covers_lo_to_hi_inclusive(self):
+        from nibe_entity_detection import _numbered
+
+        self.assertEqual(_numbered({3: "Three"}, 2, 4), {2: "2", 3: "Three", 4: "4"})
+
+    def test_is_unitless_quantity(self):
+        """A listed point is a quantity unless it has value labels — from
+        its description or from a manual mapping of its own id."""
+        from nibe_entity_detection import is_unitless_quantity
+
+        self.assertTrue(is_unitless_quantity(666, {"description": ""}))
+        self.assertFalse(is_unitless_quantity(666, {"description": "0 = Off, 1 = On"}))
+        self.assertFalse(is_unitless_quantity(99999, {"description": ""}))
+        with patch.dict("nibe_entity_detection.VALUE_MAPPINGS", {"input": {666: {0: "Off"}}}):
+            self.assertFalse(is_unitless_quantity(666, {"description": ""}))
+
+    def test_patch_metadata_keeps_the_firmware_original_across_patches(self):
+        from nibe_entity_detection import FIRMWARE_ORIGINAL_KEY, _patch_metadata
+
+        once = _patch_metadata({"minValue": 5, "maxValue": 9}, {"minValue": 10})
+        twice = _patch_metadata(once, {"minValue": 20})
+        self.assertEqual(twice["minValue"], 20)
+        self.assertEqual(twice[FIRMWARE_ORIGINAL_KEY], {"minValue": 5})
+
+    def test_range_override_applies_only_while_the_firmware_bound_is_wrong(self):
+        """Each bound is compared on its own; None leaves a bound alone. A
+        firmware that already reports the corrected bounds is left as is."""
+        from nibe_entity_detection import FIRMWARE_ORIGINAL_KEY, apply_metadata_overrides
+
+        def apply(bounds, lo, hi):
+            with patch.dict("nibe_entity_detection.RANGE_OVERRIDES", {1: bounds}):
+                return apply_metadata_overrides(1, {"minValue": lo, "maxValue": hi})
+
+        self.assertEqual(apply((10, 20), 10, 20), {"minValue": 10, "maxValue": 20})
+        fixed_max = apply((10, 20), 10, 30)
+        self.assertEqual((fixed_max["minValue"], fixed_max["maxValue"]), (10, 20))
+        self.assertEqual(fixed_max[FIRMWARE_ORIGINAL_KEY], {"minValue": 10, "maxValue": 30})
+        fixed_min = apply((10, 20), 5, 20)
+        self.assertEqual((fixed_min["minValue"], fixed_min["maxValue"]), (10, 20))
+        self.assertEqual(fixed_min[FIRMWARE_ORIGINAL_KEY], {"minValue": 5, "maxValue": 20})
+        self.assertEqual(apply((None, 20), 7, 20), {"minValue": 7, "maxValue": 20})
+        only_max = apply((None, 20), 7, 30)
+        self.assertEqual((only_max["minValue"], only_max["maxValue"]), (7, 20))
+        self.assertEqual(apply((10, None), 10, 99), {"minValue": 10, "maxValue": 99})
+
+    def test_clean_unit_strips_the_mojibake_byte(self):
+        from nibe_entity_detection import clean_unit
+
+        self.assertEqual(clean_unit("\u00c2\u00b0C"), "\u00b0C")
+
+    def test_options_need_more_than_one_pair(self):
+        """A description without a comma has at most one pair — no select."""
+        from nibe_entity_detection import get_entity_options
+
+        self.assertEqual(get_entity_options(99999, "0 = Off"), [])
+        self.assertEqual(get_entity_options(99999, "0: Off"), [])
+
+    def test_meaningful_default_edges(self):
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS, meaningful_default
+
+        holding = {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"}
+        setting = {**holding, "minValue": 0, "maxValue": 100, "intDefaultValue": 20}
+        self.assertEqual(meaningful_default(setting, 1), 20)
+        safety_point = min(SAFETY_READ_ONLY_POINTS)
+        self.assertIsNone(meaningful_default(setting, safety_point))
+        self.assertIsNone(meaningful_default({**setting, "intDefaultValue": True}, 1))
+        self.assertIsNone(meaningful_default({**setting, "intDefaultValue": 20.0}, 1))
+        # An absent bound counts as 0: no bounds at all is no declared range.
+        self.assertIsNone(meaningful_default({**holding, "intDefaultValue": 20}, 1))
+        self.assertEqual(
+            meaningful_default({**holding, "maxValue": 100, "intDefaultValue": 20}, 1), 20
+        )
+        self.assertEqual(
+            meaningful_default({**holding, "minValue": -10, "intDefaultValue": 20}, 1), 20
+        )

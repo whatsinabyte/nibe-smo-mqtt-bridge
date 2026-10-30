@@ -109,11 +109,6 @@ def _get_ha_base_url() -> str:
     if now < _ha_base_url_retry_after:
         return ""
 
-    # method="GET" is unobservable here: urllib's Request.get_method()
-    # already defaults to "GET" whenever no data= is passed (verified
-    # empirically), and this request never passes data.
-    # Header key casing is unobservable — urllib.request.Request normalizes
-    # header keys via .capitalize(). Verified empirically.
     req = urllib.request.Request(
         "http://supervisor/core/api/config",
         headers={"Authorization": f"Bearer {supervisor_token}"},
@@ -126,12 +121,8 @@ def _get_ha_base_url() -> str:
             cfg = json.loads(resp.read().decode())
         # Prefer internal_url; fall back to external_url; default to empty.
         url = cfg.get("internal_url") or cfg.get("external_url") or ""
-        # Widening this char set (e.g. adding a char that never appears in
-        # a real HA base URL) is unobservable — verified empirically, still
-        # real/tested for the actual '/' char via
-        # test_only_trailing_slashes_stripped_not_internal_ones.
         _ha_base_url = url.rstrip("/")
-        log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)
+        log_mqtt.debug("HA base URL resolved: %r", _ha_base_url)  # pragma: no mutate
         return _ha_base_url
     except (
         urllib.error.URLError,
@@ -145,7 +136,7 @@ def _get_ha_base_url() -> str:
         # unreachable, timed out). JSONDecodeError/UnicodeDecodeError: the
         # response body wasn't valid UTF-8 JSON. AttributeError: the parsed
         # body wasn't a dict (cfg.get() doesn't exist on e.g. a JSON array).
-        log_mqtt.warning("Could not fetch HA base URL: %s", e)
+        log_mqtt.warning("Could not fetch HA base URL: %s", e)  # pragma: no mutate
         _ha_base_url_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
         return ""
 
@@ -197,11 +188,6 @@ def _get_ha_language() -> str:
     if now < _ha_language_retry_after:
         return ""
 
-    # method="GET" is unobservable here: urllib's Request.get_method()
-    # already defaults to "GET" whenever no data= is passed (verified
-    # empirically), and this request never passes data. Header key casing
-    # is also unobservable — urllib.request.Request normalizes header keys
-    # via .capitalize(). Verified empirically.
     req = urllib.request.Request(
         "http://supervisor/core/api/config",
         headers={"Authorization": f"Bearer {supervisor_token}"},
@@ -213,7 +199,7 @@ def _get_ha_language() -> str:
         ) as resp:  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
             cfg = json.loads(resp.read().decode())
         _ha_language = _api_language(cfg.get("language") or "")
-        log_mqtt.debug("HA language resolved: %r", _ha_language)
+        log_mqtt.debug("HA language resolved: %r", _ha_language)  # pragma: no mutate
         return _ha_language
     except (
         urllib.error.URLError,
@@ -223,7 +209,7 @@ def _get_ha_language() -> str:
         UnicodeDecodeError,
         AttributeError,
     ) as e:
-        log_mqtt.warning("Could not fetch HA language: %s", e)
+        log_mqtt.warning("Could not fetch HA language: %s", e)  # pragma: no mutate
         _ha_language_retry_after = now + _HA_BASE_URL_RETRY_COOLDOWN
         return ""
 
@@ -238,7 +224,9 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
     """
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
+        # pragma: no mutate start
         log_mqtt.info("HA notification (no supervisor token): [%s] %s", notification_id, title)
+        # pragma: no mutate end
         return
 
     payload = json.dumps(
@@ -249,10 +237,6 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
         }
     ).encode()
 
-    # Header key casing here is unobservable: urllib.request.Request
-    # normalises every header key via str.capitalize() internally (verified
-    # empirically), so "authorization"/"AUTHORIZATION"/"Authorization" all
-    # resolve identically via get_header() and on the wire.
     req = urllib.request.Request(
         "http://supervisor/core/api/services/persistent_notification/create",
         data=payload,
@@ -266,9 +250,9 @@ def notify_ha(mqtt_client: Any, title: str, message: str, notification_id: str) 
         urllib.request.urlopen(
             req, timeout=10
         )  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
-        log_mqtt.info("HA notification sent: [%s] %s", notification_id, title)
+        log_mqtt.info("HA notification sent: [%s] %s", notification_id, title)  # pragma: no mutate
     except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
-        log_mqtt.error("Failed to send HA notification: %s", e)
+        log_mqtt.error("Failed to send HA notification: %s", e)  # pragma: no mutate
 
 
 def dismiss_ha(mqtt_client: Any, notification_id: str) -> None:
@@ -278,15 +262,12 @@ def dismiss_ha(mqtt_client: Any, notification_id: str) -> None:
     """
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token:
+        # pragma: no mutate start
         log_mqtt.info("HA notification dismiss (no supervisor token): [%s]", notification_id)
+        # pragma: no mutate end
         return
 
     payload = json.dumps({"notification_id": notification_id}).encode()
-    # Header key casing here is unobservable — see the matching comment in
-    # notify_ha(). The method="POST" kwarg is also unobservable: urllib's
-    # Request.get_method() defaults to "POST" whenever data is set (verified
-    # empirically), and data=payload is always set here — the real HTTP verb
-    # sent is identical whether this kwarg is "POST", None, or dropped.
     req = urllib.request.Request(
         "http://supervisor/core/api/services/persistent_notification/dismiss",
         data=payload,
@@ -300,9 +281,9 @@ def dismiss_ha(mqtt_client: Any, notification_id: str) -> None:
         urllib.request.urlopen(
             req, timeout=10
         )  # hardcoded http://supervisor/ URL, not runtime-controllable input  # nosec B310
-        log_mqtt.debug("HA notification dismissed: [%s]", notification_id)
+        log_mqtt.debug("HA notification dismissed: [%s]", notification_id)  # pragma: no mutate
     except Exception as e:  # noqa: BLE001 — must never raise; called from other exception handlers
-        log_mqtt.error("Failed to dismiss HA notification: %s", e)
+        log_mqtt.error("Failed to dismiss HA notification: %s", e)  # pragma: no mutate
 
 
 # ============================================================================
@@ -355,9 +336,7 @@ class HAEntityRegistryWatcher:
         # registry refresh then regenerates the menu dashboard.
         self._regen_after_refresh = False
         self._stop_event = threading.Event()
-        deferred_hooks = getattr(entity_manager, "_after_deferred_discovery", None)
-        if isinstance(deferred_hooks, list):
-            deferred_hooks.append(self._reconcile_user_disabled)
+        entity_manager._after_deferred_discovery.append(self._reconcile_user_disabled)
         self._thread: threading.Thread | None = None
         self._ws_lock = threading.Lock()
         self._current_ws = None
@@ -382,14 +361,16 @@ class HAEntityRegistryWatcher:
         """Start the background watcher thread."""
         supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
         if not supervisor_token:
+            # pragma: no mutate start
             log_registry.debug(
                 "No SUPERVISOR_TOKEN — entity registry watcher disabled "
                 "(running outside HA add-on environment)"
             )
+            # pragma: no mutate end
             return
         self._thread = threading.Thread(target=self._run, name="nibe_registry_watcher", daemon=True)
         self._thread.start()
-        log_registry.info("Entity registry watcher started")
+        log_registry.info("Entity registry watcher started")  # pragma: no mutate
 
     def entity_id_for(self, point_id: int) -> str | None:
         """Return the HA entity_id for a Nibe point, or None if not registered.
@@ -404,7 +385,7 @@ class HAEntityRegistryWatcher:
         """Re-enable an entity in HA's entity registry (disabled_by: null),
         over its own short-lived Supervisor connection, the same way
         refresh_registry fetches the registry."""
-        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
             return
         # Recorded before sending: HA fires the registry event for this update
@@ -434,10 +415,14 @@ class HAEntityRegistryWatcher:
                 ws.close()
             if not resp.get("success"):
                 self._self_reenabled.discard(entity_id)
+                # pragma: no mutate start
                 log_registry.warning("Could not re-enable %s in HA: %s", entity_id, resp)
+                # pragma: no mutate end
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
             self._self_reenabled.discard(entity_id)
+            # pragma: no mutate start
             log_registry.warning("Could not re-enable %s in HA: %s", entity_id, e)
+            # pragma: no mutate end
 
     def refresh_registry(self) -> None:
         """Re-fetch the full entity registry and refresh the local cache.
@@ -446,10 +431,7 @@ class HAEntityRegistryWatcher:
         be active — handles the case where HA registered the entity but the
         registry event was missed or had unexpected structure.
         """
-        # A None/dropped default is unobservable — only ever checked via
-        # `if not token:`, where None and '' are equally falsy. Verified
-        # empirically.
-        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
             return
         try:
@@ -464,7 +446,7 @@ class HAEntityRegistryWatcher:
             except RuntimeError as e:
                 # _ws_authenticate already closes ws on the failure paths
                 # that raise this — closing again here would double-close.
-                log_registry.warning("Registry refresh: %s", e)
+                log_registry.warning("Registry refresh: %s", e)  # pragma: no mutate
                 return
             # Fetch registry — close ws in a finally so a send/recv/parse
             # failure after a successful auth handshake can't leak the
@@ -505,7 +487,9 @@ class HAEntityRegistryWatcher:
                         if uid not in fresh:
                             del self._unique_id_map[uid]
                     self._unique_id_map.update(fresh)
+                # pragma: no mutate start
                 log_registry.debug("Registry refresh: updated %d nibe entries", len(fresh))
+                # pragma: no mutate end
                 if moved or self._regen_after_refresh:
                     # _regen_after_refresh: a rename that arrived before the
                     # entity was mapped (_apply_entity_id_rename) — the map
@@ -515,7 +499,7 @@ class HAEntityRegistryWatcher:
                     if regen is not None:
                         regen()
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-            log_registry.warning("Registry refresh failed: %s", e)
+            log_registry.warning("Registry refresh failed: %s", e)  # pragma: no mutate
 
     _REFRESH_DEBOUNCE_S = 5.0
 
@@ -545,13 +529,15 @@ class HAEntityRegistryWatcher:
             return
         if not any(uid.startswith("nibe_") for uid in renamed):
             return
-        log_registry.info("Entity renamed: %s -> %s", old_eid, new_eid)
+        log_registry.info("Entity renamed: %s -> %s", old_eid, new_eid)  # pragma: no mutate
         regen = self._em._on_enabled_state_change
         if regen is not None:
             try:
                 regen()
             except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+                # pragma: no mutate start
                 log_registry.warning("Dashboard regen after rename failed: %s", e)
+                # pragma: no mutate end
 
     def _schedule_refresh_registry(self) -> None:
         """Coalesce refresh_registry() calls that arrive in a burst into a
@@ -584,7 +570,7 @@ class HAEntityRegistryWatcher:
             t = threading.Timer(self._REFRESH_DEBOUNCE_S, self.refresh_registry)
             t.daemon = True
             t.name = "nibe_registry_refresh_debounce"
-            log_registry.debug("Scheduling registry refresh (debounce)")
+            log_registry.debug("Scheduling registry refresh (debounce)")  # pragma: no mutate
             self._refresh_timer = t
             t.start()
 
@@ -603,7 +589,7 @@ class HAEntityRegistryWatcher:
                     pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
-        log_registry.debug("Entity registry watcher stopped")
+        log_registry.debug("Entity registry watcher stopped")  # pragma: no mutate
 
     def _next_map_seq(self) -> int:
         with self._registry_map_lock:
@@ -614,11 +600,13 @@ class HAEntityRegistryWatcher:
         """Caller must hold _registry_map_lock. Marks seq applied if it is
         the newest fetch seen so far; returns False for a stale response."""
         if seq < self._map_seq_applied:
+            # pragma: no mutate start
             log_registry.debug(
                 "Registry fetch #%d finished after newer fetch #%d — discarding it",
                 seq,
                 self._map_seq_applied,
             )
+            # pragma: no mutate end
             return False
         self._map_seq_applied = seq
         return True
@@ -689,7 +677,9 @@ class HAEntityRegistryWatcher:
         # _PING_INTERVAL_S drives the recv timeout; _PING_TIMEOUT_S is how
         # long to wait for a pong before treating the connection as dead.
         ws.settimeout(self._PING_INTERVAL_S)
+        # pragma: no mutate start
         log_registry.debug("WebSocket connected and subscribed to entity_registry_updated events")
+        # pragma: no mutate end
         return ws
 
     _MAX_CONSEC_FAILURES = 10
@@ -708,10 +698,6 @@ class HAEntityRegistryWatcher:
         consec_failures = 0
 
         while not self._stop_event.is_set():
-            # Only ever read via `if ws:` in the finally block below — any
-            # other falsy placeholder (e.g. '') is unobservable here.
-            # Verified empirically, not pragma'd since the reassignment on
-            # the next line and the `if ws:` check itself are real/tested.
             ws: Any = None
             try:
                 ws = self._connect_and_subscribe(token)
@@ -720,28 +706,17 @@ class HAEntityRegistryWatcher:
                 backoff = self._INITIAL_BACKOFF
                 consec_failures = 0
 
-                # Import the websocket timeout exception for keepalive
-                # detection.  The import is safe here — if websocket-client
-                # weren't installed we would have failed in _connect_and_subscribe.
-                _WsTimeout: type[BaseException]
-                try:
-                    from websocket import WebSocketTimeoutException as _WsTimeout
-                except ImportError:
-                    _WsTimeout = TimeoutError
+                # The websocket timeout exception, for keepalive detection.
+                from websocket import WebSocketTimeoutException
 
                 ping_sent_at: float = 0.0
 
                 while not self._stop_event.is_set():
                     try:
                         raw = ws.recv()
-                    except _WsTimeout:
+                    except WebSocketTimeoutException:
                         # recv timed out after _PING_INTERVAL_S — send ping
                         now = time.time()
-                        # `> 0` vs `> 1` is unobservable here — verified
-                        # empirically: ping_sent_at is either the 0.0 "no
-                        # ping in flight" sentinel or a real Unix epoch
-                        # timestamp (~1.7 billion), and both thresholds
-                        # agree on every value either side actually takes.
                         if ping_sent_at > 0 and now - ping_sent_at > self._PING_TIMEOUT_S:
                             raise ConnectionError(
                                 f"WebSocket keepalive timeout — no pong received "
@@ -777,31 +752,30 @@ class HAEntityRegistryWatcher:
                     try:
                         msg = json.loads(raw)
                     except json.JSONDecodeError as e:
+                        # pragma: no mutate start
                         log_registry.debug("Registry watcher: discarding malformed frame: %s", e)
+                        # pragma: no mutate end
                         continue
 
-                    # This match's key/value literals are unobservable:
-                    # ping_sent_at is already unconditionally reset above on
-                    # any successful recv, and a pong that fails this match
-                    # simply falls through to the "event" check below, which
-                    # also doesn't match "pong" — so _handle_event is never
-                    # called either way. Verified empirically — no test
-                    # distinguishes a broken match here from a working one.
-                    if msg.get("type") == "pong":
-                        continue
+                    # Only events are handled; a pong has done its work by
+                    # resetting ping_sent_at above.
                     if msg.get("type") == "event":
                         try:
                             self._handle_event(msg.get("event", {}))
                         except Exception as e:
+                            # pragma: no mutate start
                             log_registry.warning(
                                 "Error handling registry event: %s", e, exc_info=True
                             )
+                            # pragma: no mutate end
 
             except ImportError:
+                # pragma: no mutate start
                 log_registry.warning(
                     "websocket-client not installed — entity registry watcher cannot run. "
                     "Add 'websocket-client' to requirements.txt."
                 )
+                # pragma: no mutate end
                 return
 
             except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
@@ -809,12 +783,15 @@ class HAEntityRegistryWatcher:
                     break
                 consec_failures += 1
                 if consec_failures >= self._MAX_CONSEC_FAILURES:
+                    # pragma: no mutate start
                     log_registry.warning(
                         "Registry watcher: %d consecutive failures — giving up. "
                         "HA-side entity enable/disable events will not be detected.",
                         consec_failures,
                     )
+                    # pragma: no mutate end
                     return
+                # pragma: no mutate start
                 log_registry.info(
                     "Registry watcher disconnected (%s) — reconnecting in %ds (failure %d/%d)",
                     e,
@@ -822,16 +799,12 @@ class HAEntityRegistryWatcher:
                     consec_failures,
                     self._MAX_CONSEC_FAILURES,
                 )
+                # pragma: no mutate end
                 self._stop_event.wait(timeout=backoff)
                 backoff = min(backoff * 2, self._MAX_BACKOFF)
 
             finally:
                 with self._ws_lock:
-                    # Only ever read via `if self._current_ws:` (here and in
-                    # stop()) — any other falsy placeholder is unobservable.
-                    # Verified empirically, not pragma'd since the real
-                    # assignment (line 508) and the truthiness checks
-                    # themselves are real/tested.
                     self._current_ws = None
                 if ws:
                     try:  # noqa: SIM105 — deliberately broad, documented on the except line below
@@ -839,7 +812,7 @@ class HAEntityRegistryWatcher:
                     except Exception:  # noqa: BLE001, S110 — best-effort ws.close() during cleanup; primary error already logged  # nosec B110
                         pass
 
-        log_registry.debug("Registry watcher thread exiting")
+        log_registry.debug("Registry watcher thread exiting")  # pragma: no mutate
 
     def _fetch_entity_registry(self, ws: Any) -> dict:
         """Fetch unique_id → entity_id mapping from the HA entity registry.
@@ -850,7 +823,6 @@ class HAEntityRegistryWatcher:
         """
         req_id = self._next_id()
         ws.send(json.dumps({"id": req_id, "type": "config/entity_registry/list"}))
-        resp = None
         try:
             ws.settimeout(30)
             while True:
@@ -861,25 +833,22 @@ class HAEntityRegistryWatcher:
                     break
                 # Discard interleaved push messages (e.g. entity_registry_updated
                 # events arriving while our list request is in flight).
+                # pragma: no mutate start
                 log_registry.debug(
                     "Registry fetch: discarding interleaved message type=%s id=%s",
                     msg.get("type"),
                     msg.get("id"),
                 )
+                # pragma: no mutate end
         except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+            # pragma: no mutate start
             log_registry.warning("Could not fetch entity registry (timeout or error): %s", e)
+            # pragma: no mutate end
             return {}
         finally:
             ws.settimeout(None)
-        # resp's initial None (line 618) is unobservable here: the only way
-        # to reach this line without the `except` above already returning
-        # is via the loop's `break`, which always assigns a real dict to
-        # resp first — so `not resp` is always False in practice, making
-        # `or`/`and` and resp's initial-value literal equivalent mutants.
-        # Verified empirically, not pragma'd since resp.get("success") is
-        # real/tested (see test_failed_response_returns_empty_dict).
-        if not resp or not resp.get("success"):
-            log_registry.warning("Could not fetch entity registry: %s", resp)
+        if not resp.get("success"):
+            log_registry.warning("Could not fetch entity registry: %s", resp)  # pragma: no mutate
             return {}
         mapping = {}
         user_disabled: set[str] = set()
@@ -897,11 +866,13 @@ class HAEntityRegistryWatcher:
                     user_disabled.add(eid)
         self._user_disabled_entities = user_disabled
         nibe_count = sum(1 for k in mapping if k.startswith("nibe_"))
+        # pragma: no mutate start
         log_registry.debug(
             "Entity registry cached: %d total entries, %d nibe entries",
             len(mapping),
             nibe_count,
         )
+        # pragma: no mutate end
         return mapping
 
     def _handle_event(self, event: dict) -> None:
@@ -909,7 +880,9 @@ class HAEntityRegistryWatcher:
         data = event.get("data", {})
         action = data.get("action")
         entity_id = data.get("entity_id", "unknown")
+        # pragma: no mutate start
         log_registry.debug("Registry event: action=%s, entity_id=%s", action, entity_id)
+        # pragma: no mutate end
 
         if action == "create":
             eid = data.get("entity_id")
@@ -1005,7 +978,9 @@ class HAEntityRegistryWatcher:
             # notification (same id) with a false "re-enabled via the HA
             # entity settings" one.
             self._self_reenabled.discard(ha_entity_id)
+            # pragma: no mutate start
             log_registry.debug("Registry re-enable of %s was our own — ignoring", ha_entity_id)
+            # pragma: no mutate end
             return
         with self._registry_map_lock:
             unique_id_map_snapshot = dict(self._unique_id_map)
@@ -1015,11 +990,13 @@ class HAEntityRegistryWatcher:
         if point_id is None:
             return
 
+        # pragma: no mutate start
         log_registry.info(
             "Entity %s (point %s) re-enabled via HA — republishing discovery",
             ha_entity_id,
             point_id,
         )
+        # pragma: no mutate end
 
         notif_id = self._em.ha_disable_notif_id(ha_entity_id)
         dismiss_ha(self._em.mqtt, notif_id)
@@ -1062,12 +1039,14 @@ class HAEntityRegistryWatcher:
             )
             if point_id is None or point_id not in self._em.mqtt_enabled_points:
                 continue
+            # pragma: no mutate start
             log_registry.info(
                 "Entity %s (point %s) is disabled in HA but enabled in the bridge — "
                 "mirroring the disable",
                 eid,
                 point_id,
             )
+            # pragma: no mutate end
             # Handled: until the next registry fetch replaces the set, a
             # second run (connect, then deferred discovery) must not re-enable
             # and notify a dynamic entity again.
@@ -1085,15 +1064,16 @@ class HAEntityRegistryWatcher:
             return
 
         point = self._em.all_points_by_id.get(point_id)
-        # Only ever consumed via `if is_dynamic:` below — None and False
-        # are indistinguishable. Verified empirically.
-        is_dynamic = point.get("is_dynamic", False) if point else False
+        # Every indexed point carries is_dynamic.
+        is_dynamic = point["is_dynamic"] if point else False
 
+        # pragma: no mutate start
         log_registry.debug(
             "Entity %s (point %s) disabled via HA — mirroring disable",
             ha_entity_id,
             point_id,
         )
+        # pragma: no mutate end
 
         title, message, notif_id = self._em.build_disable_notification(
             point_id, ha_entity_id, action="disabled"
@@ -1109,12 +1089,16 @@ class HAEntityRegistryWatcher:
             # the entity stayed disabled in HA while the bridge treated it as
             # live, though DOCS.md promises the bridge re-enables it.
             self._clear_disabled_by(ha_entity_id)
+            # pragma: no mutate start
             log_registry.info("Re-enabled dynamic point %s after a HA-side disable", point_id)
+            # pragma: no mutate end
 
         else:
             self._em.disable_entity(point_id)
             _publish_stats(self._em, self._pub)
+            # pragma: no mutate start
             log_registry.info("Mirrored HA-side disable for point %s in bridge", point_id)
+            # pragma: no mutate end
             return  # no confusing notification for an intentional disable
 
         notify_ha(self._em.mqtt, title=title, message=message, notification_id=notif_id)
@@ -1223,9 +1207,11 @@ class ManagementCommandHandler:
             try:
                 handler(client, userdata, message)
             except Exception:
+                # pragma: no mutate start
                 log_commands.exception(
                     "Unhandled exception in management command handler for %s", topic
                 )
+                # pragma: no mutate end
 
         return _guarded
 
@@ -1243,7 +1229,9 @@ class ManagementCommandHandler:
             try:
                 fn()
             except Exception:
+                # pragma: no mutate start
                 log_commands.exception("Unhandled exception in management command handler")
+                # pragma: no mutate end
 
         self._executor.submit(_wrapped)
 
@@ -1252,7 +1240,9 @@ class ManagementCommandHandler:
     def _handle_smart_mode(self, _client: Any, _userdata: Any, message: Any) -> None:
         value = message.payload.decode().strip().lower()
         if value not in ("normal", "away"):
+            # pragma: no mutate start
             log_commands.error("Invalid smart mode value: %r — expected 'normal' or 'away'", value)
+            # pragma: no mutate end
             return
 
         def _do() -> None:
@@ -1301,7 +1291,7 @@ class ManagementCommandHandler:
 
     def _handle_force_poll(self, _client: Any, _userdata: Any, _message: Any) -> None:
         def _do() -> None:
-            log_startup.info("Force poll triggered from HA")
+            log_startup.info("Force poll triggered from HA")  # pragma: no mutate
             self._em.update_all_states(force=True)
             update_stats_and_health(self._em, self._pub)
             # A forced poll should re-read the modes too, not serve the cache.
@@ -1319,18 +1309,22 @@ class ManagementCommandHandler:
         bridge's entities."""
         if message.payload.decode().strip() != "online":
             return
+        # pragma: no mutate start
         log_startup.info("Home Assistant came online — republishing retained state")
+        # pragma: no mutate end
         self._submit(self._em.republish_retained_state)
 
     def _handle_regen_dashboard(self, _client: Any, _userdata: Any, _message: Any) -> None:
-        log_startup.info("Regenerate Dashboard triggered from HA")
+        log_startup.info("Regenerate Dashboard triggered from HA")  # pragma: no mutate
 
         def _do() -> None:
             cb = self._em._on_enabled_state_change
             if cb is not None:
                 cb()
             else:
+                # pragma: no mutate start
                 log_startup.info("Regenerate Dashboard: no callback registered")
+                # pragma: no mutate end
 
         self._submit(_do)
 
@@ -1343,7 +1337,9 @@ class ManagementCommandHandler:
                 if self._em.enable_entity(point_id):
                     _publish_stats(self._em, self._pub)
             except ValueError:
+                # pragma: no mutate start
                 log_commands.warning("handle_enable: invalid point id '%s'", raw)
+                # pragma: no mutate end
 
         self._submit(_do)
 
@@ -1356,16 +1352,18 @@ class ManagementCommandHandler:
                 if self._em.disable_entity(point_id):
                     _publish_stats(self._em, self._pub)
             except ValueError:
+                # pragma: no mutate start
                 log_commands.warning("handle_disable: invalid point id '%s'", raw)
+                # pragma: no mutate end
 
         self._submit(_do)
 
     def _handle_changelog_reset(self, _client: Any, _userdata: Any, _message: Any) -> None:
-        log_history.info("Changelog reset requested by user")
+        log_history.info("Changelog reset requested by user")  # pragma: no mutate
         self._submit(self._em.mark_changelog_read)
 
     def _handle_flush_dynamic_map(self, _client: Any, _userdata: Any, _message: Any) -> None:
-        log_commands.info("Flush Dynamic Map triggered from HA (debug action)")
+        log_commands.info("Flush Dynamic Map triggered from HA (debug action)")  # pragma: no mutate
 
         def _do() -> None:
             entity_types = {
@@ -1380,7 +1378,9 @@ class ManagementCommandHandler:
             with self._em._em_lock:
                 self._em.dynamic_point_map.flush(self._em.all_points_by_id, entity_types)
                 self._em._persist_dynamic_map()
+            # pragma: no mutate start
             log_commands.info("Dynamic map flushed — all entries reset to unprocessed")
+            # pragma: no mutate end
 
         self._submit(_do)
 
@@ -1393,12 +1393,9 @@ class ManagementCommandHandler:
             {"action": "delete",  "name": "Summer Profile"}
         """
         try:
-            # Python codec names are case-insensitive ('utf-8' == 'UTF-8')
-            # — not pragma'd, the codec itself and the except clause below
-            # are real/tested.
             cmd = json.loads(message.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            log_commands.error("snapshot_cmd: invalid payload: %s", e)
+            log_commands.error("snapshot_cmd: invalid payload: %s", e)  # pragma: no mutate
             return
 
         if not isinstance(cmd, dict):
@@ -1406,7 +1403,9 @@ class ManagementCommandHandler:
             # below would raise AttributeError uncaught on the MQTT client's
             # own thread, since this handler runs directly in the paho
             # message callback rather than the isolated command executor.
+            # pragma: no mutate start
             log_commands.error("snapshot_cmd: expected a JSON object, got %r", cmd)
+            # pragma: no mutate end
             return
 
         action = cmd.get("action", "").strip().lower()
@@ -1416,17 +1415,15 @@ class ManagementCommandHandler:
             if action == "save":
                 ok, msg = self._em.save_snapshot(name)
             elif action == "restore":
-                # A case-variant default (e.g. "FLUSH") is unobservable: the
-                # trailing .lower() normalises it back to the real value —
-                # verified empirically. Not pragma'd since 'flush' vs a
-                # different-word default IS real/tested (test_restore_defaults_to_flush).
                 mode = cmd.get("mode", "flush").strip().lower()
                 if mode not in ("flush", "merge"):
+                    # pragma: no mutate start
                     log_commands.error(
                         "snapshot_cmd restore: unknown mode %r — expected 'flush' or 'merge', "
                         "using flush",
                         mode,
                     )
+                    # pragma: no mutate end
                     mode = "flush"
                 ok, msg = self._em.restore_snapshot(name, mode)
                 if ok:
@@ -1434,12 +1431,14 @@ class ManagementCommandHandler:
             elif action == "delete":
                 ok, msg = self._em.delete_snapshot(name)
             else:
+                # pragma: no mutate start
                 log_commands.error(
                     "snapshot_cmd: unknown action %r — expected 'save', 'restore', or 'delete'",
                     action,
                 )
+                # pragma: no mutate end
                 return
-            log_commands.info("snapshot_cmd %s '%s': %s", action, name, msg)
+            log_commands.info("snapshot_cmd %s '%s': %s", action, name, msg)  # pragma: no mutate
             # Tell the card how it went. Results were only logged, so a
             # refused save (the snapshot limit) or restore (unknown name,
             # blocked mode) looked to the user exactly like a success.
@@ -1460,10 +1459,12 @@ class ManagementCommandHandler:
         only responsible for MQTT command routing and the duplicate-trigger
         guard.
         """
-        log_commands.info("Run Test Suite triggered from HA (debug action)")
+        log_commands.info("Run Test Suite triggered from HA (debug action)")  # pragma: no mutate
 
         if self._test_running.is_set():
+            # pragma: no mutate start
             log_commands.info("Test suite already running — ignoring duplicate trigger")
+            # pragma: no mutate end
             return
         self._test_running.set()
 
@@ -1483,7 +1484,9 @@ class ManagementCommandHandler:
         host. See nibe_connectivity_check.py for why this deliberately
         avoids reusing NibeApiClient/urllib.
         """
+        # pragma: no mutate start
         log_commands.info("Test API Connection triggered from HA (debug action)")
+        # pragma: no mutate end
 
         def _do() -> None:
             base_url = self._em._api.base_url
@@ -1545,7 +1548,9 @@ def update_alarm_state(
 
     alarms = entity_manager._api.fetch_notifications()
     if alarms is None:
+        # pragma: no mutate start
         log_stats.debug("Alarm poll skipped — fetch_notifications returned None (API error)")
+        # pragma: no mutate end
         return
 
     alarm_count = len(alarms)
@@ -1564,7 +1569,7 @@ def update_alarm_state(
     publisher.publish_alarm_state(alarm_count, clean_alarms)
     # Log only when count changes — suppress steady-state zero noise
     if alarm_count != entity_manager._last_alarm_count:
-        log_stats.debug("Alarm poll: %d active alarm(s)", alarm_count)
+        log_stats.debug("Alarm poll: %d active alarm(s)", alarm_count)  # pragma: no mutate
         entity_manager._last_alarm_count = alarm_count
 
     mqtt_client = entity_manager.mqtt
@@ -1574,7 +1579,7 @@ def update_alarm_state(
     # updates it in place instead of stacking a new one. It used to be sent
     # once on 0 -> N and never touched again while any alarm stayed active,
     # so a new alarm only ever showed on the sensor.
-    alarm_ids = tuple(sorted(f"{a.get('alarmId')}|{a.get('header', '')}" for a in clean_alarms))
+    alarm_ids = tuple(sorted(f"{a['alarmId']}|{a['header']}" for a in clean_alarms))
     first_poll = entity_manager._alarm_first_poll_pending
     entity_manager._alarm_first_poll_pending = False
 
@@ -1584,23 +1589,14 @@ def update_alarm_state(
     ):
         lines = []
         for a in clean_alarms:
-            # `a` here iterates clean_alarms (built above with 'header' and
-            # 'description' keys always present, defaulting to '' there) —
-            # these two .get() defaults can never actually fire, so their
-            # literal values are unobservable. Verified empirically, not
-            # pragma'd since the rest of each line (equipName/severity
-            # presence checks, the dedup comparison, the join) is real/tested.
-            parts = [a.get("header", "Unknown alarm")]
-            if a.get("equipName"):
+            # clean_alarms (above) holds every key, "" for one the alarm lacks.
+            parts = [a["header"] or "Unknown alarm"]
+            if a["equipName"]:
                 parts.append(f"Equipment: {a['equipName']}")
-            if a.get("severity"):
+            if a["severity"]:
                 parts.append(f"Severity: {a['severity']}")
-            # This default is unreachable — every test's alarm fixture
-            # (_alarm()) always supplies a 'description' key explicitly
-            # (default ''), so any default value here (None, dropped, or a
-            # wrong truthy literal) never actually fires. Verified empirically.
-            desc = a.get("description", "")
-            if desc and desc != a.get("header"):
+            desc = a["description"]
+            if desc and desc != a["header"]:
                 parts.append(desc)
             lines.append(" — ".join(parts))
 
@@ -1695,12 +1691,14 @@ def _publish_stats(entity_manager: "EntityManager", publisher: MqttDiscoveryPubl
     total_count = len(entity_manager.all_points_by_id)
     stats_key = (mqtt_count, active_count, total_count)
     if getattr(entity_manager, "_last_stats_key", None) != stats_key:
+        # pragma: no mutate start
         log_stats.debug(
             "Stats: MQTT=%d, Active=%d, Total=%d",
             mqtt_count,
             active_count,
             total_count,
         )
+        # pragma: no mutate end
         entity_manager._last_stats_key = stats_key
 
 
@@ -1730,9 +1728,6 @@ def _publish_device_modes(
         ):
             cached_aid = entity_manager.device_modes_cache.get("aidMode", "off")
             cached_smart = entity_manager.device_modes_cache.get("smartMode", "normal")
-            # Only ever consumed via `if not fresh:` below, so None and
-            # False are indistinguishable here — not pragma'd, `fresh = True`
-            # on the other branch is real/tested.
             fresh = False
         else:
             fresh = True
@@ -1752,10 +1747,12 @@ def _publish_device_modes(
 
     response = entity_manager._api.fetch_device_info()
     if not response:
+        # pragma: no mutate start
         log_commands.warning(
             "Could not fetch device mode states — aid/smart mode display may be stale "
             "(see API errors above for the cause)"
         )
+        # pragma: no mutate end
         return
 
     with entity_manager._em_lock:

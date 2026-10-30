@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Binary sensors read Running, Open or Problem where NIBE documents their
+  meaning.** The compressor, the circulation and heating medium pumps, the
+  pool and ACS diverter valves and the active alarm now have a Home
+  Assistant device class, so they show Running/Not running, Open/Closed or
+  Problem/OK instead of On/Off. Only points whose on and off NIBE's Modbus
+  documentation describes, register by register or through an identical
+  documented sibling, get one; the others stay On/Off. Entity ids don't
+  change.
+
+### Fixed
+
+- **A firmware update after a failed read of the version register is
+  recorded.** When the controller's version register couldn't be read on
+  the poll that renewed the firmware record, the record lost the version,
+  and the update that followed got no changelog entry.
+
+- **An alarm without a title reads "Unknown alarm" in the notification**,
+  instead of an empty line.
+
+- **The "API unreachable" notification shows the network error itself.** A
+  DNS or socket failure used to read `<urlopen error ...>`, or nothing at all
+  for an error without text; it now shows the error's own text, or "could
+  not resolve host or reach network".
+
+- **A failed test run that names no failing test shows the end of its output.**
+  When the Run Tests button's run crashed or stopped during collection, the
+  notification showed only the output's last line, twice; it now shows the
+  last 1500 characters.
+
+- **A Nibe Menus view with a short header and one long section uses two
+  columns.** Sections are split over the columns at the boundary nearest
+  each section, so a light section followed by a heavy one no longer ends
+  up in one column.
+
+- **Uninstall cleanup says when it couldn't check for the dashboards.** With
+  `remove_frontend`, a failed request for the list of dashboards or
+  resources was logged as "already removed"; it is now a warning that they
+  may still be there, and where to remove them.
+
 ## [1.4.5] — 2026-10-29
 
 Learning which settings a switch or drop-down shows was rebuilt, and no

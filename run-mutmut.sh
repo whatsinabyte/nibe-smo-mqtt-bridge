@@ -37,6 +37,10 @@
 #   ./run-mutmut.sh              — run every module below, sequentially
 #   ./run-mutmut.sh <module>     — run just one module (e.g. nibe_lovelace)
 #   ./run-mutmut.sh --list       — print the module list and exit
+#   ./run-mutmut.sh --verify <module>
+#                                — re-check that module's survived and
+#                                  no-tests mutants with plain pytest (see
+#                                  VERIFYING SURVIVORS below)
 #   ./run-mutmut.sh --show <module> <mutant>
 #                                — print one mutant's diff from that module's
 #                                  archived run (e.g. --show nibe_attribution
@@ -54,6 +58,16 @@
 # so a full ("all") run leaves one results file AND one archived sandbox per
 # module to pick through, plus a scannable summary index, instead of one
 # shared mutants/ that only ever reflects the most recent module.
+#
+# `--verify <module>` adds:
+#   mutmut-results/<module>.verified.txt — plain-pytest verdict per mutant
+#   mutmut-results/<module>-diffs/       — one .diff per re-checked mutant
+# (both removed when the module is run again, as they then no longer apply).
+# Hand-written triage notes go next to them as <module>.triage.md.
+#
+# Pragmas: use the `# pragma: no mutate start` / `end` pair around a
+# multi-line statement — a trailing pragma on its closing `)` only covers
+# the statement's first line, also after mutmut PR #614 (ARCHITECTURE.md §6).
 #
 # INSPECTING AN ARCHIVED MODULE'S MUTANTS LATER
 #   mutmut hardcodes the literal directory name "mutants" relative to cwd
@@ -107,6 +121,25 @@
 #   prints the diff — no test execution involved); it is specifically the
 #   coverage-collection/survived-verdict machinery that is compromised.
 #
+# VERIFYING SURVIVORS
+#   --verify <module> takes the module's survived, no-tests and suspicious
+#   (a test run that took unusually long) mutants from
+#   its last run, applies each to app/<module>.py (dev/mutmut_apply.py) and
+#   runs the module's test files with plain pytest, as the caveat above
+#   asks. One line per mutant, with an estimate of the time left. Verdicts
+#   go to mutmut-results/<module>.verified.txt; an interrupted run carries
+#   on where it stopped. app/<module>.py is put back after every mutant and
+#   on exit; a copy is kept as mutmut-results/<module>.py.orig while it
+#   runs, and a run refuses to start while one is left over (a run killed
+#   with SIGKILL) — put it back by hand first. "not-applied" means the
+#   diff couldn't be placed (several hunks, or old lines not found once):
+#   look at those with --show.
+#
+# PROGRESS
+#   mutmut redraws its status line in place; dev/mutmut_progress.py turns
+#   that into one line every 30 seconds with the time elapsed, so a long
+#   run in the background shows it is still moving.
+#
 # WORKERS AND MEMORY
 #   One worker per CPU core (hw.ncpu on macOS, nproc elsewhere), passed to
 #   mutmut explicitly as --max-children. nibe_entity_manager.py's test suite
@@ -150,6 +183,17 @@ MODULES=(
     "generate_nibe_mqtt|tests/test_ha_integration.py,tests/test_lovelace.py,tests/test_caching.py,tests/test_utils.py,tests/test_generate.py,tests/test_connectivity_check.py"
     "nibe_connectivity_check|tests/test_ha_integration.py,tests/test_lovelace.py,tests/test_caching.py,tests/test_utils.py,tests/test_generate.py,tests/test_connectivity_check.py"
 )
+
+# The MODULES entry for a module name, or nothing.
+module_entry() {
+    local entry
+    for entry in "${MODULES[@]}"; do
+        if [ "${entry%%|*}" = "$1" ]; then
+            echo "$entry"
+            return
+        fi
+    done
+}
 
 if [ "$ARG" = "--list" ]; then
     for entry in "${MODULES[@]}"; do
@@ -289,9 +333,12 @@ run_one_module() {
     # safe to discard.
     echo "[mutmut] Removing any stale mutants/ sandbox (interrupted-run leftover)..."
     rm -rf "$SCRIPT_DIR/mutants"
+    # A new run reuses mutant names for other changes: an earlier run's
+    # verdicts and diffs no longer apply.
+    rm -rf "$RESULTS_DIR/${module}-diffs" "$RESULTS_DIR/${module}.verified.txt"
 
     cd "$SCRIPT_DIR"
-    mutmut run --max-children "$WORKERS" || true
+    mutmut run --max-children "$WORKERS" 2>&1 | python3 "$SCRIPT_DIR/dev/mutmut_progress.py" || true
 
     local results_file="$RESULTS_DIR/${module}.txt"
     mutmut results > "$results_file" 2>&1 || true
@@ -318,15 +365,126 @@ run_one_module() {
     fi
 }
 
-if [ -n "$ARG" ]; then
-    found=""
-    for entry in "${MODULES[@]}"; do
-        name="${entry%%|*}"
-        if [ "$name" = "$ARG" ]; then
-            found="$entry"
-            break
-        fi
+verify_module() {
+    local module="$1"
+    local entry
+    entry="$(module_entry "$module")"
+    if [ -z "$entry" ]; then
+        echo "[verify] ERROR: unknown module '$module'." >&2
+        exit 1
+    fi
+    IFS=',' read -ra test_files <<< "${entry#*|}"
+    local results="$RESULTS_DIR/${module}.txt"
+    local sandbox="$SCRIPT_DIR/mutants-${module}"
+    if [ ! -f "$results" ] || [ ! -d "$sandbox" ]; then
+        echo "[verify] ERROR: no archived run for ${module} — run ./run-mutmut.sh ${module} first." >&2
+        exit 1
+    fi
+    local source="$SCRIPT_DIR/app/${module}.py"
+    local orig="$RESULTS_DIR/${module}.py.orig"
+    if [ -f "$orig" ]; then
+        echo "[verify] ERROR: $orig is left over from a run that didn't finish." >&2
+        echo "  Compare it with app/${module}.py, copy it back if needed, then remove it." >&2
+        exit 1
+    fi
+    local diffs="$RESULTS_DIR/${module}-diffs"
+    local verified="$RESULTS_DIR/${module}.verified.txt"
+    mkdir -p "$diffs"
+    touch "$verified"
+
+    local names=()
+    while IFS= read -r name; do
+        names+=("$name")
+    done < <(sed -nE 's/^ *([^ :]+): (survived|no tests|suspicious)$/\1/p' "$results")
+    local total="${#names[@]}"
+    echo "[verify] ${module}: ${total} survived/no-tests/suspicious mutants to re-check"
+
+    # The diffs, from the archived sandbox. The staged copy and the sandbox
+    # are removed before any test runs: a root-level copy would shadow app/.
+    local missing=0 name
+    for name in "${names[@]}"; do
+        [ -s "$diffs/${name}.diff" ] || missing=$((missing + 1))
     done
+    if [ "$missing" -gt 0 ]; then
+        stage_module "$module"
+        printf '[tool.mutmut]\nsource_paths = ["%s.py"]\n' "$module" > "$PYPROJECT"
+        rm -rf "$SCRIPT_DIR/mutants"
+        cp -r "$sandbox" "$SCRIPT_DIR/mutants"
+        STAGED+=("$SCRIPT_DIR/mutants")
+        local n=0
+        for name in "${names[@]}"; do
+            [ -s "$diffs/${name}.diff" ] && continue
+            n=$((n + 1))
+            (cd "$SCRIPT_DIR" && mutmut show "$name") > "$diffs/${name}.diff" 2>/dev/null || true
+            if [ $((n % 25)) -eq 0 ] || [ "$n" -eq "$missing" ]; then
+                echo "[verify] diffs: ${n}/${missing}"
+            fi
+        done
+        cleanup
+        STAGED=()
+        PYPROJECT_BACKUP="$(mktemp)"
+        cp "$PYPROJECT" "$PYPROJECT_BACKUP"
+    fi
+
+    cp "$source" "$orig"
+    trap 'cp "$orig" "$source" && rm -f "$orig"; cleanup' EXIT
+    local started done_before i=0 killed=0 survived=0 not_applied=0
+    started="$(date +%s)"
+    done_before="$(wc -l < "$verified" | tr -d ' ')"
+    local checked=0
+    for name in "${names[@]}"; do
+        i=$((i + 1))
+        local previous
+        previous="$(awk -v n="$name" '$1 == n {print $2}' "$verified")"
+        if [ -n "$previous" ]; then
+            case "$previous" in
+                killed) killed=$((killed + 1)) ;;
+                survived) survived=$((survived + 1)) ;;
+                *) not_applied=$((not_applied + 1)) ;;
+            esac
+            continue
+        fi
+        cp "$orig" "$source"
+        local verdict t0
+        t0="$(date +%s)"
+        if ! python3 "$SCRIPT_DIR/dev/mutmut_apply.py" "$diffs/${name}.diff" "$source"; then
+            verdict="not-applied"
+            not_applied=$((not_applied + 1))
+        elif (cd "$SCRIPT_DIR" && python3 -m pytest "${test_files[@]}" -q -x -n "$WORKERS" \
+                --dist=loadscope -p no:randomly >/dev/null 2>&1); then
+            verdict="survived"
+            survived=$((survived + 1))
+        else
+            verdict="killed"
+            killed=$((killed + 1))
+        fi
+        echo "$name $verdict" >> "$verified"
+        checked=$((checked + 1))
+        local now elapsed left
+        now="$(date +%s)"
+        elapsed=$((now - started))
+        left=$(( elapsed * (total - i) / checked ))
+        printf '[verify] [%d/%d] %s elapsed, ~%s left  %s: %s (%ds)\n' \
+            "$i" "$total" "$(printf '%02d:%02d:%02d' $((elapsed / 3600)) $((elapsed % 3600 / 60)) $((elapsed % 60)))" \
+            "$(printf '%02d:%02d' $((left / 3600)) $((left % 3600 / 60)))" \
+            "${name#"${module}".}" "$verdict" $((now - t0))
+    done
+    cp "$orig" "$source" && rm -f "$orig"
+    trap cleanup EXIT
+    if [ "$done_before" -gt 0 ]; then
+        echo "[verify] (${done_before} carried over from an earlier, interrupted run)"
+    fi
+    echo "[verify] ${module}: ${killed} killed, ${survived} survived, ${not_applied} not applied -> ${verified}"
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  ${module}  verified: killed=${killed} survived=${survived} not_applied=${not_applied}" >> "$RESULTS_DIR/SUMMARY.txt"
+}
+
+if [ "$ARG" = "--verify" ]; then
+    verify_module "${2:-}"
+    exit 0
+fi
+
+if [ -n "$ARG" ]; then
+    found="$(module_entry "$ARG")"
     if [ -z "$found" ]; then
         echo "[mutmut] ERROR: unknown module '$ARG'. Run './run-mutmut.sh --list' to see valid names." >&2
         exit 1

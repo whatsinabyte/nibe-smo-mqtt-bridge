@@ -8349,7 +8349,7 @@ class TestTeardownLovelace(unittest.TestCase):
             t = payload.get("type")
             if t == "lovelace/dashboards/list":
                 items = [{"url_path": "nibe-bridge", "id": dashboard_id}] if dashboard_id else []
-                return {"result": items}
+                return {"success": True, "result": items}
             if t == "lovelace/dashboards/delete":
                 return {"success": dash_delete_success}
             if t == "lovelace/resources/list":
@@ -8358,7 +8358,7 @@ class TestTeardownLovelace(unittest.TestCase):
                     if resource_id
                     else []
                 )
-                return {"result": items}
+                return {"success": True, "result": items}
             if t == "lovelace/resources/delete":
                 return {"success": res_delete_success}
             return {"success": True}
@@ -8724,11 +8724,30 @@ class TestTeardownLovelace(unittest.TestCase):
             if t == "lovelace/dashboards/list":
                 return {"success": True, "result": []}
             if t == "lovelace/resources/list":
-                return {"result": [{"id": 1}]}  # no 'url' key
+                return {"success": True, "result": [{"id": 1}]}  # no 'url' key
             return {"success": True}
 
         mock_log = self._run_full_with_log(ws_call)
         mock_log.debug.assert_any_call("Lovelace resource not found — already removed")
+
+    def test_a_failed_dashboard_list_is_reported_not_taken_for_removed(self):
+        """A failed list call ({}) says nothing about whether the dashboard
+        is still there; the user may have to remove it."""
+        mock_log = self._run_full_with_log(lambda payload: {})
+        warnings = [c.args[0] for c in mock_log.warning.call_args_list]
+        self.assertIn(
+            "Could not list the Lovelace dashboards — the Nibe Bridge dashboard may "
+            "still be there; remove it from Settings → Dashboards if it is",
+            warnings,
+        )
+        self.assertIn(
+            "Could not list the Lovelace resources — the card's resource may still "
+            "be registered; remove it from Settings → Dashboards → Resources if it is",
+            warnings,
+        )
+        debug = [c.args[0] for c in mock_log.debug.call_args_list]
+        self.assertNotIn("Nibe Bridge dashboard not found — already removed", debug)
+        self.assertNotIn("Lovelace resource not found — already removed", debug)
 
 
 class TestRegenMenuDashboardMaxAttemptsGivesUp(unittest.TestCase):
@@ -10943,3 +10962,764 @@ class TestMenuDashboardSavedOncePerChange(unittest.TestCase):
         changed = {**config, "\x00extra": 1}
         _, calls = self._save(changed)
         self.assertIn("lovelace/config/save", calls, "changed content is saved")
+
+
+# ===========================================================================
+# Mutation-testing gaps — pinned behaviour the tests above left open
+# ===========================================================================
+
+
+def _alert(kind, title, text):
+    return f'<ha-alert alert-type="{kind}" title="{title}">{text}</ha-alert>'
+
+
+class TestCardWeight(unittest.TestCase):
+    """_card_weight approximates a card's height in entity rows; the column
+    chunks are balanced on it."""
+
+    def test_weights(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._card_weight({"type": "entities", "entities": [{}, {}, {}]}), 3)
+        self.assertEqual(nl._card_weight({"type": "tile", "entity": "number.x"}), 2)
+        self.assertEqual(nl._card_weight({"type": "markdown", "content": "x"}), 1)
+        stack = {
+            "type": "vertical-stack",
+            "cards": [
+                {"type": "markdown"},
+                {"type": "tile"},
+                {"type": "entities", "entities": [{}]},
+            ],
+        }
+        self.assertEqual(nl._card_weight(stack), 4)
+        self.assertEqual(nl._card_weight({"type": "vertical-stack"}), 0)
+        self.assertEqual(nl._card_weight({}), 1)
+
+
+class TestGroupCardsForMasonryBoundaries(unittest.TestCase):
+    """Exact chunk boundaries: a section starts the next chunk when its
+    middle lies past the boundary."""
+
+    def _section(self, name, rows):
+        md = {"type": "markdown", "content": name}
+        if not rows:
+            return [md]
+        return [md, {"type": "entities", "entities": [{}] * rows}]
+
+    def _chunks(self, *sections):
+        import nibe_lovelace as nl
+
+        cards = [card for section in sections for card in section]
+        result = nl._group_cards_for_masonry(cards)
+        names = []
+        for chunk in result:
+            stack = chunk["cards"] if chunk.get("type") == "vertical-stack" else [chunk]
+            names.append([c["content"] for c in stack if c.get("type") == "markdown"])
+        return names
+
+    def test_a_light_header_and_a_heavy_menu_get_a_column_each(self):
+        self.assertEqual(
+            self._chunks(self._section("header", 0), self._section("menu", 30)),
+            [["header"], ["menu"]],
+        )
+
+    def test_chunks_balance_by_weight(self):
+        # weights 5, 5, 1, 1, 8 (total 20, target 20/3): chunk two starts at
+        # the second 5 (middle 7.5 > 6.67), chunk three at the 8 (middle 16 > 13.3)
+        self.assertEqual(
+            self._chunks(
+                self._section("a", 4),
+                self._section("b", 4),
+                self._section("c", 0),
+                self._section("d", 0),
+                self._section("e", 7),
+            ),
+            [["a"], ["b", "c", "d"], ["e"]],
+        )
+
+    def test_a_section_whose_middle_is_on_the_boundary_stays(self):
+        # weights 1, 2, 3 (target 2): the second section's middle is exactly
+        # on the first boundary
+        self.assertEqual(
+            self._chunks(self._section("a", 0), self._section("b", 1), self._section("c", 2)),
+            [["a", "b"], ["c"]],
+        )
+
+    def test_a_light_section_joins_the_chunk_before_it(self):
+        # weights 1, 1, 4 (target 2): the second section's middle (1.5) is
+        # before the first boundary
+        self.assertEqual(
+            self._chunks(self._section("a", 0), self._section("b", 0), self._section("c", 3)),
+            [["a", "b"], ["c"]],
+        )
+
+    def test_no_more_chunks_than_columns(self):
+        names = self._chunks(*(self._section(str(i), 1) for i in range(7)))
+        self.assertEqual(len(names), 3)
+        self.assertEqual([n for chunk in names for n in chunk], [str(i) for i in range(7)])
+
+
+class TestBuildMenuViewExactCards(unittest.TestCase):
+    """Whole cards pinned by equality — the tests above check lines."""
+
+    def _watcher(self, entity_ids):
+        watcher = MagicMock()
+        watcher.entity_id_for.side_effect = lambda pid: entity_ids.get(pid)
+        return watcher
+
+    def _flat(self, cards):
+        out = []
+        for c in cards:
+            out.extend(self._flat(c["cards"]) if c.get("type") == "vertical-stack" else [c])
+        return out
+
+    def test_section_card_with_menu_and_dynamic_setting_callouts(self):
+        """A dynamic setting is never a row, so its note, tip and warning
+        go into its section's card, titled by its label; a non-dynamic
+        setting's callouts don't."""
+        import nibe_lovelace as nl
+
+        menu = {
+            "id": "1",
+            "title": "Test Menu",
+            "description": "Desc.",
+            "warning": "W",
+            "note": "N",
+            "tip": "T",
+            "settings": [
+                {"point_id": 5, "label": "Dyn", "note": "dn", "tip": "dt", "warning": "dw"},
+                {"point_id": 6, "label": "Static", "note": "sn"},
+            ],
+        }
+        cards = nl._build_menu_view(menu, self._watcher({}), known_dynamic={5})
+        self.assertEqual(
+            cards[0]["content"],
+            "\n".join(
+                [
+                    '<h2><font color="#9C1924">Menu 1 – Test Menu</font></h2>',
+                    "",
+                    "Desc.",
+                    "",
+                    _alert("warning", "Warning", "W"),
+                    "",
+                    _alert("info", "Note", "N"),
+                    "",
+                    _alert("success", "Tip", "T"),
+                    "",
+                    _alert("info", "Dyn", "dn"),
+                    "",
+                    _alert("success", "Dyn", "dt"),
+                    "",
+                    _alert("warning", "Dyn", "dw"),
+                    "",
+                ]
+            ),
+        )
+
+    def test_a_menu_not_available_via_the_local_api(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "M", "local_api": False, "settings": []}
+        cards = nl._build_menu_view(menu, self._watcher({}))
+        self.assertEqual(
+            cards[0]["content"],
+            "\n".join(
+                [
+                    '<h2><font color="#9C1924">Menu 1 – M</font></h2>',
+                    "",
+                    _alert(
+                        "info",
+                        "Not available via local API",
+                        "This feature is configured on the controller display and has no "
+                        "local API register.",
+                    ),
+                    "",
+                ]
+            ),
+        )
+
+    def test_a_dynamic_setting_without_a_label_has_untitled_callouts(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "M", "settings": [{"point_id": 5, "note": "n"}]}
+        cards = nl._build_menu_view(menu, self._watcher({}), known_dynamic={5})
+        self.assertIn(_alert("info", "", "n"), cards[0]["content"])
+
+    def test_tile_setting_is_one_stack_of_info_box_tile_and_spacer(self):
+        import nibe_lovelace as nl
+
+        menu = {
+            "id": "1",
+            "title": "M",
+            "settings": [{"point_id": 7, "label": "Temp", "range": "5 – 30 °C", "note": "N"}],
+        }
+        cards = nl._build_menu_view(
+            menu, self._watcher({7: "number.nibe_7"}), point_steps={7: "0.5 °C"}
+        )
+        self.assertEqual(
+            cards[1],
+            {
+                "type": "vertical-stack",
+                "cards": [
+                    {
+                        "type": "markdown",
+                        "content": _alert("info", "5 – 30 °C  ·  in steps of 0.5 °C", "N"),
+                    },
+                    {
+                        "type": "tile",
+                        "entity": "number.nibe_7",
+                        "name": "Temp",
+                        "features": [{"type": "numeric-input", "style": "buttons"}],
+                    },
+                    nl._SETTING_SPACER,
+                ],
+            },
+        )
+
+    def test_a_button_tile_gets_no_range(self):
+        import nibe_lovelace as nl
+
+        menu = {
+            "id": "1",
+            "title": "M",
+            "settings": [{"point_id": 8, "label": "Reset", "range": "0 – 1"}],
+        }
+        cards = nl._build_menu_view(menu, self._watcher({8: "button.nibe_8"}))
+        self.assertEqual(cards[1]["cards"][0]["type"], "tile")
+
+    def test_a_disabled_controller_shows_its_current_value(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "M", "settings": [{"point_id": 9, "label": "Ctl"}]}
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({}),
+            dynamic_injection={9: [("sensor.d", "Dyn", "", "")]},
+            controller_values={9: "On"},
+        )
+        rows = [
+            row for c in self._flat(cards) if c.get("type") == "entities" for row in c["entities"]
+        ]
+        self.assertIn(
+            {"type": "section", "label": "↳ not enabled in HA  ·  current value: On"}, rows
+        )
+
+    def test_injected_tile_and_row_both_show_and_a_default_reaches_the_tile(self):
+        import nibe_lovelace as nl
+
+        menu = {"id": "1", "title": "M", "settings": [{"point_id": 9, "label": "Ctl"}]}
+        cards = nl._build_menu_view(
+            menu,
+            self._watcher({9: "switch.c"}),
+            dynamic_injection={9: [("number.d", "D1", "0 – 5", "3"), ("sensor.e", "D2", "", "")]},
+        )
+        flat = self._flat(cards)
+        tile = next(c for c in flat if c.get("entity") == "number.d")
+        self.assertEqual(tile["state_content"], ["state", "default_status"])
+        rows = [row for c in flat if c.get("type") == "entities" for row in c["entities"]]
+        self.assertIn({"entity": "sensor.e"}, rows)
+
+    def test_a_button_tile_never_gets_state_content(self):
+        import nibe_lovelace as nl
+
+        self.assertNotIn("state_content", nl._setting_tile("button.x", "X", True))
+
+    def test_a_tile_without_a_label_keeps_the_entitys_own_name(self):
+        import nibe_lovelace as nl
+
+        self.assertNotIn("name", nl._setting_tile("number.x", "", False))
+
+
+class TestOverviewHubAndJumpCardsExact(unittest.TestCase):
+    def test_overview_content(self):
+        import nibe_lovelace as nl
+
+        view = nl._build_overview_view(
+            [
+                {"id": "7.2", "title": "Heating", "description": "First.\n\nSecond."},
+                {"id": "3", "title": "Info"},
+            ]
+        )
+        self.assertEqual(
+            view["cards"],
+            [
+                {
+                    "type": "markdown",
+                    "content": (
+                        '<h2><font color="#9C1924">Nibe Menus — Overview</font></h2>\n'
+                        "\n"
+                        "Tap a menu below to jump straight to it.\n"
+                        "\n"
+                        "### [Menu 7.2 – Heating](/nibe-menus/menu-7-2)\n"
+                        "First.\n"
+                        "\n"
+                        "### [Menu 3 – Info](/nibe-menus/menu-3)\n"
+                    ),
+                }
+            ],
+        )
+
+    def test_hub_children_card_content(self):
+        import nibe_lovelace as nl
+
+        card = nl._build_hub_children_card(
+            [{"id": "7.1", "title": "A"}, {"id": "7.2", "title": "B"}]
+        )
+        self.assertEqual(
+            card,
+            {
+                "type": "markdown",
+                "content": "### Jump to a section:\n\n"
+                "- [7.1 A](/nibe-menus/menu-7-1)\n- [7.2 B](/nibe-menus/menu-7-2)",
+            },
+        )
+
+    def test_jump_out_card_content(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(
+            nl._build_jump_out_card(
+                {"id": "3.1", "title": "Status", "description": "Live.\n\nMore."}
+            ),
+            {"type": "markdown", "content": "### [3.1 Status →](/nibe-menus/menu-3-1)\nLive."},
+        )
+        self.assertEqual(
+            nl._build_jump_out_card({"id": "3.1", "title": "Status"}),
+            {"type": "markdown", "content": "### [3.1 Status →](/nibe-menus/menu-3-1)"},
+        )
+
+
+class TestBuildMenuDashboardConfigPassThrough(unittest.TestCase):
+    """What the config hands each view: the filtered menus, the ✏️ set, a
+    disabled controller's value, the steps, and a hub's own shape."""
+
+    def _config(self, menus, **kwargs):
+        import nibe_lovelace as nl
+
+        cards = [{"type": "markdown", "content": "header"}, {"type": "markdown", "content": "body"}]
+        with patch.object(nl, "_build_menu_view", side_effect=lambda *a, **k: list(cards)) as view:
+            config = nl._build_menu_dashboard_config(menus, MagicMock(), **kwargs)
+        return config, view
+
+    def test_menus_are_filtered_for_the_controller_family(self):
+        import nibe_lovelace as nl
+
+        menus = [{"id": "1", "title": "A"}, {"id": "2", "title": "B", "family": "water_water"}]
+        with patch.object(
+            nl, "_filter_menu_structure_by_family", wraps=nl._filter_menu_structure_by_family
+        ) as flt:
+            config, _ = self._config(menus, controller_family="air_water")
+        flt.assert_called_once_with(menus, "air_water")
+        self.assertEqual([v["path"] for v in config["views"]], ["overview", "menu-1"])
+
+    def test_changed_from_default_reaches_the_view(self):
+        bulk = {5: {"is_ok": True, "raw_value": 7, "metadata": {}}}
+        _, view = self._config([{"id": "1", "title": "A"}], point_defaults={5: "3"}, bulk_data=bulk)
+        self.assertEqual(view.call_args.args[6], {5})
+
+    def test_point_defaults_without_bulk_data(self):
+        _, view = self._config([{"id": "1", "title": "A"}], point_defaults={5: "3"})
+        self.assertEqual(view.call_args.args[6], set())
+
+    def test_a_controllers_current_value_reaches_the_view(self):
+        bulk = {9: {"is_ok": True, "raw_value": 1, "metadata": {"minValue": 0, "maxValue": 1}}}
+        _, view = self._config(
+            [{"id": "1", "title": "A"}],
+            bulk_data=bulk,
+            dynamic_injection={9: [("sensor.d", "D", "", "")]},
+        )
+        self.assertEqual(view.call_args.kwargs["controller_values"], {9: "on"})
+
+    def test_point_steps_reach_the_view(self):
+        _, view = self._config([{"id": "1", "title": "A"}], point_steps={7: "0.5 °C"})
+        self.assertEqual(view.call_args.kwargs["point_steps"], {7: "0.5 °C"})
+
+    def test_a_hub_renders_no_children_and_lists_them_after_its_header(self):
+        menu = {
+            "id": "7",
+            "title": "Installer",
+            "split_submenus": True,
+            "submenus": [{"id": "7.1", "title": "A"}],
+        }
+        config, view = self._config([menu])
+        hub_call = next(c for c in view.call_args_list if c.args[0] is menu)
+        self.assertIs(hub_call.kwargs["render_submenus"], False)
+        hub_view = next(v for v in config["views"] if v["path"] == "menu-7")
+        contents = [c["content"] for c in hub_view["cards"]]
+        self.assertEqual(contents[0], "header")
+        self.assertTrue(contents[1].startswith("### Jump to a section:"))
+        self.assertEqual(contents[2], "body")
+
+    def test_a_nested_submenu_of_the_other_family_is_dropped(self):
+        import nibe_lovelace as nl
+
+        menus = [
+            {
+                "id": "1",
+                "title": "A",
+                "submenus": [
+                    {"id": "1.1", "title": "B", "family": "water_water"},
+                    {"id": "1.2", "title": "C"},
+                    {"id": "1.3", "title": "D", "family": "air_water"},
+                ],
+            }
+        ]
+        filtered = nl._filter_menu_structure_by_family(menus, "air_water")
+        self.assertEqual([s["id"] for s in filtered[0]["submenus"]], ["1.2", "1.3"])
+
+
+class TestSetupMenuDashboardBuildInputs(unittest.TestCase):
+    """The controller family comes from the device model, and the steps
+    from the indexed points."""
+
+    def test_family_and_steps_reach_the_config(self):
+        import nibe_lovelace as nl
+
+        em = MagicMock()
+        em.device_info = {"model": "SMO S40"}
+        em.mqtt_enabled_points = set()
+        em.active_dynamic_points = set()
+        em.bulk_data = {}
+        em.all_points_by_id = {
+            7: {
+                "entity_type": "number",
+                "metadata": {"change": 5, "divisor": 10, "unit": "°C"},
+            }
+        }
+        watcher = MagicMock()
+        watcher._em = em
+        with (
+            patch.object(nl, "_load_menu_structure_yaml", return_value=[{"id": "1", "title": "A"}]),
+            patch.object(nl, "_wait_for_registry_stable"),
+            patch.object(nl, "_build_menu_dashboard_config", return_value=None) as build,
+        ):
+            nl._setup_menu_dashboard_build(lambda: None, watcher, False)
+        self.assertEqual(build.call_args.kwargs["controller_family"], "air_water")
+        self.assertEqual(build.call_args.kwargs["point_steps"], {7: "0.5 °C"})
+
+
+class TestPointValueHelpersEdges(unittest.TestCase):
+    def _number(self, **meta):
+        return {"entity_type": "number", "metadata": meta}
+
+    def test_step_text_edges(self):
+        import nibe_lovelace as nl
+
+        self.assertEqual(nl._step_text(self._number(change=5.0, divisor=10)), "")
+        self.assertEqual(nl._step_text(self._number(change=2, divisor=1)), "2")
+        self.assertEqual(nl._step_text(self._number(change=5)), "5")
+        self.assertEqual(nl._step_text(self._number(change=5, divisor=10)), "0.5")
+
+    def test_a_minus_one_to_one_range_is_a_number_not_a_switch(self):
+        import nibe_lovelace as nl
+
+        point = {"metadata": {"minValue": -1, "maxValue": 1, "divisor": 1}}
+        self.assertEqual(nl._format_point_value(99999, point, 1), "1")
+
+    def test_point_defaults_edges(self):
+        """A safety read-only point has none; a skipped point doesn't stop
+        the scan; a manual mapping of the point's own id names the default."""
+        import nibe_lovelace as nl
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS
+
+        def holding(**meta):
+            return {
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "minValue": 0,
+                    "maxValue": 100,
+                    "intDefaultValue": 20,
+                    "divisor": 1,
+                    **meta,
+                }
+            }
+
+        defaults = nl._build_point_defaults(
+            {
+                min(SAFETY_READ_ONLY_POINTS): holding(),
+                1: {"metadata": {"modbusRegisterType": "MODBUS_INPUT_REGISTER"}},
+                # writable, but not a holding register
+                32825: holding(modbusRegisterType="MODBUS_NO_REGISTER"),
+                2: holding(intDefaultValue=None),
+                # a 0 default is shown only because its own mapping names it
+                3958: holding(maxValue=69, intDefaultValue=0),
+                3: holding(),
+            }
+        )
+        self.assertEqual(defaults, {3958: "0", 3: "20"})
+
+    def test_changed_from_default_skips_missing_and_unreliable_points(self):
+        import nibe_lovelace as nl
+
+        bulk = {
+            2: {"is_ok": False, "raw_value": 9, "metadata": {}},
+            3: {"is_ok": True, "raw_value": 9, "metadata": {}},
+        }
+        self.assertEqual(nl._build_changed_from_default(bulk, {1: "5", 2: "5", 3: "5"}), {3})
+
+    def test_a_controllers_value_uses_its_own_manual_mapping(self):
+        import nibe_lovelace as nl
+
+        bulk = {3958: {"is_ok": True, "raw_value": 1, "metadata": {"minValue": 0, "maxValue": 69}}}
+        self.assertEqual(
+            nl._build_controller_values(bulk, {3958: []}), {3958: "Temp. more hot water"}
+        )
+
+    def test_an_injected_rows_range_carries_its_step(self):
+        import nibe_lovelace as nl
+
+        entry = MagicMock(firmware_removed=False, point_id=1)
+        entry.all_known_dynamic_points.return_value = {7}
+        dyn_map = MagicMock()
+        dyn_map.values.return_value = [entry]
+        watcher = MagicMock()
+        watcher.entity_id_for.return_value = "number.d"
+        points = {
+            7: {
+                "display_title": "D",
+                "entity_type": "number",
+                "metadata": {
+                    "minValue": 0,
+                    "maxValue": 100,
+                    "divisor": 10,
+                    "change": 5,
+                    "unit": "°C",
+                },
+            }
+        }
+        injection = nl._build_direct_dynamic_injection(dyn_map, {7}, watcher, points, None)
+        self.assertEqual(injection[1][0][1][2], "0 – 10 °C, in steps of 0.5 °C")
+
+    def test_unplaced_safety_point_is_never_listed_as_writable(self):
+        import nibe_lovelace as nl
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS
+
+        pid = min(SAFETY_READ_ONLY_POINTS)
+
+        def point(mn, mx):
+            return {
+                "display_title": "Safe",
+                "metadata": {
+                    "modbusRegisterType": "MODBUS_HOLDING_REGISTER",
+                    "minValue": mn,
+                    "maxValue": mx,
+                },
+            }
+
+        watcher = MagicMock()
+        watcher.entity_id_for.return_value = None
+        self.assertIsNone(nl._build_unplaced_view({pid: point(0, 0)}, set(), watcher, {}))
+        view = nl._build_unplaced_view({pid: point(0, 10)}, set(), watcher, {})
+        labels = [
+            row.get("label")
+            for card in view["cards"][0]["cards"]
+            for row in card.get("entities", [])
+        ]
+        self.assertIn("Read-only (1 points)", labels)
+
+
+class TestWaitForRegistryStableExit(unittest.TestCase):
+    def test_returns_after_three_seconds_of_an_unchanged_complete_count(self):
+        """First sweep sets the count; six more unchanged half-second sweeps
+        reach the 3 s it must hold."""
+        import nibe_lovelace as nl
+
+        watcher = MagicMock()
+        watcher.entity_id_for.side_effect = lambda pid: f"sensor.nibe_{pid}"
+        with patch("nibe_lovelace.time.sleep") as sleep:
+            nl._wait_for_registry_stable(watcher, {1, 2}, set())
+        self.assertEqual(sleep.call_count, 7)
+
+
+class TestCopyCardFileIntoAnExistingDirectory(unittest.TestCase):
+    def test_copy_succeeds_when_the_www_directory_exists(self):
+        import nibe_lovelace as nl
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        src = os.path.join(tmp, "card.js")
+        www = os.path.join(tmp, "www")
+        os.makedirs(www)
+        with open(src, "wb") as f:
+            f.write(b"card")
+        with patch("nibe_lovelace._CARD_SRC", src), patch("nibe_lovelace._CARD_WWW_DIR", www):
+            self.assertTrue(nl._copy_card_file())
+
+
+class TestLovelaceWebSocketCalls(unittest.TestCase):
+    """Every _ws_call gets the real WebSocket and a fresh message id, on the
+    paths the other tests' fakes don't inspect."""
+
+    def _record(self, responses):
+        calls = []
+
+        def fake_ws_call(ws, msg_id, payload, _timeout=10):
+            calls.append((ws, msg_id, payload["type"]))
+            return responses.get(payload["type"], {"success": True})
+
+        return calls, fake_ws_call
+
+    def _assert_real_ws_and_fresh_ids(self, calls, ws, expected_types):
+        self.assertEqual([c[2] for c in calls], expected_types)
+        for c in calls:
+            self.assertIs(c[0], ws)
+        ids = [c[1] for c in calls]
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertTrue(all(isinstance(i, int) for i in ids))
+
+    def test_resource_create(self):
+        import nibe_lovelace as nl
+
+        ws = MagicMock()
+        calls, fake = self._record({"lovelace/resources/list": {"success": True, "result": []}})
+        with patch("nibe_lovelace._ws_call", side_effect=fake):
+            ok = nl._setup_lovelace_resource(ws, iter(range(1, 9)).__next__, "/local/card.js?v=1")
+        self.assertTrue(ok)
+        self._assert_real_ws_and_fresh_ids(
+            calls, ws, ["lovelace/resources/list", "lovelace/resources/create"]
+        )
+
+    def test_resource_return_values(self):
+        import nibe_lovelace as nl
+
+        current = [{"id": 1, "url": "/local/nibe-entity-manager-card.js?v=1"}]
+        cases = [
+            ({"lovelace/resources/list": {"success": True, "result": current}}, True),
+            ({"lovelace/resources/list": {"success": True, "result": []}}, True),
+            (
+                {
+                    "lovelace/resources/list": {"success": True, "result": []},
+                    "lovelace/resources/create": {"success": False},
+                },
+                False,
+            ),
+        ]
+        for responses, expected in cases:
+            _, fake = self._record(responses)
+            with patch("nibe_lovelace._ws_call", side_effect=fake):
+                ok = nl._setup_lovelace_resource(
+                    MagicMock(),
+                    iter(range(1, 9)).__next__,
+                    "/local/nibe-entity-manager-card.js?v=1",
+                )
+            self.assertIs(ok, expected, responses)
+
+    def test_a_failed_resource_list_leads_to_a_create(self):
+        import nibe_lovelace as nl
+
+        calls, fake = self._record({"lovelace/resources/list": {}})
+        with patch("nibe_lovelace._ws_call", side_effect=fake):
+            nl._setup_lovelace_resource(MagicMock(), iter(range(1, 9)).__next__, "/local/c.js")
+        self.assertEqual(calls[-1][2], "lovelace/resources/create")
+
+    def test_bridge_dashboard_create_and_config(self):
+        import nibe_lovelace as nl
+
+        ws = MagicMock()
+        calls, fake = self._record({"lovelace/dashboards/list": {"success": True, "result": []}})
+        flag = os.path.join(tempfile.mkdtemp(), "flag")
+        with patch("nibe_lovelace._ws_call", side_effect=fake):
+            nl._setup_lovelace_dashboard(ws, iter(range(1, 9)).__next__, "SMO", flag)
+        self._assert_real_ws_and_fresh_ids(
+            calls,
+            ws,
+            ["lovelace/dashboards/list", "lovelace/dashboards/create", "lovelace/config/save"],
+        )
+
+    def test_bridge_dashboard_without_config_gets_one_with_the_device_name(self):
+        import nibe_lovelace as nl
+
+        ws = MagicMock()
+        sent = []
+
+        def fake(ws_, msg_id, payload, _timeout=10):
+            sent.append((ws_, payload))
+            if payload["type"] == "lovelace/dashboards/list":
+                return {"success": True, "result": [{"url_path": "nibe-bridge", "id": 1}]}
+            if payload["type"] == "lovelace/config":
+                return {"success": False, "error": {"code": "config_not_found"}}
+            return {"success": True}
+
+        flag = os.path.join(tempfile.mkdtemp(), "flag")
+        with patch("nibe_lovelace._ws_call", side_effect=fake):
+            nl._setup_lovelace_dashboard(ws, iter(range(1, 9)).__next__, "SMO S40", flag)
+        self.assertTrue(all(w is ws for w, _ in sent))
+        config_fetch = next(p for _, p in sent if p["type"] == "lovelace/config")
+        self.assertEqual(config_fetch["url_path"], "nibe-bridge")
+        save = next(p for _, p in sent if p["type"] == "lovelace/config/save")
+        self.assertEqual(save["config"]["views"][0]["title"], "SMO S40")
+
+    def test_menu_dashboard_delete(self):
+        import nibe_lovelace as nl
+
+        ws = MagicMock()
+        calls, fake = self._record(
+            {
+                "lovelace/dashboards/list": {
+                    "success": True,
+                    "result": [{"url_path": "nibe-menus", "id": 4}],
+                }
+            }
+        )
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch(
+                "nibe_lovelace._open_ha_websocket", return_value=(ws, iter(range(1, 9)).__next__)
+            ),
+            patch("nibe_lovelace._ws_call", side_effect=fake),
+            patch("nibe_lovelace.os.remove"),
+        ):
+            nl._remove_menu_dashboard()
+        self._assert_real_ws_and_fresh_ids(
+            calls, ws, ["lovelace/dashboards/list", "lovelace/dashboards/delete"]
+        )
+
+    def test_teardown_deletes_and_removes_the_test_report(self):
+        import nibe_lovelace as nl
+
+        ws = MagicMock()
+        calls, fake = self._record(
+            {
+                "lovelace/dashboards/list": {
+                    "success": True,
+                    "result": [{"url_path": "nibe-bridge", "id": 4}],
+                },
+                "lovelace/resources/list": {
+                    "success": True,
+                    "result": [{"url": "/local/nibe-entity-manager-card.js?v=1", "id": 2}],
+                },
+            }
+        )
+        report = "/homeassistant/www/nibe_test_report.html"
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch(
+                "nibe_lovelace._open_ha_websocket", return_value=(ws, iter(range(1, 9)).__next__)
+            ),
+            patch("nibe_lovelace._ws_call", side_effect=fake),
+            patch("nibe_lovelace.os.path.exists", side_effect=lambda p: p == report),
+            patch("nibe_lovelace.os.remove") as remove,
+            patch("nibe_lovelace._remove_menu_dashboard"),
+        ):
+            nl._teardown_lovelace(True)
+        self._assert_real_ws_and_fresh_ids(
+            calls,
+            ws,
+            [
+                "lovelace/dashboards/list",
+                "lovelace/dashboards/delete",
+                "lovelace/resources/list",
+                "lovelace/resources/delete",
+            ],
+        )
+        remove.assert_any_call(report)
+
+
+class TestProvisionLovelaceUiPassThrough(unittest.TestCase):
+    def test_on_card_version_is_passed_on(self):
+        import nibe_lovelace as nl
+
+        callback = MagicMock()
+        with patch.object(nl, "_setup_lovelace") as setup:
+            nl.provision_lovelace_ui("1.0", "SMO", MagicMock(), on_card_version=callback)
+        self.assertIs(setup.call_args.kwargs["on_card_version"], callback)

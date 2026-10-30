@@ -462,6 +462,16 @@ class TestOtherSwitchDuringWindow(_Base):
         self._fetch(self._response(switch=1, other=1, new=True))
         self.assertEqual(self.em.dynamic_point_map.get(SWITCH).dynamic_points_by_value[1], [NEW])
 
+    def test_a_window_learning_nothing_is_spoiled_without_releasing_writes(self):
+        """A window not learning a value has no waiting write to release."""
+        from nibe_attribution import ScanWindow
+
+        self.em._window = ScanWindow(point=SWITCH, until=9e12, value=1)
+        self.em._learning_window_ended.clear()
+        self.em._other_switch_spoils_window(self._response(switch=1, other=1), self.em._window)
+        self.assertIsNone(self.em._window.value)
+        self.assertFalse(self.em._learning_window_ended.is_set())
+
     def test_a_window_replaced_meanwhile_is_left_alone(self):
         """A write to another switch replaced the window after this poll read
         it: that newer window isn't the one to spoil."""
