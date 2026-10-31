@@ -94,7 +94,7 @@ def _run_curl(
     base_url: str,
     ca_cert_path: str | None,
     auth_header: str | None = None,
-    timeout: int = 10,
+    timeout: int = 30,
 ) -> dict:
     """Probe *base_url* with curl and return
     {'ok': bool, 'summary': str, 'http_code': int | None, 'tls_verified': bool}.
@@ -108,6 +108,10 @@ def _run_curl(
     connection-level failure (network/TLS never even completed). Without
     *auth_header*, 'ok' is True for any real HTTP response (even 401/403) —
     a pure reachability check with no opinion on credentials.
+
+    *timeout* defaults to the 30 s NibeApiClient allows, so a controller that
+    is slow to send its points isn't reported as timed out while the bridge
+    itself reads it fine.
     """
     url = f"{base_url}/points"
     cmd = [

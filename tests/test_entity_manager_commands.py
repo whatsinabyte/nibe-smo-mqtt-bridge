@@ -1004,6 +1004,32 @@ class TestHandleCommand(unittest.TestCase):
             any("Unhandled exception in write command handler" in msg for msg in cm.output)
         )
 
+    def test_worker_dying_before_the_write_started_releases_the_guard(self):
+        """A write that hasn't started never ages out (_STALE_WRITE_AGE_S), so
+        a worker dying at that point would stop the entity updating for good."""
+        em = _make_em()
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
+        info = {
+            "point_id": 100,
+            "entity_type": "switch",
+            "state_topic": "s/100",
+            "availability_topic": "a/100",
+            "point_data": {},
+        }
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True, "metadata": {}}
+        em.pending_writes[100] = {"point_id": 100, "value": 1, "payload": "ON", "cmd_id": "c"}
+        with (
+            patch.object(em, "_opens_scan_window", side_effect=RuntimeError("boom")),
+            self.assertLogs("nibe.commands", level="ERROR"),
+        ):
+            em._submit_write(
+                em._handle_command_worker, info, 1, "ON", "c", point_id=100, cmd_id_for_log="c"
+            )
+        self.assertNotIn(100, em.pending_writes)
+        em.mqtt.publish.reset_mock()
+        em._update_entity_state(info)
+        em.mqtt.publish.assert_any_call("s/100", "0", retain=True)
+
     def test_submitted_cmd_id_matches_the_generated_correlation_token(self):
         """The cmd_id forwarded to the write executor must be the *same*
         correlation token that was generated for this command (and stored in

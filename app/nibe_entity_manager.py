@@ -4156,7 +4156,9 @@ class EntityManager:
         checks ``.result()``, so a bug in the handler fails invisibly with
         no log line and the point's ``pending_writes`` entry is never
         explicitly cleared. Wrapping it here ensures every write failure is
-        at least logged, mirroring ``ManagementCommandHandler._submit``.
+        at least logged, mirroring ``ManagementCommandHandler._submit``, and
+        releases that entry: a write that died before it started would
+        otherwise never age out, and the entity would stop updating.
 
         ``_write_executor`` has a single worker, and a write to a switch or
         select waits there for up to ``_post_write_duration`` seconds while
@@ -4198,6 +4200,8 @@ class EntityManager:
             try:
                 fn(*args)
             except Exception:
+                with self._pending_writes_lock:
+                    self.pending_writes.pop(point_id, None)
                 # pragma: no mutate start
                 log_commands.exception("Unhandled exception in write command handler")
                 # pragma: no mutate end

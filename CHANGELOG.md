@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notification showed only the output's last line, twice; it now shows the
   last 1500 characters.
 
+- **Test API Connection allows as long as the bridge does.** It gave up
+  after 10 seconds where the bridge itself waits 30, so a controller slow to
+  send its points could be reported as timed out while the bridge read it fine.
+
 - **A Nibe Menus view with a short header and one long section uses two
   columns.** Sections are split over the columns at the boundary nearest
   each section, so a light section followed by a heavy one no longer ends
