@@ -36,8 +36,8 @@ For running tests only — no Nibe controller or HA installation required.
 ```
 app/                    ← all Python source modules + menu_structure.yaml
   menu_structure.yaml   ← Nibe Menus dashboard structure (schema: [docs/menu-structure-schema.md](https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/blob/main/docs/menu-structure-schema.md))
-tests/                  ← test suite (26 test files + conftest.py + js_card_harness.py)
-translations/           ← cs, da, de, en, es, fi, fr, it, nl, no, pl, sv.yaml
+tests/                  ← test suite (31 test files + conftest.py + js_card_harness.py)
+translations/           ← bg, cs, da, de, en, es, et, fi, fr, hu, it, lt, lv, nl, no, pl, ro, ru, sk, sl, sv, uk.yaml
 config.yaml             ← add-on manifest
 Dockerfile
 run.sh
@@ -539,15 +539,17 @@ Mutation testing is used periodically to identify gaps in the test suite, not as
 ./run-mutmut.sh --list          # print the module list and exit
 ./run-mutmut.sh <module>        # run just one module, e.g. nibe_entity_manager
 ./run-mutmut.sh                 # run every module below, sequentially
+./run-mutmut.sh --verify <module>  # recheck that module's survivors with plain pytest
 ```
 
-Current module list (`./run-mutmut.sh --list`): `nibe_mqtt_publisher`, `nibe_discovery_config`, `nibe_entity_detection`, `nibe_dynamic_map`, `nibe_api`, `nibe_entity_manager`, `nibe_ha_integration`, `nibe_lovelace`, `nibe_caching`, `nibe_test_runner`, `nibe_utils`, `generate_nibe_mqtt`, `nibe_connectivity_check`.
+**A "survived" verdict is only a hypothesis until `--verify` has rechecked it.** mutmut's own verdicts can be wrong in both directions (ARCHITECTURE.md §6). `--verify` applies each survivor to `app/<module>.py` in turn and runs the module's tests with plain pytest, so don't edit that file while it runs. Its verdicts land in `mutmut-results/<module>.verified.txt`, with the diffs in `mutmut-results/<module>-diffs/`.
+
+Current module list (`./run-mutmut.sh --list`): `nibe_mqtt_publisher`, `nibe_discovery_config`, `nibe_entity_detection`, `nibe_dynamic_map`, `nibe_api`, `nibe_entity_manager`, `nibe_ha_integration`, `nibe_lovelace`, `nibe_caching`, `nibe_test_runner`, `nibe_utils`, `generate_nibe_mqtt`, `nibe_connectivity_check`, `nibe_attribution`.
 
 `nibe_entity_manager` in particular is a multi-hour run given the module's size — mutmut's own default worker count (one per CPU core) can exhaust memory on machines with limited RAM when each worker runs the full `test_entity_manager*` suite in parallel. Set `MUTMUT_MAX_CHILDREN` to cap concurrency if you hit this, e.g. `MUTMUT_MAX_CHILDREN=2 ./run-mutmut.sh nibe_entity_manager`.
 
 **mutmut 3.x limitations to be aware of:**
 - `only_mutate` uses `fnmatch` against file paths only — function-level scoping (`::function_name*`) generates 0 mutants silently
-- Pragmas on the closing `)` of multi-line log calls do NOT suppress mutations of string literals on inner lines — these survivors are at the structural ceiling
-- Pragma syntax: `# pragma: no mutate` (space required) on the **closing `)` line**
+- A trailing `# pragma: no mutate` only covers the first line of its statement, so on the closing `)` of a multi-line call it leaves the inner lines exposed. Wrap a multi-line statement in `# pragma: no mutate start` / `# pragma: no mutate end` instead (ARCHITECTURE.md §6)
 
-Survivors that are genuine semantic equivalents (log format strings, equivalent boolean expressions) do not need new tests — annotate them with the pragma instead.
+Survivors in log calls need no test: put the call in a pragma block. Any other survivor needs a look. Code that a mutant shows to have no effect is either superfluous or something whose follow-through was forgotten, so check which, then remove or complete it. A mutant that is genuinely equivalent, such as a codec name's case, gets no change.

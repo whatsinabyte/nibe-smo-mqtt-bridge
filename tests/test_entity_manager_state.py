@@ -18,7 +18,7 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
 
-class TestValueCacheDeduplication(unittest.TestCase):
+class TestStateDeduplication(unittest.TestCase):
     def _setup(self):
         em = _make_em()
         pid = 500
@@ -938,10 +938,9 @@ class TestProcessAndPublishState(unittest.TestCase):
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         self.assertEqual(state_calls, [])
 
-    def test_unchanged_value_within_rate_limit_not_republished(self):
+    def test_unchanged_value_not_republished(self):
         """Calling twice in immediate succession with the same value must
-        only publish the state once — the ValueCache rate-limit/dedup gate
-        suppresses the redundant second publish."""
+        only publish the state once: an unchanged value isn't sent again."""
         em = _make_em()
         info = self._entity_info(point_id=222, entity_type="sensor")
         em._process_and_publish_state(info, 100, "", self._metadata(divisor=1))
@@ -1204,19 +1203,12 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         self.assertEqual(ss, "00")
 
 
-class TestChangeThresholdWiring(unittest.TestCase):
-    """Pins the wiring between firmware 'change' metadata and ValueCache
-    threshold suppression inside _process_and_publish_state.
-
-    The ValueCache.should_publish logic is tested exhaustively in
-    TestValueCacheHypothesisProperties; these tests verify that the
-    firmware metadata field is correctly extracted and passed as the
-    threshold — the integration path that actually runs on hardware.
+class TestChangeMetadataIsNoPublishThreshold(unittest.TestCase):
+    """The firmware's 'change' metadata doesn't affect which states are
+    published: every changed value goes out and an unchanged one doesn't.
 
     Point 1708 (Calculated supply climate system 1) is the reference:
       divisor=10, change=5, decimal=1, unit="°C".
-    A raw change of 5 at divisor=10 means 0.5 °C — below the threshold
-    of 5 raw counts — so the second publish must be suppressed.
     """
 
     def _entity_info(self, point_id=1708):
@@ -1231,17 +1223,14 @@ class TestChangeThresholdWiring(unittest.TestCase):
     def _metadata(self, change=5, divisor=10):
         return {"variableSize": "s16", "divisor": divisor, "change": change}
 
-    # -- suppression -------------------------------------------------------
-
-    @example(first=200, change=10)  # S2125 point 1708: same value → suppress
-    @example(first=228, change=10)  # S2125 point 4 (BT1 outdoor): same value → suppress
+    @example(first=200, change=10)  # S2125 point 1708
+    @example(first=228, change=10)  # S2125 point 4 (BT1 outdoor)
     @given(
         first=st.integers(min_value=0, max_value=10000),
         change=st.integers(min_value=1, max_value=50),
     )
-    def test_change_below_threshold_suppresses_second_publish(self, first, change):
-        """Second publish with the same raw value is suppressed — the cache
-        recognises zero delta and the last_states fallback also finds no change."""
+    def test_same_value_is_not_published_again(self, first, change):
+        """A second publish with the same raw value is suppressed."""
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1251,23 +1240,19 @@ class TestChangeThresholdWiring(unittest.TestCase):
         em._process_and_publish_state(info, first, "", meta)  # identical value
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
         self.assertEqual(
-            state_calls, [], f"Identical value with threshold {change}: must be suppressed"
+            state_calls, [], f"Identical value with change {change}: must be suppressed"
         )
 
-    @example(
-        first=200, second=206, change=5
-    )  # S2125 point 1708: 200→206 = Δ6 ≥ threshold 5 → publish
-    @example(
-        first=228, second=234, change=5
-    )  # S2125 point 4 (BT1 outdoor): 228→234 = Δ6 ≥ threshold 5 → publish
+    @example(first=200, second=201, change=5)  # S2125 point 1708: less than 'change'
+    @example(first=228, second=234, change=5)  # S2125 point 4 (BT1 outdoor): more than 'change'
     @given(
         first=st.integers(min_value=0, max_value=9000),
         second=st.integers(min_value=0, max_value=10000),
         change=st.integers(min_value=1, max_value=50),
     )
-    def test_change_exceeds_threshold_publishes(self, first, second, change):
-        """Second publish fires when |Δraw| >= change threshold."""
-        assume(abs(second - first) >= change)
+    def test_changed_value_is_published_whatever_change_says(self, first, second, change):
+        """A second publish fires for any difference, smaller than 'change' too."""
+        assume(second != first)
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1277,12 +1262,10 @@ class TestChangeThresholdWiring(unittest.TestCase):
         em._process_and_publish_state(info, second, "", meta)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
         self.assertGreater(
-            len(state_calls), 0, f"Δ{abs(second - first)} >= threshold {change}: publish must fire"
+            len(state_calls), 0, f"Δ{abs(second - first)} with change {change}: publish must fire"
         )
 
-    # -- zero threshold (default) ------------------------------------------
-
-    def test_zero_change_threshold_publishes_changes_only(self):
+    def test_zero_change_publishes_changes_only(self):
         """change=0 (most points) counts any change, but an unchanged value
         isn't sent again: the state is retained, and with menus mode's ~900
         entities the repeats were hundreds of identical messages a poll."""
@@ -1312,11 +1295,8 @@ class TestChangeThresholdWiring(unittest.TestCase):
             em._process_and_publish_state(info, raw, "", meta)
             em.mqtt.publish.assert_any_call("nibe/state/1708", str(raw / 10), retain=True)
 
-    # -- missing field fallback --------------------------------------------
-
-    def test_missing_change_field_defaults_to_zero(self):
-        """Metadata without a 'change' key must fall back to 0 (no suppression),
-        not raise KeyError."""
+    def test_missing_change_field_still_publishes(self):
+        """Metadata without a 'change' key must not raise KeyError."""
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()

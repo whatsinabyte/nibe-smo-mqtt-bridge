@@ -1516,9 +1516,9 @@ class TestForceReadback(unittest.TestCase):
         em._api.fetch_point.assert_called_once_with(777)
 
     def test_readback_uses_force_true(self):
-        """The republish must bypass the ValueCache rate-limit/dedup gate —
-        otherwise a recently-cached identical value could suppress the
-        correction the user actually needs to see."""
+        """The republish must bypass the unchanged-value check — otherwise an
+        identical value could suppress the correction the user actually
+        needs to see."""
         em = _make_em()
         em._api.fetch_point.return_value = {
             "value": {"isOk": True, "integerValue": 5, "stringValue": ""},
