@@ -11,6 +11,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
+    NoCheckThenRead,
     _make_em,
     _set_window,
 )
@@ -2493,6 +2494,51 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
             em.baseline_point_ids,
             "Only the disappearing point should be discarded, not others",
         )
+
+
+class TestBulkDataChangingDuringARead(unittest.TestCase):
+    """A Force Poll fetches on another thread, without holding anything the
+    readers take, so a point can go or appear at any moment."""
+
+    def test_entity_state_reads_its_entry_once(self):
+        em = _make_em()
+        info = {
+            "point_id": 900,
+            "entity_type": "sensor",
+            "point_data": {},
+            "availability_topic": "nibe/avail/900",
+            "state_topic": "nibe/state/900",
+        }
+        em.bulk_data = NoCheckThenRead(
+            {900: {"raw_value": 7, "string_value": "", "is_ok": True, "metadata": {}}}
+        )
+        em._update_entity_state(info)
+        em.mqtt.publish.assert_any_call("nibe/state/900", "7", retain=True)
+
+    def test_reconcile_survives_a_point_appearing_while_it_reads(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+
+        class Entry(dict):
+            def __getitem__(self, key):
+                em.bulk_data[901] = {"raw_value": 0}
+                return super().__getitem__(key)
+
+        em.bulk_data = {900: Entry(raw_value=1)}
+        em._reconcile_dynamic_points()
+        self.assertIn(901, em.bulk_data)
+
+    def test_firmware_identity_survives_a_point_appearing_while_it_reads(self):
+        em = _make_em()
+
+        class Entry(dict):
+            def get(self, key, default=None):
+                em.bulk_data[901] = {"metadata": {}}
+                return super().get(key, default)
+
+        em.bulk_data = {900: Entry(metadata={}), 902: {"metadata": {}}}
+        em._check_firmware_update({900, 902})
+        self.assertIn(901, em.bulk_data)
 
 
 class TestUpdateEntityStateDataFlowFields(unittest.TestCase):

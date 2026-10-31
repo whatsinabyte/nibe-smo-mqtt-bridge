@@ -12,6 +12,7 @@ from collections import deque
 from unittest.mock import MagicMock, patch
 
 from conftest import (
+    NoCheckThenRead,
     _make_em,
 )
 from hypothesis import given
@@ -2120,6 +2121,13 @@ class TestFirmwareUpdateEntry(unittest.TestCase):
     def record(self):
         with open(self.nem._FIRMWARE_RECORD_FILE, encoding="utf-8") as f:
             return json.loads(f.read())
+
+    def test_version_registers_are_read_once(self):
+        """Another thread can remove a point between a check and a read."""
+        self.em.bulk_data = NoCheckThenRead(self.em.bulk_data)
+        with patch.object(self.em, "_describe_point", return_value=["t", "sensor", "f"]):
+            self.settle(self.STATIC)
+        self.assertEqual(self.record()["versions"], {"2509": 1037})
 
     def test_first_stable_list_is_recorded_without_an_entry(self):
         self.settle(self.STATIC)

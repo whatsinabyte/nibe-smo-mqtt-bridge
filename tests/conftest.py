@@ -448,3 +448,14 @@ def _isolate_data_file_persistence(tmp_path):
 @pytest.fixture(autouse=True)
 def _no_supervisor_token(monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+
+
+class NoCheckThenRead(dict):
+    """bulk_data that fails on `in` and on indexing: another thread can remove
+    a point between a check and a read, so code must use one .get()."""
+
+    def __contains__(self, key):
+        raise AssertionError(f"bulk_data checked for {key}, then read separately")
+
+    def __getitem__(self, key):
+        raise AssertionError(f"bulk_data[{key}] raises KeyError if the point just went")

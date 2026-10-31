@@ -1958,7 +1958,10 @@ class EntityManager:
         if pending:
             return
 
-        if point_id not in self.bulk_data:
+        # One read: a Force Poll on another thread can remove the point at any
+        # moment, so a check followed by an index could raise KeyError.
+        data = self.bulk_data.get(point_id)
+        if data is None:
             if point_id in self.mqtt_enabled_points:
                 with self._post_write_lock:
                     window = self._window
@@ -2065,11 +2068,10 @@ class EntityManager:
             with self._em_lock:
                 self._absent_since.pop(point_id, None)
 
-        if not self.bulk_data[point_id]["is_ok"]:
+        if not data["is_ok"]:
             self._publish_availability(entity_info, "offline")
             return
 
-        data = self.bulk_data[point_id]
         raw_value = data["raw_value"]
         string_value = data["string_value"]
         metadata = data.get("metadata", {})
@@ -2571,7 +2573,7 @@ class EntityManager:
 
         ``bulk_data`` and ``published_configs`` still hold the previous poll
         when this runs. Not before initial discovery, nor with an HA write
-        pending or queued (other than one to ``own_point``): that write opens
+        pending (other than one to ``own_point``) or queued: that write opens
         its own window. A previously served point missing — other than a known
         dynamic one — or a changed firmware version register means a
         restarting or updating controller, whose new points are the
@@ -4035,7 +4037,9 @@ class EntityManager:
                 return
 
             entity_type = entity_info["entity_type"]
-            if entity_type != "button" and point_id in self.bulk_data:
+            # One read: the poll thread can remove the point at any moment.
+            current = self.bulk_data.get(point_id)
+            if entity_type != "button" and current is not None:
                 # A "button" is a stateless action (e.g. a pulse/increment
                 # command) — every press must reach the controller even if
                 # the last-known value looks unchanged. Every other type is
@@ -4053,7 +4057,6 @@ class EntityManager:
                 # changed if the value was already set; the regular poll
                 # loop or a genuinely different write still catches dynamic
                 # point changes from any other cause.
-                current = self.bulk_data[point_id]
                 current_value = (
                     current["string_value"] if entity_type == "text" else current.get("raw_value")
                 )
@@ -5372,7 +5375,8 @@ class EntityManager:
         with self._em_lock:
             # bulk_data mirrors the point set, so a changed set changes this
             # identity too: the check below covers both.
-            identity = hash(tuple(id(d.get("metadata")) for d in self.bulk_data.values()))
+            # A copy, as a Force Poll's fetch can change the set during this loop.
+            identity = hash(tuple(id(d.get("metadata")) for d in list(self.bulk_data.values())))
             if identity != self._metadata_identity:
                 self._metadata_identity = identity
                 self._firmware_check_due = True
@@ -5397,9 +5401,9 @@ class EntityManager:
         language = self._api.language if isinstance(self._api.language, str) else ""
         with self._em_lock:
             versions = {
-                str(pid): self.bulk_data[pid].get("raw_value")
+                str(pid): data.get("raw_value")
                 for pid in _FIRMWARE_VERSION_POINTS
-                if pid in self.bulk_data and self.bulk_data[pid].get("is_ok")
+                if (data := self.bulk_data.get(pid)) and data.get("is_ok")
             }
             points = {
                 str(pid): self._describe_point(pid)
@@ -5702,8 +5706,10 @@ class EntityManager:
         if not self.initial_discovery_complete:
             return
 
-        current_raw_values = {pid: bd["raw_value"] for pid, bd in self.bulk_data.items()}
-        bulk_present = set(self.bulk_data.keys())
+        # A copy, as a Force Poll's fetch can change the set during this method.
+        bulk_snapshot = dict(self.bulk_data)
+        current_raw_values = {pid: bd["raw_value"] for pid, bd in bulk_snapshot.items()}
+        bulk_present = set(bulk_snapshot)
         expected_active = self.dynamic_point_map.expected_active_dynamic_points(current_raw_values)
         persisted_active = set(self.active_dynamic_points)  # snapshot
 
@@ -5726,7 +5732,7 @@ class EntityManager:
                     if point_id not in self.mqtt_enabled_points:
                         # In bulk_present: a bulk entry, which always carries
                         # metadata, title and description (_update_bulk_entry).
-                        point_data = self.bulk_data[point_id]
+                        point_data = bulk_snapshot[point_id]
                         self._classify_and_index(
                             point_id,
                             point_data["metadata"],

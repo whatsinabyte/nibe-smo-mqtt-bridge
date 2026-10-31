@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 _UNSET = object()
 
 from conftest import (
+    NoCheckThenRead,
     _learning_value,
     _make_em,
 )
@@ -160,6 +161,15 @@ class TestRedundantWriteSkip(unittest.TestCase):
             em._handle_command(info, self._message("ON"))
         mock_submit.assert_not_called()
         self.assertNotIn(100, em.pending_writes)
+
+    def test_duplicate_check_reads_the_entry_once(self):
+        """The poll thread can remove the point between a check and a read,
+        and the KeyError would lose this write."""
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data = NoCheckThenRead({100: {"raw_value": 0, "string_value": "", "is_ok": True}})
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_called_once()
 
     def test_switch_currently_off_dispatches_write(self):
         em, info = self._em_with_entity(entity_type="switch")
