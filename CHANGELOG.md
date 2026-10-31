@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **Another integration's discovery message can't stop the bridge's MQTT
+  connection.** At startup the bridge reads every retained config under
+  `homeassistant/`. One that wasn't a JSON object, or whose `unique_id` wasn't
+  text, stopped the bridge's MQTT thread: no commands or reconnects until a
+  restart, and the retained message did the same again at the next start.
+
 - **A Nibe Menus view with a short header and one long section uses two
   columns.** Sections are split over the columns at the boundary nearest
   each section, so a light section followed by a heavy one no longer ends

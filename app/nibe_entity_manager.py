@@ -1208,8 +1208,11 @@ class EntityManager:
             if topic.startswith("homeassistant/") and topic.endswith("/config") and message.payload:
                 try:
                     config = json.loads(message.payload.decode("utf-8"))
-                    unique_id = config.get("unique_id", "")
-                    if unique_id.startswith("nibe_"):
+                    # This topic also carries other integrations' configs, in
+                    # any shape: valid JSON need not be an object, nor its
+                    # unique_id a string. Not ours, so not worth a warning.
+                    unique_id = config.get("unique_id") if isinstance(config, dict) else None
+                    if isinstance(unique_id, str) and unique_id.startswith("nibe_"):
                         id_str = unique_id[5:]
                         if id_str.isdigit():
                             point_id = int(id_str)
@@ -1233,7 +1236,7 @@ class EntityManager:
                             # seed_entity_type_from_retained.
                             retained_entity_type = topic.split("/")[1]
                             self._pub.seed_entity_type_from_retained(point_id, retained_entity_type)
-                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                except Exception as e:  # noqa: BLE001 — an escaping exception kills paho's thread
                     # pragma: no mutate start
                     log_discovery.warning("Could not parse config from %s: %s", topic, e)
                     # pragma: no mutate end

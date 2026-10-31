@@ -724,6 +724,58 @@ class TestScanMqttDiscovery(unittest.TestCase):
         result = em.scan_mqtt_discovery()  # must not raise
         self.assertEqual(len(result), 0)
 
+    def _scan_with_retained(self, em, retained):
+        """Run the scan with these (topic, payload) messages delivered to its
+        config callback before the sentinel."""
+        callbacks = {}
+
+        def fake_callback_add(topic, cb):
+            callbacks[topic] = cb
+
+        def fake_publish(topic, payload, retain=False):
+            if "scan_sentinel" in topic:
+                for retained_topic, retained_payload in retained:
+                    msg = MagicMock()
+                    msg.topic = retained_topic
+                    msg.payload = retained_payload
+                    callbacks["homeassistant/+/+/config"](None, None, msg)
+                callbacks[topic](None, None, MagicMock())
+
+        em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
+        em.mqtt.publish = MagicMock(side_effect=fake_publish)
+        return em.scan_mqtt_discovery()
+
+    def test_another_integrations_config_of_any_shape_is_skipped_quietly(self):
+        """The scan's topic carries other integrations' configs. An exception
+        escaping this callback kills paho's network thread for good, and a
+        retained message would do that again at every start."""
+        for payload in (b"[1, 2]", b"42", b"null", b'"text"', b'{"unique_id": 12345}'):
+            with self.subTest(payload=payload):
+                result = self._scan_with_retained(
+                    _make_em(),
+                    [
+                        ("homeassistant/sensor/other_device/config", payload),
+                        ("homeassistant/sensor/nibe_1234/config", b'{"unique_id": "nibe_1234"}'),
+                    ],
+                )
+                self.assertEqual(set(result), {1234})
+
+    def test_another_integrations_config_of_any_shape_logs_no_warning(self):
+        with self.assertNoLogs("nibe.discovery", level="WARNING"):
+            self._scan_with_retained(
+                _make_em(), [("homeassistant/sensor/other_device/config", b"[1, 2]")]
+            )
+
+    def test_any_exception_in_the_config_callback_stays_inside_it(self):
+        em = _make_em()
+        em._pub.seed_config_hash_from_retained.side_effect = TypeError("boom")
+        with self.assertLogs("nibe.discovery", level="WARNING") as logs:
+            self._scan_with_retained(
+                em,
+                [("homeassistant/sensor/nibe_1234/config", b'{"unique_id": "nibe_1234"}')],
+            )
+        self.assertTrue(any("Could not parse config" in line for line in logs.output))
+
     def test_sentinel_timeout_still_returns_discovered(self):
         """When sentinel never fires, method falls through after timeout
         and still returns whatever was discovered before the timeout."""
