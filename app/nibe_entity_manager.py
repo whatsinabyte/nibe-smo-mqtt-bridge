@@ -4221,6 +4221,10 @@ class EntityManager:
             # reports a queue that isn't there.
             with self._write_queue_lock:
                 self._write_queue_depth -= 1
+            # Nor will anything ever start or age out this write's pending
+            # entry.
+            with self._pending_writes_lock:
+                self.pending_writes.pop(point_id, None)
             raise
 
     def begin_shutdown(self) -> None:
@@ -5133,18 +5137,29 @@ class EntityManager:
         self.mqtt.message_callback_add(BrowserTopic.CHANGELOG_UNREAD, on_unread_message)
 
     def _persist_dynamic_map(self) -> None:
-        """Persist the DynamicPointMap to MQTT (primary) and file (fallback).
+        """Persist the DynamicPointMap to its file (fallback), then MQTT
+        (primary).
 
         Called whenever the map changes — after record_outcome, after
         populate_from_bulk, and after flush.  Write-through: both stores
-        are updated on every call.
+        are updated on every call, file first like _persist_wanted_points,
+        so a crash between the two never leaves the file behind the broker.
+
+        Under _em_lock, which the poll thread holds while it adds entries:
+        republish_retained_state calls this from the MQTT or management
+        thread, and serialising a table that changes size raises
+        "dictionary changed size during iteration". Reentrant, so callers
+        that already hold it are unaffected.
         """
-        payload = _compress_payload(json.loads(self.dynamic_point_map.serialise()))
-        self.mqtt.publish(BrowserTopic.DYNAMIC_MAP, payload, retain=True)
-        self.dynamic_point_map.to_file()
-        # pragma: no mutate start
-        log_discovery.debug("Persisted DynamicPointMap (%d entries)", len(self.dynamic_point_map))
-        # pragma: no mutate end
+        with self._em_lock:
+            payload = _compress_payload(json.loads(self.dynamic_point_map.serialise()))
+            self.dynamic_point_map.to_file()
+            self.mqtt.publish(BrowserTopic.DYNAMIC_MAP, payload, retain=True)
+            # pragma: no mutate start
+            log_discovery.debug(
+                "Persisted DynamicPointMap (%d entries)", len(self.dynamic_point_map)
+            )
+            # pragma: no mutate end
 
     def _persist_active_dynamic(self) -> None:
         """Persist the active_dynamic_points set to MQTT.

@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notification showed only the output's last line, twice; it now shows the
   last 1500 characters.
 
+- **Reconnecting to the broker while the bridge learns a new switch can no
+  longer cut the republish of its retained state short.** After a broker
+  restart, or when Home Assistant announced itself, the bridge writes its
+  retained state again. If a new switch was being added to its learning
+  table at that very moment, the write stopped with `dictionary changed size
+  during iteration` and the rest stayed unpublished until the next reconnect.
+
 - **Test API Connection allows as long as the bridge does.** It gave up
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.

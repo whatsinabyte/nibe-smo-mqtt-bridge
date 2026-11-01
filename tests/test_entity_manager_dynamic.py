@@ -3301,6 +3301,49 @@ class TestPersistDynamicMap(unittest.TestCase):
         self.assertIn("1001", json_module.dumps(decompressed))
 
 
+class TestPersistDynamicMapOrderAndLocking(unittest.TestCase):
+    def test_the_file_is_written_before_the_retained_topic(self):
+        """Write-ahead, like the wanted points: a crash between the two must
+        not leave the file behind the broker."""
+        em = _make_em()
+        order = []
+        with (
+            patch.object(em.dynamic_point_map, "to_file", side_effect=lambda: order.append("file")),
+            patch.object(em.mqtt, "publish", side_effect=lambda *a, **kw: order.append("mqtt")),
+        ):
+            em._persist_dynamic_map()
+        self.assertEqual(order, ["file", "mqtt"])
+
+    def test_the_map_is_serialised_under_the_state_lock(self):
+        """republish_retained_state runs this on the MQTT or management
+        thread while the poll thread adds entries under _em_lock; another
+        thread must not be able to take the lock while the table is read."""
+        import threading
+
+        em = _make_em()
+        real_serialise = em.dynamic_point_map.serialise
+        other_thread_got_lock = []
+
+        def serialise_checking_the_lock():
+            def try_lock():
+                got = em._em_lock.acquire(timeout=0.3)
+                other_thread_got_lock.append(got)
+                if got:
+                    em._em_lock.release()
+
+            worker = threading.Thread(target=try_lock)
+            worker.start()
+            worker.join()
+            return real_serialise()
+
+        with (
+            patch.object(em.dynamic_point_map, "serialise", serialise_checking_the_lock),
+            patch.object(em.dynamic_point_map, "to_file"),
+        ):
+            em._persist_dynamic_map()
+        self.assertEqual(other_thread_got_lock, [False])
+
+
 class TestDynamicMapFileFallbackSurvivesSimulatedRestart(unittest.TestCase):
     """_persist_dynamic_map() (writer, real file write via
     DynamicPointMap.to_file()) and discover_points()'s file-fallback

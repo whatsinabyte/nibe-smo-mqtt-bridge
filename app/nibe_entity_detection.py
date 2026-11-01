@@ -4,9 +4,12 @@ nibe_entity_detection.py
 Pure functions and lookup tables for classifying Nibe data points as
 Home Assistant entity types and device classes.
 
-Nothing in this module performs I/O, holds state, or imports from the
-rest of the bridge.  All inputs are plain dicts / strings; all outputs
-are strings or None.  This makes every function here trivially unit-testable.
+Nothing in this module performs I/O or imports from the rest of the
+bridge, and its only state is two bounded module-level caches (parsed
+descriptions, and a log-once set of point ids) that are harmless to race
+on: a lost update costs one repeated parse or log line.  All inputs are
+plain dicts / strings; all outputs are strings or None.  This makes every
+function here trivially unit-testable.
 
 Public surface
 --------------

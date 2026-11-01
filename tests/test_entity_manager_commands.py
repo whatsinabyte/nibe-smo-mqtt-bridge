@@ -1197,6 +1197,22 @@ class TestSubmitWriteQueueDepthWarning(unittest.TestCase):
             em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="a")
         self.assertEqual(em._write_queue_depth, 0)
 
+    def test_pending_entry_released_when_submit_is_rejected_after_shutdown(self):
+        """A write that was never submitted is never started either, so
+        nothing would ever age out or confirm its pending entry."""
+        em = _make_em()
+        em.pending_writes[3846] = {"point_id": 3846, "value": 1, "payload": "ON", "cmd_id": "a"}
+        em.pending_writes[1234] = {"point_id": 1234, "value": 2, "payload": "2", "cmd_id": "b"}
+
+        def rejecting_submit(*_a, **_kw):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        em._write_executor.submit = rejecting_submit
+        with self.assertRaises(RuntimeError):
+            em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="a")
+        self.assertNotIn(3846, em.pending_writes)
+        self.assertIn(1234, em.pending_writes)
+
     def test_depth_returns_to_zero_after_the_write_finishes(self):
         """The counter must be decremented even when the submitted handler
         raises, or every later write would report a phantom queue."""
