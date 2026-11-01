@@ -33,7 +33,7 @@ REMOVE_FRONTEND=$(jq -r '.remove_frontend // false' /data/options.json 2>/dev/nu
 MQTT_HOST_OPT=$(jq -r '.mqtt_host // "core-mosquitto"' /data/options.json 2>/dev/null || echo "core-mosquitto")
 
 if [ "${MQTT_HOST_OPT}" = "core-mosquitto" ] && [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-    MQTT_SVC=$(curl -sf \
+    MQTT_SVC=$(curl -sf --max-time 10 \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
         http://supervisor/services/mqtt 2>/dev/null || echo "")
     if echo "${MQTT_SVC}" | jq -e '.result == "ok"' > /dev/null 2>&1; then

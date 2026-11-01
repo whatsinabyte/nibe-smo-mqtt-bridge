@@ -51,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **The add-on no longer waits forever at start when the Supervisor doesn't
+  answer the MQTT lookup.** `run.sh` asked the Supervisor for the broker's
+  details without a time limit. It now gives up after 10 seconds and uses the
+  configured MQTT settings, as it does when the Supervisor refuses.
+
 - **A message from another MQTT client can no longer inject markup into the
   Entity Manager card.** The card put the point ids of the retained point
   list, and a snapshot's entity count, into its HTML without escaping them. A
