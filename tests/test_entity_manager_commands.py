@@ -375,6 +375,18 @@ class TestParseCommandPayload(unittest.TestCase):
         ei = self._ei("number", metadata={"divisor": 1, "minValue": 0, "maxValue": 100})
         self.assertEqual(self.em._parse_command_payload("42", ei, "t"), 42)
 
+    def test_number_that_is_not_finite_is_dropped_like_any_invalid_number(self):
+        """float() accepts "inf", "-inf" and "1e999" and round() of infinity
+        raises OverflowError: that used to escape the parser and be logged as
+        an unhandled ERROR with a traceback, where "abc" got a plain warning."""
+        ei = self._ei("number", metadata={"divisor": 10, "minValue": -500, "maxValue": 500})
+        for payload in ("inf", "-inf", "1e999", "nan", "abc"):
+            with self.subTest(payload=payload):
+                with self.assertLogs("nibe.commands", level="WARNING") as logs:
+                    self.assertIsNone(self.em._parse_command_payload(payload, ei, "t"))
+                self.assertTrue(any("Invalid number" in line for line in logs.output))
+                self.assertFalse(any(line.startswith("ERROR") for line in logs.output))
+
     def test_number_below_min_returns_none(self):
         ei = self._ei("number", metadata={"divisor": 10, "minValue": 150, "maxValue": 300})
         self.assertIsNone(self.em._parse_command_payload("10.0", ei, "t"))

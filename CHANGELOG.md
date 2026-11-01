@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **A number command of `inf` or `1e999` is dropped with the usual warning.**
+  It was logged as an unhandled error with a traceback. The command was
+  dropped either way.
+
 - **One oddly shaped point no longer makes the bridge report the API as
   unreachable.** When the controller sent a point, or its value or metadata,
   as anything but an object (a list or a string, say), the whole poll failed:

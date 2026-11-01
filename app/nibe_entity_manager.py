@@ -3810,7 +3810,9 @@ class EntityManager:
             divisor = entity_info["metadata"].get("divisor") or 1
             try:
                 value = reverse_divisor(float(payload), divisor)
-            except ValueError:
+            except (ValueError, OverflowError):
+                # float() accepts "inf" and "1e999"; round() of infinity
+                # raises OverflowError, and NaN raises ValueError.
                 # pragma: no mutate start
                 log_commands.warning("[%s] Invalid number: '%s'", cmd_id, payload)
                 # pragma: no mutate end
