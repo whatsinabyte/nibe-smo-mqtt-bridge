@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **A message from another MQTT client can no longer inject markup into the
+  Entity Manager card.** The card put the point ids of the retained point
+  list, and a snapshot's entity count, into its HTML without escaping them. A
+  client that could publish to `nibe/browser/point_list` could run script in the
+  Home Assistant dashboard of whoever opened the card. Point ids are now whole
+  numbers only, and the count is escaped.
+
 - **A wrongly shaped message from Home Assistant can no longer end the
   entity registry watcher.** A registry entry that wasn't an object made
   every connection attempt fail; after 10 failures (about 13 minutes of

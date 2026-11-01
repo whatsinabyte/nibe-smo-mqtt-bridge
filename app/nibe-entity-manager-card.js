@@ -1688,7 +1688,10 @@ class NibeEntityManager extends HTMLElement {
       const data = JSON.parse(msg.payload);
       if (!Array.isArray(data.points)) return;
 
-      const authoritative = new Set(data.points);
+      // Point ids are integers. Anything else (a string from a retained message
+      // that did not come from the bridge) must not become an entity id: ids go
+      // into markup and into data-id attributes.
+      const authoritative = new Set(data.points.filter(Number.isInteger));
 
       // Remove any entities the bridge no longer knows about.
       let removed = 0;
@@ -3181,7 +3184,7 @@ class NibeEntityManager extends HTMLElement {
               ${this._esc(snap.name)}
             </div>
             <div style="font-size:12px;color:var(--ha-color-secondary-text,#888);margin-top:3px;">
-              ${snap.point_count ?? '?'} entities · saved ${this._esc(snap.timestamp || '')}
+              ${this._esc(snap.point_count ?? '?')} entities · saved ${this._esc(snap.timestamp || '')}
               ${snap.mode ? ` · mode: ${this._esc(snap.mode)}` : ''}
             </div>
           </div>
