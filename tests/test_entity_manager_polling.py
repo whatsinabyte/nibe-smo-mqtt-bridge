@@ -1342,6 +1342,66 @@ class TestFetchBulkDataMalformed(unittest.TestCase):
         self.assertIn(401, em.bulk_data)
         self.assertEqual(em.bulk_data[401]["raw_value"], 42)
 
+    def test_a_point_of_the_wrong_shape_does_not_stop_the_others(self):
+        """Valid JSON need not have the documented shape: a point, its value
+        or its metadata can arrive as a string, list or number. One such point
+        must not make the whole fetch count as an API failure, which past the
+        threshold raises "API Unreachable" while the controller is answering."""
+        good = {"title": "Good", "metadata": {}, "value": {"integerValue": 42, "isOk": True}}
+        cases = (
+            # label, the odd point, stored?, is_ok of the stored point
+            ("value is a string", {"title": "x", "metadata": {}, "value": "oops"}, True, False),
+            ("value is a list", {"title": "x", "metadata": {}, "value": [1]}, True, False),
+            ("value is a number", {"title": "x", "metadata": {}, "value": 5}, True, False),
+            (
+                "metadata is a list",
+                {"title": "x", "metadata": ["m"], "value": {"isOk": True}},
+                True,
+                True,
+            ),
+            (
+                "metadata is a string",
+                {"title": "x", "metadata": "m", "value": {"isOk": True}},
+                True,
+                True,
+            ),
+            ("the point is null", None, False, None),
+            ("the point is a list", [1, 2], False, None),
+            ("the point is a string", "oops", False, None),
+        )
+        for label, odd, stored, is_ok in cases:
+            with self.subTest(label):
+                em = _make_em()
+                em._api.fetch_bulk_points.return_value = {"500": odd, "501": good}
+                self.assertTrue(em._fetch_bulk_data(detect_changes=False))
+                self.assertEqual(em.api_consecutive_failures, 0)
+                self.assertEqual(em.bulk_data[501]["raw_value"], 42)
+                self.assertEqual(500 in em.bulk_data, stored)
+                if stored:
+                    self.assertIsInstance(em.bulk_data[500]["metadata"], dict)
+                    self.assertEqual(em.bulk_data[500]["is_ok"], is_ok)
+
+    def test_a_point_that_is_not_an_object_is_skipped_with_a_warning(self):
+        em = _make_em()
+        em._api.fetch_bulk_points.return_value = {"500": ["not", "a", "point"]}
+        with self.assertLogs("nibe.discovery", level="WARNING") as logs:
+            em._fetch_bulk_data(detect_changes=False)
+        self.assertTrue(any("Error processing point 500" in line for line in logs.output))
+
+    def test_response_values_read_a_wrong_shape_as_no_value(self):
+        from nibe_entity_manager import _response_values
+
+        values = _response_values(
+            {
+                "1": {"value": "oops"},
+                "2": {"value": {"integerValue": 3}},
+                "3": None,
+                "4": {"value": [7]},
+                "x": {"value": {"integerValue": 9}},
+            }
+        )
+        self.assertEqual(values, {1: None, 2: 3, 3: None, 4: None})
+
 
 class TestUpdateAllStatesIntervalAndLockBusy(unittest.TestCase):
     """update_all_states: interval-not-elapsed and lock-busy branches."""

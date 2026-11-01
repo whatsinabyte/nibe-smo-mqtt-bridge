@@ -1627,6 +1627,15 @@ class TestForceReadback(unittest.TestCase):
         em._api.fetch_point.return_value = {"value": None, "metadata": {}}
         em._force_readback(self._entity_info(point_id=100))  # must not raise
 
+    def test_metadata_not_an_object_is_read_as_empty(self):
+        em = _make_em()
+        em._api.fetch_point.return_value = {
+            "value": {"isOk": True, "integerValue": 5, "stringValue": ""},
+            "metadata": ["not", "an", "object"],
+        }
+        em._force_readback(self._entity_info(point_id=100))  # must not raise
+        em.mqtt.publish.assert_any_call("nibe/state/100", "5", retain=True)
+
     def test_missing_value_key_treated_as_not_ok(self):
         em = _make_em()
         em._api.fetch_point.return_value = {"metadata": {"divisor": 1}}

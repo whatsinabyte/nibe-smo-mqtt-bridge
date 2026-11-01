@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **One oddly shaped point no longer makes the bridge report the API as
+  unreachable.** When the controller sent a point, or its value or metadata,
+  as anything but an object (a list or a string, say), the whole poll failed:
+  nothing updated, and after `api_failure_threshold` polls the "API
+  Unreachable" notification appeared although the controller answered. That
+  point alone is now skipped, or read as having no value.
+
 - **Another integration's discovery message can't stop the bridge's MQTT
   connection.** At startup the bridge reads every retained config under
   `homeassistant/`. One that wasn't a JSON object, or whose `unique_id` wasn't

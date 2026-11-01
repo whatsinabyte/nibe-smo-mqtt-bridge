@@ -301,6 +301,21 @@ class TestDynamicPoints(unittest.TestCase):
         self.assertIn(pid, self.em.active_dynamic_points)
         self.assertIn(pid, self.em.all_points_by_id)
 
+    def test_appeared_point_with_metadata_of_the_wrong_shape_does_not_crash(self):
+        """Metadata that is valid JSON but not an object (a list, string or
+        number) is read as {}, like null, instead of raising AttributeError."""
+        self.em.initial_discovery_complete = True
+        for pid, odd in ((7010, ["m"]), (7011, "m"), (7012, 5)):
+            with self.subTest(metadata=odd):
+                fake_point_data = {
+                    "title": "Odd metadata point",
+                    "description": "",
+                    "metadata": odd,
+                    "value": {"isOk": True, "integerValue": 10, "stringValue": ""},
+                }
+                self.em._publish_dynamic_changes([(pid, fake_point_data)], set())
+                self.assertIn(pid, self.em.active_dynamic_points)
+
     def test_appeared_point_not_added_when_enable_fails(self):
         """If discovery publish fails for a newly-appeared dynamic point,
         it must not be marked active — that would desync the bridge's own
