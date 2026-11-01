@@ -6433,6 +6433,140 @@ class TestFetchEntityRegistryRemainingPaths(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class TestRegistryWatcherWrongShapedData(unittest.TestCase):
+    """HA's websocket sends valid JSON, but any part of it can have another
+    shape than documented. An odd registry entry used to fail every connect
+    (AttributeError), which counts toward giving up for good after
+    _MAX_CONSEC_FAILURES; a frame that was not an object dropped the
+    connection instead of being discarded like broken JSON."""
+
+    def _make_watcher(self):
+        import threading
+
+        from nibe_ha_integration import HAEntityRegistryWatcher
+
+        w = object.__new__(HAEntityRegistryWatcher)
+        w._user_disabled_entities = set()
+        w._self_reenabled = set()
+        w._regen_after_refresh = False
+        w._unique_id_map = {}
+        w._registry_map_lock = threading.Lock()
+        w._stop_event = threading.Event()
+        w._thread = None
+        w._ws_lock = threading.Lock()
+        w._current_ws = None
+        w._msg_id = 0
+        w._refresh_timer = None
+        w._refresh_timer_lock = threading.Lock()
+        w._em = MagicMock()
+        w._pub = MagicMock()
+        return w
+
+    def _fetch(self, result):
+        w = self._make_watcher()
+        ws = MagicMock()
+        ws.recv.return_value = json.dumps(
+            {"id": 1, "type": "result", "success": True, "result": result}
+        )
+        return w, w._fetch_entity_registry(ws)
+
+    def test_registry_entries_of_the_wrong_shape_are_skipped(self):
+        good = {"entity_id": "sensor.a", "unique_id": "nibe_1", "disabled_by": "user"}
+        odd = [
+            None,
+            "oops",
+            5,
+            [1],
+            {"entity_id": "sensor.n", "unique_id": 12345},
+            {"entity_id": 7, "unique_id": "nibe_9"},
+            {"entity_id": "sensor.c", "config": "x", "options": 5},
+        ]
+        w, mapping = self._fetch(odd + [good])
+        self.assertEqual(mapping, {"nibe_1": "sensor.a"})
+        self.assertEqual(w._user_disabled_entities, {"sensor.a"})
+
+    def test_registry_result_that_is_not_a_list_is_a_failed_fetch(self):
+        for result in ({"a": 1}, None, "oops", 5):
+            with self.subTest(result=result):
+                with self.assertLogs("nibe.registry", level="WARNING"):
+                    _, mapping = self._fetch(result)
+                self.assertEqual(mapping, {})
+
+    def test_frame_that_is_not_an_object_is_discarded_without_reconnecting(self):
+        w = self._make_watcher()
+        ws = MagicMock()
+        frames = ["[1, 2]", "null", "42", '"text"']
+
+        def fake_recv():
+            if frames:
+                return frames.pop(0)
+            w._stop_event.set()
+            return json.dumps({"type": "pong"})
+
+        ws.recv.side_effect = fake_recv
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.object(w, "_connect_and_subscribe", return_value=ws) as connect,
+            self.assertNoLogs("nibe.registry", level="INFO"),
+        ):
+            w._run()
+        connect.assert_called_once()
+
+    def test_event_with_a_wrong_shaped_part_is_ignored_quietly(self):
+        w = self._make_watcher()
+        w._schedule_refresh_registry = MagicMock()
+        ws = MagicMock()
+        frames = [
+            json.dumps({"type": "event", "event": None}),
+            json.dumps({"type": "event", "event": [1]}),
+            json.dumps({"type": "event", "event": {"data": None}}),
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": {
+                        "data": {"action": "create", "entity_id": "sensor.x", "config": None}
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": {
+                        "data": {
+                            "action": "update",
+                            "entity_id": "sensor.x",
+                            "unique_id": "nibe_2",
+                            "changes": None,
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": {
+                        "data": {"action": "remove", "entity_id": "sensor.y", "config": ["x"]}
+                    },
+                }
+            ),
+        ]
+
+        def fake_recv():
+            if frames:
+                return frames.pop(0)
+            w._stop_event.set()
+            return json.dumps({"type": "pong"})
+
+        ws.recv.side_effect = fake_recv
+        with (
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "tok"}),
+            patch.object(w, "_connect_and_subscribe", return_value=ws),
+            self.assertNoLogs("nibe.registry", level="WARNING"),
+        ):
+            w._run()
+        self.assertEqual(w._unique_id_map, {"nibe_2": "sensor.x"})
+
+
 class TestRegistryWatcherStart(unittest.TestCase):
     """start(): no-token early return and normal thread-start path."""
 

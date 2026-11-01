@@ -51,6 +51,7 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import run_test_suite
+from nibe_utils import as_object
 from nibe_utils import fmt_ts as _fmt_ts
 
 if TYPE_CHECKING:
@@ -756,12 +757,17 @@ class HAEntityRegistryWatcher:
                         log_registry.debug("Registry watcher: discarding malformed frame: %s", e)
                         # pragma: no mutate end
                         continue
+                    if not isinstance(msg, dict):
+                        # Valid JSON, but not a message: discard it like broken
+                        # JSON, rather than let msg.get() raise and drop the
+                        # connection.
+                        continue
 
                     # Only events are handled; a pong has done its work by
                     # resetting ping_sent_at above.
                     if msg.get("type") == "event":
                         try:
-                            self._handle_event(msg.get("event", {}))
+                            self._handle_event(as_object(msg.get("event")))
                         except Exception as e:
                             # pragma: no mutate start
                             log_registry.warning(
@@ -853,14 +859,23 @@ class HAEntityRegistryWatcher:
         mapping = {}
         user_disabled: set[str] = set()
         result = resp.get("result", [])
+        if not isinstance(result, list):
+            # pragma: no mutate start
+            log_registry.warning("Could not fetch entity registry: result is not a list")
+            # pragma: no mutate end
+            return {}
         for entry in result:
+            # One odd entry must not fail the fetch: a failed fetch at connect
+            # counts toward giving up for good (_MAX_CONSEC_FAILURES).
+            if not isinstance(entry, dict):
+                continue
             uid = (
                 entry.get("unique_id")
-                or entry.get("config", {}).get("unique_id")
-                or entry.get("options", {}).get("unique_id")
+                or as_object(entry.get("config")).get("unique_id")
+                or as_object(entry.get("options")).get("unique_id")
             )
             eid = entry.get("entity_id")
-            if uid and eid:
+            if isinstance(uid, str) and isinstance(eid, str) and uid and eid:
                 mapping[uid] = eid
                 if uid.startswith("nibe_") and entry.get("disabled_by") == "user":
                     user_disabled.add(eid)
@@ -877,7 +892,7 @@ class HAEntityRegistryWatcher:
 
     def _handle_event(self, event: dict) -> None:
         """Process a single entity_registry_updated event payload."""
-        data = event.get("data", {})
+        data = as_object(event.get("data"))
         action = data.get("action")
         entity_id = data.get("entity_id", "unknown")
         # pragma: no mutate start
@@ -886,7 +901,7 @@ class HAEntityRegistryWatcher:
 
         if action == "create":
             eid = data.get("entity_id")
-            uid = data.get("unique_id") or data.get("config", {}).get("unique_id")
+            uid = data.get("unique_id") or as_object(data.get("config")).get("unique_id")
             if uid and eid:
                 with self._registry_map_lock:
                     self._unique_id_map[uid] = eid
@@ -904,7 +919,7 @@ class HAEntityRegistryWatcher:
 
         if action == "update":
             eid = data.get("entity_id")
-            uid = data.get("unique_id") or data.get("config", {}).get("unique_id")
+            uid = data.get("unique_id") or as_object(data.get("config")).get("unique_id")
             old_eid = data.get("old_entity_id")
             if uid and eid:
                 with self._registry_map_lock:
@@ -917,7 +932,7 @@ class HAEntityRegistryWatcher:
             # Detect HA-side enable/disable via the disabled_by field change.
             # prev_disabled == "user" means the entity WAS disabled → now enabled.
             # prev_disabled == None  means the entity WAS enabled  → now disabled.
-            changes = data.get("changes", {})
+            changes = as_object(data.get("changes"))
             if "disabled_by" in changes and eid:
                 prev_disabled = changes["disabled_by"]
                 if prev_disabled == "user":
@@ -930,7 +945,7 @@ class HAEntityRegistryWatcher:
             # Clean up the local map so stale unique_id → entity_id entries
             # do not accumulate over time (Finding 7 — _unique_id_map growth).
             eid = data.get("entity_id")
-            uid = data.get("unique_id") or data.get("config", {}).get("unique_id")
+            uid = data.get("unique_id") or as_object(data.get("config")).get("unique_id")
             if uid:
                 with self._registry_map_lock:
                     self._unique_id_map.pop(uid, None)

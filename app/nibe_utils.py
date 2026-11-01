@@ -15,6 +15,7 @@ import contextlib
 import os
 import tempfile
 import time
+from typing import Any
 
 # Cipher-string suffix used to widen OpenSSL's TLS compatibility (below its
 # default SECLEVEL=2) when talking to the Nibe controller's old embedded TLS
@@ -23,6 +24,14 @@ import time
 # "Test API Connection" diagnostic), so the diagnostic's TLS compatibility
 # can't silently drift from what the real connection actually accepts.
 TLS_COMPAT_CIPHERS = "DEFAULT@SECLEVEL=1"
+
+
+def as_object(value: Any) -> dict:
+    """``value`` when it is a JSON object, else an empty one: null and any
+    other wrong shape (a string, a list, a number) read alike as "not there".
+    Valid JSON need not have the shape an API documents, and one odd element
+    must not fail a whole poll or end a watcher."""
+    return value if isinstance(value, dict) else {}
 
 
 def fmt_ts(t: float | None = None) -> str:

@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after 10 seconds where the bridge itself waits 30, so a controller slow to
   send its points could be reported as timed out while the bridge read it fine.
 
+- **A wrongly shaped message from Home Assistant can no longer end the
+  entity registry watcher.** A registry entry that wasn't an object made
+  every connection attempt fail; after 10 failures (about 13 minutes of
+  backoff) the watcher gave up until the add-on restarted, and entities
+  disabled or enabled in Home Assistant went unnoticed. Such entries are now
+  skipped, and a frame that isn't an object is discarded instead of dropping
+  the connection.
+
 - **A number command of `inf` or `1e999` is dropped with the usual warning.**
   It was logged as an unhandled error with a traceback. The command was
   dropped either way.

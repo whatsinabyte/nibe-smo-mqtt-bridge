@@ -95,7 +95,7 @@ from nibe_entity_detection import (
     reverse_divisor,
 )
 from nibe_mqtt_publisher import BrowserTopic, MqttDiscoveryPublisher, t_attributes, t_config
-from nibe_utils import atomic_write_text
+from nibe_utils import as_object, atomic_write_text
 from nibe_utils import fmt_ts as _fmt_ts
 
 log_api = logging.getLogger("nibe.api")
@@ -256,14 +256,6 @@ def _decompress_payload(payload: bytes | str) -> bytes:
 # ============================================================================
 
 
-def _as_object(value: Any) -> dict:
-    """``value`` when it is a JSON object, else an empty one: the controller's
-    null and any other wrong shape (a string, a list, a number) read alike as
-    "not there". Valid JSON need not have the shape the API documents, and one
-    odd point must not fail the whole poll."""
-    return value if isinstance(value, dict) else {}
-
-
 def _response_values(response: dict) -> dict[int, int | None]:
     """Each point's integerValue in a bulk response, keyed by point id
     (None for a point without one)."""
@@ -273,7 +265,7 @@ def _response_values(response: dict) -> dict[int, int | None]:
             pid = int(key)
         except (TypeError, ValueError):
             continue
-        values[pid] = _as_object(_as_object(point).get("value")).get("integerValue")
+        values[pid] = as_object(as_object(point).get("value")).get("integerValue")
     return values
 
 
@@ -3002,14 +2994,14 @@ class EntityManager:
         # The resulting AttributeError isn't caught by _fetch_bulk_data's
         # (ValueError, KeyError), so one odd point would abort the whole bulk
         # fetch and count as an API failure. A wrong-shaped value or metadata
-        # reads as "not there" (_as_object); a point that isn't an object is
+        # reads as "not there" (as_object); a point that isn't an object is
         # skipped by the caller, on ValueError.
         if not isinstance(point_data, dict):
             raise ValueError(  # noqa: TRY004 — _fetch_bulk_data skips a point on ValueError
                 f"point {point_id} is a {type(point_data).__name__}, not an object"
             )
-        value_data = _as_object(point_data.get("value"))
-        metadata = apply_metadata_overrides(point_id, _as_object(point_data.get("metadata")))
+        value_data = as_object(point_data.get("value"))
+        metadata = apply_metadata_overrides(point_id, as_object(point_data.get("metadata")))
 
         # ── String cache (Finding 2) ──────────────────────────────
         # title and description never change between firmware updates.
@@ -3446,7 +3438,7 @@ class EntityManager:
         enabled_new_pids: list[int] = []
         with self._em_lock, self._suppress_enabled_state():
             for point_id, point_data in new_points:
-                metadata = _as_object(point_data.get("metadata"))
+                metadata = as_object(point_data.get("metadata"))
                 title = clean_string(point_data.get("title", f"Point {point_id}"))
                 description = clean_string(point_data.get("description", ""))
                 processed = self._classify_and_index(point_id, metadata, title, description, True)
@@ -4533,7 +4525,7 @@ class EntityManager:
             entity_info,
             dv.get("integerValue", 0),
             dv.get("stringValue", ""),
-            apply_metadata_overrides(point_id, _as_object(response.get("metadata"))),
+            apply_metadata_overrides(point_id, as_object(response.get("metadata"))),
             force=True,
         )
 
