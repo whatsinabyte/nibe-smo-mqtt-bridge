@@ -56,6 +56,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   details without a time limit. It now gives up after 10 seconds and uses the
   configured MQTT settings, as it does when the Supervisor refuses.
 
+- **A controller that answers 401, 403 or 404 on its first contact after
+  startup is handled like any other API failure.** After a start with the
+  controller unreachable, the retry's device-info request raised into the main
+  loop, which logged a traceback and backed off every time; it now goes
+  through the usual failure accounting and notification.
+
+- **A controller that refuses the alarm list no longer fills the log.** When
+  `/notifications` answered 401, 403 or 404 while the points were fine, the
+  error reached the main loop, which logged a traceback and backed off, again
+  and again. The alarm poll now skips quietly, as it already did for other
+  errors.
+
 - **A message from another MQTT client can no longer inject markup into the
   Entity Manager card.** The card put the point ids of the retained point
   list, and a snapshot's entity count, into its HTML without escaping them. A

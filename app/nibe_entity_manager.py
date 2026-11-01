@@ -1077,7 +1077,15 @@ class EntityManager:
         log_discovery.info("API is back — completing deferred startup discovery...")
         # pragma: no mutate end
 
-        device_response = self._api.fetch_device_info()
+        try:
+            device_response = self._api.fetch_device_info()
+        except urllib.error.HTTPError:
+            # A refusal (401, 403, 404) is no device info. The bulk fetch in
+            # discover_points() meets the same refusal and does the failure
+            # accounting (_handle_api_failure); raising here would instead
+            # reach the main loop's catch-all, which retries with backoff and
+            # a traceback each time. request() has already logged it.
+            device_response = None
         if device_response:
             self.device_info = _build_device_info(
                 device_response, self._pub.device_id, self._pub.device_name, self._api.base_url

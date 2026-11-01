@@ -492,6 +492,23 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         em.discover_points.return_value = False
         self.assertFalse(em.complete_deferred_discovery("essential"))
 
+    def test_a_refusal_for_the_device_info_is_a_failed_retry_not_an_exception(self):
+        """The controller can answer 401, 403 or 404 the first time it is
+        reachable. request() raises for those; here they must reach the bulk
+        fetch in discover_points(), which does the failure accounting, not the
+        main loop's catch-all."""
+        import urllib.error
+
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                em = self._make_em_ready()
+                em.discover_points.return_value = False
+                em._api.fetch_device_info.side_effect = urllib.error.HTTPError(
+                    "https://x/", code, "refused", {}, None
+                )
+                self.assertFalse(em.complete_deferred_discovery("essential"))
+                em.discover_points.assert_called_once()
+
     def test_runs_the_after_deferred_discovery_callbacks_on_success(self):
         """The registry watcher reconciles entities disabled in HA here: if
         the controller was unreachable at startup, nothing was enabled yet

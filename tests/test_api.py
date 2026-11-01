@@ -1005,6 +1005,19 @@ class TestNibeApiClientMethods(unittest.TestCase):
             result = self.client.fetch_notifications()
         self.assertEqual(result, alarms)
 
+    def test_fetch_notifications_returns_none_when_the_controller_refuses(self):
+        """request() raises for 401, 403 and 404. The docstring says None on
+        error and the one caller guards only None: an exception would reach the
+        main loop's catch-all and repeat there on every pass."""
+        import urllib.error
+
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                err = urllib.error.HTTPError("https://x/notifications", code, "refused", {}, None)
+                with patch("urllib.request.urlopen", side_effect=err):
+                    self.assertIsNone(self.client.fetch_notifications())
+                self.assertIsNotNone(self.client.last_error)
+
     def test_fetch_notifications_returns_empty_list_when_no_alarms(self):
         with patch("urllib.request.urlopen", return_value=self._ok({"alarms": []})):
             result = self.client.fetch_notifications()

@@ -394,8 +394,18 @@ class NibeApiClient:
             raise
 
     def fetch_notifications(self) -> list[dict] | None:
-        """GET /notifications — return the alarm list, or None on error."""
-        response = self.request(f"{self.base_url}/notifications")
+        """GET /notifications — return the alarm list, or None on error.
+
+        None includes the refusals request() raises for (401, 403, 404): the
+        sole caller (update_alarm_state) only guards a None response, and an
+        exception would reach the main loop's catch-all and come back on
+        every pass, with a traceback each time, while /points works fine.
+        """
+        try:
+            response = self.request(f"{self.base_url}/notifications")
+        except urllib.error.HTTPError:
+            # request() has set last_error, and logged an authentication failure.
+            return None
         if response is None:
             return None
         # `or []` covers an absent key and an explicit "alarms": null alike;
