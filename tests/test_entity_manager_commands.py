@@ -6,7 +6,6 @@ for file-size/maintainability. Shared fixtures are in conftest.py.
 """
 
 import json
-import os
 import threading
 import time
 import unittest
@@ -15,6 +14,7 @@ from unittest.mock import MagicMock, patch
 _UNSET = object()
 
 from conftest import (
+    NoCheckThenRead,
     _learning_value,
     _make_em,
 )
@@ -162,6 +162,15 @@ class TestRedundantWriteSkip(unittest.TestCase):
         mock_submit.assert_not_called()
         self.assertNotIn(100, em.pending_writes)
 
+    def test_duplicate_check_reads_the_entry_once(self):
+        """The poll thread can remove the point between a check and a read,
+        and the KeyError would lose this write."""
+        em, info = self._em_with_entity(entity_type="switch")
+        em.bulk_data = NoCheckThenRead({100: {"raw_value": 0, "string_value": "", "is_ok": True}})
+        with patch.object(em, "_submit_write") as mock_submit:
+            em._handle_command(info, self._message("ON"))
+        mock_submit.assert_called_once()
+
     def test_switch_currently_off_dispatches_write(self):
         em, info = self._em_with_entity(entity_type="switch")
         em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True}
@@ -254,6 +263,7 @@ class TestParseCommandPayload(unittest.TestCase):
             "point_id": point_id,
             "entity_type": entity_type,
             "metadata": metadata or {},
+            "point_data": {},
             "state_topic": f"nibe/s/{point_id}",
             **kwargs,
         }
@@ -321,15 +331,9 @@ class TestParseCommandPayload(unittest.TestCase):
         )
         self.assertIsNone(self.em._parse_command_payload("99", ei, "t"))
 
-    def test_select_uses_manual_value_mapping_keyed_by_register_type(self):
-        """register_type must be correctly computed and passed through to
-        get_value_mapping — point 1758 has a manual VALUE_MAPPINGS entry
-        keyed under "input" with no firmware description, so this only
-        resolves correctly if register_type is actually "input" (derived
-        from modbusRegisterType), not None/wrong. A point without a
-        manual mapping (like the other select tests here) can't catch a
-        broken register_type, since the description-based fallback
-        produces the same result either way."""
+    def test_select_uses_the_manual_value_mapping_of_its_point(self):
+        """Point 1758 has a manual VALUE_MAPPINGS entry and no firmware
+        description, so the label only resolves through the point id."""
         ei = self._ei(
             "select",
             point_id=1758,
@@ -370,6 +374,18 @@ class TestParseCommandPayload(unittest.TestCase):
     def test_number_divisor_one(self):
         ei = self._ei("number", metadata={"divisor": 1, "minValue": 0, "maxValue": 100})
         self.assertEqual(self.em._parse_command_payload("42", ei, "t"), 42)
+
+    def test_number_that_is_not_finite_is_dropped_like_any_invalid_number(self):
+        """float() accepts "inf", "-inf" and "1e999" and round() of infinity
+        raises OverflowError: that used to escape the parser and be logged as
+        an unhandled ERROR with a traceback, where "abc" got a plain warning."""
+        ei = self._ei("number", metadata={"divisor": 10, "minValue": -500, "maxValue": 500})
+        for payload in ("inf", "-inf", "1e999", "nan", "abc"):
+            with self.subTest(payload=payload):
+                with self.assertLogs("nibe.commands", level="WARNING") as logs:
+                    self.assertIsNone(self.em._parse_command_payload(payload, ei, "t"))
+                self.assertTrue(any("Invalid number" in line for line in logs.output))
+                self.assertFalse(any(line.startswith("ERROR") for line in logs.output))
 
     def test_number_below_min_returns_none(self):
         ei = self._ei("number", metadata={"divisor": 10, "minValue": 150, "maxValue": 300})
@@ -993,10 +1009,38 @@ class TestHandleCommand(unittest.TestCase):
         em = _make_em()
         em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
         with self.assertLogs("nibe.commands", level="ERROR") as cm:
-            em._submit_write(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+            em._submit_write(
+                lambda: (_ for _ in ()).throw(RuntimeError("boom")), point_id=1, cmd_id_for_log="a"
+            )
         self.assertTrue(
             any("Unhandled exception in write command handler" in msg for msg in cm.output)
         )
+
+    def test_worker_dying_before_the_write_started_releases_the_guard(self):
+        """A write that hasn't started never ages out (_STALE_WRITE_AGE_S), so
+        a worker dying at that point would stop the entity updating for good."""
+        em = _make_em()
+        em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
+        info = {
+            "point_id": 100,
+            "entity_type": "switch",
+            "state_topic": "s/100",
+            "availability_topic": "a/100",
+            "point_data": {},
+        }
+        em.bulk_data[100] = {"raw_value": 0, "string_value": "", "is_ok": True, "metadata": {}}
+        em.pending_writes[100] = {"point_id": 100, "value": 1, "payload": "ON", "cmd_id": "c"}
+        with (
+            patch.object(em, "_opens_scan_window", side_effect=RuntimeError("boom")),
+            self.assertLogs("nibe.commands", level="ERROR"),
+        ):
+            em._submit_write(
+                em._handle_command_worker, info, 1, "ON", "c", point_id=100, cmd_id_for_log="c"
+            )
+        self.assertNotIn(100, em.pending_writes)
+        em.mqtt.publish.reset_mock()
+        em._update_entity_state(info)
+        em.mqtt.publish.assert_any_call("s/100", "0", retain=True)
 
     def test_submitted_cmd_id_matches_the_generated_correlation_token(self):
         """The cmd_id forwarded to the write executor must be the *same*
@@ -1079,119 +1123,6 @@ class TestHandleCommand(unittest.TestCase):
         self.assertEqual(em.pending_writes[100]["payload"], "ON")
 
 
-class TestAtomicWriteText(unittest.TestCase):
-    """_atomic_write_text: every /data fallback file is read back with its
-    parse failure swallowed as "no data", so a half-written file silently
-    discards whatever it held rather than surfacing an error. Being killed
-    mid-write is a real scenario here — the shutdown drain budget can exceed
-    a supervisor's stop grace period — so the destination must only ever
-    hold complete contents."""
-
-    def setUp(self):
-        import tempfile
-
-        self._dir = tempfile.mkdtemp()
-        self._path = os.path.join(self._dir, "state.json")
-
-    def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self._dir, ignore_errors=True)
-
-    def _read(self):
-        with open(self._path, encoding="utf-8") as f:
-            return f.read()
-
-    def test_writes_the_payload(self):
-        from nibe_entity_manager import _atomic_write_text
-
-        _atomic_write_text(self._path, "hello")
-        self.assertEqual(self._read(), "hello")
-
-    def test_overwrites_existing_contents_completely(self):
-        from nibe_entity_manager import _atomic_write_text
-
-        _atomic_write_text(self._path, "a-much-longer-original-payload")
-        _atomic_write_text(self._path, "short")
-        self.assertEqual(self._read(), "short")
-
-    def test_failed_write_leaves_previous_contents_intact(self):
-        """The point of the temp-and-rename: a write that dies partway
-        must not destroy what was already there."""
-        from nibe_entity_manager import _atomic_write_text
-
-        _atomic_write_text(self._path, "original")
-        with (
-            patch("nibe_entity_manager.os.replace", side_effect=OSError("boom")),
-            self.assertRaises(OSError),
-        ):
-            _atomic_write_text(self._path, "replacement")
-        self.assertEqual(self._read(), "original")
-
-    def test_concurrent_writers_never_produce_a_corrupt_file(self):
-        """None of the callers hold a common lock, and they run on the MQTT
-        command thread, the management executor, the registry watcher thread
-        and the poll thread. Sharing one fixed temp path let two writers
-        truncate each other's half-written file and rename the mixture over
-        the destination — the corruption the atomic write exists to prevent.
-        Whichever writer lands last may win; what must never happen is a
-        destination that parses as neither payload."""
-        import json as _json
-        import threading as _threading
-
-        from nibe_entity_manager import _atomic_write_text
-
-        # Payloads of very different lengths, so a truncating collision shows
-        # up as trailing remnants of the longer one rather than clean JSON.
-        payloads = [_json.dumps([i] * (200 * (i + 1))) for i in range(6)]
-        errors: list[BaseException] = []
-        barrier = _threading.Barrier(len(payloads))
-
-        def writer(payload: str) -> None:
-            try:
-                barrier.wait(timeout=10)
-                for _ in range(20):
-                    _atomic_write_text(self._path, payload)
-            except BaseException as e:  # noqa: BLE001 — surfaced via `errors`
-                errors.append(e)
-
-        threads = [_threading.Thread(target=writer, args=(p,)) for p in payloads]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-
-        self.assertEqual(errors, [], f"writer threads raised: {errors}")
-        self.assertIn(
-            self._read(), payloads, "destination held neither payload intact — a torn write"
-        )
-
-    def test_temp_files_are_not_left_behind_by_concurrent_writers(self):
-        from nibe_entity_manager import _atomic_write_text
-
-        for _ in range(5):
-            _atomic_write_text(self._path, "payload")
-        leftovers = [n for n in os.listdir(self._dir) if n != os.path.basename(self._path)]
-        self.assertEqual(leftovers, [], f"temp files left behind: {leftovers}")
-
-    def test_failed_write_leaves_no_temp_file_behind(self):
-        from nibe_entity_manager import _atomic_write_text
-
-        with (
-            patch("nibe_entity_manager.os.replace", side_effect=OSError("boom")),
-            self.assertRaises(OSError),
-        ):
-            _atomic_write_text(self._path, "replacement")
-        self.assertFalse(os.path.exists(self._path + ".tmp"))
-
-    def test_oserror_propagates_so_callers_can_log_it(self):
-        from nibe_entity_manager import _atomic_write_text
-
-        missing = os.path.join(self._dir, "no-such-dir", "state.json")
-        with self.assertRaises(OSError):
-            _atomic_write_text(missing, "x")
-
-
 class TestSubmitWriteQueueDepthWarning(unittest.TestCase):
     """_write_executor has a single worker, and a write that opens a
     learning-detection window occupies it for up to _post_write_duration
@@ -1264,15 +1195,6 @@ class TestSubmitWriteQueueDepthWarning(unittest.TestCase):
         with self.assertNoLogs("nibe.commands", level="INFO"):
             em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="abc123")
 
-    def test_no_warning_when_point_id_is_omitted(self):
-        """Callers that don't pass point_id (there are none today besides
-        _handle_command, but the parameter is optional) must not crash or
-        log a message naming a nonexistent point."""
-        em = _make_em()
-        em._write_queue_depth = 1
-        with self.assertNoLogs("nibe.commands", level="INFO"):
-            em._submit_write(lambda: None)
-
     def test_depth_unwound_when_submit_is_rejected_after_shutdown(self):
         """submit() raises once the executor is shut down, so the wrapper
         that would decrement never runs. Without unwinding here the count
@@ -1284,18 +1206,38 @@ class TestSubmitWriteQueueDepthWarning(unittest.TestCase):
 
         em._write_executor.submit = rejecting_submit
         with self.assertRaises(RuntimeError):
-            em._submit_write(lambda: None, point_id=3846)
+            em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="a")
         self.assertEqual(em._write_queue_depth, 0)
+
+    def test_pending_entry_released_when_submit_is_rejected_after_shutdown(self):
+        """A write that was never submitted is never started either, so
+        nothing would ever age out or confirm its pending entry."""
+        em = _make_em()
+        em.pending_writes[3846] = {"point_id": 3846, "value": 1, "payload": "ON", "cmd_id": "a"}
+        em.pending_writes[1234] = {"point_id": 1234, "value": 2, "payload": "2", "cmd_id": "b"}
+
+        def rejecting_submit(*_a, **_kw):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        em._write_executor.submit = rejecting_submit
+        with self.assertRaises(RuntimeError):
+            em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="a")
+        self.assertNotIn(3846, em.pending_writes)
+        self.assertIn(1234, em.pending_writes)
 
     def test_depth_returns_to_zero_after_the_write_finishes(self):
         """The counter must be decremented even when the submitted handler
         raises, or every later write would report a phantom queue."""
         em = _make_em()
         em._write_executor.submit = lambda fn, *a, **kw: fn(*a, **kw)  # run synchronously
-        em._submit_write(lambda: None, point_id=3846)
+        em._submit_write(lambda: None, point_id=3846, cmd_id_for_log="a")
         self.assertEqual(em._write_queue_depth, 0)
         with self.assertLogs("nibe.commands", level="ERROR"):
-            em._submit_write(lambda: (_ for _ in ()).throw(RuntimeError("boom")), point_id=3846)
+            em._submit_write(
+                lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+                point_id=3846,
+                cmd_id_for_log="a",
+            )
         self.assertEqual(em._write_queue_depth, 0)
 
 
@@ -1638,9 +1580,9 @@ class TestForceReadback(unittest.TestCase):
         em._api.fetch_point.assert_called_once_with(777)
 
     def test_readback_uses_force_true(self):
-        """The republish must bypass the ValueCache rate-limit/dedup gate —
-        otherwise a recently-cached identical value could suppress the
-        correction the user actually needs to see."""
+        """The republish must bypass the unchanged-value check — otherwise an
+        identical value could suppress the correction the user actually
+        needs to see."""
         em = _make_em()
         em._api.fetch_point.return_value = {
             "value": {"isOk": True, "integerValue": 5, "stringValue": ""},
@@ -1696,6 +1638,15 @@ class TestForceReadback(unittest.TestCase):
         em = _make_em()
         em._api.fetch_point.return_value = {"value": None, "metadata": {}}
         em._force_readback(self._entity_info(point_id=100))  # must not raise
+
+    def test_metadata_not_an_object_is_read_as_empty(self):
+        em = _make_em()
+        em._api.fetch_point.return_value = {
+            "value": {"isOk": True, "integerValue": 5, "stringValue": ""},
+            "metadata": ["not", "an", "object"],
+        }
+        em._force_readback(self._entity_info(point_id=100))  # must not raise
+        em.mqtt.publish.assert_any_call("nibe/state/100", "5", retain=True)
 
     def test_missing_value_key_treated_as_not_ok(self):
         em = _make_em()
@@ -2593,3 +2544,68 @@ class TestRequestedStateShownAtOnce(unittest.TestCase):
             em._handle_command_worker(self._info(), 1, "1", "c1")
         readback.assert_called_once()
         self.assertNotIn(100, em.pending_writes)
+
+
+class TestHandleCommandWorkerGaps(unittest.TestCase):
+    def _entity_info(self, point_id=100):
+        return {
+            "point_id": point_id,
+            "entity_type": "switch",
+            "point_data": {"display_title": "Pump"},
+            "state_topic": f"nibe/state/{point_id}",
+        }
+
+    def test_the_write_start_is_stored_for_the_staleness_check(self):
+        """A write that waited in the queue ages from when it started."""
+        em = _make_em()
+        em._api.write_point.return_value = True
+        em.pending_writes[100] = {"point_id": 100, "value": 1, "timestamp": 1.0, "cmd_id": "c"}
+        with patch("nibe_entity_manager.time.time", return_value=5_000.0):
+            em._handle_command_worker(self._entity_info(), 1, "1", "c")
+        self.assertEqual(em.pending_writes[100]["started_at"], 5_000.0)
+
+    def test_a_non_controlling_switch_write_starts_an_ha_late_tail(self):
+        """Its late arrivals are linked as from an HA write, not as a change
+        made on the controller."""
+        import nibe_entity_manager as nem
+        from nibe_dynamic_map import DynamicPointEntry
+
+        em = _make_em()
+        em._api.write_point.return_value = True
+        em.dynamic_point_map._table[100] = DynamicPointEntry(
+            point_id=100,
+            title="Pump",
+            entity_type="switch",
+            processed_values={0, 1},
+            is_controlling=False,
+        )
+        with patch.object(em, "_start_late_tail") as tail:
+            em._handle_command_worker(self._entity_info(), 1, "1", "c")
+        tail.assert_called_once_with(100, 1, False, after=nem._POST_WRITE_SCAN_S)
+
+
+class TestHandleCommandQueuedLine(unittest.TestCase):
+    def test_the_queued_line_names_the_commanded_point_and_its_command(self):
+        em = _make_em()
+        em._write_queue_depth = 1
+        em.mqtt_enabled_points.add(4)
+        em.bulk_data[4] = {"raw_value": 0, "string_value": "", "is_ok": True, "metadata": {}}
+        info = {
+            "point_id": 4,
+            "entity_type": "switch",
+            "metadata": {},
+            "point_data": {},
+            "state_topic": "nibe/state/4",
+        }
+        em.active_entities_by_id[4] = info
+        msg = MagicMock(payload=b"1", topic="nibe/switch/nibe_4/set")
+        with (
+            patch.object(em._write_executor, "submit"),
+            patch("nibe_entity_manager.uuid.uuid4", return_value=MagicMock(hex="abcdef123456")),
+            self.assertLogs("nibe.commands", level="INFO") as logs,
+        ):
+            em._handle_command(info, msg)
+        queued = [line for line in logs.output if "queued behind" in line]
+        self.assertEqual(len(queued), 1)
+        self.assertIn("for point 4 ", queued[0])
+        self.assertIn("[abcdef", queued[0])

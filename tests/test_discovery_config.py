@@ -30,6 +30,16 @@ class TestBuildSelectConfig(unittest.TestCase):
         self.assertIs(config["optimistic"], False)
         self.assertNotIn("options", config)
 
+    def test_options_are_translated_and_untranslated_ones_kept(self):
+        """The dropdown must agree with the translated state the bridge
+        publishes for the same point; a label without a translation stays
+        as the firmware wrote it."""
+        from nibe_discovery_config import build_select_config
+
+        config = {}
+        build_select_config(config, "state/t", "cmd/t", 999900, "0=Off, 1=Heating", {"Off": "Uit"})
+        self.assertEqual(config["options"], ["Uit", "Heating"])
+
 
 class TestBuildSwitchConfig(unittest.TestCase):
     def test_sets_fixed_fields(self):

@@ -595,6 +595,29 @@ class TestDynamicPointEntry(unittest.TestCase):
         e = self._switch_entry(processed_values=set(), unprocessed_values={0, 1})
         self.assertFalse(e.is_fully_processed())
 
+    def test_is_fully_processed_false_with_no_values_at_all(self):
+        e = self._switch_entry(processed_values=set(), unprocessed_values=set())
+        self.assertFalse(e.is_fully_processed())
+
+    def test_from_dict_of_an_older_file_gives_the_defaults(self):
+        """A map written before a field existed (firmware_removed came
+        later) loads with the defaults — above all not as firmware-removed,
+        which would hide every switch of an older map."""
+        e = self.cls.from_dict({"point_id": "1001"})
+        self.assertEqual(
+            e,
+            self.cls(
+                point_id=1001,
+                title="",
+                entity_type="switch",
+                processed_values=set(),
+                unprocessed_values=set(),
+                is_controlling=None,
+                dynamic_points_by_value={},
+                firmware_removed=False,
+            ),
+        )
+
     def test_dynamic_points_for_value_found(self):
         e = self._switch_entry()
         self.assertEqual(e.dynamic_points_for_value(1), [22001, 22002])
@@ -1084,7 +1107,7 @@ class TestDynamicPointMap(unittest.TestCase):
     def test_to_file_oserror_returns_false(self):
         """OSError on write (e.g. read-only filesystem) returns False without raising."""
         m = self._map_with_entries()
-        with patch("nibe_dynamic_map.tempfile.mkstemp", side_effect=OSError("read-only")):
+        with patch("nibe_utils.tempfile.mkstemp", side_effect=OSError("read-only")):
             result = m.to_file("/tmp/nibe_test_readonly.json")
         self.assertFalse(result)
 
@@ -1095,7 +1118,7 @@ class TestDynamicPointMap(unittest.TestCase):
         m = self._map_with_entries()
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "map.json")
-            with patch("nibe_dynamic_map.os.replace", side_effect=OSError("disk full")):
+            with patch("nibe_utils.os.replace", side_effect=OSError("disk full")):
                 self.assertFalse(m.to_file(path))
             self.assertEqual(os.listdir(d), [])
 
@@ -3163,31 +3186,14 @@ class TestToFileTempName(unittest.TestCase):
     writers truncate each other's half-written file and rename the mixture
     into place (see ARCHITECTURE.md's durability note on /data files)."""
 
-    def test_temp_file_is_a_unique_sibling(self):
-        import os
-        import tempfile
+    def test_to_file_writes_the_serialised_map_atomically(self):
+        """to_file goes through nibe_utils.atomic_write_text (tested there),
+        so a write killed partway can't leave a truncated map behind."""
         from unittest.mock import patch
 
         from nibe_dynamic_map import DynamicPointMap
 
         m = DynamicPointMap()
-        real_replace = os.replace
-        sources = []
-
-        def spy_replace(src, dst):
-            sources.append((src, dst))
-            return real_replace(src, dst)
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "map.json")
-            with patch("nibe_dynamic_map.os.replace", side_effect=spy_replace):
-                self.assertTrue(m.to_file(path))
-                self.assertTrue(m.to_file(path))
-            (src1, dst1), (src2, dst2) = sources
-            self.assertEqual((dst1, dst2), (path, path))
-            for src in (src1, src2):
-                self.assertEqual(os.path.dirname(src), d)
-                self.assertTrue(os.path.basename(src).startswith(".map.json."))
-                self.assertTrue(src.endswith(".tmp"))
-            self.assertNotEqual(src1, src2, "temp name must be unique per write")
-            self.assertEqual(os.listdir(d), ["map.json"])
+        with patch("nibe_dynamic_map.atomic_write_text") as write:
+            self.assertTrue(m.to_file("/data/map.json"))
+        write.assert_called_once_with("/data/map.json", m.serialise())

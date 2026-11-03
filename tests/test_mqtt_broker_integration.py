@@ -476,6 +476,61 @@ class TestCorruptedRetainedConfigAgainstARealBroker:
             setup_client.disconnect()
 
 
+class TestAnotherIntegrationsRetainedConfigAgainstARealBroker:
+    """The scan's wildcard also matches other integrations' discovery configs.
+    Valid JSON of another shape used to raise AttributeError in the callback,
+    which killed paho's network thread: no MQTT at all until a restart, and
+    the retained message did it again at the next start."""
+
+    @pytest.mark.parametrize("payload", ["[1, 2]", "42", "null", '{"unique_id": 12345}'])
+    def test_valid_json_of_another_shape_leaves_the_network_thread_alive(
+        self, payload: str
+    ) -> None:
+        from nibe_entity_manager import EntityManager
+        from nibe_mqtt_publisher import MqttDiscoveryPublisher
+
+        topic = f"homeassistant/sensor/other_device_{_TEST_POINT_ID}/config"
+        setup_client = _real_client()
+        try:
+            setup_client.publish(topic, payload, qos=1, retain=True).wait_for_publish(5)
+            with (
+                patch("nibe_entity_manager.EntityManager.resubscribe_all"),
+                patch("nibe_entity_manager.EntityManager._setup_history_loading"),
+                patch("nibe_entity_manager.EntityManager._setup_dynamic_map_loading"),
+                patch("nibe_entity_manager._MQTT_SCAN_TIMEOUT_S", 3),
+            ):
+                fresh_client = _real_client()
+                try:
+                    em = EntityManager(
+                        api_client=MagicMock(),
+                        publisher=MqttDiscoveryPublisher(
+                            mqtt_client=fresh_client,
+                            device_info={
+                                "identifiers": ["nibe_integration_test"],
+                                "name": "Integration Test",
+                            },
+                            device_id="nibe_integration_test",
+                            device_name="Integration Test Device",
+                        ),
+                        notify_fn=MagicMock(),
+                        dismiss_fn=MagicMock(),
+                        mqtt_client=fresh_client,
+                    )
+                    em.scan_mqtt_discovery()
+                    time.sleep(0.2)
+                    thread = fresh_client._thread
+                    assert thread is not None
+                    assert thread.is_alive()
+                finally:
+                    fresh_client.loop_stop()
+                    fresh_client.disconnect()
+        finally:
+            setup_client.publish(topic, "", retain=True)
+            time.sleep(0.1)
+            setup_client.loop_stop()
+            setup_client.disconnect()
+
+
 def _make_reconnecting_client(avail_topic: str) -> tuple[mqtt.Client, threading.Event]:
     """A client configured the same way generate_nibe_mqtt.py configures the
     bridge's real one: an LWT that fires "offline" on any ungraceful loss of

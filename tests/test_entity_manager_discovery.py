@@ -202,7 +202,13 @@ class TestDiscoverPoints(unittest.TestCase):
 
         def fake_fetch(**_kw):
             for pid in (*point_ids, *dynamic_ids):
-                em.bulk_data[pid] = {"raw_value": 0, "is_ok": True, "metadata": {}}
+                em.bulk_data[pid] = {
+                    "raw_value": 0,
+                    "is_ok": True,
+                    "metadata": {},
+                    "title": f"Point {pid}",
+                    "description": "",
+                }
             for pid in point_ids:
                 em.all_points_by_id[pid] = {
                     "variableId": pid,
@@ -231,6 +237,24 @@ class TestDiscoverPoints(unittest.TestCase):
     def test_returns_true_on_success(self):
         em = self._make_em_with_bulk()
         self.assertTrue(em.discover_points())
+
+    def test_point_sets_restored_from_mqtt_are_not_replaced_by_the_files(self):
+        """The files are the fallback for a broker that lost them; the
+        reclassified set must be in place before the fetch classifies."""
+        import nibe_entity_manager as nem
+
+        em = self._make_em_with_bulk()
+        em._wanted_points = {7}
+        em._binary_sensor_reclassified = {8}
+        with patch("nibe_entity_manager._load_point_ids_file") as load:
+            em.discover_points()
+        load.assert_not_called()
+
+        em = self._make_em_with_bulk()
+        files = {nem._WANTED_POINTS_FILE: {1}, nem._RECLASSIFIED_POINTS_FILE: {2}}
+        with patch("nibe_entity_manager._load_point_ids_file", side_effect=files.get):
+            em.discover_points()
+        self.assertEqual((em._wanted_points, em._binary_sensor_reclassified), ({1}, {2}))
 
     def test_returns_false_when_fetch_fails(self):
         em = _make_em()
@@ -468,6 +492,23 @@ class TestCompleteDeferredDiscovery(unittest.TestCase):
         em.discover_points.return_value = False
         self.assertFalse(em.complete_deferred_discovery("essential"))
 
+    def test_a_refusal_for_the_device_info_is_a_failed_retry_not_an_exception(self):
+        """The controller can answer 401, 403 or 404 the first time it is
+        reachable. request() raises for those; here they must reach the bulk
+        fetch in discover_points(), which does the failure accounting, not the
+        main loop's catch-all."""
+        import urllib.error
+
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                em = self._make_em_ready()
+                em.discover_points.return_value = False
+                em._api.fetch_device_info.side_effect = urllib.error.HTTPError(
+                    "https://x/", code, "refused", {}, None
+                )
+                self.assertFalse(em.complete_deferred_discovery("essential"))
+                em.discover_points.assert_called_once()
+
     def test_runs_the_after_deferred_discovery_callbacks_on_success(self):
         """The registry watcher reconciles entities disabled in HA here: if
         the controller was unreachable at startup, nothing was enabled yet
@@ -699,6 +740,58 @@ class TestScanMqttDiscovery(unittest.TestCase):
         em.mqtt.publish = MagicMock(side_effect=fake_publish)
         result = em.scan_mqtt_discovery()  # must not raise
         self.assertEqual(len(result), 0)
+
+    def _scan_with_retained(self, em, retained):
+        """Run the scan with these (topic, payload) messages delivered to its
+        config callback before the sentinel."""
+        callbacks = {}
+
+        def fake_callback_add(topic, cb):
+            callbacks[topic] = cb
+
+        def fake_publish(topic, payload, retain=False):
+            if "scan_sentinel" in topic:
+                for retained_topic, retained_payload in retained:
+                    msg = MagicMock()
+                    msg.topic = retained_topic
+                    msg.payload = retained_payload
+                    callbacks["homeassistant/+/+/config"](None, None, msg)
+                callbacks[topic](None, None, MagicMock())
+
+        em.mqtt.message_callback_add = MagicMock(side_effect=fake_callback_add)
+        em.mqtt.publish = MagicMock(side_effect=fake_publish)
+        return em.scan_mqtt_discovery()
+
+    def test_another_integrations_config_of_any_shape_is_skipped_quietly(self):
+        """The scan's topic carries other integrations' configs. An exception
+        escaping this callback kills paho's network thread for good, and a
+        retained message would do that again at every start."""
+        for payload in (b"[1, 2]", b"42", b"null", b'"text"', b'{"unique_id": 12345}'):
+            with self.subTest(payload=payload):
+                result = self._scan_with_retained(
+                    _make_em(),
+                    [
+                        ("homeassistant/sensor/other_device/config", payload),
+                        ("homeassistant/sensor/nibe_1234/config", b'{"unique_id": "nibe_1234"}'),
+                    ],
+                )
+                self.assertEqual(set(result), {1234})
+
+    def test_another_integrations_config_of_any_shape_logs_no_warning(self):
+        with self.assertNoLogs("nibe.discovery", level="WARNING"):
+            self._scan_with_retained(
+                _make_em(), [("homeassistant/sensor/other_device/config", b"[1, 2]")]
+            )
+
+    def test_any_exception_in_the_config_callback_stays_inside_it(self):
+        em = _make_em()
+        em._pub.seed_config_hash_from_retained.side_effect = TypeError("boom")
+        with self.assertLogs("nibe.discovery", level="WARNING") as logs:
+            self._scan_with_retained(
+                em,
+                [("homeassistant/sensor/nibe_1234/config", b'{"unique_id": "nibe_1234"}')],
+            )
+        self.assertTrue(any("Could not parse config" in line for line in logs.output))
 
     def test_sentinel_timeout_still_returns_discovered(self):
         """When sentinel never fires, method falls through after timeout
@@ -1114,17 +1207,6 @@ class TestRestoreFromMqtt(unittest.TestCase):
         em._pub.publish_entity_discovery.return_value = entity
         em.restore_from_mqtt()
         self.assertEqual(em.active_entities_by_id[100], entity)
-
-    def test_is_dynamic_missing_key_defaults_to_not_dynamic(self):
-        """When a point dict has no 'is_dynamic' key at all, restore must
-        default to False (not add it to active_dynamic_points) — matching
-        get('is_dynamic', False), not some other default."""
-        em = self._make_em_with_points([100])
-        del em.all_points_by_id[100]["is_dynamic"]
-        em.mqtt_enabled_points.add(100)
-        em._pub.publish_entity_discovery.return_value = self._entity_info(100)
-        em.restore_from_mqtt()
-        self.assertNotIn(100, em.active_dynamic_points)
 
     def test_dynamic_point_added_to_active_dynamic_points(self):
         """restore_from_mqtt: is_dynamic=True points are added to

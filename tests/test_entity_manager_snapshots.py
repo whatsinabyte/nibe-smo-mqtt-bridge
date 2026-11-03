@@ -85,7 +85,7 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
                 "mode": "essential",
             }
         ]
-        with patch("nibe_entity_manager._atomic_write_text") as m:
+        with patch("nibe_entity_manager.atomic_write_text") as m:
             em._save_snapshots(snaps)
         m.assert_called_once()
         self.assertEqual(m.call_args.args[0], _SNAPSHOTS_FILE)
@@ -116,7 +116,7 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
         ]
         with (
             patch(
-                "nibe_entity_manager._atomic_write_text",
+                "nibe_entity_manager.atomic_write_text",
                 side_effect=OSError("read-only filesystem"),
             ),
             self.assertLogs("nibe.restore", level="WARNING") as cm,
@@ -180,7 +180,7 @@ class TestLoadSaveSnapshotsRoundtrip(unittest.TestCase):
         exception object."""
         em = _make_em()
         with (
-            patch("nibe_entity_manager._atomic_write_text", side_effect=OSError("disk full")),
+            patch("nibe_entity_manager.atomic_write_text", side_effect=OSError("disk full")),
             self.assertLogs("nibe.restore", level="WARNING") as cm,
         ):
             em._save_snapshots([{"name": "X"}], path=self._path)
@@ -447,6 +447,13 @@ class TestRestoreSnapshot(unittest.TestCase):
         self._seed_snapshot(em, "Snap", [3, 4])
         em.restore_snapshot("Snap", mode="merge", path=self._path)
         self.assertEqual(em._wanted_points, {3, 4})
+
+    def test_a_point_that_fails_to_enable_is_not_wanted(self):
+        em = self._em_with_firmware(all_pids=[1, 2, 3, 4], enabled_pids=[1, 2])
+        self._seed_snapshot(em, "Snap", [3, 4])
+        with patch.object(em, "_enable_entity_locked", side_effect=lambda pid: pid == 4):
+            em.restore_snapshot("Snap", mode="merge", path=self._path)
+        self.assertEqual(em._wanted_points, {4})
 
     def test_flush_restore_removes_wanted_from_disabled_points(self):
         """A flush-mode disable is an intentional snapshot override — the

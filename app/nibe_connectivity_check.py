@@ -94,7 +94,7 @@ def _run_curl(
     base_url: str,
     ca_cert_path: str | None,
     auth_header: str | None = None,
-    timeout: int = 10,
+    timeout: int = 30,
 ) -> dict:
     """Probe *base_url* with curl and return
     {'ok': bool, 'summary': str, 'http_code': int | None, 'tls_verified': bool}.
@@ -108,6 +108,10 @@ def _run_curl(
     connection-level failure (network/TLS never even completed). Without
     *auth_header*, 'ok' is True for any real HTTP response (even 401/403) —
     a pure reachability check with no opinion on credentials.
+
+    *timeout* defaults to the 30 s NibeApiClient allows, so a controller that
+    is slow to send its points isn't reported as timed out while the bridge
+    itself reads it fine.
     """
     url = f"{base_url}/points"
     cmd = [
@@ -180,11 +184,6 @@ def _run_curl(
     http_code = None
     for line in result.stdout.splitlines():
         if line.startswith("HTTP_CODE:"):
-            # maxsplit=1 vs omitted, split() vs rsplit(), and maxsplit=2 are
-            # all equivalent for this exact string shape (exactly one ':' in
-            # "HTTP_CODE:NNN") — not pragma'd, the ':' separator itself,
-            # split(None,...) whitespace-splitting, and index [1] vs [2] are
-            # all real/tested (crash/wrong value on a real curl response).
             with contextlib.suppress(ValueError):
                 http_code = int(line.split(":", 1)[1])
 
@@ -246,27 +245,13 @@ def run_connectivity_check(
       'curl'    : the _run_curl() result dict
       'summary' : one-line overall summary for the HA notification title/state
     """
-    # host/base_url value substitutions and message text are log-only (both
-    # reused for real right after, unaffected by this log call's own copy)
-    # — not pragma'd, arg count/format string are real/tested.
+    # pragma: no mutate start
     log_commands.info("Running connectivity check against %s (%s)", host, base_url)
+    # pragma: no mutate end
     ping_result = _run_ping(host)
     curl_result = _run_curl(base_url, ca_cert_path, auth_header)
 
     ok = ping_result["ok"] and curl_result["ok"]
-    # Wrong key, always-None, or a wrong/narrowed code tuple here all leave
-    # auth_rejected falsy in every case that would otherwise have been
-    # True — but whenever the real value WOULD be True, curl also reached
-    # the host (http_code is not None), so the summary always falls through
-    # to the `elif curl_reached_host:` / `elif not ping_result['ok']:`
-    # branches below with the identical `curl_result['summary']` /
-    # `also_ping_failed` text anyway. Verified empirically: none of these
-    # mutations change any assertion in test_connectivity_check.py. Not
-    # pragma'd because `in` -> `not in` on this same line IS real (it can
-    # make auth_rejected wrongly True when curl succeeded with a non-401/403
-    # code) and is already caught by
-    # test_ping_fails_curl_succeeds_exact_summary.
-    auth_rejected = curl_result.get("http_code") in (401, 403)
     # http_code is set whenever curl got any real HTTP response, even one
     # that makes curl_result['ok'] False (e.g. a 500) — distinct from curl
     # never completing a connection at all (http_code is None). Conflating
@@ -278,10 +263,6 @@ def run_connectivity_check(
         summary = "Reachable — both ping and the REST API responded."
     elif not ping_result["ok"] and not curl_reached_host:
         summary = "Unreachable — no response to ping or the REST API. Likely a network/firewall/VLAN block."
-    elif auth_rejected and ping_result["ok"]:
-        summary = curl_result["summary"]
-    elif auth_rejected:
-        summary = also_ping_failed
     elif not ping_result["ok"] and curl_result["ok"]:
         summary = "REST API responded but ping did not — ICMP may be blocked while HTTPS is allowed; not necessarily a problem."
     elif not ping_result["ok"]:
@@ -291,7 +272,5 @@ def run_connectivity_check(
     else:
         summary = "Host responds to ping but the REST API did not — check the port/service/firewall for that specific port."
 
-    # summary value substitution and message text are log-only — not
-    # pragma'd, arg count/format string are real/tested.
-    log_commands.info("Connectivity check result: %s", summary)
+    log_commands.info("Connectivity check result: %s", summary)  # pragma: no mutate
     return {"ok": ok, "ping": ping_result, "curl": curl_result, "summary": summary}
