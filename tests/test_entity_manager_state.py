@@ -11,6 +11,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from conftest import (
+    NoCheckThenRead,
     _make_em,
     _set_window,
 )
@@ -18,13 +19,14 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
 
-class TestValueCacheDeduplication(unittest.TestCase):
+class TestStateDeduplication(unittest.TestCase):
     def _setup(self):
         em = _make_em()
         pid = 500
         ei = {
             "point_id": pid,
             "entity_type": "sensor",
+            "point_data": {},
             "entity_id": f"nibe_{pid}",
             "state_topic": f"homeassistant/sensor/nibe_{pid}/state",
             "availability_topic": f"homeassistant/sensor/nibe_{pid}/avail",
@@ -619,6 +621,79 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, v, "", self._metadata())
         em.mqtt.publish.assert_any_call("nibe/state/2022", "Heating (Running)", retain=True)
 
+    def test_point_2022_compressor_starting_and_preheating_are_translated(self):
+        em = _make_em()
+        em._value_translations = {
+            "Heating": "Verwarmen",
+            "Starting": "Opstarten",
+            "Preheating": "Voorverwarmen",
+        }
+        info = self._entity_info(point_id=2022, entity_type="sensor")
+        em._process_and_publish_state(info, (1 << 12) | (1 << 4), "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Verwarmen (Opstarten)", retain=True)
+        em._process_and_publish_state(info, 1 << 12, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/2022", "Verwarmen (Voorverwarmen)", retain=True)
+
+    def test_a_number_at_exactly_its_maximum_is_published(self):
+        em = _make_em()
+        info = self._entity_info(entity_type="number")
+        em._process_and_publish_state(info, 100, "", self._metadata(minValue=0, maxValue=100))
+        em.mqtt.publish.assert_any_call("nibe/state/100", "100", retain=True)
+        self.assertNotIn(
+            ("nibe/avail/100", "offline"),
+            [c.args[:2] for c in em.mqtt.publish.call_args_list],
+        )
+
+    def test_select_and_sensor_labels_are_translated(self):
+        em = _make_em()
+        em._value_translations = {"Auto": "Automatisch"}
+        select = self._entity_info(point_id=101, entity_type="select")
+        select["value_mapping"] = {0: "Auto", 1: "Manual"}
+        sensor = self._entity_info(point_id=102, entity_type="sensor")
+        sensor["value_mapping"] = {1: "Auto"}
+        em._process_and_publish_state(select, 0, "", self._metadata())
+        em._process_and_publish_state(sensor, 1, "", self._metadata())
+        em.mqtt.publish.assert_any_call("nibe/state/101", "Automatisch", retain=True)
+        em.mqtt.publish.assert_any_call("nibe/state/102", "Automatisch", retain=True)
+
+    def test_a_value_outside_the_options_warns_once_per_point(self):
+        """And it doesn't silence another point's out-of-range warning."""
+        em = _make_em()
+        select = self._entity_info(point_id=101, entity_type="select")
+        select["value_mapping"] = {0: "Auto"}
+        number = self._entity_info(point_id=103, entity_type="number")
+        with self.assertLogs("nibe.entities", level="WARNING") as logs:
+            em._process_and_publish_state(select, 5, "", self._metadata())
+            em._process_and_publish_state(select, 5, "", self._metadata())
+            em._process_and_publish_state(number, 500, "", self._metadata(minValue=0, maxValue=100))
+        option_warnings = [m for m in logs.output if "not one of its select options" in m]
+        self.assertEqual(len(option_warnings), 1)
+        self.assertTrue(
+            any("Point 103" in m and "outside firmware range" in m for m in logs.output)
+        )
+
+    def test_a_selects_default_status_follows_its_value(self):
+        """Its default is checked against its options: a 0 default that is
+        one of them counts. A safety read-only point has no default."""
+        from nibe_entity_detection import SAFETY_READ_ONLY_POINTS
+
+        em = _make_em()
+        meta = self._metadata(
+            modbusRegisterType="MODBUS_HOLDING_REGISTER",
+            minValue=0,
+            maxValue=2,
+            intDefaultValue=0,
+        )
+        select = self._entity_info(point_id=104, entity_type="select")
+        select["value_mapping"] = {0: "Off", 1: "A", 2: "B"}
+        em._process_and_publish_state(select, 2, "", meta)
+        em._pub.update_default_status.assert_called_once_with(104, True)
+        em._pub.update_default_status.reset_mock()
+        safety = self._entity_info(point_id=min(SAFETY_READ_ONLY_POINTS), entity_type="select")
+        safety["value_mapping"] = {0: "Off", 1: "A", 2: "B"}
+        em._process_and_publish_state(safety, 2, "", meta)
+        em._pub.update_default_status.assert_not_called()
+
     def test_point_2022_non_numeric_raw_value_falls_back_to_raw_string(self):
         em = _make_em()
         info = self._entity_info(point_id=2022, entity_type="sensor")
@@ -864,10 +939,9 @@ class TestProcessAndPublishState(unittest.TestCase):
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
         self.assertEqual(state_calls, [])
 
-    def test_unchanged_value_within_rate_limit_not_republished(self):
+    def test_unchanged_value_not_republished(self):
         """Calling twice in immediate succession with the same value must
-        only publish the state once — the ValueCache rate-limit/dedup gate
-        suppresses the redundant second publish."""
+        only publish the state once: an unchanged value isn't sent again."""
         em = _make_em()
         info = self._entity_info(point_id=222, entity_type="sensor")
         em._process_and_publish_state(info, 100, "", self._metadata(divisor=1))
@@ -890,53 +964,20 @@ class TestProcessAndPublishState(unittest.TestCase):
         em._process_and_publish_state(info, 1, "", self._metadata())
         self.assertEqual(em.last_states[224], "1")
 
-    def test_should_publish_is_called_with_the_real_point_id_not_a_shared_key(self):
-        """value_cache.should_publish(point_id, ...) must be called with
-        THIS entity's own point_id — if all points shared one cache key
-        (e.g. a mutation to None), two unrelated points would corrupt each
-        other's suppression state.
-
-        A naive two-point test doesn't catch this: any point's *first ever*
-        call always publishes regardless of should_publish's result, via
-        the separate `point_id not in self.last_states` OR-fallback in the
-        caller — so the mutation hides behind that fallback on a fresh
-        point_id. The corruption only becomes observable on a *repeated*,
-        unchanged call for a point whose value happens to have been
-        clobbered, under the shared key, by a different point's call in
-        between:
-          1. B publishes 50 (its own first call — always succeeds either way).
-          2. A publishes 999. Under a shared cache key this overwrites what
-             was cached for B's key too.
-          3. B publishes 50 again (same value, no time has passed). Correctly
-             suppressed by the real per-point cache (nothing changed for B).
-             But if the cache is shared, the value now on file under B's
-             key is A's 999, not B's own last 50 — so the mutant sees a
-             949-unit 'change' that never happened and republishes."""
+    def test_a_sent_state_is_recorded_for_its_own_point(self):
+        """Sending point A's state must not count as sending B's: B's
+        unchanged state after a reconnect is still resent."""
         em = _make_em()
         info_a = self._entity_info(point_id=301, entity_type="sensor")
         info_b = self._entity_info(point_id=302, entity_type="sensor")
         meta = self._metadata(divisor=1, change=1)
-
-        # Each call must be >= min_interval (self.bulk_interval, 30s) apart —
-        # otherwise ValueCache.should_publish's own time-gate suppresses the
-        # call before it ever reaches the value-diff check, regardless of
-        # which cache key it used, masking the mutation just as thoroughly
-        # as the near-simultaneous-calls version of this test did.
-        with patch("nibe_caching.time.time") as mock_time:
-            mock_time.return_value = 1_000_000.0
-            em._process_and_publish_state(info_b, 50, "", meta)
-            mock_time.return_value = 1_000_100.0
-            em._process_and_publish_state(info_a, 999, "", meta)
-            mock_time.return_value = 1_000_200.0
-            em.mqtt.publish.reset_mock()
-            em._process_and_publish_state(info_b, 50, "", meta)
+        em._process_and_publish_state(info_b, 50, "", meta)
+        em._state_sent.clear()  # what a reconnect does (resubscribe_all)
+        em._process_and_publish_state(info_a, 999, "", meta)
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(info_b, 50, "", meta)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/302"]
-        self.assertEqual(
-            state_calls,
-            [],
-            "Unchanged value for point 302 must not republish its state — "
-            "a shared/wrong cache key would make this look like a change",
-        )
+        self.assertEqual([c.args[1] for c in state_calls], ["50"])
 
 
 class TestProcessAndPublishStateProperties(unittest.TestCase):
@@ -969,9 +1010,24 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
             "entity_type": entity_type,
             "state_topic": f"nibe/state/{point_id}",
             "availability_topic": f"nibe/avail/{point_id}",
-            "point_data": {},
+            "point_data": {"entity_type": entity_type, "entity_category": "diagnostic"},
             "value_mapping": None,
         }
+
+    def _em(self):
+        """An EntityManager whose publisher answers a republish (a binary
+        sensor seeing a value other than 0/1 becomes a sensor) the way the
+        real one does: a sensor entity_info carrying its point."""
+        em = _make_em()
+
+        def republish(point, _bulk_data):
+            info = self._entity_info(entity_type=point["entity_type"])
+            info["state_topic"] = f"nibe/{point['entity_type']}/state/100"
+            info["point_data"] = point
+            return info
+
+        em._pub.publish_entity_discovery.side_effect = republish
+        return em
 
     def _metadata(self, **kw):
         m = {
@@ -1080,7 +1136,7 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         """binary_sensor state must always be 'ON' or 'OFF' — never a
         numeric string.  This is an HA protocol requirement: binary_sensor
         entities must report ON/OFF, not 0/1."""
-        em = _make_em()
+        em = self._em()
         info = self._entity_info(entity_type="binary_sensor")
         em._process_and_publish_state(info, raw_value, "", self._metadata())
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/100"]
@@ -1102,7 +1158,7 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
     def test_state_payload_always_string(self, entity_type, raw_value):
         """State topic payload must always be a str — paho MQTT requires
         string payloads, and HA's MQTT integration expects string values."""
-        em = _make_em()
+        em = self._em()
         info = self._entity_info(entity_type=entity_type)
         with patch("nibe_entity_manager.get_value_mapping", return_value=None):
             em._process_and_publish_state(info, raw_value, "", self._metadata())
@@ -1148,19 +1204,12 @@ class TestProcessAndPublishStateProperties(unittest.TestCase):
         self.assertEqual(ss, "00")
 
 
-class TestChangeThresholdWiring(unittest.TestCase):
-    """Pins the wiring between firmware 'change' metadata and ValueCache
-    threshold suppression inside _process_and_publish_state.
-
-    The ValueCache.should_publish logic is tested exhaustively in
-    TestValueCacheHypothesisProperties; these tests verify that the
-    firmware metadata field is correctly extracted and passed as the
-    threshold — the integration path that actually runs on hardware.
+class TestChangeMetadataIsNoPublishThreshold(unittest.TestCase):
+    """The firmware's 'change' metadata doesn't affect which states are
+    published: every changed value goes out and an unchanged one doesn't.
 
     Point 1708 (Calculated supply climate system 1) is the reference:
       divisor=10, change=5, decimal=1, unit="°C".
-    A raw change of 5 at divisor=10 means 0.5 °C — below the threshold
-    of 5 raw counts — so the second publish must be suppressed.
     """
 
     def _entity_info(self, point_id=1708):
@@ -1175,17 +1224,14 @@ class TestChangeThresholdWiring(unittest.TestCase):
     def _metadata(self, change=5, divisor=10):
         return {"variableSize": "s16", "divisor": divisor, "change": change}
 
-    # -- suppression -------------------------------------------------------
-
-    @example(first=200, change=10)  # S2125 point 1708: same value → suppress
-    @example(first=228, change=10)  # S2125 point 4 (BT1 outdoor): same value → suppress
+    @example(first=200, change=10)  # S2125 point 1708
+    @example(first=228, change=10)  # S2125 point 4 (BT1 outdoor)
     @given(
         first=st.integers(min_value=0, max_value=10000),
         change=st.integers(min_value=1, max_value=50),
     )
-    def test_change_below_threshold_suppresses_second_publish(self, first, change):
-        """Second publish with the same raw value is suppressed — the cache
-        recognises zero delta and the last_states fallback also finds no change."""
+    def test_same_value_is_not_published_again(self, first, change):
+        """A second publish with the same raw value is suppressed."""
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1195,23 +1241,19 @@ class TestChangeThresholdWiring(unittest.TestCase):
         em._process_and_publish_state(info, first, "", meta)  # identical value
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
         self.assertEqual(
-            state_calls, [], f"Identical value with threshold {change}: must be suppressed"
+            state_calls, [], f"Identical value with change {change}: must be suppressed"
         )
 
-    @example(
-        first=200, second=206, change=5
-    )  # S2125 point 1708: 200→206 = Δ6 ≥ threshold 5 → publish
-    @example(
-        first=228, second=234, change=5
-    )  # S2125 point 4 (BT1 outdoor): 228→234 = Δ6 ≥ threshold 5 → publish
+    @example(first=200, second=201, change=5)  # S2125 point 1708: less than 'change'
+    @example(first=228, second=234, change=5)  # S2125 point 4 (BT1 outdoor): more than 'change'
     @given(
         first=st.integers(min_value=0, max_value=9000),
         second=st.integers(min_value=0, max_value=10000),
         change=st.integers(min_value=1, max_value=50),
     )
-    def test_change_exceeds_threshold_publishes(self, first, second, change):
-        """Second publish fires when |Δraw| >= change threshold."""
-        assume(abs(second - first) >= change)
+    def test_changed_value_is_published_whatever_change_says(self, first, second, change):
+        """A second publish fires for any difference, smaller than 'change' too."""
+        assume(second != first)
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1221,12 +1263,10 @@ class TestChangeThresholdWiring(unittest.TestCase):
         em._process_and_publish_state(info, second, "", meta)
         state_calls = [c for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/1708"]
         self.assertGreater(
-            len(state_calls), 0, f"Δ{abs(second - first)} >= threshold {change}: publish must fire"
+            len(state_calls), 0, f"Δ{abs(second - first)} with change {change}: publish must fire"
         )
 
-    # -- zero threshold (default) ------------------------------------------
-
-    def test_zero_change_threshold_publishes_changes_only(self):
+    def test_zero_change_publishes_changes_only(self):
         """change=0 (most points) counts any change, but an unchanged value
         isn't sent again: the state is retained, and with menus mode's ~900
         entities the repeats were hundreds of identical messages a poll."""
@@ -1256,11 +1296,8 @@ class TestChangeThresholdWiring(unittest.TestCase):
             em._process_and_publish_state(info, raw, "", meta)
             em.mqtt.publish.assert_any_call("nibe/state/1708", str(raw / 10), retain=True)
 
-    # -- missing field fallback --------------------------------------------
-
-    def test_missing_change_field_defaults_to_zero(self):
-        """Metadata without a 'change' key must fall back to 0 (no suppression),
-        not raise KeyError."""
+    def test_missing_change_field_still_publishes(self):
+        """Metadata without a 'change' key must not raise KeyError."""
         em = _make_em()
         em.bulk_interval = 0
         info = self._entity_info()
@@ -1441,6 +1478,7 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
         return {
             "point_id": point_id,
             "entity_type": "sensor",
+            "point_data": {},
             "availability_topic": f"nibe/avail/{point_id}",
             "state_topic": f"nibe/state/{point_id}",
         }
@@ -1455,6 +1493,50 @@ class TestUpdateEntityStateAbsentNoPostWrite(unittest.TestCase):
             em._update_entity_state(entity_info)
         with patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S + 1):
             em._update_entity_state(entity_info)
+
+    def test_absent_for_exactly_the_grace_period_is_disabled(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        em._window = None
+        em.mqtt_enabled_points.add(9999)
+        info = self._entity_info()
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            em._update_entity_state(info)
+        with (
+            patch("nibe_entity_manager.time.time", return_value=t0 + nem._ABSENT_GRACE_S),
+            patch.object(em, "disable_entity") as disable,
+        ):
+            em._update_entity_state(info)
+        disable.assert_called_once_with(9999, remove_from_wanted=False)
+
+    def test_the_absence_is_logged_once(self):
+        em = _make_em()
+        em._window = None
+        em.mqtt_enabled_points.add(9999)
+        info = self._entity_info()
+        t0 = 1_700_000_000.0
+        with (
+            self.assertLogs("nibe.entities", level="INFO") as logs,
+            patch("nibe_entity_manager.time.time", return_value=t0),
+        ):
+            em._update_entity_state(info)  # the first absent poll says so
+        self.assertEqual(sum("marking unavailable" in line for line in logs.output), 1)
+        with (
+            patch("nibe_entity_manager.time.time", return_value=t0 + 15),
+            self.assertNoLogs("nibe.entities", level="INFO"),
+        ):
+            em._update_entity_state(info)
+
+    def test_a_present_point_while_another_is_absent(self):
+        em = _make_em()
+        em._window = None
+        em._absent_since[1234] = 1_700_000_000.0
+        em.mqtt_enabled_points.add(9999)
+        em.bulk_data[9999] = {"raw_value": 1, "string_value": "", "is_ok": True, "metadata": {}}
+        em._update_entity_state(self._entity_info())
+        self.assertIn(1234, em._absent_since)
 
     def test_disabling_an_absent_entity_forgets_its_absence(self):
         """A disabled entity isn't polled, so its point reappearing never
@@ -2207,6 +2289,7 @@ class TestUpdateEntityStatePendingWriteEviction(unittest.TestCase):
         return {
             "point_id": point_id,
             "entity_type": "sensor",
+            "point_data": {},
             "availability_topic": f"nibe/avail/{point_id}",
             "state_topic": f"nibe/state/{point_id}",
         }
@@ -2413,6 +2496,51 @@ class TestUpdateEntityStatePostWriteDynamicDisappearance(unittest.TestCase):
         )
 
 
+class TestBulkDataChangingDuringARead(unittest.TestCase):
+    """A Force Poll fetches on another thread, without holding anything the
+    readers take, so a point can go or appear at any moment."""
+
+    def test_entity_state_reads_its_entry_once(self):
+        em = _make_em()
+        info = {
+            "point_id": 900,
+            "entity_type": "sensor",
+            "point_data": {},
+            "availability_topic": "nibe/avail/900",
+            "state_topic": "nibe/state/900",
+        }
+        em.bulk_data = NoCheckThenRead(
+            {900: {"raw_value": 7, "string_value": "", "is_ok": True, "metadata": {}}}
+        )
+        em._update_entity_state(info)
+        em.mqtt.publish.assert_any_call("nibe/state/900", "7", retain=True)
+
+    def test_reconcile_survives_a_point_appearing_while_it_reads(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+
+        class Entry(dict):
+            def __getitem__(self, key):
+                em.bulk_data[901] = {"raw_value": 0}
+                return super().__getitem__(key)
+
+        em.bulk_data = {900: Entry(raw_value=1)}
+        em._reconcile_dynamic_points()
+        self.assertIn(901, em.bulk_data)
+
+    def test_firmware_identity_survives_a_point_appearing_while_it_reads(self):
+        em = _make_em()
+
+        class Entry(dict):
+            def get(self, key, default=None):
+                em.bulk_data[901] = {"metadata": {}}
+                return super().get(key, default)
+
+        em.bulk_data = {900: Entry(metadata={}), 902: {"metadata": {}}}
+        em._check_firmware_update({900, 902})
+        self.assertIn(901, em.bulk_data)
+
+
 class TestUpdateEntityStateDataFlowFields(unittest.TestCase):
     """Covers the fields extracted from bulk_data and forwarded to
     _process_and_publish_state (raw_value, string_value, metadata).
@@ -2453,6 +2581,7 @@ class TestUpdateEntityStateDataFlowFields(unittest.TestCase):
         entity_info = {
             "point_id": point_id,
             "entity_type": "sensor",
+            "point_data": {},
             "availability_topic": f"nibe/avail/{point_id}",
             "state_topic": f"nibe/state/{point_id}",
         }
@@ -2585,6 +2714,32 @@ class TestApplyModeHandlesAbsentAtStartup(unittest.TestCase):
             if c.args[0].endswith("nibe_9999/config") and c.args[1] == ""
         ]
         self.assertTrue(cleared, "its retained config must be cleared")
+
+    def test_replace_mode_forgets_an_absent_point_entirely(self):
+        """Its config hash goes too (so a return republishes it), and it
+        stops being wanted even when it is a known dynamic point, which the
+        later wanted-point sweep leaves alone."""
+        em = _make_em()
+        em.mode_switch_behavior = "replace"
+        em._absent_at_startup = {9999: 1_700_000_000.0}
+        em.dynamic_point_map.all_known_dynamic_point_ids = lambda: {9999}
+        with patch.object(em, "_persist_wanted_points"), patch.object(em, "_persist_applied_mode"):
+            em._wanted_points = {9999}
+            em.apply_mode("none")
+        em._pub.invalidate_config_hash.assert_any_call(9999)
+        self.assertNotIn(9999, em._wanted_points)
+
+    def test_a_point_the_new_mode_disables_is_no_longer_wanted(self):
+        em = _make_em()
+        em.mqtt_enabled_points.add(4)
+        em._wanted_points = {4}
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_applied_mode"),
+            patch.object(em, "_disable_entity_locked"),
+        ):
+            em.apply_mode("none")
+        self.assertNotIn(4, em._wanted_points)
 
     def test_replace_mode_drops_a_point_disabled_by_the_absence_grace(self):
         """Disabled after _ABSENT_GRACE_S, a point stays wanted but isn't

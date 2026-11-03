@@ -81,7 +81,6 @@ from nibe_api import NibeApiClient
 from nibe_entity_detection import MODES
 from nibe_entity_manager import (
     EntityManager,
-    _atomic_write_text,
     _build_device_info,
     _load_value_mapping_translations,
     decide_startup_action,
@@ -115,7 +114,7 @@ from nibe_mqtt_publisher import (
     MqttDiscoveryPublisher,
 )
 from nibe_test_runner import abort_test_suite
-from nibe_utils import TLS_COMPAT_CIPHERS
+from nibe_utils import TLS_COMPAT_CIPHERS, atomic_write_text
 
 # ============================================================================
 # BRIDGE VERSION
@@ -137,7 +136,6 @@ def _load_bridge_version() -> str:
     candidates = [
         "/config.yaml",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.yaml"),
-        "/mnt/project/config.yaml",
     ]
     for path in candidates:
         try:
@@ -250,7 +248,7 @@ class BridgeConfig:
         )
 
 
-def load_config(cli_args: Any = None) -> BridgeConfig:
+def load_config(cli_args: argparse.Namespace | None = None) -> BridgeConfig:
     """Resolve runtime configuration from all sources into a BridgeConfig.
 
     Sources are applied lowest-to-highest priority — each step unconditionally
@@ -424,7 +422,7 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
             cfg.mqtt_port = int(env["NIBE_MQTT_PORT"])
         if env.get("NIBE_POLL_INTERVAL"):
             cfg.poll_interval = _validated_poll(
-                max(15, int(env["NIBE_POLL_INTERVAL"])), "NIBE_POLL_INTERVAL"
+                int(env["NIBE_POLL_INTERVAL"]), "NIBE_POLL_INTERVAL"
             )
         if env.get("NIBE_API_FAILURE_THRESHOLD"):
             cfg.api_failure_threshold = max(1, min(100, int(env["NIBE_API_FAILURE_THRESHOLD"])))
@@ -435,9 +433,9 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
     # run.sh passes --log-level and --mode; other settings come from
     # options.json so the add-on UI remains the single source of truth.
     if cli_args:
-        if getattr(cli_args, "log_level", None):
+        if cli_args.log_level:
             cfg.log_level = cli_args.log_level
-        if getattr(cli_args, "mode", None):
+        if cli_args.mode:
             cfg.mode = cli_args.mode
 
     # ── Validate mode/log_level against the same sets config.yaml's schema
@@ -468,11 +466,11 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
 
     # ── Language auto-detection ────────────────────────────────────────────
     # An explicit `language` from any source above always wins. Only when
-    # it's "auto" (config.yaml's default) or blank (a hand-edited
-    # options.json or NIBE_LANGUAGE, which bypass the schema) do we ask HA's
-    # own configured language via the Supervisor API — same precedence
-    # pattern as mqtt_host's auto-discovery.
-    if cfg.language in ("", "auto"):
+    # it's "auto" (config.yaml's default; a blank one from options.json or
+    # NIBE_LANGUAGE is skipped above and leaves it there) do we ask HA's own
+    # configured language via the Supervisor API — same precedence pattern
+    # as mqtt_host's auto-discovery.
+    if cfg.language == "auto":
         cfg.language = _get_ha_language()
 
     # ── Derived values ─────────────────────────────────────────────────────
@@ -498,12 +496,7 @@ def load_config(cli_args: Any = None) -> BridgeConfig:
 # ============================================================================
 
 
-def _build_logging(level: str = "info") -> None:
-    # Any mutation of this default (case-flip, garbled text) is
-    # unobservable — verified empirically: getattr(logging, ..., INFO)
-    # falls back to the same logging.INFO for both a valid "INFO" lookup
-    # and an invalid one, so every candidate default resolves to the
-    # identical numeric level.
+def _build_logging(level: str) -> None:
     numeric = getattr(logging, level.upper(), logging.INFO)
     root = logging.getLogger("nibe")
     if root.handlers:
@@ -553,26 +546,11 @@ def parse_arguments() -> argparse.Namespace:
     dataclass defaults already supply 'info'/'essential' as the final
     fallback, so nothing is lost by leaving the CLI defaults empty here.
     """
-    # description= only affects --help text, never asserted on — not
-    # pragma'd, the flags/choices themselves are real/tested.
     parser = argparse.ArgumentParser(description="Nibe S-Series MQTT Bridge")
-    # dest='log_level' and both default=None are what argparse already
-    # derives/uses on its own (dest from '--log-level' with '-' -> '_';
-    # default is None when omitted) — dropping them, or passing dest=None
-    # explicitly, is unobservable. Verified empirically, not pragma'd
-    # since the flag names/choices themselves are real/tested.
+    # No default: argparse gives None, which load_config reads as "not set".
+    parser.add_argument("-l", "--log-level", choices=["debug", "info", "warning", "error"])
     parser.add_argument(
-        "-l",
-        "--log-level",
-        choices=["debug", "info", "warning", "error"],
-        default=None,
-        dest="log_level",
-    )
-    parser.add_argument(
-        "-m",
-        "--mode",
-        choices=["essential", "monitoring", "advanced", "menus", "all", "none"],
-        default=None,
+        "-m", "--mode", choices=["essential", "monitoring", "advanced", "menus", "all", "none"]
     )
     return parser.parse_args()
 
@@ -607,7 +585,7 @@ def _cleanup_mqtt_retained(mqtt_client: Any) -> None:
     _SCAN_TIMEOUT = 15
     _SENTINEL = BrowserTopic.SCAN_SENTINEL.value
 
-    log_startup.info("Collecting retained MQTT topics for cleanup...")
+    log_startup.info("Collecting retained MQTT topics for cleanup...")  # pragma: no mutate
     retained_topics = set()
     sentinel_received = threading.Event()
 
@@ -645,16 +623,16 @@ def _cleanup_mqtt_retained(mqtt_client: Any) -> None:
     mqtt_client.message_callback_add(_SENTINEL, _on_sentinel)
 
     # Sentinel flush: any retained messages arrive before this non-retained one
-    # retain=False is already paho's own default for publish() — the
-    # explicit kwarg here is documentation, not behavior. Verified empirically.
     mqtt_client.publish(_SENTINEL, "cleanup", retain=False)
 
     if not sentinel_received.wait(timeout=_SCAN_TIMEOUT):
+        # pragma: no mutate start
         log_startup.warning(
             "Sentinel timeout after %ds during MQTT cleanup — "
             "some retained messages may not have been collected",
             _SCAN_TIMEOUT,
         )
+        # pragma: no mutate end
 
     # Tear down callbacks and subscriptions
     mqtt_client.message_callback_remove(ha_wildcard)
@@ -665,15 +643,14 @@ def _cleanup_mqtt_retained(mqtt_client: Any) -> None:
     mqtt_client.unsubscribe(_SENTINEL)
 
     if not retained_topics:
-        log_startup.info("No retained MQTT messages found to clean up")
+        log_startup.info("No retained MQTT messages found to clean up")  # pragma: no mutate
         return
 
+    # pragma: no mutate start
     log_startup.info("Clearing %d retained MQTT topics...", len(retained_topics))
+    # pragma: no mutate end
     pending = []
     for topic in retained_topics:
-        # payload=None is already paho's own default for publish() — the
-        # explicit kwarg here is documentation, not behavior. Verified
-        # empirically, not pragma'd since retain=True is real/tested.
         result = mqtt_client.publish(topic, payload=None, retain=True)
         pending.append((topic, result))
 
@@ -683,16 +660,18 @@ def _cleanup_mqtt_retained(mqtt_client: Any) -> None:
         try:
             result.wait_for_publish(timeout=2.0)
             cleared += 1
-            log_startup.debug("Cleared retained topic: %s", topic)
+            log_startup.debug("Cleared retained topic: %s", topic)  # pragma: no mutate
         except (ValueError, RuntimeError) as e:
             # wait_for_publish() only raises these two — ValueError if the
             # outgoing queue was full, RuntimeError for any other publish
             # failure (e.g. disconnected mid-publish).
-            log_startup.warning("Could not confirm clear for %s: %s", topic, e)
+            log_startup.warning("Could not confirm clear for %s: %s", topic, e)  # pragma: no mutate
 
+    # pragma: no mutate start
     log_startup.info(
         "MQTT cleanup complete — cleared %d/%d retained topics", cleared, len(retained_topics)
     )
+    # pragma: no mutate end
 
 
 # ===========================================================================
@@ -710,12 +689,12 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     """
     if ca_cert_path and os.path.exists(ca_cert_path):
         ctx = ssl.create_default_context(cafile=ca_cert_path)
+        # pragma: no mutate start
         log_startup.info("Nibe API TLS: verification enabled using CA cert %s", ca_cert_path)
+        # pragma: no mutate end
         return ctx
 
     ctx = ssl.create_default_context()
-    # check_hostname = None is unobservable — verified empirically:
-    # SSLContext's setter coerces any falsy value to False.
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     # Verification is already off above, so these don't weaken security —
@@ -724,10 +703,12 @@ def _build_ssl_context(ca_cert_path: str | None) -> ssl.SSLContext:
     # negotiate below the platform's default minimum TLS version.
     ctx.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
     ctx.set_ciphers(TLS_COMPAT_CIPHERS)
+    # pragma: no mutate start
     log_startup.warning(
         "TLS: Certificate verification disabled (self-signed cert). "
         "Enable verification by setting 'nibe_ca_cert' in add-on options."
     )
+    # pragma: no mutate end
     return ctx
 
 
@@ -771,45 +752,48 @@ def _derive_device_id(response: dict, fallback: str, persist_path: str | None = 
     if serial:
         safe = "".join(c for c in serial.lower() if c.isalnum() or c == "_")
         device_id = f"nibe_{safe}"
-        log_startup.info("Device ID derived from serial number: %s", device_id)
+        log_startup.info("Device ID derived from serial number: %s", device_id)  # pragma: no mutate
         try:
             # Atomic: this file is read back as `f.read().strip()` and used
             # only `if persisted:`, so a truncated write reads as empty and
             # silently falls through to the generic fallback id — producing
             # exactly the duplicate HA device this persistence exists to
-            # prevent. See _atomic_write_text.
-            _atomic_write_text(persist_path, device_id)
+            # prevent. See atomic_write_text.
+            atomic_write_text(persist_path, device_id)
         except OSError as e:
+            # pragma: no mutate start
             log_startup.warning(
                 "Could not persist device_id to %s: %s — a future startup during "
                 "a transient outage may fall back to the generic default instead.",
                 persist_path,
                 e,
             )
+            # pragma: no mutate end
         return device_id
 
     try:
         with open(persist_path, encoding="utf-8") as f:
             persisted = f.read().strip()
     except OSError:
-        # Only ever read via `if persisted:` — None is equally falsy, so
-        # that alternative default is unobservable. Verified empirically,
-        # not pragma'd since the read/.strip() themselves are real/tested.
         persisted = ""
     if persisted:
+        # pragma: no mutate start
         log_startup.warning(
             "Serial number not available this startup (device unreachable?) — "
             "reusing the previously learned device_id '%s' instead of the "
             "generic default, to avoid creating a duplicate HA device.",
             persisted,
         )
+        # pragma: no mutate end
         return persisted
 
+    # pragma: no mutate start
     log_startup.warning(
         "Serial number not available — using default device_id '%s'. "
         "Running two bridges without serial numbers may cause HA device collisions.",
         fallback,
     )
+    # pragma: no mutate end
     return fallback
 
 
@@ -840,16 +824,20 @@ def _configure_mqtt_tls(mqtt_client: Any, cfg: "BridgeConfig") -> None:
     if cfg.mqtt_tls:
         ca = cfg.mqtt_ca_cert if (cfg.mqtt_ca_cert and os.path.exists(cfg.mqtt_ca_cert)) else None
         mqtt_client.tls_set(ca_certs=ca)
+        # pragma: no mutate start
         log_mqtt.info(
             "MQTT TLS enabled%s",
             f" (CA: {ca})" if ca else " (system CA store)",
         )
+        # pragma: no mutate end
     else:
         if cfg.mqtt_username:
+            # pragma: no mutate start
             log_mqtt.warning(
                 "MQTT TLS disabled — credentials sent in plaintext. "
                 "Enable with 'mqtt_tls: true' in add-on options."
             )
+            # pragma: no mutate end
 
 
 def _run_scan_with_retry(
@@ -872,6 +860,7 @@ def _run_scan_with_retry(
             break
         if attempt >= retries:
             break
+        # pragma: no mutate start
         log_restore.info(
             "Scan returned 0 configs (attempt %d/%d) — broker may still be "
             "loading. Retrying in %ds...",
@@ -879,6 +868,7 @@ def _run_scan_with_retry(
             retries,
             wait,
         )
+        # pragma: no mutate end
         time.sleep(wait)
         result = entity_manager.scan_mqtt_discovery()
     return result
@@ -904,16 +894,20 @@ def _execute_startup_action(
     reconcile — mode changed: restore then apply new mode to reconcile set.
     """
     if startup_action == "apply":
+        # pragma: no mutate start
         log_restore.info("No existing MQTT configs — applying initial mode: %s", initial_mode)
+        # pragma: no mutate end
     elif startup_action == "restore":
         pass  # apply_startup_action logs the applied-mode baseline message if needed
     else:  # "reconcile"
+        # pragma: no mutate start
         log_restore.info(
             "Entity mode changed from '%s' to '%s' — restoring then reconciling "
             "the enabled set to the new mode.",
             applied_mode,
             initial_mode,
         )
+        # pragma: no mutate end
 
     entity_manager.apply_startup_action(startup_action, applied_mode, initial_mode)
 
@@ -921,10 +915,12 @@ def _execute_startup_action(
     # in complete_deferred_discovery because deferred startups only reach this
     # path after the device comes back online and real points are discovered.
     if startup_action == "apply" and initial_mode == "none":
+        # pragma: no mutate start
         log_restore.info(
             "Mode 'none' selected — no entities enabled by default. "
             "Use the Entity Manager card to enable entities."
         )
+        # pragma: no mutate end
         notify_ha(
             mqtt_client,
             title="Nibe Bridge: No Entities Enabled",
@@ -963,31 +959,31 @@ def _fetch_api_response(api_client: NibeApiClient) -> dict:
     should log the error and exit, since bad credentials will not fix
     themselves.
     """
-    log_startup.info("Testing Nibe API connection...")
+    log_startup.info("Testing Nibe API connection...")  # pragma: no mutate
     try:
         response = api_client.fetch_device_info()
     except urllib.error.HTTPError as e:
         raise _ApiAuthError(e.code) from e
 
     if not response:
+        # pragma: no mutate start
         log_startup.warning(
             "Cannot reach Nibe API at startup — device may be offline. "
             "The bridge will start and keep retrying."
         )
+        # pragma: no mutate end
         return {}
 
     product = response.get("product", {})
+    # pragma: no mutate start
     log_startup.info(
         "Connected to %s %s (serial: %s, firmware: %s)",
         product.get("manufacturer", "NIBE"),
-        # The .get() default here is unobservable: whatever it evaluates to
-        # (a missing key, "S-series", or any other falsy/truthy value) is
-        # immediately ORed with the same "S-series" literal, so the final
-        # value only ever depends on that trailing literal.
-        product.get("name", "S-series") or "S-series",
+        product.get("name") or "S-series",
         product.get("serialNumber", "unknown"),
         product.get("firmwareId", "unknown"),
     )
+    # pragma: no mutate end
     return response
 
 
@@ -1015,11 +1011,17 @@ def _load_menu_structure(
         point_to_menu = _build_point_to_menu(_load_menu_structure_yaml(menu_path))
         menu_points = build_menu_points(menu_path, controller_family=controller_family)
         if log_if_mode:
+            # pragma: no mutate start
             log_startup.debug("Built point→menu map: %d entries", len(point_to_menu))
+            # pragma: no mutate end
+            # pragma: no mutate start
             log_startup.debug("MODES['menus'] populated: %d points", len(menu_points))
+            # pragma: no mutate end
         return point_to_menu, menu_points
     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+        # pragma: no mutate start
         log_startup.warning("Could not build point→menu map / MODES['menus']: %s", e)
+        # pragma: no mutate end
         return {}, frozenset()
 
 
@@ -1050,20 +1052,25 @@ def _build_infrastructure(
     unreachable) — identical behaviour to the previous monolithic main().
     """
     if not cfg.nibe_auth:
-        log_api.error("Could not find Nibe API credentials in any source.")
+        log_api.error("Could not find Nibe API credentials in any source.")  # pragma: no mutate
+        # pragma: no mutate start
         log_api.error("  Add-on: set nibe_username + nibe_password in the add-on options UI")
-        log_api.error("  secrets.yaml: add  nibe_basic_auth: <base64token>")
+        # pragma: no mutate end
+        log_api.error("  secrets.yaml: add  nibe_basic_auth: <base64token>")  # pragma: no mutate
         sys.exit(1)
 
     try:
         ssl_context = _build_ssl_context(cfg.nibe_ca_cert)
     except ssl.SSLError as e:
+        # pragma: no mutate start
         log_startup.error("Could not build TLS context for the Nibe API connection: %s", e)
+        # pragma: no mutate end
         sys.exit(1)
     api_client = NibeApiClient(cfg.api_base_url, cfg.nibe_auth, ssl_context, cfg.language)
 
-    log_startup.info("Bridge version: %s", BRIDGE_VERSION)
+    log_startup.info("Bridge version: %s", BRIDGE_VERSION)  # pragma: no mutate
     copy_card_file()
+    # pragma: no mutate start
     log_startup.info(
         "Config: API=%s  MQTT=%s:%d  device='%s'",
         cfg.api_base_url,
@@ -1071,12 +1078,15 @@ def _build_infrastructure(
         cfg.mqtt_port,
         cfg.device_name,
     )
+    # pragma: no mutate end
 
     # ── Test API connection ───────────────────────────────────────────────────
     try:
         response = _fetch_api_response(api_client)
     except _ApiAuthError as e:
+        # pragma: no mutate start
         log_startup.error("Nibe API authentication failed (HTTP %s) — check credentials.", e)
+        # pragma: no mutate end
         sys.exit(1)
 
     device_id = _derive_device_id(response, cfg.device_id)
@@ -1085,7 +1095,7 @@ def _build_infrastructure(
     # device_id is serial-based so it is unique per physical controller.
     # Truncated to 23 chars to satisfy conservative MQTT 3.1 broker limits.
     mqtt_client_id = _build_mqtt_client_id(device_id)
-    log_startup.info("Connecting to MQTT broker...")
+    log_startup.info("Connecting to MQTT broker...")  # pragma: no mutate
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mqtt_client_id)
     mqtt_client.user_data_set({})
     mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
@@ -1095,11 +1105,13 @@ def _build_infrastructure(
     if cfg.mqtt_username and cfg.mqtt_password:
         mqtt_client.username_pw_set(cfg.mqtt_username, cfg.mqtt_password)
     else:
+        # pragma: no mutate start
         log_mqtt.warning(
             "MQTT broker connected without credentials — ensure broker ACLs "
             "restrict write access to nibe/ and homeassistant/ topics. "
             "Set mqtt_username and mqtt_password in the add-on options."
         )
+        # pragma: no mutate end
 
     _configure_mqtt_tls(mqtt_client, cfg)
     mqtt_client.will_set(MGMT_AVAIL_TOPIC, "offline", retain=True)
@@ -1144,17 +1156,21 @@ def _build_infrastructure(
             # republish_availability() below iterate every active entity
             # issuing real subscribe/publish calls, so this is not a
             # theoretical path.
+            # pragma: no mutate start
             log_mqtt.exception("Unhandled exception in MQTT on_connect — connection setup aborted")
+            # pragma: no mutate end
 
     def _on_connect_inner(reason_code: Any) -> None:
         rc_value = reason_code.value if hasattr(reason_code, "value") else int(reason_code)
         if rc_value == 0:
+            # pragma: no mutate start
             log_mqtt.info(
                 "MQTT connected to %s:%d (keepalive %ds)",
                 cfg.mqtt_broker,
                 cfg.mqtt_port,
                 keepalive,
             )
+            # pragma: no mutate end
             if _em:
                 _em[0].resubscribe_all()
                 _em[0].republish_availability()
@@ -1162,6 +1178,7 @@ def _build_infrastructure(
                 # EntityManager.republish_retained_state) — put them back.
                 _em[0].republish_retained_state()
         elif rc_value in _FATAL_RC:
+            # pragma: no mutate start
             log_mqtt.error(
                 "MQTT broker %s:%d refused the connection (reason %d) — "
                 "check mqtt_username and mqtt_password in the add-on options.",
@@ -1169,14 +1186,17 @@ def _build_infrastructure(
                 cfg.mqtt_port,
                 rc_value,
             )
+            # pragma: no mutate end
             _auth_failed.set()
         else:
+            # pragma: no mutate start
             log_mqtt.error(
                 "MQTT connection to %s:%d failed: %s",
                 cfg.mqtt_broker,
                 cfg.mqtt_port,
                 reason_code,
             )
+            # pragma: no mutate end
 
     def on_disconnect(
         _client: Any, _userdata: Any, _disconnect_flags: Any, reason_code: Any, _properties: Any
@@ -1185,7 +1205,7 @@ def _build_infrastructure(
             _on_disconnect_inner(reason_code)
         except Exception:
             # Same network-thread reasoning as on_connect above.
-            log_mqtt.exception("Unhandled exception in MQTT on_disconnect")
+            log_mqtt.exception("Unhandled exception in MQTT on_disconnect")  # pragma: no mutate
 
     def _on_disconnect_inner(reason_code: Any) -> None:
         if shutting_down[0]:
@@ -1200,12 +1220,14 @@ def _build_infrastructure(
             5: "connection refused — not authorised",
         }
         label = _DISCONNECT_LABELS.get(rc_value, str(reason_code))
+        # pragma: no mutate start
         log_mqtt.warning(
             "MQTT disconnected from %s:%d (%s) — paho will reconnect automatically",
             cfg.mqtt_broker,
             cfg.mqtt_port,
             label,
         )
+        # pragma: no mutate end
 
     mqtt_client.on_connect = on_connect
     mqtt_client.on_disconnect = on_disconnect
@@ -1220,14 +1242,17 @@ def _build_infrastructure(
             sys.exit(1)
 
         if not mqtt_client.is_connected():
+            # pragma: no mutate start
             log_mqtt.info("MQTT not yet connected after 2s — broker may be slow, continuing")
+            # pragma: no mutate end
         else:
-            log_mqtt.info("MQTT client connection verified")
+            log_mqtt.info("MQTT client connection verified")  # pragma: no mutate
 
         mqtt_client.publish(MGMT_AVAIL_TOPIC, "online", retain=True)
-        log_mqtt.info("Availability topic pre-cleared to 'online'")
+        log_mqtt.info("Availability topic pre-cleared to 'online'")  # pragma: no mutate
 
     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
+        # pragma: no mutate start
         log_mqtt.error(
             "Cannot connect to MQTT broker at %s:%d — %s. "
             "Check that the broker is running and that 'mqtt_host' and 'mqtt_port' "
@@ -1237,6 +1262,7 @@ def _build_infrastructure(
             cfg.mqtt_port,
             e,
         )
+        # pragma: no mutate end
         sys.exit(1)
 
     # Returns a callable so the caller can wire entity_manager into the
@@ -1331,21 +1357,25 @@ def _run_startup_sequence(
         _app_dir, log_if_mode=(initial_mode == "menus"), controller_family=_controller_family
     )
 
+    # pragma: no mutate start
     log_startup.debug(
         "Device info: model=%s, serial=%s, firmware=%s",
         device_info.get("model"),
         device_info.get("serial_number"),
         device_info.get("model_id"),
     )
+    # pragma: no mutate end
 
     dismiss_ha(mqtt_client, "nibe_write_error")
 
     # ── Discover points ───────────────────────────────────────────────────────
     if not entity_manager.discover_points():
+        # pragma: no mutate start
         log_startup.warning(
             "Initial point discovery failed — device unreachable. "
             "The bridge will keep retrying in the polling loop."
         )
+        # pragma: no mutate end
         notify_ha(
             mqtt_client,
             title="Nibe Bridge: Started Without Device",
@@ -1463,6 +1493,7 @@ def _run_startup_sequence(
     update_stats_and_health(entity_manager, publisher)
     update_device_modes(entity_manager, publisher)
 
+    # pragma: no mutate start
     log_startup.info(
         "Bridge ready — %d points, %d enabled, %d active | poll=%ds alarm=%ds",
         len(entity_manager.all_points),
@@ -1471,6 +1502,7 @@ def _run_startup_sequence(
         entity_manager.bulk_interval,
         _ALARM_POLL_INTERVAL,
     )
+    # pragma: no mutate end
 
     return entity_manager, publisher, registry_watcher, mgmt_executor, test_executor
 
@@ -1510,10 +1542,8 @@ def _poll_loop(
             )
 
             if current_time - last_update >= effective_outer:
-                log_entities.debug("Periodic state update")
+                log_entities.debug("Periodic state update")  # pragma: no mutate
 
-                # Only ever consumed via `if deferred_ran:` below — None and
-                # False are indistinguishable there. Verified empirically.
                 deferred_ran = False
                 if (
                     not entity_manager.initial_discovery_complete
@@ -1542,18 +1572,19 @@ def _poll_loop(
                 if current_time - last_memory_log >= 600:
                     try:
                         memory_stats = entity_manager.get_memory_usage()
+                        # pragma: no mutate start
                         log_startup.debug(
                             "Memory usage: %d points, %d active entities, ~%.2f MB "
-                            "(cache sizes: value=%d, states=%d, strings=%d)",
+                            "(cache sizes: states=%d, strings=%d)",
                             memory_stats.get("total_points", 0),
                             memory_stats.get("active_entities", 0),
                             memory_stats.get("estimated_memory_mb", 0),
-                            memory_stats.get("value_cache_size", 0),
                             memory_stats.get("last_states_size", 0),
                             memory_stats.get("point_string_cache_size", 0),
                         )
+                        # pragma: no mutate end
                     except Exception as e:  # noqa: BLE001 — best-effort; logged and degrades gracefully
-                        log_startup.error("Memory logging error: %s", e)
+                        log_startup.error("Memory logging error: %s", e)  # pragma: no mutate
                     last_memory_log = current_time
 
             if current_time - last_alarm_check >= _ALARM_POLL_INTERVAL:
@@ -1567,11 +1598,13 @@ def _poll_loop(
         except Exception as e:
             _loop_consecutive_errors += 1
             backoff = min(5 * _loop_consecutive_errors, 60)
+            # pragma: no mutate start
             log_startup.exception(
                 "Unexpected error in main loop (occurrence %d, backing off %ds)",
                 _loop_consecutive_errors,
                 backoff,
             )
+            # pragma: no mutate end
             if _loop_consecutive_errors >= 5:
                 try:  # noqa: SIM105 — deliberately broad, documented on the except line below
                     publisher.publish_bridge_alert(
@@ -1618,7 +1651,7 @@ def _shutdown(
       6. Tear down Lovelace resources.
       7. Disconnect MQTT cleanly.
     """
-    log_startup.info("Shutting down...")
+    log_startup.info("Shutting down...")  # pragma: no mutate
     registry_watcher.stop()
 
     # A test-suite run can legitimately take 25-30+ minutes, far longer than
@@ -1636,7 +1669,7 @@ def _shutdown(
     # the other two no time to drain at all.
     entity_manager.begin_shutdown()
 
-    log_startup.info("Waiting for in-flight commands to complete...")
+    log_startup.info("Waiting for in-flight commands to complete...")  # pragma: no mutate
     # Share one _SHUTDOWN_TIMEOUT deadline across all three executors rather
     # than giving each its own full budget — three independent 35s joins
     # could otherwise sum to ~105s if all three are legitimately busy at
@@ -1656,14 +1689,16 @@ def _shutdown(
         remaining = max(0.0, shutdown_deadline - time.monotonic())
         t.join(timeout=remaining)
         if t.is_alive():
+            # pragma: no mutate start
             log_startup.warning(
                 "%s executor did not finish within the shared %ds shutdown "
                 "budget — proceeding with shutdown",
                 name,
                 _SHUTDOWN_TIMEOUT,
             )
+            # pragma: no mutate end
 
-    log_startup.info("Publishing offline availability...")
+    log_startup.info("Publishing offline availability...")  # pragma: no mutate
     pending_publishes = []
     with entity_manager._active_entities_lock:
         for entity_info in entity_manager.active_entities:
@@ -1679,12 +1714,12 @@ def _shutdown(
         except (ValueError, RuntimeError) as e:
             # wait_for_publish() only raises these two — see the analogous
             # comment on the retained-topic clear above.
-            log_mqtt.warning("Offline publish did not confirm: %s", e)
+            log_mqtt.warning("Offline publish did not confirm: %s", e)  # pragma: no mutate
 
     if remove_frontend:
         _cleanup_mqtt_retained(mqtt_client)
     else:
-        log_startup.info("MQTT discovery configs retained for next startup")
+        log_startup.info("MQTT discovery configs retained for next startup")  # pragma: no mutate
 
     teardown_lovelace(remove_frontend)
 
@@ -1693,7 +1728,7 @@ def _shutdown(
     shutting_down[0] = True
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
-    log_startup.info("Service stopped cleanly")
+    log_startup.info("Service stopped cleanly")  # pragma: no mutate
 
 
 # ============================================================================
@@ -1717,7 +1752,7 @@ def _register_thread_dump_signal() -> bool:
     return True
 
 
-def main() -> None:  # pragma: no cover
+def main() -> None:
     """Initialise all subsystems and run the polling loop.
 
     Startup sequence:
@@ -1726,12 +1761,6 @@ def main() -> None:  # pragma: no cover
       3.  Run startup sequence: assemble subsystems, restore state, start threads.
       4.  Enter the polling loop (exits only via KeyboardInterrupt / signal).
       5.  On shutdown: drain executors, publish offline, disconnect.
-
-    Not unit tested directly — each phase it orchestrates (parse_arguments,
-    load_config, _build_infrastructure, _run_startup_sequence, _poll_loop,
-    _shutdown) has its own dedicated test coverage. Testing this function
-    itself would require a live-ish integration harness for signal handling
-    and process lifecycle, for little incremental value over the phase tests.
     """
     args = parse_arguments()
     cfg = load_config(cli_args=args)
@@ -1739,13 +1768,13 @@ def main() -> None:  # pragma: no cover
     _build_logging(level=log_level)
 
     for warning in cfg.warnings:
-        log_api.warning("%s", warning)
+        log_api.warning("%s", warning)  # pragma: no mutate
 
-    log_startup.info("Log level: %s", log_level)
+    log_startup.info("Log level: %s", log_level)  # pragma: no mutate
     _register_thread_dump_signal()
 
     initial_mode = _resolve_initial_mode(args, cfg)
-    log_startup.info("Initial mode: %s", initial_mode)
+    log_startup.info("Initial mode: %s", initial_mode)  # pragma: no mutate
 
     # ── Phase 1: infrastructure ───────────────────────────────────────────────
     api_client, mqtt_client, response, device_id, shutting_down, set_entity_manager = (
@@ -1779,8 +1808,10 @@ def main() -> None:  # pragma: no cover
     # The add-on runs as a supervised container — no terminal, no Ctrl-C.
     # KeyboardInterrupt is used purely as a lightweight internal shutdown signal.
     def _sigterm_handler(signum: int, _frame: Any) -> None:
+        # pragma: no mutate start
         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGHUP"
         log_startup.info("%s received — shutting down cleanly...", sig_name)
+        # pragma: no mutate end
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, _sigterm_handler)

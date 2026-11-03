@@ -1537,7 +1537,6 @@ class TestGetMemoryUsage(unittest.TestCase):
             "active_entities",
             "mqtt_enabled_points",
             "active_dynamic_points",
-            "value_cache_size",
             "last_states_size",
             "point_string_cache_size",
             "pending_writes",
@@ -1639,7 +1638,7 @@ class TestGetMemoryUsage(unittest.TestCase):
         self.assertEqual(stats["estimated_memory_mb"], expected_mb)
 
     def test_estimated_bytes_cache_sizes_multiplier_is_50(self):
-        """The combined cache-size term (value_cache + last_states +
+        """The combined cache-size term (last_states +
         point_string_cache) must use a 50-bytes-per-entry multiplier,
         isolated from the other (zero) terms."""
         em = _make_em()
@@ -1832,6 +1831,7 @@ class TestEnableDisableEntityLockedMutationSurvivors(unittest.TestCase):
             "attributes_topic": f"homeassistant/sensor/nibe_{self.point_id}/attributes",
             "command_topic": None,  # read-only sensor — no command topic
             "metadata": {"divisor": 10},
+            "point_data": self.em.all_points_by_id[self.point_id],
         }
         self.em._pub.publish_entity_discovery.return_value = self.mock_entity_info
 
@@ -2267,3 +2267,437 @@ class TestInitAttributeDefaults(unittest.TestCase):
         shares a source line with max_workers and is otherwise untested."""
         em = _make_em()
         self.assertEqual(em._write_executor._thread_name_prefix, "nibe_write")
+
+
+class TestLoadValueMappingTranslations(unittest.TestCase):
+    """_load_value_mapping_translations: the value_mappings table of
+    translations/<language>.yaml, never raising over a file problem."""
+
+    def _load(self, language, files):
+        """Load with the candidate paths answering from *files* (path
+        suffix → text); the others are missing. Returns (result, tried)."""
+        import io
+
+        from nibe_entity_manager import _load_value_mapping_translations
+
+        tried = []
+
+        def fake_open(path, *_a, **kw):
+            tried.append(path)
+            self.assertEqual(kw.get("encoding"), "utf-8")
+            for suffix, text in files.items():
+                if path.endswith(suffix):
+                    return io.StringIO(text)
+            raise FileNotFoundError(path)
+
+        with patch("builtins.open", side_effect=fake_open):
+            return _load_value_mapping_translations(language), tried
+
+    def test_english_or_no_language_needs_no_table(self):
+        from nibe_entity_manager import _load_value_mapping_translations
+
+        for language in (None, "", "en"):
+            self.assertEqual(_load_value_mapping_translations(language), {})
+
+    def test_the_repos_dutch_table_is_read(self):
+        from nibe_entity_manager import _load_value_mapping_translations
+
+        self.assertEqual(_load_value_mapping_translations("nl")["Active"], "Actief")
+
+    def test_the_image_path_is_tried_first_then_the_repo_one(self):
+        result, tried = self._load("nl", {})
+        self.assertEqual(result, {})
+        self.assertEqual(tried[0], "/translations/nl.yaml")
+        self.assertTrue(tried[1].endswith("/translations/nl.yaml"))
+        self.assertEqual(len(tried), 2)
+
+    def test_a_missing_image_file_falls_through_to_the_repo_one(self):
+        import io
+
+        from nibe_entity_manager import _load_value_mapping_translations
+
+        def fake_open(path, *_a, **_kw):
+            if path == "/translations/nl.yaml":
+                raise FileNotFoundError(path)
+            return io.StringIO("value_mappings:\n  Active: Actief\n")
+
+        with patch("builtins.open", side_effect=fake_open):
+            self.assertEqual(_load_value_mapping_translations("nl"), {"Active": "Actief"})
+
+    def test_bad_files_give_no_table(self):
+        for text in (
+            "language: nl\n",
+            "value_mappings: [a, b]\n",
+            "- just a list\n",
+            "{bad: [yaml",
+        ):
+            result, _ = self._load("nl", {"/translations/nl.yaml": text})
+            self.assertEqual(result, {}, text)
+
+    def test_non_string_entries_are_dropped_and_utf8_is_kept(self):
+        """An unquoted yes/no/on/off key is a YAML boolean (the shipped files
+        quote 'Off'/'On'); such an entry, or a non-text value, is skipped."""
+        result, _ = self._load(
+            "cs",
+            {
+                "/translations/cs.yaml": "value_mappings:\n  'Off': Vypnuto\n  yes: Ano\n  'On': 1\n  Heating: Topení\n"
+            },
+        )
+        self.assertEqual(result, {"Off": "Vypnuto", "Heating": "Topení"})
+
+
+class TestEntityManagerSmallGaps(unittest.TestCase):
+    """Edges of small EntityManager helpers no other test reached."""
+
+    def test_describe_point(self):
+        """Title, entity type and fingerprint; an untitled point reads
+        "Point N", and a point served but not indexed "unknown"."""
+        from nibe_entity_detection import firmware_fingerprint
+
+        em = _make_em()
+        em.bulk_data[5] = {"metadata": {"maxValue": 10}}
+        em.bulk_data[6] = {"metadata": {"maxValue": 3}}
+        em.all_points_by_id[5] = {"display_title": None, "entity_type": "number"}
+        self.assertEqual(
+            em._describe_point(5), ["Point 5", "number", firmware_fingerprint({"maxValue": 10})]
+        )
+        self.assertEqual(
+            em._describe_point(6), ["Point 6", "unknown", firmware_fingerprint({"maxValue": 3})]
+        )
+
+    def test_a_register_type_change_reads_input_to_holding(self):
+        from nibe_entity_manager import _describe_fingerprint_change
+
+        self.assertIn(
+            "input → holding",
+            _describe_fingerprint_change(
+                {"modbusRegisterType": "MODBUS_INPUT_REGISTER"},
+                {"modbusRegisterType": "MODBUS_HOLDING_REGISTER"},
+            ),
+        )
+
+    def test_first_success_dismisses_only_leftover_notifications(self):
+        """One raised by this process is cleared by the recovery path (with
+        its "restored" alert), not by the first-success clean-up."""
+        from nibe_entity_manager import _NOTIF_API_UNREACHABLE, _NOTIF_DISCOVERY_INCOMPLETE
+
+        em = _make_em()
+        em._dismiss = MagicMock()
+        em._api_first_success_pending = True
+        em._api_notification_active = True
+        em._discovery_notification_active = False
+        em.api_consecutive_failures = 0
+        em._note_api_success()
+        em._dismiss.assert_any_call(em.mqtt, _NOTIF_DISCOVERY_INCOMPLETE)
+        self.assertNotIn(((em.mqtt, _NOTIF_API_UNREACHABLE),), em._dismiss.call_args_list)
+
+        em = _make_em()
+        em._dismiss = MagicMock()
+        em._api_first_success_pending = True
+        em._api_notification_active = False
+        em._note_api_success()
+        em._dismiss.assert_any_call(em.mqtt, _NOTIF_API_UNREACHABLE)
+
+    def test_firmware_record_file_is_read_once_and_must_be_a_record(self):
+        import io
+
+        em = _make_em()
+        for text in ("[1, 2]", '{"versions": [1]}', '{"points": {}}'):
+            em._firmware_record_loaded = False
+            em._firmware_record = None
+            with patch("builtins.open", return_value=io.StringIO(text)):
+                self.assertIsNone(em._load_firmware_record(), text)
+        em._firmware_record_loaded = False
+        with patch("builtins.open", side_effect=FileNotFoundError) as opener:
+            self.assertIsNone(em._load_firmware_record())
+            self.assertIsNone(em._load_firmware_record())
+        self.assertEqual(opener.call_count, 1)
+
+    def test_firmware_entry_version_note(self):
+        """A register missing from the old record is no version change; two
+        changes are joined with "; "."""
+        em = _make_em()
+        em._update_changelog_history = MagicMock()
+        points = {"2509": ["Version (EB100)"], "2453": ["Version (EB101)"]}
+        em._write_firmware_entry(
+            [],
+            [],
+            [],
+            {"2509": 1037, "2453": 12481},
+            {"2509": 1038, "2453": 12482, "14987": 5},
+            points,
+        )
+        note = em._update_changelog_history.call_args.args[0]["note"]
+        self.assertEqual(note, "Version (EB100): 4.13 → 4.14; Version (EB101): 3.3.1 → 3.3.2")
+
+
+class TestEntityManagerFilesAndValues(unittest.TestCase):
+    def test_point_ids_file(self):
+        import os
+        import tempfile
+
+        from nibe_entity_manager import _load_point_ids_file
+
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "ids.json")
+        cases = [
+            ("[3, 1, 2]", {1, 2, 3}),
+            ("not json", set()),
+            ("[null]", set()),
+            ('{"a": 1}', set()),
+        ]
+        for text, expected in cases:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.assertEqual(_load_point_ids_file(path), expected, text)
+        self.assertEqual(_load_point_ids_file(os.path.join(directory, "missing.json")), set())
+
+    def test_a_startup_mode_read_is_remembered(self):
+        """republish_retained_state republishes it; nothing found remembers
+        nothing."""
+        for found in ("menus", None):
+            em = _make_em()
+            with (
+                patch("nibe_entity_manager._APPLIED_MODE_TIMEOUT_S", 0),
+                patch.object(em, "_read_applied_mode_from_file", return_value=found),
+            ):
+                self.assertEqual(em.read_applied_mode(), found)
+            self.assertEqual(em._applied_mode_known, found)
+
+    def test_an_accepted_reset_is_the_new_reference(self):
+        import nibe_entity_manager as nem
+
+        em = _make_em()
+        info = {"point_id": 7, "point_data": {"display_title": "Energy"}}
+        meta = {"divisor": 1}
+        t0 = 1_700_000_000.0
+        with patch("nibe_entity_manager.time.time", return_value=t0):
+            self.assertFalse(em._running_total_dropped(info, 100, meta))
+        with patch.object(em, "_save_running_totals"):
+            with patch("nibe_entity_manager.time.time", return_value=t0 + 1):
+                self.assertTrue(em._running_total_dropped(info, 5, meta))
+            with patch(
+                "nibe_entity_manager.time.time", return_value=t0 + 1 + nem._RUNNING_TOTAL_RESET_S
+            ):
+                self.assertFalse(em._running_total_dropped(info, 5, meta))  # accepted
+            with patch(
+                "nibe_entity_manager.time.time", return_value=t0 + 2 + nem._RUNNING_TOTAL_RESET_S
+            ):
+                self.assertTrue(em._running_total_dropped(info, 3, meta))  # below 5: a drop
+
+    def test_a_drop_is_logged_once(self):
+        em = _make_em()
+        info = {"point_id": 7, "point_data": {"display_title": "Energy"}}
+        em._running_total_dropped(info, 100, {})
+        with (
+            self.assertLogs("nibe.entities", level="INFO") as logs,
+            patch("nibe_entity_manager.time.time", return_value=1_700_000_001.0),
+        ):
+            em._running_total_dropped(info, 5, {})  # the first lower poll says so
+        self.assertEqual(sum("is below its last value" in line for line in logs.output), 1)
+        with (
+            self.assertNoLogs("nibe.entities", level="INFO"),
+            patch("nibe_entity_manager.time.time", return_value=1_700_000_016.0),
+        ):
+            em._running_total_dropped(info, 5, {})
+
+    def test_a_save_restarts_the_save_interval(self):
+        em = _make_em()
+        with (
+            patch("nibe_entity_manager.time.time", return_value=1_234.0),
+            patch("nibe_entity_manager.atomic_write_text"),
+        ):
+            em._save_running_totals()
+        self.assertEqual(em._running_totals_saved_at, 1_234.0)
+
+    def test_other_version_registers_show_their_plain_number(self):
+        from nibe_entity_manager import _format_version
+
+        self.assertEqual(_format_version(14987, 123), "123")
+        self.assertEqual(_format_version(802, 7), "7")
+
+    def test_response_values_skip_keys_that_are_not_point_ids(self):
+        from nibe_entity_manager import _response_values
+
+        self.assertEqual(
+            _response_values(
+                {"meta": {"value": {"integerValue": 1}}, "5": {"value": {"integerValue": 2}}}
+            ),
+            {5: 2},
+        )
+
+
+class TestEntityManagerWriteFailuresAndEdges(unittest.TestCase):
+    def test_a_failed_running_totals_write_is_logged_not_raised(self):
+        em = _make_em()
+        em._running_totals = {7: 5.0}
+        with (
+            patch("nibe_entity_manager.atomic_write_text", side_effect=OSError("disk full")),
+            self.assertLogs("nibe.entities", level="WARNING") as logs,
+        ):
+            em._save_running_totals()
+        self.assertIn("Could not write running totals file", logs.output[0])
+
+    def test_a_failed_firmware_record_write_is_logged_not_raised(self):
+        em = _make_em()
+        em._firmware_record = {"versions": {}}
+        with (
+            patch("nibe_entity_manager.atomic_write_text", side_effect=OSError("disk full")),
+            self.assertLogs("nibe.discovery", level="WARNING") as logs,
+        ):
+            em._write_firmware_record_file()
+        self.assertIn("Could not write the firmware record", logs.output[0])
+
+    def test_a_learning_window_does_not_replace_an_open_one(self):
+        from nibe_attribution import ScanWindow
+
+        em = _make_em()
+        em._window = ScanWindow(point=1, until=9e12)
+        self.assertIsNone(em._open_learning_window(5, True, 1))
+        self.assertEqual(em._window.point, 1)
+
+    def test_a_select_command_in_the_translated_label_is_understood(self):
+        em = _make_em()
+        em._value_translations = {"Auto": "Automatisch"}
+        ei = {
+            "point_id": 1,
+            "entity_type": "select",
+            "metadata": {},
+            "point_data": {"description": "0 = Auto, 1 = Manual"},
+        }
+        self.assertEqual(em._parse_command_payload("Automatisch", ei, "c"), 0)
+
+
+class TestEntityManagerRemainingBranches(unittest.TestCase):
+    def test_a_point_that_fails_to_enable_in_a_mode_is_not_wanted(self):
+        em = _make_em()
+        em._wanted_points = set()
+        em.all_points_by_id[4] = {"variableId": 4}
+        with (
+            patch("nibe_entity_manager.MODES", {"pick": frozenset({4})}),
+            patch.object(em, "_enable_entity_locked", return_value=False),
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_applied_mode"),
+        ):
+            em.apply_mode("pick")
+        self.assertEqual(em._wanted_points, set())
+
+    def test_a_running_totals_file_that_is_not_a_table_is_ignored(self):
+        import os
+        import tempfile
+
+        path = os.path.join(tempfile.mkdtemp(), "totals.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("[1, 2]")
+        em = _make_em()
+        em._running_totals = {}
+        em._load_running_totals(path)
+        self.assertEqual(em._running_totals, {})
+
+    def test_without_an_mqtt_client_the_first_success_dismisses_nothing(self):
+        em = _make_em()
+        em.mqtt = None
+        em._dismiss = MagicMock()
+        em._api_first_success_pending = True
+        em._note_api_success()
+        em._dismiss.assert_not_called()
+
+    def test_a_late_arrival_while_a_window_is_open_opens_none(self):
+        from nibe_attribution import ScanWindow
+
+        em = _make_em()
+        em._window = ScanWindow(point=1, until=9e12)
+        with (
+            patch.object(em, "_controller_side_change", return_value=None),
+            patch.object(em, "_late_arrival", return_value=(5, 1, False, [30])),
+        ):
+            self.assertIsNone(em._window_opened_by_poll({}))
+
+    def test_no_notification_without_changes(self):
+        em = _make_em()
+        em._notify = MagicMock()
+        em._notify_dashboard_updated([], [], None)
+        em._notify.assert_not_called()
+
+    def test_an_unknown_applied_mode_is_not_republished(self):
+        from nibe_mqtt_publisher import BrowserTopic
+
+        em = _make_em()
+        em.initial_discovery_complete = True
+        em._applied_mode_known = None
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+        topics = [c.args[0] for c in em.mqtt.publish.call_args_list]
+        self.assertNotIn(BrowserTopic.APPLIED_MODE, topics)
+
+
+class TestEntityManagerRoundTwoGaps(unittest.TestCase):
+    def _republish(self, em):
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+
+    def test_a_fresh_manager_has_no_management_discovery_to_republish(self):
+        em = _make_em()
+        em.initial_discovery_complete = True
+        self._republish(em)
+        em._pub.publish_management_discovery.assert_not_called()
+
+    def test_a_fresh_manager_has_no_catalog_change_to_flush(self):
+        em = _make_em()
+        em._flush_point_catalog()
+        em._pub.publish_all_metadata.assert_not_called()
+
+    def test_republish_prefers_the_indexed_point_over_the_enabled_copy(self):
+        """A poll without change detection re-indexes points into fresh
+        dicts; the index is the current one."""
+        em = _make_em()
+        em.initial_discovery_complete = True
+        indexed = {"variableId": 4, "entity_type": "sensor", "display_title": "New", "metadata": {}}
+        em.all_points_by_id[4] = indexed
+        em.active_entities_by_id[4] = {
+            "point_id": 4,
+            "point_data": dict(indexed, display_title="Old"),
+        }
+        self._republish(em)
+        em._pub.publish_entity_discovery.assert_called_once_with(indexed, em.bulk_data)
+
+    def test_a_number_at_exactly_its_minimum_is_published(self):
+        em = _make_em()
+        info = {
+            "point_id": 5,
+            "entity_type": "number",
+            "point_data": {},
+            "state_topic": "nibe/state/5",
+            "availability_topic": "nibe/avail/5",
+        }
+        em._process_and_publish_state(info, 10, "", {"minValue": 10, "maxValue": 100, "divisor": 1})
+        em.mqtt.publish.assert_any_call("nibe/state/5", "10", retain=True)
+
+    def test_an_optimistic_state_counts_as_sent(self):
+        """The next poll with the same value doesn't send it again."""
+        em = _make_em()
+        info = {"point_id": 5, "entity_type": "switch", "state_topic": "nibe/state/5"}
+        em._publish_requested_state(info, 1, "1")
+        self.assertIn(5, em._state_sent)
+
+    def test_a_write_just_after_a_window_ended_waits_for_its_outcome(self):
+        """The window is gone but its outcome not recorded yet: the write
+        waits instead of failing on the missing window."""
+        em = _make_em()
+        em._window = None
+        em._learning_window_ended.clear()
+        with patch.object(em._learning_window_ended, "wait") as wait:
+            em._wait_for_learning_window(5, "c")
+        wait.assert_called_once()

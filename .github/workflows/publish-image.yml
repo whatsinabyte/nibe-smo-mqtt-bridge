@@ -37,6 +37,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Check that the version matches config.yaml
+        # The Supervisor pulls the image tagged with config.yaml's version, so a
+        # different tag here would publish an image nobody gets. The input goes
+        # through env, not into the script text.
+        env:
+          REQUESTED: ${{ github.event.inputs.version }}
+        run: |
+          CONFIGURED=$(sed -n 's/^version:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' config.yaml)
+          if [ -z "${CONFIGURED}" ] || [ "${REQUESTED}" != "${CONFIGURED}" ]; then
+            echo "::error::Requested version '${REQUESTED}' does not match config.yaml's version '${CONFIGURED}'."
+            exit 1
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 

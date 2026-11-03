@@ -95,6 +95,7 @@ class TestEnableDisableEntity(unittest.TestCase):
             "attributes_topic": f"homeassistant/sensor/nibe_{self.point_id}/attributes",
             "command_topic": None,  # read-only sensor — no command topic
             "metadata": {"divisor": 10},
+            "point_data": self.em.all_points_by_id[self.point_id],
         }
         self.em._pub.publish_entity_discovery.return_value = self.mock_entity_info
 
@@ -261,12 +262,23 @@ class TestEnableDisableEntity(unittest.TestCase):
         self.em.disable_entity(self.point_id)
         self.assertNotIn(self.point_id, self.em.last_states)
 
-    def test_disable_discards_value_cache(self):
+    def test_disable_forgets_the_sent_state(self):
+        """Enabled again, the entity's state is sent at once."""
         self.em.enable_entity(self.point_id)
-        self.em.value_cache.should_publish(self.point_id, 100, threshold=1)
+        self.em._state_sent.add(self.point_id)
         self.em.disable_entity(self.point_id)
-        # After discard, next publish call for this point is treated as first
-        self.assertTrue(self.em.value_cache.should_publish(self.point_id, 100, threshold=1))
+        self.assertNotIn(self.point_id, self.em._state_sent)
+
+    def test_a_re_enabled_entity_sends_its_availability_again(self):
+        """Disabling forgets the availability already sent and the cleared
+        state, so a re-enable starts afresh."""
+        self.em.enable_entity(self.point_id)
+        ei = self.em.active_entities_by_id[self.point_id]
+        self.em._publish_availability(ei, "online")
+        self.em._state_cleared.add(self.point_id)
+        self.em.disable_entity(self.point_id)
+        self.assertNotIn(ei["availability_topic"], self.em._availability_sent)
+        self.assertNotIn(self.point_id, self.em._state_cleared)
 
     def test_disable_clears_pending_write(self):
         """A write triggered just before disable must not leak in
@@ -2355,6 +2367,45 @@ class TestRepublishRetainedState(unittest.TestCase):
         self.assertEqual(em._history_seq, 6)
         self.assertEqual(em._last_published_seq, 6)
 
+    def _republish(self, em):
+        with (
+            patch.object(em, "_persist_wanted_points"),
+            patch.object(em, "_persist_reclassified_points"),
+            patch.object(em, "_persist_dynamic_map"),
+            patch.object(em, "_persist_active_dynamic"),
+            patch.object(em, "publish_snapshots"),
+        ):
+            em.republish_retained_state()
+
+    def test_entities_are_republished_from_their_own_point_when_not_indexed(self):
+        """An entity whose point isn't indexed any more goes out from its own
+        point_data; one without a point is skipped, the rest still go out."""
+        em, _ = self._em()
+        own = {"variableId": 101, "entity_type": "sensor", "display_title": "Own", "metadata": {}}
+        del em.all_points_by_id[100]
+        em.active_entities_by_id = {
+            102: {"point_id": 102, "point_data": None},
+            100: {"point_id": 100, "point_data": own},
+        }
+        self._republish(em)
+        em._pub.publish_entity_discovery.assert_called_once_with(own, em.bulk_data)
+
+    def test_catalog_and_applied_mode_are_republished(self):
+        from nibe_mqtt_publisher import BrowserTopic
+
+        em, _ = self._em()
+        em._applied_mode_known = "menus"
+        self._republish(em)
+        em._pub.publish_all_metadata.assert_called_once_with(em.all_points)
+        em._pub.publish_point_list.assert_called_once_with(em.all_points_by_id)
+        em.mqtt.publish.assert_any_call(BrowserTopic.APPLIED_MODE, "menus", retain=True)
+
+    def test_management_discovery_waits_for_its_arguments(self):
+        em, _ = self._em()
+        em._mgmt_discovery_args = None
+        self._republish(em)
+        em._pub.publish_management_discovery.assert_not_called()
+
     def test_does_nothing_before_discovery_completes(self):
         em, _ = self._em()
         em.initial_discovery_complete = False
@@ -2392,7 +2443,7 @@ class TestRepublishRetainedState(unittest.TestCase):
 
     def test_applied_mode_is_remembered_from_persist(self):
         em = _make_em()
-        with patch("nibe_entity_manager._atomic_write_text"):
+        with patch("nibe_entity_manager.atomic_write_text"):
             em._persist_applied_mode("menus")
         self.assertEqual(em._applied_mode_known, "menus")
 
@@ -2608,13 +2659,12 @@ class TestResubscribeAll(unittest.TestCase):
         em._on_active_dynamic_message = MagicMock()
         return em
 
-    def test_reassigns_value_cache_and_last_bulk_fetch_under_em_lock(self):
+    def test_resets_sent_states_and_last_bulk_fetch_under_em_lock(self):
         """resubscribe_all() runs on paho's own MQTT network thread (via
         on_connect after a broker reconnect), concurrently with the poll
         loop thread reading/writing the same two attributes in
-        update_all_states(). Regression test for a real race: reassigning
-        value_cache/last_bulk_fetch used to be two plain, unsynchronized
-        attribute writes. Proves actual mutual exclusion — not just that
+        update_all_states(). Regression test for a real race: resetting
+        them used to be plain, unsynchronized attribute writes. Proves actual mutual exclusion — not just that
         the final values happen to look right — by holding _em_lock on the
         main thread and confirming resubscribe_all() genuinely blocks on
         it from a background thread, rather than sailing through."""
@@ -2642,8 +2692,8 @@ class TestResubscribeAll(unittest.TestCase):
             self.assertFalse(
                 finished.is_set(),
                 "resubscribe_all() completed while _em_lock was held by "
-                "another thread — the value_cache/last_bulk_fetch "
-                "reassignment is not actually serialized by the lock",
+                "another thread — the sent-state/last_bulk_fetch "
+                "reset is not actually serialized by the lock",
             )
 
         # Lock released — resubscribe_all() must now complete promptly.
@@ -2667,16 +2717,32 @@ class TestResubscribeAll(unittest.TestCase):
         em.resubscribe_all()
         em.mqtt.subscribe.assert_any_call("nibe/cmd/100", qos=1)
 
-    def test_value_cache_reset_to_functional_instance(self):
-        """value_cache must be reset to a genuinely usable ValueCache, not
-        just something truthy — a mutation to None here would crash the
-        very next should_publish() call on the following poll cycle with
-        AttributeError, not just silently skip clearing stale state."""
+    def test_the_next_poll_resends_unchanged_states(self):
+        """The broker may have lost its retained messages: a state sent
+        before the reconnect is sent again, though unchanged."""
         em = self._make_em_with_resubscribe()
+        ei = {
+            "point_id": 4,
+            "entity_type": "sensor",
+            "state_topic": "nibe/state/4",
+            "availability_topic": "nibe/avail/4",
+            "point_data": {},
+        }
+        meta = {"variableSize": "s16", "divisor": 1}
+
+        def state_publishes():
+            return [
+                c.args[1] for c in em.mqtt.publish.call_args_list if c.args[0] == "nibe/state/4"
+            ]
+
+        em._process_and_publish_state(ei, 5, "", meta)
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(ei, 5, "", meta)
+        self.assertEqual(state_publishes(), [])
         em.resubscribe_all()
-        # Must not raise, and must behave like a fresh cache (first call
-        # for a never-seen point always publishes).
-        self.assertTrue(em.value_cache.should_publish(999, 42, threshold=1))
+        em.mqtt.publish.reset_mock()
+        em._process_and_publish_state(ei, 5, "", meta)
+        self.assertEqual(state_publishes(), ["5"])
 
     def test_register_mgmt_subscription_appends_the_exact_triple(self):
         """register_mgmt_subscription() must append (topic, handler, qos)

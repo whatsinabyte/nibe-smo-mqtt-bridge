@@ -32,8 +32,6 @@ except ImportError:
     QUICKJS_AVAILABLE = False
 
 _APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app")
-if not os.path.exists(os.path.join(_APP_DIR, "nibe-entity-manager-card.js")):
-    _APP_DIR = "/mnt/project/app"
 _CARD_JS_PATH = os.path.join(_APP_DIR, "nibe-entity-manager-card.js")
 
 # Minimal browser-global stubs needed only so the file can be parsed and

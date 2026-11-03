@@ -7,7 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.4.6] — 2026-11-03
+
+A full mutation-testing run across all modules found test gaps and a number
+of real bugs. All are fixed here: concurrent-access races on `bulk_data` and
+the dynamic map, message-handling crashes from oddly shaped payloads or
+network errors, a markup-injection path in the Entity Manager card, and a
+missing version check in the publish workflow. Binary sensors now show
+Running, Open or Problem where NIBE's Modbus documentation describes their
+meaning.
+
+### Changed
+
+- **Binary sensors read Running, Open or Problem where NIBE documents their
+  meaning.** The compressor, the circulation and heating medium pumps, the
+  pool and ACS diverter valves and the active alarm now have a Home
+  Assistant device class, so they show Running/Not running, Open/Closed or
+  Problem/OK instead of On/Off. Only points whose on and off NIBE's Modbus
+  documentation describes, register by register or through an identical
+  documented sibling, get one; the others stay On/Off. Entity ids don't
+  change.
+
+### Fixed
+
+- **A firmware update after a failed read of the version register is
+  recorded.** When the controller's version register couldn't be read on
+  the poll that renewed the firmware record, the record lost the version,
+  and the update that followed got no changelog entry.
+
+- **An alarm without a title reads "Unknown alarm" in the notification**,
+  instead of an empty line.
+
+- **The "API unreachable" notification shows the network error itself.** A
+  DNS or socket failure used to read `<urlopen error ...>`, or nothing at all
+  for an error without text; it now shows the error's own text, or "could
+  not resolve host or reach network".
+
+- **A failed test run that names no failing test shows the end of its output.**
+  When the Run Tests button's run crashed or stopped during collection, the
+  notification showed only the output's last line, twice; it now shows the
+  last 1500 characters.
+
+- **Reconnecting to the broker while the bridge learns a new switch can no
+  longer cut the republish of its retained state short.** After a broker
+  restart, or when Home Assistant announced itself, the bridge writes its
+  retained state again. If a new switch was being added to its learning
+  table at that very moment, the write stopped with `dictionary changed size
+  during iteration` and the rest stayed unpublished until the next reconnect.
+
+- **Test API Connection allows as long as the bridge does.** It gave up
+  after 10 seconds where the bridge itself waits 30, so a controller slow to
+  send its points could be reported as timed out while the bridge read it fine.
+
+- **The add-on no longer waits forever at start when the Supervisor doesn't
+  answer the MQTT lookup.** `run.sh` asked the Supervisor for the broker's
+  details without a time limit. It now gives up after 10 seconds and uses the
+  configured MQTT settings, as it does when the Supervisor refuses.
+
+- **A controller that answers 401, 403 or 404 on its first contact after
+  startup is handled like any other API failure.** After a start with the
+  controller unreachable, the retry's device-info request raised into the main
+  loop, which logged a traceback and backed off every time; it now goes
+  through the usual failure accounting and notification.
+
+- **A controller that refuses the alarm list no longer fills the log.** When
+  `/notifications` answered 401, 403 or 404 while the points were fine, the
+  error reached the main loop, which logged a traceback and backed off, again
+  and again. The alarm poll now skips quietly, as it already did for other
+  errors.
+
+- **A message from another MQTT client can no longer inject markup into the
+  Entity Manager card.** The card put the point ids of the retained point
+  list, and a snapshot's entity count, into its HTML without escaping them. A
+  client that could publish to `nibe/browser/point_list` could run script in the
+  Home Assistant dashboard of whoever opened the card. Point ids are now whole
+  numbers only, and the count is escaped.
+
+- **A wrongly shaped message from Home Assistant can no longer end the
+  entity registry watcher.** A registry entry that wasn't an object made
+  every connection attempt fail; after 10 failures (about 13 minutes of
+  backoff) the watcher gave up until the add-on restarted, and entities
+  disabled or enabled in Home Assistant went unnoticed. Such entries are now
+  skipped, and a frame that isn't an object is discarded instead of dropping
+  the connection.
+
+- **A number command of `inf` or `1e999` is dropped with the usual warning.**
+  It was logged as an unhandled error with a traceback. The command was
+  dropped either way.
+
+- **One oddly shaped point no longer makes the bridge report the API as
+  unreachable.** When the controller sent a point, or its value or metadata,
+  as anything but an object (a list or a string, say), the whole poll failed:
+  nothing updated, and after `api_failure_threshold` polls the "API
+  Unreachable" notification appeared although the controller answered. That
+  point alone is now skipped, or read as having no value.
+
+- **Another integration's discovery message can't stop the bridge's MQTT
+  connection.** At startup the bridge reads every retained config under
+  `homeassistant/`. One that wasn't a JSON object, or whose `unique_id` wasn't
+  text, stopped the bridge's MQTT thread: no commands or reconnects until a
+  restart, and the retained message did the same again at the next start.
+
+- **A Nibe Menus view with a short header and one long section uses two
+  columns.** Sections are split over the columns at the boundary nearest
+  each section, so a light section followed by a heavy one no longer ends
+  up in one column.
+
+- **Uninstall cleanup says when it couldn't check for the dashboards.** With
+  `remove_frontend`, a failed request for the list of dashboards or
+  resources was logged as "already removed"; it is now a warning that they
+  may still be there, and where to remove them.
+
+[1.4.6]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/compare/v1.4.5...v1.4.6
+
+---
 
 ## [1.4.5] — 2026-10-29
 

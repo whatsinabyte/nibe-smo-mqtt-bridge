@@ -41,10 +41,10 @@ export default defineConfig({
       // coverage genuinely improves; do not lower them to make a dependency
       // bump pass.
       thresholds: {
-        statements: 96,
-        branches: 83,
-        functions: 96,
-        lines: 98,
+        statements: 99,
+        branches: 99,
+        functions: 99,
+        lines: 99,
       },
     },
   },

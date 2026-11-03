@@ -396,18 +396,19 @@ class TestRunCurl(unittest.TestCase):
             },
         )
 
-    def test_default_timeout_is_exactly_ten(self):
-        """Pins the default timeout=10 — a wrong default would silently
-        change both curl's --max-time and the subprocess timeout for every
-        caller that doesn't override it (run_connectivity_check doesn't)."""
+    def test_default_timeout_is_the_bridge_s_own(self):
+        """The 30 s NibeApiClient allows — a shorter default would report a
+        controller as timed out that the bridge reads fine. It sets both
+        curl's --max-time and the subprocess timeout for every caller that
+        doesn't override it (run_connectivity_check doesn't)."""
         from nibe_connectivity_check import _run_curl
 
         with patch(
             "subprocess.run", return_value=self._curl_result(stdout="HTTP_CODE:200")
         ) as mock_run:
             _run_curl("https://192.0.2.1:8443/api/v1/devices/0", None)
-        self.assertIn("10", mock_run.call_args.args[0])
-        self.assertEqual(mock_run.call_args.kwargs["timeout"], 15)
+        self.assertIn("30", mock_run.call_args.args[0])
+        self.assertEqual(mock_run.call_args.kwargs["timeout"], 35)
 
     def test_curl_not_installed_summary_exact_text(self):
         from nibe_connectivity_check import _run_curl
@@ -605,6 +606,14 @@ class TestRunCurl(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("authenticated", result["summary"])
 
+    def test_the_http_code_is_found_after_other_output(self):
+        from nibe_connectivity_check import _run_curl
+
+        with patch(
+            "subprocess.run", return_value=self._curl_result(stdout="* note\nHTTP_CODE:200")
+        ):
+            self.assertEqual(_run_curl("https://h/api", None, None)["http_code"], 200)
+
     def test_auth_header_401_is_not_ok_and_names_credentials(self):
         """With real credentials supplied, a 401 is a genuine, actionable
         finding — must be reported as a credentials problem, not silently
@@ -654,7 +663,7 @@ class TestRunCurlProperties(unittest.TestCase):
         return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
 
     @given(timeout=st.integers(min_value=1, max_value=120))
-    @example(timeout=10)  # the real default
+    @example(timeout=30)  # the real default
     def test_max_time_flag_matches_timeout_argument(self, timeout):
         from nibe_connectivity_check import _run_curl
 
