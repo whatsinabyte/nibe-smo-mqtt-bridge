@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.4.6] — 2026-11-03
+
+A full mutation-testing run across all modules found test gaps and a number
+of real bugs. All are fixed here: concurrent-access races on `bulk_data` and
+the dynamic map, message-handling crashes from oddly shaped payloads or
+network errors, a markup-injection path in the Entity Manager card, and a
+missing version check in the publish workflow. Binary sensors now show
+Running, Open or Problem where NIBE's Modbus documentation describes their
+meaning.
 
 ### Changed
 
@@ -109,6 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `remove_frontend`, a failed request for the list of dashboards or
   resources was logged as "already removed"; it is now a warning that they
   may still be there, and where to remove them.
+
+[1.4.6]: https://github.com/whatsinabyte/nibe-smo-mqtt-bridge/compare/v1.4.5...v1.4.6
+
+---
 
 ## [1.4.5] — 2026-10-29
 
